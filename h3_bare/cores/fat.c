@@ -89,8 +89,8 @@ static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t 
 
 // ---- обработка одной записи директории ----
 // Возвращает 1 если запись обработана (файл/папка), 0 если пустая, -1 конец.
-// LFN-записи копятся в lfn_buf.
-static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int lfn_len) {
+// LFN-записи копятся в lfn_buf. lfn_len обновляется через указатель.
+static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* lfn_len) {
     uint8_t attr = e[11];
     // LFN запись
     if (attr == 0x0F) {
@@ -119,11 +119,11 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int lf
             // записываем на своё место: seq 0x41 = последний фрагмент (индекс 0 в LFN)
             int pos = (seq & 0x0F) - 1;
             memcpy(lfn + pos * 13, tmp, n + 1);
-            lfn_len += n;
+            *lfn_len += n;
             // если это последний (0x40), сдвигаем в начало
             if (seq & 0x40) {
                 memmove(lfn, lfn + pos * 13, n + 1);
-                lfn_len = n;
+                *lfn_len = n;
             }
         }
         return 0;
@@ -131,12 +131,12 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int lf
 
     uint8_t first = e[0];
     if (first == 0x00) return -1;    // конец директории
-    if (first == 0xE5) { lfn[0] = 0; return 0; } // удалённая
+    if (first == 0xE5) { lfn[0] = 0; *lfn_len = 0; return 0; } // удалённая
 
     uint8_t short_attr = attr;
     // системные/volume — пропускаем (кроме директорий)
     if (short_attr & (0x08 | 0x20)) { // volume label / archive
-        if ((short_attr & 0x08) && !(short_attr & 0x10)) { lfn[0] = 0; return 0; }
+        if ((short_attr & 0x08) && !(short_attr & 0x10)) { lfn[0] = 0; *lfn_len = 0; return 0; }
     }
 
     // имя: LFN если есть, иначе 8.3
@@ -162,6 +162,7 @@ if (lfn[0]) {
     out->first_cluster = le16(e + 26) | (le16(e + 20) << 16);
     out->size = (short_attr & 0x10) ? 0 : le32(e + 28);
     lfn[0] = 0;
+    *lfn_len = 0;
     return 1;
 }
 
@@ -177,12 +178,11 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
             if (sd_read_sector(sec + s, g_sector) < 0) return count;
             for (int i = 0; i < 512; i += 32) {
                 const uint8_t* e = g_sector + i;
-                int r = parse_dir_entry(e, &out[count], lfn, lfn_len);
+                int r = parse_dir_entry(e, &out[count], lfn, &lfn_len);
                 if (r < 0) return count;
                 if (r > 0) {
                     count++;
                     if (count >= max) return count;
-                    lfn_len = 0;
                 }
             }
         }

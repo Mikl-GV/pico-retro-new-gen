@@ -113,8 +113,9 @@ static int mmc_read_fifo(uint8_t* buf, uint32_t bytes) {
     while (done < bytes) {
         int r = mmc_wait_rint(RINT_RX_REQ | RINT_DATA_OVER);
         if (r < 0) return -1;
+        uint32_t rv = MMC->rint;
         uint32_t stat = MMC->status;
-        if (MMC->rint & RINT_RX_REQ) {
+        if (rv & RINT_RX_REQ) {
             uint32_t cnt = STATUS_FIFO_LEVEL(stat);
             if (cnt == 0 && (stat & STATUS_FIFO_FULL)) cnt = 32;
             uint32_t* dst = (uint32_t*)(buf + done);
@@ -122,10 +123,9 @@ static int mmc_read_fifo(uint8_t* buf, uint32_t bytes) {
                 dst[i] = MMC->fifo;
                 done += 4;
             }
-            uint32_t rv = MMC->rint;
             MMC->rint = rv & ~RINT_RX_REQ;
-        } else if (MMC->rint & RINT_DATA_OVER) {
-            MMC->rint = MMC->rint;
+        } else if (rv & RINT_DATA_OVER) {
+            MMC->rint = rv & ~RINT_DATA_OVER;
             break;
         }
     }

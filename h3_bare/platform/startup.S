@@ -87,8 +87,8 @@ _start:
     /* Stack: в конце 512MB DRAM (0x60000000) */
     ldr sp, =0x60000000
 
-    /* DGN '3': стек готов */
-    mov r0, #'3'
+    /* DGN '4': стек готов */
+    mov r0, #'4'
     bl uart_dbg
 
     /* Инвалидируем I-cache + DSB+ISB */

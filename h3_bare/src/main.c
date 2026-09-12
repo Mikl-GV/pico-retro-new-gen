@@ -11,6 +11,7 @@
 #include "sd.h"
 #include "fat.h"
 #include "usb_kbd.h"
+#include "fb_text.h"
 
 const uint8_t* test_a5200_get_bios(void);
 const uint8_t* test_a5200_get_cart(void);
@@ -31,13 +32,16 @@ void udelay(uint32_t d);
 static void blit_emu_fb(void) {
     uint16_t* src = (uint16_t*)EMU_FB;
     volatile uint32_t* dst = (volatile uint32_t*)FB_ADDR;
+    // EMU_FB: 160x240 RGB565, HDMI: 1024x600 XRGB8888
+    // H3 DE2 ожидает BGR порядок в 32-битном пикселе (byte0=R, byte1=G, byte2=B)
     int sx = 32, sy = 0;
     for (int y = 0; y < 240 && sy + 2 < PHYS_H; y++) {
-        for (int x = 0; x < 320; x++) {
-            uint16_t p = src[y * 320 + x];
-            uint32_t px = ((uint32_t)(p & 0x001F) << 3) |
-                          ((uint32_t)(p & 0x07E0) << 5) |
-                          ((uint32_t)(p & 0xF800) << 8);
+        for (int x = 0; x < 160; x++) {
+            uint16_t p = src[y * 160 + x];
+            // RGB565 → BGR888 (DE2: byte[0]=R, byte[1]=G, byte[2]=B)
+            uint32_t px = ((uint32_t)(p & 0x001F) << 3)   |  // B[4:0] → byte0
+                          ((uint32_t)(p & 0x07E0) << 5)   |  // G[10:5] → byte1
+                          ((uint32_t)(p & 0xF800) << 8);     // R[15:11] → byte2
             dst[(sy+0)*PHYS_W + sx+0] = px;
             dst[(sy+0)*PHYS_W + sx+1] = px;
             dst[(sy+0)*PHYS_W + sx+2] = px;
@@ -51,6 +55,7 @@ static void blit_emu_fb(void) {
         }
         sx = 32; sy += 3;
     }
+    fb_flush();
 }
 
 static void dbg_pc(uint16_t pc) {
@@ -131,6 +136,20 @@ static void show_menu(void) {
     uart_puts("s - SD init\n");
     uart_puts("l - list ROMs\n");
     uart_puts("Выбор: ");
+
+    // HDMI: рисуем меню прямо на фреймбуфере
+    fb_clear();
+    fb_puts(320, 60, "=== MultiTool Retro ===", 0xFFFFFF);
+    fb_puts(320, 110, "1 - Atari 2600 (test)", 0xFFFFFF);
+    fb_puts(320, 140, "2 - Atari 5200 (test)", 0xFFFFFF);
+    fb_puts(320, 170, "3 - Atari 7800 (Asteroids)", 0xFFFFFF);
+    fb_puts(320, 210, "4 - SD: Atari 2600", 0xFFFFFF);
+    fb_puts(320, 240, "5 - SD: Atari 5200", 0xFFFFFF);
+    fb_puts(320, 270, "6 - SD: Atari 7800", 0xFFFFFF);
+    fb_puts(320, 310, "s - SD init", 0x888888);
+    fb_puts(320, 340, "l - list ROMs", 0x888888);
+    fb_puts(320, 400, "Press key / touch", 0xAAAAAA);
+    fb_flush();
 }
 
 void main(void) {
@@ -194,17 +213,22 @@ void main(void) {
             else if (k == 22) m = 's'; else if (k == 15) m = 'l';
             else { int x, y;
                 if (touch_read(&x, &y)) {
-                    if (y < 1200 && !prev_touch) m = '1';
-                    else if (y < 2400 && !prev_touch) m = '2';
-                    else if (y < 3600 && !prev_touch) m = '3';
-                    else if (y < 4800 && !prev_touch) m = '4';
-                    else if (y < 6000 && !prev_touch) m = '5';
-                    else if (!prev_touch) m = '6';
+                    // Отсеиваем шум XPT2046 без подключённой панели:
+                    // реальное касание даёт значения 100..4000,
+                    // шум обычно 0, 4095, или случайные
+                    if (x > 100 && x < 4000 && y > 100 && y < 4000 && !prev_touch) {
+                        if (y < 1200) m = '1';
+                        else if (y < 2400) m = '2';
+                        else if (y < 3600) m = '3';
+                        else if (y < 4800) m = '4';
+                        else if (y < 6000) m = '5';
+                        else m = '6';
+                    }
                 }
             }
             if (m) sel = m;
         }
-        prev_touch = 0;
+        if (!sel) prev_touch = 0;
         udelay(10000);
 
         if (sel == 's' || sel == 'l') {
@@ -234,6 +258,10 @@ void main(void) {
     // ================= 2600 (test kernel) =================
     if (sel == '1') {
         uart_puts("Running A2600\n");
+        // Чистим эмуляторный буфер и HDMI — иначе мусор/полосы
+        memset((void*)EMU_FB, 0, 160 * 240 * 2);
+        fb_clear();
+        fb_flush();
         a2600_t a26;
         a2600_init(&a26, kernel_2600, 4096, emu_fb);
         while (1) {
@@ -245,6 +273,8 @@ void main(void) {
     // ================= 5200 (test) =================
     else if (sel == '2') {
         uart_puts("Running A5200 (mini BIOS)\n");
+        memset((void*)EMU_FB, 0, 160 * 240 * 2);
+        fb_clear(); fb_flush();
         a5200_t a52;
         a5200_init(&a52, test_a5200_get_cart(), 16384,
                    test_a5200_get_bios(), emu_fb);
@@ -258,6 +288,8 @@ void main(void) {
     // ================= 7800 (Asteroids) =================
     else if (sel == '3') {
         uart_puts("Running A7800 Asteroids\n");
+        memset((void*)EMU_FB, 0, 160 * 240 * 2);
+        fb_clear(); fb_flush();
         a7800_t a78;
         a7800_init(&a78, rom_a7800_asteroids, sizeof(rom_a7800_asteroids),
                    NULL, 0, emu_fb);
@@ -294,6 +326,8 @@ void main(void) {
 
         if (rom) {
             uart_puts("Running from SD...\n");
+            memset((void*)EMU_FB, 0, 160 * 240 * 2);
+            fb_clear(); fb_flush();
             if (plat == ROM_PLAT_A2600) {
                 a2600_t a26;
                 a2600_init(&a26, rom, rom_size, emu_fb);

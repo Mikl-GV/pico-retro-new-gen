@@ -1,311 +1,357 @@
-// usb_ohci.c — минимальный OHCI-драйвер для H3 (Full/Low-Speed USB).
-// Покрывает: инициализацию контроллера, root hub, управляющие и прерывные передачи.
-// Регистры OHCI: 0x01C1A400 (OHCI0), 0x01C1B400 (OHCI1), 0x01C1C400 (OHCI2), 0x01C1D400 (OHCI3).
-// Orange Pi Lite использует OHCI1 (0x01C1B400) и OHCI2 (0x01C1C400) — физические USB-A порты.
-// (Send Data Volume 2 + OpenHCI spec)
+// usb_ohci.c — OHCI-драйвер для H3. Паттерн — TinyUSB hcd_ohci.c
+// (тот же стек, что использует uli/allwinner-bare-metal на H3).
+//
+// Ключевые принципы из TinyUSB:
+//   1. HCR делается при init, head/списки пишутся ТОЛЬКО после HCR
+//      (HC не в OPER — запись не игнорируется).
+//   2. control_head_ed настраивается ОДИН раз. Каждая передача обновляет
+//      содержимое ED в памяти (HC читает через DMA) + CLF.
+//      Писать HcControlHeadED при работающем HC нельзя — игнорируется.
+//   3. frame_interval пишется с toggle FIT (bit31), как Linux/TinyUSB.
+//   4. Передача завершена, когда CC setup TD != NOT_ACCESSED.
 #include <string.h>
 #include "h3.h"
 #include "h3_ccu.h"
 #include "uart.h"
 #include "usb_ohci.h"
 
-// ---- OHCI register block (HcRevision offset 0x00) ----
+// ---- OHCI register block ----
 typedef struct {
-    volatile uint32_t rev;           // 0x00
-    volatile uint32_t ctrl;          // 0x04
-    volatile uint32_t cmdstatus;     // 0x08
-    volatile uint32_t intrstatus;    // 0x0C
-    volatile uint32_t intrenable;    // 0x10
-    volatile uint32_t intrdisable;   // 0x14
-    volatile uint32_t hcca;          // 0x18
-    volatile uint32_t peried;        // 0x1C
-    volatile uint32_t ctrlhead;      // 0x20
-    volatile uint32_t ctrlcur;       // 0x24
-    volatile uint32_t bulkhead;      // 0x28
-    volatile uint32_t bulkcur;       // 0x2C
-    volatile uint32_t donehead;      // 0x30
-    volatile uint32_t fminterval;    // 0x34
-    volatile uint32_t fmremaining;   // 0x38
-    volatile uint32_t fmnumber;      // 0x3C
-    volatile uint32_t periodstart;   // 0x40
-    volatile uint32_t lsperiod;      // 0x44
-    volatile uint32_t rha_des;       // 0x48  Root Hub A (Descriptor)
-    volatile uint32_t rhb_des;       // 0x4C  Root Hub B (Descriptor)
-    volatile uint32_t rhstatus;      // 0x50  Root Hub Status
-    volatile uint32_t rhport[2];     // 0x54-0x58  Root Hub Port Status
+    volatile uint32_t rev;
+    volatile uint32_t ctrl;
+    volatile uint32_t cmdstatus;
+    volatile uint32_t intrstatus;
+    volatile uint32_t intrenable;
+    volatile uint32_t intrdisable;
+    volatile uint32_t hcca;
+    volatile uint32_t peried;
+    volatile uint32_t ctrlhead;
+    volatile uint32_t ctrlcur;
+    volatile uint32_t bulkhead;
+    volatile uint32_t bulkcur;
+    volatile uint32_t donehead;
+    volatile uint32_t fminterval;
+    volatile uint32_t fmremaining;
+    volatile uint32_t fmnumber;
+    volatile uint32_t periodstart;
+    volatile uint32_t lsperiod;
+    volatile uint32_t rha_des;
+    volatile uint32_t rhb_des;
+    volatile uint32_t rhstatus;
+    volatile uint32_t rhport[2];
 } ohci_regs_t;
 
-// ---- OHCI control bits ----
-#define OHCI_CTRL_CBSR_SHIFT  0       // Control-Bulk-Service Ratio
-#define OHCI_CTRL_PLE         (1<<4)  // Periodic List Enable
-#define OHCI_CTRL_IE          (1<<5)  // Isochronous Enable
-#define OHCI_CTRL_CLE         (1<<6)  // Control List Enable
-#define OHCI_CTRL_BLE         (1<<7)  // Bulk List Enable
-#define OHCI_CTRL_HCFS_SHIFT  8
-#define OHCI_CTRL_HCFS_RESET  (0<<8)
-#define OHCI_CTRL_HCFS_OP    (2<<8)
-#define OHCI_CTRL_RWE         (1<<9)  // Remote Wakeup Enable
-#define OHCI_CTRL_HC_LPEN     (1<<10) // Legacy Power Enable (must clear)
+#define RH_PS_CCS   (1u << 0)
+#define RH_PS_PPS   (1u << 8)
+#define RH_PS_LSDA  (1u << 9)
+#define RH_PS_PRS   (1u << 4)
+#define RH_PS_PES   (1u << 1)
+#define RH_PS_CSC   (1u << 16)
+#define RH_PS_PRSC  (1u << 20)
 
-// ---- CMDSTATUS (Host Controller Command & Status) ----
-#define OHCI_CMD_HCR          (1<<0)  // Host Controller Reset
-#define OHCI_CMD_CLF          (1<<1)  // Control List Filled
-#define OHCI_CMD_BLF          (1<<2)  // Bulk List Filled
-#define OHCI_CMD_OCR          (1<<3)  // Ownership Change Request
-#define OHCI_CMD_SOC_SHIFT    16
+#define ED_SKIP        (1u << 14)
+#define ED_LOWSPEED    (1u << 13)
+#define ED_FROM_TD     (0u << 11)   // DIR=00: направление из TD (control)
 
-// ---- Root Hub A descriptor ----
-#define OHCI_RHA_NDP_SHIFT    0       // Number Downstream Ports
-#define OHCI_RHA_PSM          (1<<8)  // Power Switching Mode
-#define OHCI_RHA_NPS          (1<<9)  // No Power Switching
-#define OHCI_RHA_DT           (1<<10) // Device Type
-#define OHCI_RHA_OCPM         (1<<11) // Overcurrent Protection Mode
-#define OHCI_RHA_NOCP         (1<<12) // No Overcurrent Protection
-#define OHCI_RHA_POTPG_SHIFT  24      // Power On to Power Good Time
+#define TD_T_DATA0     (2u << 24)
+#define TD_T_DATA1     (3u << 24)
+#define TD_DP_SETUP    (0u << 19)
+#define TD_DP_OUT      (1u << 19)
+#define TD_DP_IN       (2u << 19)
+#define TD_R           (1u << 18)
+#define TD_CC_SHIFT    28
+#define TD_CC_NOTACC   0xFu
+#define TD_CC_NOERR    0x0u
 
-// ---- Root Hub Port Status bits (OHCI ver) ----
-#define RHPS_CCS              (1<<0)  // Current Connect Status
-#define RHPS_PSS              (1<<1)  // Port Enable Status
-#define RHPS_LSDA             (1<<9)  // Low-Speed Device Attached
-#define RHPS_CSC              (1<<16) // Connect Status Change
-#define RHPS_PESC             (1<<17) // Port Enable Status Change
-
-// ---- OHCI memory structures ----
-typedef struct __attribute__((packed)) {
-    uint32_t cfg;     // Endpoint Descriptor (ED) config
-    uint32_t tail;    // Tail Pointer to TD
-    uint32_t head;    // Head Pointer to TD
-    uint32_t next;    // Next ED
+typedef struct __attribute__((aligned(16))) {
+    uint32_t cfg;     // w0: FUNC[6:0] ENDP[10:7] DIR[12:11] S[13] SKIP[14] ISO[15] MPS[26:16]
+    uint32_t tail;    // w1: TailP (dummy TD)
+    uint32_t head;    // w2: HeadP
+    uint32_t next;    // w3: NextED
 } ohci_ed_t;
 
-typedef struct __attribute__((packed)) {
-    uint32_t cfg;     // Transfer Descriptor (TD) config
-    uint32_t cbp;     // Current Buffer Pointer (or 0 if done)
-    uint32_t next;    // Next TD
-    uint32_t be;      // Buffer End
+typedef struct __attribute__((aligned(32))) {
+    uint32_t cfg;     // w0: CC[31:28] EC[27:26] T[25:24] DI[23:21] DP[20:19] R[18]
+    uint32_t cbp;
+    uint32_t next;
+    uint32_t be;
+    uint32_t pad[4];
 } ohci_td_t;
 
-// ED config bits
-#define ED_CONFIG_SKIP    (1<<14)
-#define ED_CONFIG_DIR_IN  (0<<11)   // dir=0: OUT, dir=1: IN, dir=2: from TD
-#define ED_CONFIG_DIR_OUT (1<<11)
-#define ED_CONFIG_DIR_TD  (2<<11)
-#define ED_CONFIG_ADDR_SHIFT 16
-#define ED_CONFIG_EN_SHIFT   7
-#define ED_CONFIG_F_SHIFT    4
-#define ED_CONFIG_S          (1<<15) // Speed (0=FS, 1=LS)
-
-// TD config bits
-#define TD_CONFIG_R         (1<<24)   // Toggle: 0=DATA0, 1=DATA1
-#define TD_CONFIG_DP_SHIFT  19        // DataPID: 0=SETUP, 1=OUT, 2=IN
-#define TD_CONFIG_DP_SETUP  (0<<19)
-#define TD_CONFIG_DP_OUT    (1<<19)
-#define TD_CONFIG_DP_IN     (2<<19)
-#define TD_CONFIG_T_SHIFT   24        // buffer routing
-#define TD_CONFIG_CC        0xF0000000 // Condition Code (top 4 bits)
-
-// ---- GCC (USB-CCU) bits ----
-#define USB_PHY_GATE   (1<<1) // Reset deassert
-#define PLL_GATE       (1<<8)
-
-// ---- HCCA: 256-byte aligned ----
-typedef struct __attribute__((packed)) {
-    uint32_t intr[32];      // Interrupt table (32 entries)
-    uint16_t framenumber;   // Current frame number
-    uint16_t pad;           // pad
-    uint32_t donehead;      // Done queue head
+typedef struct __attribute__((aligned(256))) {
+    uint32_t intr[32];
+    uint16_t framenumber;
+    uint16_t pad;
+    uint32_t donehead;
     uint8_t  reserved[120];
 } ohci_hcca_t;
 
-// Глобальные буферы (доступны из любого адреса)
-static ohci_hcca_t g_hcca __attribute__((aligned(256)));
-static ohci_ed_t   g_ed[8];    // до 8 устройств
-static ohci_td_t   g_td[32];
-static int g_ed_idx = 0, g_td_idx = 0;
+static ohci_hcca_t g_hcca;
+static ohci_ed_t   g_head_ed;   // control head ED (постоянный, skip=1 по умолчанию)
+static ohci_td_t   g_td[8];
+static uint16_t    g_mps = 8;
 
-static ohci_regs_t* ohci = 0;
-
-// Сброс внутренних очередей
-static void reset_descs(void) {
-    memset(&g_ed, 0, sizeof(g_ed));
-    memset(&g_td, 0, sizeof(g_td));
-    g_ed_idx = 0;
-    g_td_idx = 0;
+void usb_ohci_set_mps(uint16_t mps) {
+    if (mps >= 8 && mps <= 64) g_mps = mps;
 }
 
-// Выделить ED (для устройства)
-static ohci_ed_t* alloc_ed(void) {
-    if (g_ed_idx >= 8) return 0;
-    ohci_ed_t* e = &g_ed[g_ed_idx++];
-    memset(e, 0, sizeof(*e));
-    return e;
+// ---- D-cache maintenance по MVA (Cortex-A7) ----
+// U-Boot оставляет MMU + write-back D-cache включёнными. OHCI-DMA читает
+// физическую DRAM, а наши ED/TD пишутся через кэш — поэтому перед запуском
+// передачи чистим (clean) кэш для структур, после IN — инвалидируем кэш
+// для буфера данных.
+static inline void cache_clean(uint32_t addr, uint32_t size) {
+    addr &= ~0x1Fu;
+    uint32_t end = addr + size + 32;
+    for (; addr < end; addr += 32) {
+        __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
+    }
+    __asm volatile("dsb" ::: "memory");
 }
 
-// Выделить TD (для передачи)
-static ohci_td_t* alloc_td(void) {
-    if (g_td_idx >= 32) return 0;
-    ohci_td_t* t = &g_td[g_td_idx++];
-    memset(t, 0, sizeof(*t));
-    return t;
+static inline void cache_invalidate(uint32_t addr, uint32_t size) {
+    addr &= ~0x1Fu;
+    uint32_t end = addr + size + 32;
+    for (; addr < end; addr += 32) {
+        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr)); // invalidate MVA
+    }
+    __asm volatile("dsb" ::: "memory");
+}
+
+// Полный цикл тактов/PHY (по uli reference + ICR для AHB burst)
+static void usb_port_hw_init(uint32_t ohci_base) {
+    int port_num = (ohci_base == OHCI1_BASE) ? 1 : (ohci_base == OHCI2_BASE) ? 2 : 0;
+    if (port_num == 0) return;
+
+    uint32_t e_bit = (1u << (24 + port_num));
+    uint32_t o_bit = (1u << (28 + port_num));
+    uint32_t phy_rst = (1u << port_num);
+    uint32_t phy_cal = (1u << (8 + port_num));
+    uint32_t phy_clk = (1u << (16 + port_num));
+
+    H3_CCU->BUS_CLK_GATING0 &= ~(e_bit | o_bit);
+    H3_CCU->BUS_SOFT_RESET0  &= ~(e_bit | o_bit);
+    H3_CCU->USBPHY_CFG &= ~(phy_rst | phy_cal | phy_clk);
+    udelay(10000);
+
+    H3_CCU->BUS_CLK_GATING0 |= e_bit | o_bit;
+    H3_CCU->BUS_SOFT_RESET0  |= e_bit | o_bit;
+    H3_CCU->USBPHY_CFG |= phy_rst | phy_cal | phy_clk;
+    udelay(30000);
+
+    // ICR — AHB burst config (INCR16/8/4), base+0x800
+    uint32_t ehci_base = (port_num == 1) ? 0x01C1B000u : 0x01C1C000u;
+    volatile uint32_t* icr = (volatile uint32_t*)(ehci_base + 0x800);
+    icr[0] = 0x00000701u;
+    icr[4] = 0;
 }
 
 int usb_ohci_init(uint32_t base) {
-    ohci = (ohci_regs_t*)base;
-
-    /* Диагностика: состояние контроллера после U-Boot */
+    ohci_regs_t* ohci = (ohci_regs_t*)base;
     extern int uart0_printf(const char* fmt, ...);
-    uart0_printf("usb: base=0x%X rev=0x%X ctrl=0x%X cmd=0x%X rha=0x%X\n",
-                 base, ohci->rev, ohci->ctrl, ohci->cmdstatus, ohci->rha_des);
 
-    /* Включаем такты и снимаем reset для этого порта:
-     * H3: OHCI gate bits 28-31 в BUS_CLK_GATING0, EHCI gate bits 24-27 там же.
-     * Нам достаточно OHCI, но для связки включаем и EHCI (общий AHB). */
-    int port_idx = (base == OHCI1_BASE) ? 1 : (base == OHCI2_BASE) ? 2 :
-                   (base == 0x01C1A400) ? 0 : 3;
-    /* OHCI gate = 28 + port_idx */
-    H3_CCU->BUS_CLK_GATING0 |= (1u << (28 + port_idx));
-    H3_CCU->BUS_SOFT_RESET0  |= (1u << (28 + port_idx));
-    udelay(2000);
+    uart0_printf("usb: base=0x%X rev=0x%X rha=0x%X\n",
+                 base, ohci->rev, ohci->rha_des);
 
-    /* НЕ делаем HCR — он убивает Root Hub.
-     * Просто переводим в Operational. */
-    /* 1. HCCA */
+    // Диагностика D-cache: читаем SCTLR (bit 2 = D-cache enable)
+    uint32_t sctlr;
+    __asm volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
+    uart0_printf("usb: SCTLR=0x%X %s\n", sctlr,
+                 (sctlr & 4) ? "DCACHE=ON" : "DCACHE=OFF");
+
+    usb_port_hw_init(base);
+
+    if (ohci->rev != 0x10) { uart_puts("usb: OHCI dead\n"); return -1; }
+
+    // ---- Init attach-режим: НЕ делаем HCR, чтобы не сбрасывать
+    // head→current в 0 и не терять write-ability ctrlcur
+    // (в этой реализации OHCI ctrlcur read-only после HCR).
+
+    ohci->intrdisable = 0xFFFFFFFFu;
+
+    memset(&g_hcca, 0, sizeof(g_hcca));
+    memset(&g_head_ed, 0, sizeof(g_head_ed));
+    memset(&g_td, 0, sizeof(g_td));
+
+    g_head_ed.cfg = ED_SKIP | ((uint32_t)g_mps << 16);
+    g_head_ed.head = 1;
+    g_head_ed.tail = 1;
+
     ohci->hcca = (uint32_t)&g_hcca;
-    /* 2. Перевод в Operational (HCFS = 2) */
-    uint32_t ctrl = ohci->ctrl;
-    ctrl &= ~OHCI_CTRL_HC_LPEN;         /* снять Legacy Power Enable */
-    ctrl &= ~(3u << 8);                 /* очистить HCFS */
-    ctrl |= OHCI_CTRL_HCFS_OP;          /* Operational */
-    ohci->ctrl = ctrl;
-    /* 3. Включить списки */
-    ohci->ctrl |= OHCI_CTRL_PLE | OHCI_CTRL_CLE;
-    /* 4. Root hub: снять события */
-    ohci->rhstatus = 0;
-    /* 5. Поднять питание портов */
-    int n_ports = ohci->rha_des & 0xFF;
-    if (n_ports == 0 || n_ports > 4) n_ports = 1;
-    for (int p = 0; p < n_ports; p++) {
-        ohci->rhport[p] = (ohci->rhport[p] & ~1) | 1;  /* SetPower */
-        udelay(2000);
-    }
-    for (int p = 0; p < n_ports; p++) {
-        uart0_printf("usb: port%d status=0x%X\n", p, ohci->rhport[p]);
-    }
 
-    uart_puts("usb: ohci "); uart_putc('0' + n_ports); uart_puts(" port(s) @ "); uart_puts(base == OHCI1_BASE ? "1" : (base == OHCI2_BASE ? "2" : "?"));
-    uart_puts("\n");
+    uint32_t fi = 0x2edf;
+    uint32_t fsmps = (6 * (fi - 210)) / 7;
+    ohci->fminterval = (fsmps << 16) | fi;
+    ohci->fminterval ^= (1u << 31);
+    ohci->periodstart = (fi * 9) / 10;
+    ohci->lsperiod = 0x628;
+
+    // Пустые списки, но ctrlcur НЕ трогаем — U-Boot что-то там держит
+    ohci->bulkhead = 0;
+    ohci->bulkcur  = 0;
+    ohci->peried   = 0;
+
+    // Не трогаем ctrlhead и ctrlcur — пусть остаются, как U-Boot оставил
+    // (U-Boot после usb stop не обязательно их чистит)
+
+    // OPER + CLE
+    ohci->ctrl = (ohci->ctrl & ~(3u << 6)) | (2u << 6) | (1u << 4);
+    udelay(1000);
+
+    ohci->rhstatus = (1u << 16);
+    ohci->rhport[0] |= RH_PS_PPS;
+    uint32_t potpgt = (ohci->rha_des >> 24) & 0xFF;
+    udelay(potpgt * 2000 + 5000);
+
+    uint32_t st = ohci->rhport[0];
+    uart0_printf("usb: ohci port=0x%X\n", st);
+    if (st & RH_PS_CCS) uart_puts("usb: DEVICE on OHCI!\n");
     return 0;
 }
 
 int usb_ohci_root_port_connected(uint32_t base, int port) {
-    ohci_regs_t* r = (ohci_regs_t*)base;
-    uint32_t s = r->rhport[port];
-    return (s & RHPS_CCS) ? 1 : 0;
+    return (((ohci_regs_t*)base)->rhport[port] & RH_PS_CCS) ? 1 : 0;
+}
+
+uint32_t usb_ohci_port_status(uint32_t base, int port) {
+    return ((ohci_regs_t*)base)->rhport[port];
 }
 
 int usb_ohci_port_low_speed(uint32_t base, int port) {
-    ohci_regs_t* r = (ohci_regs_t*)base;
-    uint32_t s = r->rhport[port];
-    return (s & RHPS_LSDA) ? 1 : 0;
+    return (((ohci_regs_t*)base)->rhport[port] & RH_PS_LSDA) ? 1 : 0;
 }
 
-// Простая управляющая передача на OHCI:
-// alloc ED -> alloc TD(s) -> загоняем в список управления -> ждём done -> разбираем
+int usb_ohci_port_reset(uint32_t base, int port) {
+    ohci_regs_t* ohci = (ohci_regs_t*)base;
+    extern int uart0_printf(const char* fmt, ...);
+
+    ohci->rhport[port] |= RH_PS_PRS;
+    udelay(50000);                       // 50ms PRS pulse (USB spec: >= 10ms)
+    for (uint32_t t = 0; t < 200000; t++) {
+        uint32_t st = ohci->rhport[port];
+        if (!(st & RH_PS_PRS)) {
+            ohci->rhport[port] = RH_PS_CSC | RH_PS_PRSC;  // w1c stale changes
+            udelay(100000);              // USB recovery time — 100ms перед первым get_descriptor!
+            st = ohci->rhport[port];
+            uart0_printf("usb: port after reset=0x%X\n", st);
+            if (!(st & RH_PS_CCS)) { uart_puts("usb: device gone\n"); return -1; }
+            if (!(st & RH_PS_PES)) { uart_puts("usb: PES not set\n"); return -1; }
+            return 0;
+        }
+        udelay(1);
+    }
+    uart_puts("usb: port reset timeout\n");
+    return -1;
+}
+
+static void td_link(ohci_td_t* a, ohci_td_t* b) { a->next = (uint32_t)b; }
+
 int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
                            const uint8_t* setup, uint8_t setup_len,
                            uint8_t* data, uint32_t data_len, int dir_in,
                            uint32_t timeout_ms) {
-    ohci = (ohci_regs_t*)base;
-    if (!ohci) return -1;
+    (void)ep_in;
+    ohci_regs_t* ohci = (ohci_regs_t*)base;
+    extern int uart0_printf(const char* fmt, ...);
 
-    reset_descs();
+    memset(&g_td, 0, sizeof(g_td));
 
-    // ED для endpoint 0 (default control)
-    ohci_ed_t* ed = alloc_ed();
-    if (!ed) return -1;
+    ohci_td_t* t_setup = &g_td[0];
+    ohci_td_t* t_data  = &g_td[1];
+    ohci_td_t* t_stat  = &g_td[2];
+    ohci_td_t* t_dummy = &g_td[3];
 
-    uint32_t ed_cfg = (addr << ED_CONFIG_ADDR_SHIFT) |
-                       (0 << ED_CONFIG_EN_SHIFT) |       // endpoint 0
-                       (0 << ED_CONFIG_F_SHIFT) |
-                       ED_CONFIG_SKIP;                    // start skipped
-    // Если LS — ставим S=1
-    if (usb_ohci_port_low_speed(0, 0))
-        ed_cfg |= ED_CONFIG_S;
+    int low_speed = usb_ohci_port_low_speed(base, 0) ? 1 : 0;
 
-    ed->cfg = ed_cfg;
-    ed->head = 1; // Tail=1 означает, что очередь пуста (OHCI convention)
+    // ED в памяти (head-ED уже висит в control list с init)
+    g_head_ed.cfg = (addr & 0x7F)
+            | (low_speed ? ED_LOWSPEED : 0)
+            | ED_FROM_TD
+            | ED_SKIP
+            | ((uint32_t)g_mps << 16);
+    g_head_ed.next = 0;
 
-    // TD: SETUP
-    ohci_td_t* td_setup = alloc_td();
-    td_setup->cfg = TD_CONFIG_DP_SETUP;
-    td_setup->cbp = (uint32_t)setup;
-    td_setup->be  = (uint32_t)(setup + setup_len - 1);
+    // SETUP: DP=00, DATA0
+    t_setup->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA0 | TD_DP_SETUP;
+    t_setup->cbp = (uint32_t)setup;
+    t_setup->be  = (uint32_t)(setup + setup_len - 1);
+    td_link(t_setup, t_data);
 
-    if (data_len > 0 && !dir_in) {
-        // TD: DATA0 OUT
-        ohci_td_t* td_data = alloc_td();
-        td_data->cfg = TD_CONFIG_DP_OUT;
-        td_data->cbp = (uint32_t)data;
-        td_data->be  = (uint32_t)(data + data_len - 1);
-        td_setup->next = (uint32_t)td_data;
-    } else if (data_len > 0) {
-        // TD: DATA1 IN
-        ohci_td_t* td_data = alloc_td();
-        td_data->cfg = TD_CONFIG_R | TD_CONFIG_DP_IN;
-        td_data->cbp = (uint32_t)data;
-        td_data->be  = (uint32_t)(data + data_len - 1);
-        td_setup->next = (uint32_t)td_data;
-    }
-
-    // STATUS TD
-    ohci_td_t* td_status = alloc_td();
-    td_status->cfg = (dir_in ? TD_CONFIG_DP_OUT : TD_CONFIG_DP_IN);
-    td_status->cbp = 0;
-    td_status->be  = 0;
-
-    // Цепочка: td_setup -> td_data? -> td_status
-    // td_status не имеет next
     if (data_len > 0) {
-        // последний td из data/data_in указывает на статус
-        ohci_td_t* last = (data_len > 0) ? (td_setup->next ? (ohci_td_t*)td_setup->next : td_setup) : td_setup;
-        if (td_setup->next) ((ohci_td_t*)td_setup->next)->next = (uint32_t)td_status;
-        else td_setup->next = (uint32_t)td_status;
+        // DATA: DP=OUT/IN, DATA1; для IN ставим R (короткий пакет — ок)
+        uint32_t dp = dir_in ? TD_DP_IN : TD_DP_OUT;
+        t_data->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA1 | dp | (dir_in ? TD_R : 0);
+        t_data->cbp = (uint32_t)data;
+        t_data->be  = (uint32_t)(data + data_len - 1);
+        td_link(t_data, t_stat);
+
+        // STATUS: DATA1, противоположное направление
+        t_stat->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA1 | (dir_in ? TD_DP_OUT : TD_DP_IN);
+        t_stat->cbp = t_stat->be = 0;
+        td_link(t_stat, t_dummy);
     } else {
-        td_setup->next = (uint32_t)td_status;
+        // Без DATA-фазы: t_data = статусный IN/OUT, сразу на dummy
+        t_data->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA1 |
+                       (dir_in ? TD_DP_OUT : TD_DP_IN);
+        t_data->cbp = t_data->be = 0;
+        td_link(t_data, t_dummy);
     }
 
-    // ED head = TD setup
-    ed->head = (uint32_t)td_setup;
-    ed->tail = (uint32_t)td_status; // tail указывает на последний TD (статус)
+    // ED голову на setup, хвост на dummy
+    g_head_ed.head = (uint32_t)t_setup;
+    g_head_ed.tail = (uint32_t)t_dummy;
 
-    // Снимаем SKIP, вешаем ED в управляющий список
-    ed->cfg &= ~ED_CONFIG_SKIP;
+    // Снять SKIP (HC игнорирует ED со SKIP=1)
+    g_head_ed.cfg &= ~ED_SKIP;
 
-    // Ставим ED в HC
-    ohci->ctrlhead = (uint32_t)ed;
-    ohci->ctrlcur   = (uint32_t)ed;
-    ohci->cmdstatus = OHCI_CMD_CLF;  // Control List Filled
+    // ---- D-cache maintenance: clean ED, TDs, setup, data. ----
+    // ДОЛЖНО быть ПОСЛЕ снятия SKIP (иначе HC видит SKIP=1 в DRAM)
+    cache_clean((uint32_t)&g_head_ed, sizeof(g_head_ed));
+    cache_clean((uint32_t)&g_td, sizeof(g_td));
+    cache_clean((uint32_t)setup, setup_len);
+    if (data_len > 0 && !dir_in) cache_clean((uint32_t)data, data_len);
 
-    // Ждём выполнения
-    uint32_t start = ~H3_HS_TIMER->CURNT_LO;
+    // g_head_ed уже висит в control list после init. Но HC закэшировал
+    // его со SKIP=1 при загрузке head→current в init. Простое изменение
+    // в памяти + cache_clean не заставляет HC перечитать ED.
+    // Перезаписываем head + current при каждой передаче (как в рабочем
+    // прототипе) — это гарантирует, что HC увидит новый ED.
+    ohci->ctrlhead = (uint32_t)&g_head_ed;
+    ohci->ctrlcur  = (uint32_t)&g_head_ed;
+    ohci->cmdstatus = (1u << 1);   // CLF
+
+    // Ждём, пока HC завершит передачу: проверяем CC последнего TD
+    // (t_data для data_len=0 — это status phase; для data_len>0 — t_stat).
+    ohci_td_t* last = (data_len > 0) ? t_stat : t_data;
+    uint32_t elapsed = 0;
     while (1) {
-        if (ohci->ctrlcur == 0) {
-            // ED завершён
-            break;
-        }
-        if ((~(start - H3_HS_TIMER->CURNT_LO) / 100) > timeout_ms * 1000) {
-            return -1; // timeout
+        cache_invalidate((uint32_t)&g_td, sizeof(g_td));
+        if ((last->cfg >> TD_CC_SHIFT) != TD_CC_NOTACC) break;
+        udelay(1000);
+        if (++elapsed > timeout_ms) {
+            uint32_t head = ohci->ctrlhead;
+            uint32_t cur  = ohci->ctrlcur;
+            uart0_printf("usb: TO a=%u ctrl=0x%X fm=%u\n", addr, ohci->ctrl, ohci->fmnumber);
+            uart0_printf("usb:   hd=0x%X cu=0x%X ed=0x%X cc s=%u d=%u t=%u\n",
+                         head, cur, (uint32_t)&g_head_ed,
+                         t_setup->cfg >> TD_CC_SHIFT,
+                         t_data->cfg >> TD_CC_SHIFT,
+                         t_stat->cfg >> TD_CC_SHIFT);
+            return -1;
         }
     }
 
-    // Смотрим condition code первого TD (setup)
-    uint32_t cc = td_setup->cfg >> 28;
-    if (cc != 0) return -(int)cc;
+    // Проверяем CC
+    uint32_t cc;
+    cc = t_setup->cfg >> TD_CC_SHIFT;
+    if (cc != TD_CC_NOERR) { uart0_printf("usb: cc setup=%u addr=%u\n", cc, addr); return -1; }
+    cc = t_data->cfg >> TD_CC_SHIFT;
+    if (cc != TD_CC_NOERR) { uart0_printf("usb: cc data=%u addr=%u\n", cc, addr); return -1; }
+    cc = t_stat->cfg >> TD_CC_SHIFT;
+    if (cc != TD_CC_NOERR) { uart0_printf("usb: cc stat=%u addr=%u\n", cc, addr); return -1; }
 
-    if (data_len > 0 && dir_in) {
-        cc = ((ohci_td_t*)td_setup->next)->cfg >> 28;
-        if (cc != 0) return -(int)cc;
-    }
+    // IN: инвалидируем кэш для буфера, чтобы прочитать свежие данные (записанные DMA)
+    if (data_len > 0 && dir_in) cache_invalidate((uint32_t)data, data_len);
 
     return (int)data_len;
 }

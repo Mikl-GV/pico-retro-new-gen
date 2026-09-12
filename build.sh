@@ -30,7 +30,7 @@ CFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm"
 CFLAGS="$CFLAGS -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG"
 INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
 
-SRC_CORE="$TOP/h3_bare/cores/cpu6502.c $TOP/h3_bare/cores/a2600.c $TOP/h3_bare/cores/a5200.c $TOP/h3_bare/cores/a7800.c $TOP/h3_bare/cores/test_a5200.c $TOP/h3_bare/cores/touch_xpt2046.c $TOP/h3_bare/cores/sd.c $TOP/h3_bare/cores/fat.c $TOP/h3_bare/cores/usb_ohci.c $TOP/h3_bare/cores/usb_kbd.c"
+SRC_CORE="$TOP/h3_bare/cores/cpu6502.c $TOP/h3_bare/cores/a2600.c $TOP/h3_bare/cores/a5200.c $TOP/h3_bare/cores/a7800.c $TOP/h3_bare/cores/test_a5200.c $TOP/h3_bare/cores/touch_xpt2046.c $TOP/h3_bare/cores/sd.c $TOP/h3_bare/cores/fat.c $TOP/h3_bare/cores/usb_ohci.c $TOP/h3_bare/cores/usb_kbd.c $TOP/h3_bare/cores/fb_text.c"
 SRC_PLATFORM="$TOP/h3_bare/platform/udelay.c $TOP/h3_bare/platform/h3_hs_timer.c $TOP/h3_bare/platform/h3_ccu.c $TOP/h3_bare/platform/h3.c"
 SRC_FB="$TOP/h3_bare/platform/fb/h3_de2.c $TOP/h3_bare/platform/fb/h3_hdmi.c $TOP/h3_bare/platform/fb/dw_hdmi.c $TOP/h3_bare/platform/fb/h3_lcd.c"
 SRC_SRC="$TOP/h3_bare/src/uart.c $TOP/h3_bare/src/printf.c $TOP/h3_bare/src/libc_min.c $TOP/h3_bare/src/main.c"
@@ -54,6 +54,7 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/sd.o" "$TOP/h3_bare/cores/sd.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fat.o" "$TOP/h3_bare/cores/fat.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_ohci.o" "$TOP/h3_bare/cores/usb_ohci.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_kbd.o" "$TOP/h3_bare/cores/usb_kbd.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/fb_text.o" "$TOP/h3_bare/cores/fb_text.c"
 
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/udelay.o" "$TOP/h3_bare/platform/udelay.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_hs_timer.o" "$TOP/h3_bare/platform/h3_hs_timer.c"
@@ -70,7 +71,7 @@ $CC -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     -o "$BUILD/h3_bare.elf" \
     "$BUILD/startup.o" "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" \
     "$BUILD/cpu6502.o" "$BUILD/a2600.o" "$BUILD/a5200.o" "$BUILD/a7800.o" \
-    "$BUILD/test_a5200.o" "$BUILD/touch.o" "$BUILD/sd.o" "$BUILD/fat.o" "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" \
+    "$BUILD/test_a5200.o" "$BUILD/touch.o" "$BUILD/sd.o" "$BUILD/fat.o" "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/fb_text.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
     -lgcc

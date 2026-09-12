@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.13)
 project(h3_bare C ASM)
 
+# Кросс-компиляция под ARM (Cortex-A7).
+# Задаётся через toolchain файл или:
+#   cmake -DCMAKE_C_COMPILER=arm-none-eabi-gcc -DCMAKE_ASM_COMPILER=arm-none-eabi-gcc
+#   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY ..
+# Или используй build.sh (рекомендуется).
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/include
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores

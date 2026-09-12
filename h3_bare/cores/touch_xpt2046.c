@@ -102,6 +102,8 @@ int touch_read(int* x, int* y) {
         return 0;
 
     uint16_t raw_x = read_channel(0x90);
+    // задержка между каналами для конвертации XPT2046
+    { volatile int _d = 100; while (_d--) {} }
     uint16_t raw_y = read_channel(0xD0);
     *x = raw_x;
     *y = raw_y;
