@@ -358,16 +358,10 @@ int usb_kbd_poll(void) {
         __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr));
     __asm volatile("dsb" ::: "memory");
 
-    // DGN: лог только при нажатии или раз в 3 сек
+    // DGN: лог только при нажатии
     extern int uart0_printf(const char* fmt, ...);
     if (g_report[2] || g_report[3] || g_report[4] || g_report[5] || g_report[6] || g_report[7])
         uart0_printf("kbd down %X %X %X %X %X %X %X %X\n",
-                     g_report[0], g_report[1], g_report[2], g_report[3],
-                     g_report[4], g_report[5], g_report[6], g_report[7]);
-
-    static uint32_t tick = 0;
-    if (++tick % 300 == 0)  // раз в ~3 сек (300 * 10ms = 3s, но GET_REPORT 200ms, так что реже)
-        uart0_printf("kbd alive rep %X %X %X %X %X %X %X %X\n",
                      g_report[0], g_report[1], g_report[2], g_report[3],
                      g_report[4], g_report[5], g_report[6], g_report[7]);
 
