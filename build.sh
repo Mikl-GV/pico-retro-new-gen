@@ -98,8 +98,8 @@ if [ "${1:-}" = "sd" ] || [ "${1:-}" = "full" ]; then
 
     # boot.cmd → boot.scr
     cat > "$BUILD/boot.cmd" << EOF
-fatload mmc 0 0x42000000 h3_bare.bin
-go 0x42000000
+fatload mmc 0 0x40000000 h3_bare.bin
+go 0x40000000
 EOF
     mkimage -A arm -T script -C none -n "pico-retro V5" \
         -d "$BUILD/boot.cmd" "$BUILD/boot.scr"

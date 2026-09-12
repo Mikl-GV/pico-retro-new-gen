@@ -122,43 +122,286 @@ static uint8_t kernel_2600[4096] = {
     0xA2, 0x25, 0x85, 0x02, 0xCA, 0xD0, 0xFB,
     0xA9, 0x00, 0x85, 0x01, 0xA2, 0xC0,
     0xA5, 0x80, 0x29, 0x7F, 0x85, 0x09,
-    0xA9, 0x14, 0x85, 0x08, 0x85, 0x02,
-    0xA9, 0xAA, 0x85, 0x0E, 0x85, 0x0F, 0xCA, 0xD0, 0xF3,
+    0xA9, 0xAA, 0x85, 0x0E, 0x85, 0x0F, 0xA9, 0x14, 0x85, 0x08, 0x85, 0x02, 0xCA, 0xD0, 0xF7,
     0xA9, 0x02, 0x85, 0x01, 0xA2, 0x1E, 0x85, 0x02, 0xCA, 0xD0, 0xFB,
     0xA9, 0x00, 0x85, 0x01, 0x4C, 0x05, 0xF0,
     [0xFFC] = 0x00, 0xF0,
     [0xFFE] = 0x00, 0xF0,
 };
 
-static void show_menu(void) {
-    uart_puts("\n=== MultiTool Retro ===\n");
-    uart_puts("1 - Atari 2600 (test)\n");
-    uart_puts("2 - Atari 5200 (test)\n");
-    uart_puts("3 - Atari 7800 (Asteroids)\n");
-    uart_puts("4 - SD: Atari 2600\n");
-    uart_puts("5 - SD: Atari 5200\n");
-    uart_puts("6 - SD: Atari 7800\n");
-    uart_puts("s - SD init\n");
-    uart_puts("l - list ROMs\n");
-    uart_puts("c - color test\n");
-    uart_puts("Выбор: ");
+// ============================================================
+// Главное меню
+// ============================================================
+static int cursor_idx = 0;
 
-    // HDMI: рисуем меню прямо на фреймбуфере
+static const char* menu_labels[] = {
+    "1  Atari 2600 (test)",
+    "2  Atari 5200 (test)",
+    "3  Atari 7800 (Asteroids)",
+    "4  Atari 2600 - games",
+    "5  Atari 5200 - games",
+    "6  Atari 7800 - games",
+    "c  Color test",
+    "l  List ROMs (UART)",
+};
+#define MENU_N (sizeof(menu_labels)/sizeof(menu_labels[0]))
+
+static char cursor_to_sel(void) {
+    switch (cursor_idx) {
+        case 0: return '1'; case 1: return '2'; case 2: return '3';
+        case 3: return '4'; case 4: return '5'; case 5: return '6';
+        case 6: return 'c'; case 7: return 'l';
+        default: return 0;
+    }
+}
+
+static void show_menu(void) {
+    for (int i = 0; i < (int)MENU_N; i++) {
+        uart_puts(i == cursor_idx ? " > " : "   ");
+        uart_puts(menu_labels[i]); uart_puts("\n");
+    }
+
     fb_clear();
     fb_puts(320, 60, "=== MultiTool Retro ===", 0xFFFFFF);
-    fb_puts(320, 110, "1 - Atari 2600 (test)", 0xFFFFFF);
-    fb_puts(320, 140, "2 - Atari 5200 (test)", 0xFFFFFF);
-    fb_puts(320, 170, "3 - Atari 7800 (Asteroids)", 0xFFFFFF);
-    fb_puts(320, 210, "4 - SD: Atari 2600", 0xFFFFFF);
-    fb_puts(320, 240, "5 - SD: Atari 5200", 0xFFFFFF);
-    fb_puts(320, 270, "6 - SD: Atari 7800", 0xFFFFFF);
-    fb_puts(320, 310, "s - SD init", 0x888888);
-    fb_puts(320, 340, "c - color test", 0x888888);
-    fb_puts(320, 400, "Press key / touch", 0xAAAAAA);
+    for (int i = 0; i < (int)MENU_N; i++) {
+        uint32_t color = (i == cursor_idx) ? 0x00FFFF00 : 0x00FFFFFF;
+        int y = 120 + i * 30;
+        fb_puts(320, y, menu_labels[i], color);
+    }
+    fb_puts(320, 430, "Arrows + Enter, or number", 0x00AAAAAA);
+    fb_puts(320, 460, "In game: ESC = back to menu", 0x00AAAAAA);
     fb_flush();
 }
 
-// Цветовой тест: 8 полос с подписями (стандартный RGB 0x00RRGGBB)
+// ============================================================
+// Ожидание любой клавиши (для информационных экранов)
+// ============================================================
+static void wait_key(void) {
+    for (;;) {
+        if (uart_rx_ready()) { uart_getc(); return; }
+        if (usb_kbd_poll() != 0) { while (usb_kbd_poll() != 0) udelay(10000); return; }
+        udelay(10000);
+    }
+}
+
+// Возвращает 1, если нужно выйти из эмулятора (ESC / 'q' в UART)
+static int check_quit(uint32_t* frame_cnt) {
+    if (uart_rx_ready()) { uart_getc(); return 1; }
+    if ((*frame_cnt & 0x7F) == 0) {
+        int k = usb_kbd_poll();
+        if (k == 41) return 1;   // ESC
+    }
+    return 0;
+}
+
+// ============================================================
+// Эмуляторы (возврат в меню по ESC)
+// ============================================================
+static void run_a2600_kernel(void) {
+    uart_puts("Running A2600\n");
+    memset((void*)EMU_FB, 0, 160 * 240 * 2);
+    fb_clear(); fb_flush();
+    a2600_t a26;
+    uint16_t* emu_fb = (uint16_t*)EMU_FB;
+    a2600_init(&a26, kernel_2600, 4096, emu_fb);
+    uint32_t fc = 0;
+    while (1) {
+        a2600_frame(&a26);
+        blit_emu_fb();
+        if ((fc++ & 0x3F) == 0) { uart_puts("a2600 pc="); dbg_pc(a26.cpu.pc); }
+        if (check_quit(&fc)) break;
+    }
+    uart_puts("a2600 exit\n");
+}
+
+static void run_a5200_kernel(void) {
+    uart_puts("Running A5200 (mini BIOS)\n");
+    memset((void*)EMU_FB, 0, 160 * 240 * 2);
+    fb_clear(); fb_flush();
+    a5200_t a52;
+    uint16_t* emu_fb = (uint16_t*)EMU_FB;
+    a5200_init(&a52, test_a5200_get_cart(), 16384,
+               test_a5200_get_bios(), emu_fb);
+    test_a5200_setup_dl(&a52);
+    uint32_t fc = 0;
+    while (1) {
+        a5200_frame(&a52);
+        blit_emu_fb();
+        if ((fc++ & 0x3F) == 0) { uart_puts("a5200 pc="); dbg_pc(a52.cpu.pc); }
+        if (check_quit(&fc)) break;
+    }
+    uart_puts("a5200 exit\n");
+}
+
+static void run_a7800_asteroids(void) {
+    uart_puts("Running A7800 Asteroids\n");
+    memset((void*)EMU_FB, 0, 160 * 240 * 2);
+    fb_clear(); fb_flush();
+    a7800_t a78;
+    uint16_t* emu_fb = (uint16_t*)EMU_FB;
+    a7800_init(&a78, rom_a7800_asteroids, sizeof(rom_a7800_asteroids),
+               NULL, 0, emu_fb);
+    uart_puts("pc="); dbg_pc(a78.cpu.pc);
+    uint32_t fc = 0;
+    while (1) {
+        a7800_frame(&a78);
+        blit_emu_fb();
+        if ((fc++ & 0x3F) == 0) { uart_puts("a7800 pc="); dbg_pc(a78.cpu.pc); }
+        if (check_quit(&fc)) break;
+    }
+    uart_puts("a7800 exit\n");
+}
+
+// ============================================================
+// Экран выбора игры со SD
+// ============================================================
+#define ROM_PAGE 14   // строк на экран
+
+static void show_rom_list(fat_entry_t* list, int n, int cursor, int page, const char* title) {
+    fb_clear();
+    fb_puts(20, 30, title, 0x00FFFFFF);
+    char pbuf[24] = "page   of   ";
+    pbuf[5] = '0' + (page + 1);
+    int npages = (n + ROM_PAGE - 1) / ROM_PAGE;
+    if (npages > 9) npages = 9;
+    pbuf[10] = '0' + npages;
+    fb_puts(700, 30, pbuf, 0x00AAAAAA);
+    for (int i = 0; i < ROM_PAGE; i++) {
+        int idx = page * ROM_PAGE + i;
+        if (idx >= n) break;
+        uint32_t col = (idx == cursor) ? 0x00FFFF00 : 0x00FFFFFF;
+        fb_puts(40, 90 + i * 30, list[idx].name, col);
+    }
+    fb_puts(20, 560, "Up/Down move   Enter run   Esc back", 0x00AAAAAA);
+    fb_flush();
+}
+
+// Выбор ROM. Возвращает индекс или -1 (назад).
+static int pick_rom(int plat, fat_entry_t* list, int n) {
+    const char* title = (plat == ROM_PLAT_A2600) ? "Atari 2600 - games" :
+                        (plat == ROM_PLAT_A5200) ? "Atari 5200 - games" : "Atari 7800 - games";
+    for (int i = 0; i < n; i++) {
+        uart_puts("  "); uart_puts(list[i].name); uart_puts("\n");
+    }
+    if (n == 0) {
+        fb_clear();
+        fb_puts(20, 280, "No ROMs found", 0x00FF6666);
+        fb_flush();
+        wait_key();
+        return -1;
+    }
+
+    int cursor = 0;
+    for (;;) {
+        int page = cursor / ROM_PAGE;
+        show_rom_list(list, n, cursor, page, title);
+        int k = 0;
+        for (;;) {
+            if (uart_rx_ready()) {
+                char c = uart_getc();
+                if (c == '\n' || c == '\r') return cursor;
+                if (c == 'q' || c == 0x1B) return -1;
+                if (c == 'w') { cursor = (cursor - 1 + n) % n; break; }
+                if (c == 's') { cursor = (cursor + 1) % n; break; }
+            } else {
+                k = usb_kbd_poll();
+                if (k == 82) { cursor = (cursor - 1 + n) % n; break; }          // Up
+                else if (k == 81) { cursor = (cursor + 1) % n; break; }         // Down
+                else if (k == 40) return cursor;                                // Enter
+                else if (k == 41 || k == 42) return -1;                         // Esc / Backspace
+            }
+            udelay(10000);
+        }
+    }
+}
+
+static void run_sd_game(int plat, int* sd_ok) {
+    if (!*sd_ok) {
+        *sd_ok = (sd_init() == 0) && (fat_init() == 0);
+    }
+    if (!*sd_ok) {
+        uart_puts("SD not ready\n");
+        fb_clear();
+        fb_puts(20, 280, "SD not ready", 0x00FF6666);
+        fb_flush();
+        wait_key();
+        return;
+    }
+
+    fat_entry_t list[FAT_MAX_ENTRIES];
+    int n = list_roms(plat, list, FAT_MAX_ENTRIES);
+    int pick = pick_rom(plat, list, n);
+    if (pick < 0) { uart_puts("games: back\n"); return; }
+
+    uint8_t* rom = 0;
+    uint32_t rom_size = 0;
+    if (load_rom(rom_dir_for_plat(plat), list[pick].name, &rom, &rom_size,
+                 (plat == ROM_PLAT_A7800)) != 0) {
+        uart_puts("ROM load failed\n");
+        fb_clear();
+        fb_puts(20, 280, "ROM load failed", 0x00FF6666);
+        fb_flush();
+        wait_key();
+        return;
+    }
+
+    memset((void*)EMU_FB, 0, 160 * 240 * 2);
+    fb_clear(); fb_flush();
+    uint16_t* emu_fb = (uint16_t*)EMU_FB;
+    uint32_t fc = 0;
+
+    if (plat == ROM_PLAT_A2600) {
+        a2600_t a26;
+        a2600_init(&a26, rom, rom_size, emu_fb);
+        while (1) {
+            a2600_frame(&a26);
+            blit_emu_fb();
+            if ((fc++ & 0x3F) == 0) { uart_puts("a2600 pc="); dbg_pc(a26.cpu.pc); }
+            if (check_quit(&fc)) break;
+        }
+    } else if (plat == ROM_PLAT_A5200) {
+        a5200_t a52;
+        a5200_init(&a52, rom, rom_size, test_a5200_get_bios(), emu_fb);
+        test_a5200_setup_dl(&a52);
+        while (1) {
+            a5200_frame(&a52);
+            blit_emu_fb();
+            if ((fc++ & 0x3F) == 0) { uart_puts("a5200 pc="); dbg_pc(a52.cpu.pc); }
+            if (check_quit(&fc)) break;
+        }
+    } else if (plat == ROM_PLAT_A7800) {
+        a7800_t a78;
+        a7800_init(&a78, rom, rom_size, NULL, 0, emu_fb);
+        while (1) {
+            a7800_frame(&a78);
+            blit_emu_fb();
+            if ((fc++ & 0x3F) == 0) { uart_puts("a7800 pc="); dbg_pc(a78.cpu.pc); }
+            if (check_quit(&fc)) break;
+        }
+    }
+    uart_puts("game exit\n");
+}
+
+// Список всех ROM в UART
+static void list_all_roms(int* sd_ok) {
+    if (!*sd_ok) {
+        *sd_ok = (sd_init() == 0) && (fat_init() == 0);
+    }
+    if (!*sd_ok) { uart_puts("SD not ready\n"); return; }
+    fat_entry_t list[FAT_MAX_ENTRIES];
+    const char* dirs[3] = {"/roms/a2600", "/roms/a5200", "/roms/a7800"};
+    const char* labels[3] = {" [2600]", " [5200]", " [7800]"};
+    for (int d = 0; d < 3; d++) {
+        int n = fat_list(dirs[d], list, FAT_MAX_ENTRIES);
+        for (int i = 0; i < n; i++) {
+            uart_puts(list[i].name); uart_puts(labels[d]); uart_puts("\n");
+        }
+    }
+}
+
+// ============================================================
+// Цветовой тест
+// ============================================================
 static void color_test(void) {
     uart_puts("Color test\n");
     fb_clear();
@@ -189,9 +432,10 @@ static void color_test(void) {
     fb_flush();
 }
 
+// ============================================================
+// main
+// ============================================================
 void main(void) {
-    uint16_t* emu_fb = (uint16_t*)EMU_FB;
-    uint32_t frames = 0;
     int prev_touch = 0;
     int sd_ok = 0;
 
@@ -232,175 +476,63 @@ void main(void) {
         uart_puts("USB kbd not found (touch/UART ok)\n");
     }
 
-    show_menu();
-    char sel = 0;
-    while (!sel) {
-        char c = 0;
-        if (uart_rx_ready()) {
-            c = uart_getc();
-            if ((c >= '1' && c <= '9') || c == 's' || c == 'l' || c == 'c')
-                sel = c;
-        } else {
-            int k = usb_kbd_poll();
-            char m = 0;
-            if (k == 30) m = '1'; else if (k == 31) m = '2';
-            else if (k == 32) m = '3'; else if (k == 33) m = '4';
-            else if (k == 34) m = '5'; else if (k == 35) m = '6';
-            else if (k == 22) m = 's'; else if (k == 15) m = 'l';
-            else if (k == 6)  m = 'c';  // сканкод C
-            else { int x, y;
-                if (touch_read(&x, &y)) {
-                    if (x > 100 && x < 4000 && y > 100 && y < 4000 && !prev_touch) {
-                        if (y < 1200) m = '1';
-                        else if (y < 2400) m = '2';
-                        else if (y < 3600) m = '3';
-                        else if (y < 4800) m = '4';
-                        else if (y < 6000) m = '5';
-                        else m = '6';
+    for (;;) {
+        show_menu();
+        char sel = 0;
+        while (!sel) {
+            // Проверяем UART (номер / буква)
+            if (uart_rx_ready()) {
+                char c = uart_getc();
+                if (c == '1') sel = '1'; else if (c == '2') sel = '2';
+                else if (c == '3') sel = '3'; else if (c == '4') sel = '4';
+                else if (c == '5') sel = '5'; else if (c == '6') sel = '6';
+                else if (c == 'c' || c == 'C') sel = 'c';
+                else if (c == 'l' || c == 'L') sel = 'l';
+            } else {
+                int k = usb_kbd_poll();
+                int redraw = 0;
+                if (k == 82) { cursor_idx = (cursor_idx - 1 + MENU_N) % MENU_N; redraw = 1; } // Up
+                else if (k == 81) { cursor_idx = (cursor_idx + 1) % MENU_N; redraw = 1; }    // Down
+                else if (k == 40) sel = cursor_to_sel();                                    // Enter
+                else if (k == 30) sel = '1'; else if (k == 31) sel = '2';
+                else if (k == 32) sel = '3'; else if (k == 33) sel = '4';
+                else if (k == 34) sel = '5'; else if (k == 35) sel = '6';
+                else if (k == 6)  sel = 'c';  // сканкод C
+                else if (k == 15) sel = 'l';  // сканкод L
+                else { int x, y;
+                    if (touch_read(&x, &y)) {
+                        if (x > 100 && x < 4000 && y > 100 && y < 4000 && !prev_touch) {
+                            int new_cursor = (y - 120) / 30;
+                            if (new_cursor >= 0 && new_cursor < (int)MENU_N) {
+                                if (new_cursor != cursor_idx) { cursor_idx = new_cursor; redraw = 1; }
+                                else sel = cursor_to_sel();
+                            }
+                        }
                     }
                 }
+                if (redraw) { show_menu(); }
             }
-            if (m) sel = m;
+            if (!sel) prev_touch = 0;
+            udelay(10000);
         }
-        if (!sel) prev_touch = 0;
-        udelay(10000);
 
-        // 'c' — цветовой тест, выходим сразу
+        // Действие
         if (sel == 'c') {
             color_test();
-            // ждём кнопку, потом обратно в меню
-            int wait = 1;
-            while (wait) {
-                if (uart_rx_ready()) { uart_getc(); wait = 0; }
-                else if (usb_kbd_poll() != 0) wait = 0;
-                udelay(50000);
-            }
-            sel = 0;
-            show_menu();
+            wait_key();
         }
-        else if (sel == 's' || sel == 'l') {
-            uart_puts("\n");
-            if (!sd_ok) {
-                sd_ok = (sd_init() == 0) && (fat_init() == 0);
-            }
-            if (sd_ok && sel == 'l') {
-                fat_entry_t list[32];
-                const char* dirs[3] = {"/roms/a2600", "/roms/a5200", "/roms/a7800"};
-                const char* labels[3] = {" [2600]", " [5200]", " [7800]"};
-                uart_puts("ROMs:\n");
-                for (int d = 0; d < 3; d++) {
-                    int n = fat_list(dirs[d], list, 32);
-                    for (int i = 0; i < n; i++) {
-                        uart_puts(list[i].name); uart_puts(labels[d]); uart_puts("\n");
-                    }
-                }
-            }
-            if (!sd_ok) uart_puts("SD not ready\n");
-            sel = 0;
-            show_menu();
+        else if (sel == 'l') {
+            list_all_roms(&sd_ok);
+            fb_clear();
+            fb_puts(20, 280, "ROM list in UART", 0x00FFFFFF);
+            fb_flush();
+            wait_key();
         }
-    }
-    uart_puts("\n");
-
-    // ================= 2600 (test kernel) =================
-    if (sel == '1') {
-        uart_puts("Running A2600\n");
-        // Чистим эмуляторный буфер и HDMI — иначе мусор/полосы
-        memset((void*)EMU_FB, 0, 160 * 240 * 2);
-        fb_clear();
-        fb_flush();
-        a2600_t a26;
-        a2600_init(&a26, kernel_2600, 4096, emu_fb);
-        while (1) {
-            a2600_frame(&a26);
-            blit_emu_fb();
-            if ((frames++ & 0x3F) == 0) { uart_puts("a2600 pc="); dbg_pc(a26.cpu.pc); }
-        }
-    }
-    // ================= 5200 (test) =================
-    else if (sel == '2') {
-        uart_puts("Running A5200 (mini BIOS)\n");
-        memset((void*)EMU_FB, 0, 160 * 240 * 2);
-        fb_clear(); fb_flush();
-        a5200_t a52;
-        a5200_init(&a52, test_a5200_get_cart(), 16384,
-                   test_a5200_get_bios(), emu_fb);
-        test_a5200_setup_dl(&a52);
-        while (1) {
-            a5200_frame(&a52);
-            blit_emu_fb();
-            if ((frames++ & 0x3F) == 0) { uart_puts("a5200 pc="); dbg_pc(a52.cpu.pc); }
-        }
-    }
-    // ================= 7800 (Asteroids) =================
-    else if (sel == '3') {
-        uart_puts("Running A7800 Asteroids\n");
-        memset((void*)EMU_FB, 0, 160 * 240 * 2);
-        fb_clear(); fb_flush();
-        a7800_t a78;
-        a7800_init(&a78, rom_a7800_asteroids, sizeof(rom_a7800_asteroids),
-                   NULL, 0, emu_fb);
-        uart_puts("pc="); dbg_pc(a78.cpu.pc);
-        while (1) {
-            a7800_frame(&a78);
-            blit_emu_fb();
-            if ((frames++ & 0x3F) == 0) { uart_puts("a7800 pc="); dbg_pc(a78.cpu.pc); }
-        }
-    }
-    // ================= SD ROMs (4/5/6) =================
-    else if (sel >= '4' && sel <= '6') {
-        uint8_t* rom = 0;
-        uint32_t rom_size = 0;
-        int plat = 0;
-        if (sel == '4') plat = ROM_PLAT_A2600;
-        else if (sel == '5') plat = ROM_PLAT_A5200;
-        else if (sel == '6') plat = ROM_PLAT_A7800;
-
-        if (plat && sd_ok) {
-            fat_entry_t list[32];
-            int n = list_roms(plat, list, 32);
-            for (int i = 0; i < n && !rom; i++) {
-                load_rom(rom_dir_for_plat(plat), list[i].name, &rom, &rom_size,
-                         (plat == ROM_PLAT_A7800));
-            }
-        }
-
-        if (!rom) {
-            uart_puts("No ROM found\n");
-            // БЕЗ автозапуска дефолтной игры: ждать выбора снова
-            while (1) udelay(1000000);
-        }
-
-        if (rom) {
-            uart_puts("Running from SD...\n");
-            memset((void*)EMU_FB, 0, 160 * 240 * 2);
-            fb_clear(); fb_flush();
-            if (plat == ROM_PLAT_A2600) {
-                a2600_t a26;
-                a2600_init(&a26, rom, rom_size, emu_fb);
-                while (1) {
-                    a2600_frame(&a26);
-                    blit_emu_fb();
-                    if ((frames++ & 0x3F) == 0) { uart_puts("a2600 pc="); dbg_pc(a26.cpu.pc); }
-                }
-            } else if (plat == ROM_PLAT_A5200) {
-                a5200_t a52;
-                a5200_init(&a52, rom, rom_size, test_a5200_get_bios(), emu_fb);
-                test_a5200_setup_dl(&a52);
-                while (1) {
-                    a5200_frame(&a52);
-                    blit_emu_fb();
-                    if ((frames++ & 0x3F) == 0) { uart_puts("a5200 pc="); dbg_pc(a52.cpu.pc); }
-                }
-            } else if (plat == ROM_PLAT_A7800) {
-                a7800_t a78;
-                a7800_init(&a78, rom, rom_size, NULL, 0, emu_fb);
-                while (1) {
-                    a7800_frame(&a78);
-                    blit_emu_fb();
-                    if ((frames++ & 0x3F) == 0) { uart_puts("a7800 pc="); dbg_pc(a78.cpu.pc); }
-                }
-            }
-        }
+        else if (sel == '1') run_a2600_kernel();
+        else if (sel == '2') run_a5200_kernel();
+        else if (sel == '3') run_a7800_asteroids();
+        else if (sel == '4') run_sd_game(ROM_PLAT_A2600, &sd_ok);
+        else if (sel == '5') run_sd_game(ROM_PLAT_A5200, &sd_ok);
+        else if (sel == '6') run_sd_game(ROM_PLAT_A7800, &sd_ok);
     }
 }

@@ -96,6 +96,14 @@ _start:
     mcr p15, 0, r0, c7, c5, 0
     isb
 
+    /* Invalidate D-cache — U-Boot оставляет DCACHE=ON со stale-линиями.
+     * Бинарник уже в DRAM (DMA-загрузка), поэтому только invalidate:
+     * clean+invalidate (c7,c14) опасен — вытолкнет чужие dirty-линии
+     * U-Boot в DRAM и может затереть свежезагруженный код. */
+    mcr p15, 0, r0, c7, c6, 0        /* Invalidate entire D-cache */
+    dsb
+    isb
+
     /* BSS = 0 (ARM mode) */
     ldr r0, =_bstart1
     ldr r1, =_bend1
