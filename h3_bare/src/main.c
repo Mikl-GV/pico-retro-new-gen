@@ -29,19 +29,20 @@ void udelay(uint32_t d);
 #define ROM_BUF 0x50000000       // буфер ROM с SD (до 24MB)
 #define ROM_MAX (24 * 1024 * 1024)
 
-static void blit_emu_fb(void) {
+static void blit_emu_fb_w(int w) {
     uint16_t* src = (uint16_t*)EMU_FB;
     volatile uint32_t* dst = (volatile uint32_t*)FB_ADDR;
-    // EMU_FB: 160x240 RGB565, HDMI: 1024x600 XRGB8888
     // H3 DE2 ожидает BGR порядок в 32-битном пикселе (byte0=R, byte1=G, byte2=B)
-    int sx = 32, sy = 0;
+    int sx = (PHYS_W - w * 3) / 2;  // центр экрана
+    int sy = (PHYS_H - 240 * 3) / 2;
     for (int y = 0; y < 240 && sy + 2 < PHYS_H; y++) {
-        for (int x = 0; x < 160; x++) {
-            uint16_t p = src[y * 160 + x];
-            // RGB565 → BGR888 (DE2: byte[0]=R, byte[1]=G, byte[2]=B)
-            uint32_t px = ((uint32_t)(p & 0x001F) << 3)   |  // B[4:0] → byte0
-                          ((uint32_t)(p & 0x07E0) << 5)   |  // G[10:5] → byte1
-                          ((uint32_t)(p & 0xF800) << 8);     // R[15:11] → byte2
+        for (int x = 0; x < w; x++) {
+            uint16_t p = src[y * w + x];
+            // RGB565 → RGB888: R(5бит) << 3, G(6бит) << 2, B(5бит) << 3
+            uint32_t r = ((p >> 11) & 0x1F) << 3;
+            uint32_t g = ((p >> 5)  & 0x3F) << 2;
+            uint32_t b = ((p >> 0)  & 0x1F) << 3;
+            uint32_t px = (r << 16) | (g << 8) | b;
             dst[(sy+0)*PHYS_W + sx+0] = px;
             dst[(sy+0)*PHYS_W + sx+1] = px;
             dst[(sy+0)*PHYS_W + sx+2] = px;
@@ -53,10 +54,14 @@ static void blit_emu_fb(void) {
             dst[(sy+2)*PHYS_W + sx+2] = px;
             sx += 3;
         }
-        sx = 32; sy += 3;
+        // конец строки: сброс x в центр
+        sx = (PHYS_W - w * 3) / 2; sy += 3;
     }
     fb_flush();
 }
+
+// Рендер 160px (A2600)
+static void blit_emu_fb(void) { blit_emu_fb_w(160); }
 
 static void dbg_pc(uint16_t pc) {
     char b[8] = "0x0000\n";
@@ -135,6 +140,7 @@ static void show_menu(void) {
     uart_puts("6 - SD: Atari 7800\n");
     uart_puts("s - SD init\n");
     uart_puts("l - list ROMs\n");
+    uart_puts("c - color test\n");
     uart_puts("Выбор: ");
 
     // HDMI: рисуем меню прямо на фреймбуфере
@@ -147,8 +153,39 @@ static void show_menu(void) {
     fb_puts(320, 240, "5 - SD: Atari 5200", 0xFFFFFF);
     fb_puts(320, 270, "6 - SD: Atari 7800", 0xFFFFFF);
     fb_puts(320, 310, "s - SD init", 0x888888);
-    fb_puts(320, 340, "l - list ROMs", 0x888888);
+    fb_puts(320, 340, "c - color test", 0x888888);
     fb_puts(320, 400, "Press key / touch", 0xAAAAAA);
+    fb_flush();
+}
+
+// Цветовой тест: 8 полос с подписями (стандартный RGB 0x00RRGGBB)
+static void color_test(void) {
+    uart_puts("Color test\n");
+    fb_clear();
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    // 0x00RRGGBB: R=биты16-23, G=биты8-15, B=биты0-7
+    const char* names[8] = {"RED", "GREEN", "BLUE", "YEL", "CYAN", "MAG", "WHITE", "BLK"};
+    uint32_t colors[8] = {0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFF00,
+                          0x0000FFFF, 0x00FF00FF, 0x00FFFFFF, 0x00000000};
+    for (int i = 0; i < 8; i++) {
+        int bx = 30 + i * 120;
+        for (int y = 250; y < 370; y++)
+            for (int x = bx; x < bx + 80; x++)
+                fb[y * PHYS_W + x] = colors[i];
+        fb_puts(bx + 10, 220, names[i], 0x00FFFFFF);
+    }
+    // Нижняя строка: чистые R / G / B / W
+    for (int y = 420; y < 460; y++) {
+        for (int x = 30; x < 110; x++) fb[y * PHYS_W + x] = 0x00FF0000; // R
+        for (int x = 150; x < 230; x++) fb[y * PHYS_W + x] = 0x0000FF00; // G
+        for (int x = 270; x < 350; x++) fb[y * PHYS_W + x] = 0x000000FF; // B
+        for (int x = 390; x < 470; x++) fb[y * PHYS_W + x] = 0x00FFFFFF; // W
+    }
+    fb_puts(30,  480, "R", 0x00FFFFFF);
+    fb_puts(150, 480, "G", 0x00FFFFFF);
+    fb_puts(270, 480, "B", 0x00FFFFFF);
+    fb_puts(390, 480, "W", 0x00FFFFFF);
+    fb_puts(320, 550, "press any key", 0x00AAAAAA);
     fb_flush();
 }
 
@@ -201,8 +238,7 @@ void main(void) {
         char c = 0;
         if (uart_rx_ready()) {
             c = uart_getc();
-            // Принимаем ТОЛЬКО валидные клавиши, мусор игнорируем
-            if ((c >= '1' && c <= '9') || c == 's' || c == 'l')
+            if ((c >= '1' && c <= '9') || c == 's' || c == 'l' || c == 'c')
                 sel = c;
         } else {
             int k = usb_kbd_poll();
@@ -211,11 +247,9 @@ void main(void) {
             else if (k == 32) m = '3'; else if (k == 33) m = '4';
             else if (k == 34) m = '5'; else if (k == 35) m = '6';
             else if (k == 22) m = 's'; else if (k == 15) m = 'l';
+            else if (k == 6)  m = 'c';  // сканкод C
             else { int x, y;
                 if (touch_read(&x, &y)) {
-                    // Отсеиваем шум XPT2046 без подключённой панели:
-                    // реальное касание даёт значения 100..4000,
-                    // шум обычно 0, 4095, или случайные
                     if (x > 100 && x < 4000 && y > 100 && y < 4000 && !prev_touch) {
                         if (y < 1200) m = '1';
                         else if (y < 2400) m = '2';
@@ -231,7 +265,20 @@ void main(void) {
         if (!sel) prev_touch = 0;
         udelay(10000);
 
-        if (sel == 's' || sel == 'l') {
+        // 'c' — цветовой тест, выходим сразу
+        if (sel == 'c') {
+            color_test();
+            // ждём кнопку, потом обратно в меню
+            int wait = 1;
+            while (wait) {
+                if (uart_rx_ready()) { uart_getc(); wait = 0; }
+                else if (usb_kbd_poll() != 0) wait = 0;
+                udelay(50000);
+            }
+            sel = 0;
+            show_menu();
+        }
+        else if (sel == 's' || sel == 'l') {
             uart_puts("\n");
             if (!sd_ok) {
                 sd_ok = (sd_init() == 0) && (fat_init() == 0);
