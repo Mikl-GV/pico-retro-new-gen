@@ -1,0 +1,19 @@
+build/
+build_h3/
+*.uf2
+*.bin
+*.elf
+*.o
+*.d
+*.img
+*.img.gz
+.DS_Store
+Thumbs.db
+.vs/
+.pre-build/
+
+# ROM-файлы (копирайт) — не в репозиторий
+a2600_roms/
+a5200_roms/
+a7800_roms/
+roms/
