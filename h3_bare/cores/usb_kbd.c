@@ -97,6 +97,7 @@ static uint32_t g_ohci_base = OHCI1_BASE;
 
 // ---- USB HID report (8 байт) ----
 static uint8_t g_report[8];
+static int g_wait_release = 0;   // после срабатывания ждём отпускания всех клавиш
 
 // GET_REPORT — короткий таймаут (200ms) чтобы не блокировать цикл
 static int get_report(uint8_t* buf, int len);
@@ -363,20 +364,40 @@ static uint8_t scancode_to_ascii(uint8_t sc, int shift) {
 }
 
 int usb_kbd_poll(void) {
-    // Edge-детект: возвращает сканкод только в момент НОВОГО нажатия.
-    // Сравниваем текущий report с предыдущим. Если клавиша была в обоих
-    // report'ах — не возвращаем (иначе удержание стрелки прыгает по меню).
+    // Режим «ждём полного отпускания»: после срабатывания клавиши не
+    // возвращаем новые сканкоды, пока все клавиши не отпущены.
     if (!g_device_found || !g_in_ep) return 0;
+
     uint8_t cur[8];
     memcpy(cur, g_report, 8);
     if (kbd_read_report() < 0) return 0;
+
+    // Проверка: все ли клавиши отпущены (кроме модификаторов)
+    int all_released = 1;
+    for (int i = 2; i < 8; i++)
+        if (g_report[i]) { all_released = 0; break; }
+
+    if (g_wait_release) {
+        if (all_released) g_wait_release = 0;
+        return 0;
+    }
+
+    // Ищем новое нажатие (edge-детект)
     for (int i = 2; i < 8; i++) {
         uint8_t sc = g_report[i];
         if (!sc) continue;
         int in_prev = 0;
         for (int j = 2; j < 8; j++)
             if (cur[j] == sc) { in_prev = 1; break; }
-        if (!in_prev) return sc;
+        if (!in_prev) {
+            // Проверка модификаторов: если нажата не стрелка/enter/esc — не ждём отпускания
+            // Стрелки: 82(up), 81(down), 80(left), 79(right), 40(enter), 41(esc)
+            if (sc == 82 || sc == 81 || sc == 80 || sc == 79 ||
+                sc == 40 || sc == 41 || sc == '\n' || sc == '\r' ||
+                sc == 27 || sc == 'q' || sc == 'w' || sc == 's')
+                g_wait_release = 1;
+            return sc;
+        }
     }
     return 0;
 }

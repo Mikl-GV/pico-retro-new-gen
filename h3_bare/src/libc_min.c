@@ -54,6 +54,13 @@ char* strcpy(char* dst, const char* src) {
     return dst;
 }
 
+char* strcat(char* dst, const char* src) {
+    char* d = dst;
+    while (*d) d++;
+    while ((*d++ = *src++)) {}
+    return dst;
+}
+
 char* strncpy(char* dst, const char* src, size_t n) {
     char* d = dst;
     while (n > 0 && *src) { *d++ = *src++; n--; }

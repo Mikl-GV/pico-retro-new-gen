@@ -1,11 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 project(h3_bare C ASM)
 
-# Кросс-компиляция под ARM (Cortex-A7).
-# Задаётся через toolchain файл или:
-#   cmake -DCMAKE_C_COMPILER=arm-none-eabi-gcc -DCMAKE_ASM_COMPILER=arm-none-eabi-gcc
-#   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY ..
-# Или используй build.sh (рекомендуется).
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 include_directories(
@@ -21,14 +16,13 @@ set(SRCS
     h3_bare/src/printf.c
     h3_bare/src/libc_min.c
     h3_bare/src/main.c
-    h3_bare/cores/cpu6502.c
-    h3_bare/cores/a2600.c
-    h3_bare/cores/a5200.c
-    h3_bare/cores/a7800.c
-    h3_bare/cores/test_a5200.c
-    h3_bare/cores/touch_xpt2046.c
+    h3_bare/cores/menu.c
+    h3_bare/cores/rom_browser.c
     h3_bare/cores/sd.c
     h3_bare/cores/fat.c
+    h3_bare/cores/usb_ohci.c
+    h3_bare/cores/usb_kbd.c
+    h3_bare/cores/fb_text.c
     h3_bare/platform/udelay.c
     h3_bare/platform/h3_hs_timer.c
     h3_bare/platform/h3_ccu.c
