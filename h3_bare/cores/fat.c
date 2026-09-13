@@ -36,19 +36,20 @@ static uint32_t g_fat_size;
 static uint32_t g_root_cluster;
 static uint32_t g_data_start;   // первый сектор data region
 static uint32_t g_total_clusters;
+static uint32_t g_part_lba;     // LBA начала FAT-раздела (сдвиг для чтения)
 
 static uint32_t le16(const uint8_t* p) { return p[0] | ((uint32_t)p[1] << 8); }
 static uint32_t le32(const uint8_t* p) { return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
-// ---- кластер -> сектор ----
+// ---- кластер -> сектор (с учётом сдвига раздела) ----
 static uint32_t cluster_to_sector(uint32_t cl) {
-    return g_data_start + (cl - 2) * g_sec_per_cluster;
+    return g_part_lba + g_data_start + (cl - 2) * g_sec_per_cluster;
 }
 
 // ---- чтение следующего кластера по FAT ----
 static uint32_t fat_next_cluster(uint32_t cl) {
     uint32_t fat_off = cl * 4;
-    uint32_t sec = g_reserved + (fat_off / 512);
+    uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
     if (sd_read_sector(sec, g_sector) < 0) return 0x0FFFFFFF;
     uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
     return v;
@@ -192,7 +193,22 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
 }
 
 int fat_init(void) {
-    if (sd_read_sector(0, g_sector) < 0) return -1;
+    // Карта с MBR: FAT32 живёт в разделе 1 (обычно LBA 2048).
+    // Сначала читаем MBR (сектор 0), находим начало раздела.
+    uint32_t part_lba = 0;
+
+    if (sd_read_sector(0, g_sector) >= 0) {
+        if (le16(g_sector + 510) == 0x55AA && (g_sector[446 + 4] == 0x0B ||
+                                                g_sector[446 + 4] == 0x0C ||
+                                                g_sector[446 + 4] == 0x06)) {
+            // тип: FAT32 / FAT32 LBA / FAT16
+            part_lba = le32(g_sector + 446 + 8);   // LBA начала раздела
+            g_part_lba = part_lba;
+            if (part_lba > 0) uart_puts("fat: MBR part1 @ lba\n");
+        }
+    }
+
+    if (sd_read_sector(part_lba, g_sector) < 0) return -1;
 
     // проверка сигнатуры FAT32
     if (le16(g_sector + 510) != 0x55AA) { uart_puts("fat: no 55AA\n"); return -1; }
@@ -212,7 +228,7 @@ int fat_init(void) {
         return -1;
     }
 
-    g_data_start = g_reserved + g_num_fats * g_fat_size;
+    g_data_start = part_lba + g_reserved + g_num_fats * g_fat_size;
 
     uint32_t total_sectors = le32(g_sector + 32);
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;

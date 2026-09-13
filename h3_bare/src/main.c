@@ -46,9 +46,12 @@ static void blit_emu_fb_w(int w) {
     for (int y = 0; y < 240 && sy + 2 < PHYS_H; y++) {
         for (int x = 0; x < w; x++) {
             uint16_t p = src[y * w + x];
-            uint32_t r = ((p >> 11) & 0x1F) << 3;
-            uint32_t g = ((p >> 5)  & 0x3F) << 2;
-            uint32_t b = ((p >> 0)  & 0x1F) << 3;
+            // RGB565 -> RGB888 + коррекция белой точки против желтизны H3
+            // (чуть убрать R/G, добавить B — как в fb_text)
+            uint32_t r = ((((p >> 11) & 0x1F) << 3) * 235) >> 8;
+            uint32_t g = ((((p >> 5)  & 0x3F) << 2) * 235) >> 8;
+            uint32_t b = ((((p >> 0)  & 0x1F) << 3) * 280) >> 8;
+            if (b > 0xFF) b = 0xFF;
             uint32_t px = (r << 16) | (g << 8) | b;
             dst[(sy+0)*PHYS_W + sx+0] = px;
             dst[(sy+0)*PHYS_W + sx+1] = px;
@@ -124,17 +127,39 @@ static uint8_t kernel_2600[4096] = {
 };
 
 // ============================================================
-// UI helpers (menu style pico-retro / Chat-4)
+// UI helpers
 // ============================================================
 
 static void draw_header(const char* title) {
-    fb_fill_rect(60, 8, PHYS_W - 120, 3, C_WHITE);
+    fb_fill_rect(80, 8, PHYS_W - 160, 3, C_WHITE);
     fb_text_center(title, 16, 2, C_TITLE);
 }
 
 static void draw_footer(const char* msg) {
-    fb_fill_rect(60, PHYS_H - 34, PHYS_W - 120, 2, C_BAR);
+    fb_fill_rect(80, PHYS_H - 34, PHYS_W - 160, 2, C_BAR);
     fb_text_center(msg, PHYS_H - 24, 1, C_WHITE);
+}
+
+// Киноплёнка — левая и правая оранжевые панели с перфорацией как у плёнки
+static void draw_film_strip(void) {
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    for (int y = 0; y < PHYS_H; y++) {
+        int bright = 10 + (y * 12) / PHYS_H;
+        uint32_t orange = (uint32_t)(bright << 16) | ((bright / 2) << 8);
+        for (int x = 0; x < 60; x++) {
+            fb[y * PHYS_W + x] = orange;
+            fb[y * PHYS_W + PHYS_W - 1 - x] = orange;
+        }
+    }
+    // Перфорация (sprocket holes) на внешнем крае панелей — как у киноплёнки
+    for (int side = 0; side < 2; side++) {
+        int x0 = side ? (PHYS_W - 60) : 0;
+        for (int y = 10; y < PHYS_H - 20; y += 22) {
+            for (int yy = 0; yy < 12; yy++)
+                for (int xx = 0; xx < 10; xx++)
+                    fb[(y + yy) * PHYS_W + x0 + 3 + xx] = C_BG;
+        }
+    }
 }
 
 static void wait_key(void) {
@@ -151,8 +176,18 @@ static int check_quit(uint32_t* fc) {
     return 0;
 }
 
+// Ожидание нажатия Enter или пробела
+static int kbd_get_action(void) {
+    for (;;) {
+        if (uart_rx_ready()) { return uart_getc(); }
+        int k = usb_kbd_poll();
+        if (k) return k;
+        udelay(10000);
+    }
+}
+
 // ============================================================
-// Системное меню (pico-retro style)
+// Системное меню
 // ============================================================
 
 static const char* sys_names[] = {
@@ -180,8 +215,9 @@ static const char* sys_menu_name(int i) {
 
 static void draw_system_menu(void) {
     fb_clear();
+    draw_film_strip();
     draw_header("SELECT SYSTEM");
-    const int row_h = 30, vis = 8, sy = 50;
+    const int row_h = 34, vis = 7, sy = 60;
     if (sys_cursor < sys_scroll) sys_scroll = sys_cursor;
     if (sys_cursor >= sys_scroll + vis) sys_scroll = sys_cursor - vis + 1;
     if (sys_scroll + vis > MENU_COUNT) sys_scroll = MENU_COUNT - vis;
@@ -190,66 +226,57 @@ static void draw_system_menu(void) {
         int py = sy + (i - sys_scroll) * row_h;
         int sel = (i == sys_cursor);
         uint32_t clr = sel ? C_CURSOR : (i < N_SYS ? C_WHITE : C_GREY);
-        if (sel) fb_fill_rect(60, py - 2, PHYS_W - 120, row_h, C_HILITE);
-        fb_puts_s(64, py, sel ? ">>" : "  ", 1, clr);
-        fb_puts_s(100, py, sys_menu_name(i), 2, clr);
-        if (i < N_SYS) {
-            fb_fill_rect(100, py + 22, strlen(sys_names[i]) * 18, 1, clr);
-            if (sel) fb_puts_s(104, py + 26, sys_info[i], 1, C_INFO);
-        }
+        if (sel) fb_fill_rect(140, py - 1, PHYS_W - 280, 26, C_HILITE);
+        fb_puts_s(144, py, sel ? ">>" : "  ", 1, clr);
+        fb_puts_s(170, py, sys_menu_name(i), 2, clr);
     }
-    if (sys_scroll > 0) fb_puts_s(PHYS_W - 44, sy, "^", 2, C_WHITE);
-    if (sys_scroll + vis < MENU_COUNT) fb_puts_s(PHYS_W - 44, sy + (vis-1)*row_h, "v", 2, C_WHITE);
+    // Характеристики выбранной системы — отдельной строкой внизу (не поверх текста)
+    if (sys_cursor < N_SYS) {
+        fb_fill_rect(140, PHYS_H - 90, PHYS_W - 280, 2, C_BAR);
+        fb_text_center(sys_info[sys_cursor], PHYS_H - 80, 1, C_INFO);
+    }
+    if (sys_scroll > 0) fb_puts_s(PHYS_W - 60, sy, "^", 2, C_WHITE);
+    if (sys_scroll + vis < MENU_COUNT) fb_puts_s(PHYS_W - 60, sy + (vis-1)*row_h, "v", 2, C_WHITE);
     draw_footer("UP/DN  ENTER  ESC=back");
     fb_flush();
 }
 
 // ============================================================
-// Игровой список (pico-retro style)
+// Игровой список
 // ============================================================
 
 static void draw_game_list(const char* title, const char** names, int n, int cursor, const char* footer) {
     fb_clear();
+    draw_film_strip();
     draw_header(title);
     if (n <= 0) {
         fb_text_center("No ROMs found", 160, 2, C_TITLE);
-        fb_text_center("Insert SD card with ROMs", 200, 1, C_WHITE);
+        fb_text_center("Insert SD card or USB drive", 200, 1, C_WHITE);
     } else {
-        int rows = 14, top = cursor - rows/2, sy = 50;
+        int rows = 10, sy = 55;
+        int top = cursor - rows/2;
         if (top < 0) top = 0;
         if (top + rows > n) top = n - rows;
         for (int i = 0; i < rows && top + i < n; i++) {
-            int idx = top + i, py = sy + i * 28;
+            int idx = top + i, py = sy + i * 32;
             int sel = (idx == cursor);
             uint32_t clr = sel ? C_CURSOR : C_WHITE;
-            if (sel) fb_fill_rect(60, py - 2, PHYS_W - 120, 28, C_HILITE);
-            fb_puts_s(64, py, ">", 1, clr);
-            int maxc = (PHYS_W - 74) / 18;
-            char buf[64], *dst = buf;
+            if (sel) fb_fill_rect(140, py - 1, PHYS_W - 280, 30, C_HILITE);
+            fb_puts_s(144, py, ">", 1, clr);
+            char buf[64];
             const char* src = names[idx];
-            for (int ci = 0; ci < maxc && src[ci]; ci++) *dst++ = src[ci];
-            *dst = 0;
-            fb_puts_s(74, py, buf, 2, clr);
+            int maxc = (PHYS_W - 180) / 18;
+            if (maxc > 63) maxc = 63;
+            strncpy(buf, src, maxc); buf[maxc] = 0;
+            fb_puts_s(160, py, buf, 2, clr);
         }
         if (n > rows) {
-            if (top > 0) fb_puts_s(PHYS_W - 44, sy, "^", 2, C_WHITE);
-            if (top + rows < n) fb_puts_s(PHYS_W - 44, sy + (rows-1)*28, "v", 2, C_WHITE);
+            if (top > 0) fb_puts_s(PHYS_W - 60, sy, "^", 2, C_WHITE);
+            if (top + rows < n) fb_puts_s(PHYS_W - 60, sy + (rows-1)*32, "v", 2, C_WHITE);
         }
     }
     draw_footer(footer);
     fb_flush();
-}
-
-// ============================================================
-// Ожидание ввода: клавиатура + UART. Возвращает код.
-// ============================================================
-static int wait_kbd_sel(void) {
-    for (;;) {
-        if (uart_rx_ready()) { return uart_getc(); }
-        int k = usb_kbd_poll();
-        if (k) return k;
-        udelay(10000);
-    }
 }
 
 // ============================================================
@@ -258,11 +285,14 @@ static int wait_kbd_sel(void) {
 static void color_test(void) {
     fb_clear();
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
-    uint32_t cols[8] = {0x00FF0000,0x0000FF00,0x000000FF,0x00FFFF00,0x0000FFFF,0x00FF00FF,0x00FFFFFF,0x00000000};
+    uint32_t cols[8] = {0x00FF0000,0x0000FF00,0x000000FF,0x00FFFF00,
+                        0x0000FFFF,0x00FF00FF,0x00FFFFFF,0x00000000};
     const char* names[8] = {"RED","GREEN","BLUE","YEL","CYAN","MAG","WHITE","BLK"};
     for (int i = 0; i < 8; i++) {
         int bx = 30 + i * 120;
-        for (int y = 250; y < 370; y++) for (int x = bx; x < bx + 80; x++) fb[y*PHYS_W+x] = cols[i];
+        for (int y = 250; y < 370; y++)
+            for (int x = bx; x < bx + 80; x++)
+                fb[y*PHYS_W+x] = cols[i];
         fb_puts_s(bx + 10, 220, names[i], 1, C_WHITE);
     }
     fb_text_center("press any key", 500, 1, C_GREY);
@@ -292,50 +322,72 @@ static void run_a7800_asteroids(void) {
 
 static void run_sd_game(int plat, int* sd_ok) {
     if (!*sd_ok) { *sd_ok = (sd_init() == 0) && (fat_init() == 0); }
-    if (!*sd_ok) { draw_header("SD READY"); fb_text_center("SD not ready", 200, 2, C_TITLE); draw_footer("press any key"); fb_flush(); wait_key(); return; }
+    if (!*sd_ok) {
+        fb_clear(); draw_film_strip();
+        fb_text_center("SD not ready", 160, 2, C_TITLE);
+        draw_footer("press any key"); fb_flush(); wait_key(); return;
+    }
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = list_roms(plat, list, FAT_MAX_ENTRIES);
-    for (int i = 0; i < n-1; i++) for (int j = i+1; j < n; j++) if (strcmp(list[i].name, list[j].name) > 0) { fat_entry_t t = list[i]; list[i] = list[j]; list[j] = t; }
-    if (n == 0) { fb_text_center("No ROMs found", 200, 2, C_TITLE); draw_footer("press any key"); fb_flush(); wait_key(); return; }
-
-    const char* title = (plat == ROM_PLAT_A2600) ? "Atari 2600" : (plat == ROM_PLAT_A5200) ? "Atari 5200" : "Atari 7800";
-    char gnames[60][32];
-    for (int i = 0; i < n && i < 60; i++) {
-        strncpy(gnames[i], list[i].name, 31); gnames[i][31]=0;
+    for (int i = 0; i < n-1; i++)
+        for (int j = i+1; j < n; j++)
+            if (strcmp(list[i].name, list[j].name) > 0) {
+                fat_entry_t t = list[i]; list[i] = list[j]; list[j] = t;
+            }
+    if (n == 0) {
+        fb_clear(); draw_film_strip();
+        fb_text_center("No ROMs found", 160, 2, C_TITLE);
+        draw_footer("press any key"); fb_flush(); wait_key(); return;
     }
-    const char* dp[60];
-    int n_show = n > 60 ? 60 : n;
-    for (int i = 0; i < n_show; i++) dp[i] = gnames[i];
+
+    const char* title = (plat == ROM_PLAT_A2600) ? "Atari 2600" :
+                        (plat == ROM_PLAT_A5200) ? "Atari 5200" : "Atari 7800";
+    char gnames[FAT_MAX_ENTRIES][32];
+    for (int i = 0; i < n && i < FAT_MAX_ENTRIES; i++) {
+        strncpy(gnames[i], list[i].name, 31); gnames[i][31] = 0;
+        // убираем расширение для красоты
+        int dot = -1;
+        for (int p = 0; gnames[i][p]; p++) if (gnames[i][p] == '.') dot = p;
+        if (dot > 0) gnames[i][dot] = 0;
+    }
+    const char* dp[FAT_MAX_ENTRIES];
+    for (int i = 0; i < n; i++) dp[i] = gnames[i];
 
     int cursor = 0;
     for (;;) {
-        draw_game_list(title, dp, n_show, cursor, "UP/DN  ENTER=play  ESC=back");
-        int k = 0;
-        for (;;) {
+        draw_game_list(title, dp, n, cursor, "UP/DN  ENTER=play  ESC=back");
+        int done = 0;
+        while (!done) {
             int c = 0;
             if (uart_rx_ready()) { c = uart_getc(); }
-            else { k = usb_kbd_poll(); if (k) c = k; }
-            if (c == 82 || c == 'w') { cursor = (cursor - 1 + n_show) % n_show; break; }
-            if (c == 81 || c == 's') { cursor = (cursor + 1) % n_show; break; }
-            if (c == 40 || c == '\n' || c == '\r') goto run_game;
+            else { int k = usb_kbd_poll(); if (k) c = k; }
+            if (c == 82 || c == 'w') { cursor = (cursor - 1 + n) % n; break; }
+            if (c == 81 || c == 's') { cursor = (cursor + 1) % n; break; }
+            if (c == 40 || c == '\n' || c == '\r') { done = 2; break; }
             if (c == 41 || c == 'q') { uart_puts("back\n"); return; }
             udelay(10000);
         }
+        if (done == 2) break;
     }
 
-run_game:
     uint8_t* rom = 0; uint32_t rom_size = 0;
-    int idx = cursor;
-    // map cursor back to original list index
-    int orig = cursor;
-    if (load_rom(rom_dir_for_plat(plat), list[orig].name, &rom, &rom_size, (plat == ROM_PLAT_A7800)) != 0) {
-        draw_header("ERROR"); fb_text_center("ROM load failed", 200, 2, C_TITLE); draw_footer("press any key"); fb_flush(); wait_key(); return;
+    if (load_rom(rom_dir_for_plat(plat), list[cursor].name, &rom, &rom_size, (plat == ROM_PLAT_A7800)) != 0) {
+        fb_clear(); draw_film_strip();
+        fb_text_center("ROM load failed", 160, 2, C_TITLE);
+        draw_footer("press any key"); fb_flush(); wait_key(); return;
     }
     memset((void*)EMU_FB, 0, 160*240*2); fb_clear(); fb_flush(); uint32_t fc = 0;
-    if (plat == ROM_PLAT_A2600) { a2600_t a26; a2600_init(&a26, rom, rom_size, (uint16_t*)EMU_FB); while (1) { a2600_frame(&a26); blit_emu_fb(); if ((fc++&0x3F)==0) { uart_puts("a2600 pc="); dbg_pc(a26.cpu.pc); } if (check_quit(&fc)) break; } }
-    else if (plat == ROM_PLAT_A5200) { a5200_t a52; a5200_init(&a52, rom, rom_size, test_a5200_get_bios(), (uint16_t*)EMU_FB); test_a5200_setup_dl(&a52); while (1) { a5200_frame(&a52); blit_emu_fb(); if ((fc++&0x3F)==0) { uart_puts("a5200 pc="); dbg_pc(a52.cpu.pc); } if (check_quit(&fc)) break; } }
-    else { a7800_t a78; a7800_init(&a78, rom, rom_size, NULL, 0, (uint16_t*)EMU_FB); while (1) { a7800_frame(&a78); blit_emu_fb(); if ((fc++&0x3F)==0) { uart_puts("a7800 pc="); dbg_pc(a78.cpu.pc); } if (check_quit(&fc)) break; } }
-    uart_puts("game exit\n");
+    if (plat == ROM_PLAT_A2600) {
+        a2600_t a26; a2600_init(&a26, rom, rom_size, (uint16_t*)EMU_FB);
+        while (1) { a2600_frame(&a26); blit_emu_fb(); if ((fc++&0x3F)==0) uart_puts("a2600 running\n"); if (check_quit(&fc)) break; }
+    } else if (plat == ROM_PLAT_A5200) {
+        a5200_t a52; a5200_init(&a52, rom, rom_size, test_a5200_get_bios(), (uint16_t*)EMU_FB);
+        test_a5200_setup_dl(&a52);
+        while (1) { a5200_frame(&a52); blit_emu_fb(); if ((fc++&0x3F)==0) uart_puts("a5200 running\n"); if (check_quit(&fc)) break; }
+    } else {
+        a7800_t a78; a7800_init(&a78, rom, rom_size, NULL, 0, (uint16_t*)EMU_FB);
+        while (1) { a7800_frame(&a78); blit_emu_fb(); if ((fc++&0x3F)==0) uart_puts("a7800 running\n"); if (check_quit(&fc)) break; }
+    }
 }
 
 // ============================================================
@@ -350,18 +402,27 @@ void main(void) {
     struct display_timing timing;
     memset(&timing, 0, sizeof(timing));
     timing.hdmi_monitor = 1; timing.pixelclock.typ = 51200000;
-    timing.hactive.typ = 1024; timing.hfront_porch.typ = 160; timing.hback_porch.typ = 88; timing.hsync_len.typ = 40;
-    timing.vactive.typ = 600; timing.vfront_porch.typ = 12; timing.vback_porch.typ = 20; timing.vsync_len.typ = 3;
+    timing.hactive.typ = 1024; timing.hfront_porch.typ = 160;
+    timing.hback_porch.typ = 88; timing.hsync_len.typ = 40;
+    timing.vactive.typ = 600; timing.vfront_porch.typ = 12;
+    timing.vback_porch.typ = 20; timing.vsync_len.typ = 3;
     timing.flags = (DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW);
 
     uart_puts("HDMI init...\n");
-    if (h3_de2_init(&timing, FB_ADDR) != 0) { uart_puts("HDMI FAILED\n"); while (1) udelay(1000000); }
+    if (h3_de2_init(&timing, FB_ADDR) != 0) {
+        uart_puts("HDMI FAILED\n"); while (1) udelay(1000000);
+    }
     uart_puts("HDMI ok\n");
 
     touch_init(); uart_puts("touch init ok\n");
     uart_puts("USB kbd init...\n");
     if (usb_kbd_init() == 0) uart_puts("USB kbd ready\n");
     else uart_puts("USB kbd not found\n");
+
+    // Инициализируем SD при старте
+    uart_puts("SD init...\n");
+    sd_ok = (sd_init() == 0) && (fat_init() == 0);
+    if (sd_ok) uart_puts("SD ready\n");
 
     for (;;) {
         sys_cursor = 0; sys_scroll = 0;
@@ -374,32 +435,28 @@ void main(void) {
             else if (c == 81 || c == 's') { sys_cursor = (sys_cursor + 1) % MENU_COUNT; draw_system_menu(); }
             else if (c == 40 || c == '\n' || c == '\r') {
                 if (sys_cursor < N_SYS) {
-                    int plat = (sys_cursor == 0) ? ROM_PLAT_A2600 : (sys_cursor == 1) ? ROM_PLAT_A5200 : ROM_PLAT_A7800;
+                    int plat = (sys_cursor == 0) ? ROM_PLAT_A2600 :
+                               (sys_cursor == 1) ? ROM_PLAT_A5200 : ROM_PLAT_A7800;
                     run_sd_game(plat, &sd_ok);
                     break;
                 } else if (sys_cursor == MENU_SETTINGS) {
-                    // Settings stub
-                    fb_text_center("Settings - not yet", 200, 2, C_TITLE);
+                    fb_clear(); draw_film_strip();
+                    fb_text_center("Settings - press any key", 160, 2, C_TITLE);
+                    fb_text_center("Pad test, brightness - not yet on H3", 200, 1, C_WHITE);
                     draw_footer("press any key"); fb_flush(); wait_key();
                     break;
                 } else if (sys_cursor == MENU_ABOUT) {
-                    // About
-                    fb_clear(); draw_header("ABOUT");
-                    fb_text_center("MultiTool Retro", 100, 2, C_CURSOR);
-                    fb_text_center("the MultiTool bare-metal emulator", 150, 1, C_WHITE);
-                    fb_text_center("Atari 2600 / 5200 / 7800", 190, 1, C_GREEN);
-                    fb_text_center("Orange Pi Lite (Allwinner H3)", 220, 1, C_WHITE);
-                    fb_text_center("USB keyboard + HDMI 1024x600", 240, 1, C_GREY);
-                    char sz[32]; int bs = 93272; // approximate
-                    fb_puts_s(300, 300, "Binary size: 93272 bytes", 1, C_GREY);
+                    fb_clear(); draw_film_strip();
+                    fb_text_center("MultiTool Retro", 80, 2, C_CURSOR);
+                    fb_text_center("the bare-metal emulator for Orange Pi Lite", 120, 1, C_WHITE);
+                    fb_text_center("Atari 2600 / 5200 / 7800", 150, 1, C_GREEN);
+                    fb_text_center("CPU: Allwinner H3 Cortex-A7", 180, 1, C_WHITE);
+                    fb_text_center("HDMI 1024x600  USB keyboard", 200, 1, C_GREY);
+                    fb_text_center("SD FAT32 /roms/<system>/", 230, 1, C_GREY);
                     draw_footer("press any key"); fb_flush(); wait_key();
                     break;
                 }
-            }
-            else if (c == 41 || c == 'q') {
-                // handle from submenus
-                break;
-            }
+            } else if (c == 41 || c == 'q') { break; }
             udelay(10000);
         }
     }

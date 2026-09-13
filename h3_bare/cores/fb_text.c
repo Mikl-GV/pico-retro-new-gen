@@ -105,21 +105,34 @@ static const uint8_t font8x8[96][8] = {
     {0x00,0x00,0x62,0x92,0x8C,0x00,0x00,0x00}, // 0x7E ~
 };
 
+// Коррекция белой точки для HDMI Allwinner H3 (+10% синего против желтизны).
+// Применяется ко всем вызовам fb_putchar / fb_puts / fb_fill_rect / fb_text_center.
+static inline uint32_t wb_correct(uint32_t color) {
+    // 0x00RRGGBB: извлекаем R,G,B
+    uint32_t r = (color >> 16) & 0xFF;
+    uint32_t g = (color >> 8) & 0xFF;
+    uint32_t b = color & 0xFF;
+    // Уменьшаем R и G на 10%, поднимаем B на 10% (для компенсации желтизны H3 HDMI)
+    r = (r * 235) >> 8;
+    g = (g * 235) >> 8;
+    b = (b * 280) >> 8; if (b > 0xFF) b = 0xFF;
+    return (r << 16) | (g << 8) | b;
+}
+
 // Вывести один символ (x,y = пиксель левого верхнего угла)
 void fb_putchar(int x, int y, char c, uint32_t color) {
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    uint32_t col = wb_correct(color);
     for (int row = 0; row < 8; row++) {
         uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
         for (int col = 0; col < 8; col++) {
             int px = x + col;
             int py = y + row;
             if (px >= 0 && px < FB_W && py >= 0 && py < FB_H) {
-                // Работаем с volatile uint32* (вертикальные полосы в фреймбуфере)
-                // Каждый пиксель — 4 байта XRGB8888
                 if (bits & (0x80 >> col))
-                    fb[py * FB_W + px] = color;
+                    fb[py * FB_W + px] = col;
                 else
                     fb[py * FB_W + px] = 0;
             }
@@ -127,17 +140,18 @@ void fb_putchar(int x, int y, char c, uint32_t color) {
     }
 }
 
-// Вывести строку (x,y = пиксель первой буквы). Гарантирует пробелы между строками.
+// Вывести строку (x,y = пиксель первой буквы)
 void fb_puts(int x, int y, const char* s, uint32_t color) {
+    uint32_t col = wb_correct(color);
     while (*s) {
-        fb_putchar(x, y, *s, color);
+        fb_putchar(x, y, *s, col);
         x += 10;
         if (x + 10 > FB_W) { x = 0; y += 10; }
         s++;
     }
 }
 
-// Залить прямоугольник (x,y=верхний левый угол, w,h=размер)
+// Залить прямоугольник (с коррекцией цвета)
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
     if (x < 0) { w += x; x = 0; }
@@ -145,16 +159,18 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
     if (x + w > FB_W) w = FB_W - x;
     if (y + h > FB_H) h = FB_H - y;
     if (w <= 0 || h <= 0) return;
+    uint32_t col = wb_correct(color);
     for (int yy = y; yy < y + h; yy++)
         for (int xx = x; xx < x + w; xx++)
-            fb[yy * FB_W + xx] = color;
+            fb[yy * FB_W + xx] = col;
 }
 
-// Масштабированный символ scale=1..4 (8*scale x 8*scale)
+// Масштабированный символ scale=1..4 (с коррекцией)
 static void fb_putchar_s(int x, int y, char c, int scale, uint32_t color) {
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    uint32_t col = wb_correct(color);
     for (int row = 0; row < 8; row++) {
         uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -164,13 +180,12 @@ static void fb_putchar_s(int x, int y, char c, int scale, uint32_t color) {
                     int px = x + col * scale + dx;
                     int py = y + row * scale + dy;
                     if (px >= 0 && px < FB_W && py >= 0 && py < FB_H)
-                        fb[py * FB_W + px] = color;
+                        fb[py * FB_W + px] = col;
                 }
         }
     }
 }
-
-// Масштабированная строка. Возвращает новую x-координату.
+        // Масштабированная строка. Возвращает новую x-координату.
 int fb_puts_s(int x, int y, const char* s, int scale, uint32_t color) {
     int adv = 8 * scale + 2 * scale;
     while (*s) {
