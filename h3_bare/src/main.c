@@ -262,14 +262,15 @@ void main(void) {
     timing.hdmi_monitor = 0;   // DVI mode: панель Waveshare ждёт чистый RGB 0-255
                                // без AVI-инфофреймов (иначе уводит в YUV/limited -> жёлтый)
     timing.pixelclock.typ = 51200000;
-    // CVT-тайминги для RTD2660 1024x600@60 (как у Raspberry Pi):
-    // H: 1024 + 40 + 32 + 248 = 1344,  V: 600 + 1 + 8 + 26 = 635
+    // Точные CVT-тайминги 1024x600@60 (как у Raspberry Pi hdmi_mode=87):
+    // Modeline: 51.20  1024 1064 1096 1344  600 601 604 635  -HSync +VSync
     timing.hactive.typ = 1024; timing.hfront_porch.typ = 40;
     timing.hback_porch.typ = 248; timing.hsync_len.typ = 32;
     timing.vactive.typ = 600; timing.vfront_porch.typ = 1;
-    timing.vback_porch.typ = 26; timing.vsync_len.typ = 8;
-    // Полярность синхры Negative (активный низкий) — критична для RTD2660
-    timing.flags = (DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW);
+    timing.vback_porch.typ = 31; timing.vsync_len.typ = 3;
+    // Полярность как в CVT: HSync negative, VSync positive. RTD2660
+    // сверяет полярность с базой VESA — при H-V- не узнаёт режим и желтит.
+    timing.flags = (DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_HIGH);
 
     if (h3_de2_init(&timing, FB_ADDR) != 0) { uart_puts("HDMI FAILED\n"); while (1) udelay(1000000); }
     uart_puts("HDMI ok\n");
