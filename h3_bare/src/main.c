@@ -125,13 +125,14 @@ static void show_menu(void) {
     fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
     for (int i = 0; i < MENU_COUNT; i++) {
         int y = 110 + i * 36;
-        uint32_t clr = (i == cursor) ? 0x00FFFF00 : 0x00FFFFFF;
+        int sel = (i == cursor);
+        uint32_t clr = sel ? 0x00FFFF00 : 0x00FFFFFF;
+        // Подложку рисуем ДО текста, чтобы не затирать его
+        if (sel) fb_fill_rect(60, y - 2, PHYS_W - 120, 30, 0x00101010);
         if (i < N_SYS)
             fb_puts_s(80, y, sys_names[i], 2, clr);
         else
             fb_puts_s(80, y, "Color test", 2, clr);
-        if (i == cursor)
-            fb_fill_rect(60, y - 2, PHYS_W - 120, 30, 0x00282828);
     }
     fb_puts(60, PHYS_H - 40, "Arrows+Enter: select   ESC: back", 0x00AAAAAA);
     fb_flush();
@@ -167,8 +168,10 @@ static int pick_rom_screen(const char* title, fat_entry_t* list, int n) {
         if (top + rows > n) top = n - rows;
         for (int i = 0; i < rows && top + i < n; i++) {
             int idx = top + i, y = 100 + i * 34;
-            uint32_t clr = (idx == cur) ? 0x00FFFF00 : 0x00FFFFFF;
-            if (idx == cur) fb_fill_rect(60, y - 2, PHYS_W - 120, 28, 0x00282828);
+            int sel = (idx == cur);
+            uint32_t clr = sel ? 0x00FFFF00 : 0x00FFFFFF;
+            // Подложку рисуем ДО текста, чтобы не затирать его
+            if (sel) fb_fill_rect(60, y - 2, PHYS_W - 120, 28, 0x00101010);
             char buf[64];
             strncpy(buf, list[idx].name, 60); buf[60] = 0;
             fb_puts_s(80, y, buf, 1, clr);
@@ -256,7 +259,9 @@ void main(void) {
 
     struct display_timing timing;
     memset(&timing, 0, sizeof(timing));
-    timing.hdmi_monitor = 1; timing.pixelclock.typ = 51200000;
+    timing.hdmi_monitor = 0;   // DVI mode: панель Waveshare ждёт чистый RGB 0-255
+                               // без AVI-инфофреймов (иначе уводит в YUV/limited -> жёлтый)
+    timing.pixelclock.typ = 51200000;
     timing.hactive.typ = 1024; timing.hfront_porch.typ = 160;
     timing.hback_porch.typ = 88; timing.hsync_len.typ = 40;
     timing.vactive.typ = 600; timing.vfront_porch.typ = 12;

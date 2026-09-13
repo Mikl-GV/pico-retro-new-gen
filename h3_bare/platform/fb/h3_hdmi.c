@@ -363,6 +363,12 @@ __attribute__((cold)) int h3_hdmi_enable(uint32_t panel_bpp, const struct displa
 		return ret;
 	}
 
+	/* Принудительно выключаем встроенный CSC (Color Space Conversion)
+	 * в HDMI-контроллере Allwinner H3. Запись 0 в этот регистр переводит
+	 * конвертер в bypass: пиксели идут из DE2 в PHY 1:1, без пересчёта
+	 * RGB->YUV (иначе белый уходит в грязно-жёлтый). */
+	*(volatile uint32_t *)(H3_HDMI_BASE + 0x180) = 0;
+
 	hdmi_lcdc_init(edid, panel_bpp);
 
 	if (edid->flags & DISPLAY_FLAGS_VSYNC_LOW) {

@@ -244,20 +244,55 @@ static int name_eq(const char* a, const char* b) {
     return strcmp(a, b) == 0;
 }
 
+// Пройти по пути из компонентов (разделены '/'), начиная от корня.
+// Возвращает запись последней папки (или файла) по пути.
+// buf — временный буфер для компонента.
+static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen) {
+    uint32_t cluster = g_root_cluster;
+    const char* p = path;
+    while (*p == '/') p++;
+    if (*p == 0) {
+        // корень
+        out->first_cluster = cluster;
+        out->size = 0;
+        strcpy(out->name, "/");
+        return 1;
+    }
+    for (;;) {
+        const char* slash = p;
+        while (*slash && *slash != '/') slash++;
+        int n = (int)(slash - p);
+        if (n == 0 || n >= buflen) return 0;
+        memcpy(buf, p, n); buf[n] = 0;
+
+        fat_entry_t entries[FAT_MAX_ENTRIES];
+        int cnt = read_dir(cluster, entries, FAT_MAX_ENTRIES);
+        int found = 0;
+        for (int i = 0; i < cnt; i++) {
+            if (name_eq(entries[i].name, buf)) {
+                *out = entries[i];
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return 0;
+
+        if (*slash == 0) return 1;          // это последний компонент
+        if (out->size != 0) return 0;       // не папка — дальше идти нельзя
+        cluster = out->first_cluster;
+        p = slash + 1;
+    }
+}
+
 int fat_list(const char* dir, fat_entry_t* out, int max) {
     if (!dir || dir[0] == 0 || strcmp(dir, "/") == 0) {
         return read_dir(g_root_cluster, out, max);
     }
-    // ищем подпапку с этим именем в корне
-    fat_entry_t root[FAT_MAX_ENTRIES];
-    int n = read_dir(g_root_cluster, root, FAT_MAX_ENTRIES);
-    for (int i = 0; i < n; i++) {
-        if (name_eq(root[i].name, dir)) {
-            // читаем содержимое подпапки
-            return read_dir(root[i].first_cluster, out, max);
-        }
-    }
-    return 0;
+    fat_entry_t d;
+    char buf[FAT_NAME_LEN];
+    if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return 0;
+    if (d.size != 0) return 0;   // это файл, не папка
+    return read_dir(d.first_cluster, out, max);
 }
 
 int fat_find(const char* dir, const char* name, fat_entry_t* out) {
