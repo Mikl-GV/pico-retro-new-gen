@@ -26,6 +26,7 @@ extern int uart0_printf(const char* fmt, ...);
 
 #include "dw_hdmi.h"
 #include "media_bus_format.h"
+#include "h3_hs_timer.h"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -559,4 +560,74 @@ void __attribute__((cold)) dw_hdmi_init(struct dw_hdmi *hdmi) {
 
 	/* enable i2c client nack % arbitration error irq */
 	hdmi_write(hdmi, ~0x44, HDMI_I2CM_CTLINT);
+}
+
+// ---- EDID чтение через DDC (встроенный i2c-мастер DW-HDMI) ----
+static int hdmi_ddc_wait_i2c_done(struct dw_hdmi *hdmi, int msec) {
+	u32 val;
+	uint32_t start;
+	extern uint32_t h3_hs_timer_lo_us(void);
+	start = h3_hs_timer_lo_us();
+	do {
+		val = hdmi_read(hdmi, HDMI_IH_I2CM_STAT0);
+		if (val & 0x2) {
+			hdmi_write(hdmi, val, HDMI_IH_I2CM_STAT0);
+			return 0;
+		}
+		udelay(100);
+	} while ((h3_hs_timer_lo_us() - start) < (uint32_t)msec * 1000);
+	return 1;
+}
+
+static void hdmi_ddc_reset(struct dw_hdmi *hdmi) {
+	hdmi_mod(hdmi, HDMI_I2CM_SOFTRSTZ, HDMI_I2CM_SOFTRSTZ_MASK, 0);
+	udelay(10);
+	hdmi_mod(hdmi, HDMI_I2CM_SOFTRSTZ, HDMI_I2CM_SOFTRSTZ_MASK, HDMI_I2CM_SOFTRSTZ_MASK);
+}
+
+static int hdmi_read_edid_block(struct dw_hdmi *hdmi, int block, u8 *buff) {
+	int shift = (block % 2) * 0x80;
+	int edid_read_err = 0;
+	uint32_t trytime = 2;
+	uint32_t n;
+
+	// установка тактов DDC (~100 кГц)
+	hdmi_write(hdmi, hdmi->i2c_clk_high, HDMI_I2CM_SS_SCL_HCNT_0_ADDR);
+	hdmi_write(hdmi, hdmi->i2c_clk_low, HDMI_I2CM_SS_SCL_LCNT_0_ADDR);
+	hdmi_mod(hdmi, HDMI_I2CM_DIV, HDMI_I2CM_DIV_FAST_STD_MODE, HDMI_I2CM_DIV_STD_MODE);
+
+	hdmi_write(hdmi, HDMI_I2CM_SLAVE_DDC_ADDR, HDMI_I2CM_SLAVE);
+	hdmi_write(hdmi, HDMI_I2CM_SEGADDR_DDC, HDMI_I2CM_SEGADDR);
+	hdmi_write(hdmi, block >> 1, HDMI_I2CM_SEGPTR);
+
+	while (trytime--) {
+		edid_read_err = 0;
+		for (n = 0; n < HDMI_EDID_BLOCK_SIZE; n++) {
+			hdmi_write(hdmi, shift + n, HDMI_I2CM_ADDRESS);
+
+			if (block == 0)
+				hdmi_write(hdmi, HDMI_I2CM_OP_RD8, HDMI_I2CM_OPERATION);
+			else
+				hdmi_write(hdmi, HDMI_I2CM_OP_RD8_EXT, HDMI_I2CM_OPERATION);
+
+			if (hdmi_ddc_wait_i2c_done(hdmi, 5)) {
+				hdmi_ddc_reset(hdmi);
+				edid_read_err = 1;
+				break;
+			}
+			buff[n] = hdmi_read(hdmi, HDMI_I2CM_DATAI);
+		}
+		if (!edid_read_err) break;
+	}
+	return edid_read_err;
+}
+
+int dw_hdmi_read_edid(struct dw_hdmi *hdmi, u8 *buf, int buf_size) {
+	(void)buf_size;
+	if (hdmi_read_edid_block(hdmi, 0, buf)) return -1;
+	if (buf[0x7e] != 0) {
+		hdmi_read_edid_block(hdmi, 1, buf + HDMI_EDID_BLOCK_SIZE);
+		return 256;
+	}
+	return 128;
 }
