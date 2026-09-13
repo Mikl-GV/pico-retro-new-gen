@@ -16,10 +16,21 @@ static const am_t am[16] = {
     {1,1,1,0},  {2,1,2,0},  {1,1,2,0},  {1,2,1,0},
 };
 
-// Р¦РІРµС‚ GTIA (hue|lum) -> RGB565
+// Цвет GTIA (hue|lum) -> RGB565. Полная NTSC-палитра Atari 8-bit,
+// с синим каналом (иначе белый/серый уходят в жёлтый).
 static inline uint16_t col16(uint8_t c) {
-    return (uint16_t)(((uint32_t)(c & 0xF) * 31 / 15) << 11) |
-           (uint16_t)(((uint32_t)((c >> 4) & 7) * 63 / 7) << 5);
+    static const uint8_t rgb[16][3] = {
+        {0x00,0x00,0x00},{0x90,0x70,0x20},{0xB0,0x60,0x10},{0xC0,0x40,0x20},
+        {0xD0,0x20,0x20},{0xB0,0x20,0x80},{0x80,0x30,0xA0},{0x40,0x40,0xC0},
+        {0x20,0x60,0xD0},{0x20,0x90,0xE0},{0x20,0xA0,0xB0},{0x30,0xB0,0x60},
+        {0x60,0xC0,0x40},{0xA0,0xB0,0x30},{0xC0,0x80,0x30},{0xC0,0xC0,0xC0},
+    };
+    uint8_t h = (c >> 4) & 0x0F;
+    uint8_t l = c & 0x0F;
+    uint8_t rr = (uint16_t)rgb[h][0] * l / 15;
+    uint8_t gg = (uint16_t)rgb[h][1] * l / 15;
+    uint8_t bb = (uint16_t)rgb[h][2] * l / 15;
+    return (uint16_t)(((rr >> 3) << 11) | ((gg >> 2) << 5) | (bb >> 3));
 }
 
 // ============================================================

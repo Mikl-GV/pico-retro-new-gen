@@ -201,7 +201,7 @@ static void hdmi_av_composer(struct dw_hdmi *hdmi, const struct display_timing *
 	 * в YUV/limited и белый становится грязно-жёлтым. */
 	hdmi_write(hdmi, HDMI_FC_AVICONF0_PIX_FMT_RGB |
 			HDMI_FC_AVICONF0_ACTIVE_FMT_INFO_PRESENT |
-			HDMI_FC_AVICONF0_SCAN_INFO_UNDERSCAN |
+			HDMI_FC_AVICONF0_SCAN_INFO_NODATA |
 			HDMI_FC_AVICONF0_BAR_DATA_NO_DATA,
 			HDMI_FC_AVICONF0);
 	hdmi_write(hdmi, HDMI_FC_AVICONF1_CODED_ASPECT_RATIO_16_9 |

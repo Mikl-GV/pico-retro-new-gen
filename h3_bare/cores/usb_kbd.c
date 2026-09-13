@@ -98,6 +98,26 @@ static uint32_t g_ohci_base = OHCI1_BASE;
 // ---- USB HID report (8 байт) ----
 static uint8_t g_report[8];
 
+// GET_REPORT — короткий таймаут (200ms) чтобы не блокировать цикл
+static int get_report(uint8_t* buf, int len);
+
+// Чтение отчёта + инвалидация D-cache (DMA-запись). Возвращает 0/-1.
+static int kbd_read_report(void) {
+    if (!g_device_found || !g_in_ep) return -1;
+    if (get_report(g_report, 8) < 0) {
+        uart_puts("kbd: get_report fail\n");
+        return -1;
+    }
+    // Инвалидируем D-cache: GET_REPORT записал данные через DMA в DRAM,
+    // а D-cache (DCACHE=ON) хранит старые нули → читаем мусор без invalidate
+    uint32_t addr = (uint32_t)g_report & ~0x1Fu;
+    uint32_t end = addr + 8 + 32;
+    for (; addr < end; addr += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr));
+    __asm volatile("dsb" ::: "memory");
+    return 0;
+}
+
 // Динамический выбор порта (выбирается при enum)
 static uint32_t ohci_active(void) { return g_ohci_base; }
 
@@ -343,32 +363,20 @@ static uint8_t scancode_to_ascii(uint8_t sc, int shift) {
 }
 
 int usb_kbd_poll(void) {
+    // Edge-детект: возвращает сканкод только в момент НОВОГО нажатия.
+    // Сравниваем текущий report с предыдущим. Если клавиша была в обоих
+    // report'ах — не возвращаем (иначе удержание стрелки прыгает по меню).
     if (!g_device_found || !g_in_ep) return 0;
-
-    if (get_report(g_report, 8) < 0) {
-        uart_puts("kbd: get_report fail\n");
-        return 0;
-    }
-
-    // Инвалидируем D-cache: GET_REPORT записал данные через DMA в DRAM,
-    // а D-cache (DCACHE=ON) хранит старые нули → читаем мусор без invalidate
-    uint32_t addr = (uint32_t)g_report & ~0x1Fu;
-    uint32_t end = addr + 8 + 32;
-    for (; addr < end; addr += 32)
-        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr));
-    __asm volatile("dsb" ::: "memory");
-
-    // DGN: лог только при нажатии
-    extern int uart0_printf(const char* fmt, ...);
-    if (g_report[2] || g_report[3] || g_report[4] || g_report[5] || g_report[6] || g_report[7])
-        uart0_printf("kbd down %X %X %X %X %X %X %X %X\n",
-                     g_report[0], g_report[1], g_report[2], g_report[3],
-                     g_report[4], g_report[5], g_report[6], g_report[7]);
-
+    uint8_t cur[8];
+    memcpy(cur, g_report, 8);
+    if (kbd_read_report() < 0) return 0;
     for (int i = 2; i < 8; i++) {
-        if (g_report[i]) {
-            return g_report[i];
-        }
+        uint8_t sc = g_report[i];
+        if (!sc) continue;
+        int in_prev = 0;
+        for (int j = 2; j < 8; j++)
+            if (cur[j] == sc) { in_prev = 1; break; }
+        if (!in_prev) return sc;
     }
     return 0;
 }
