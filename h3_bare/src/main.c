@@ -135,14 +135,14 @@ static uint8_t kernel_2600[4096] = {
 static int cursor_idx = 0;
 
 static const char* menu_labels[] = {
-    "1  Atari 2600 (test)",
-    "2  Atari 5200 (test)",
-    "3  Atari 7800 (Asteroids)",
-    "4  Atari 2600 - games",
-    "5  Atari 5200 - games",
-    "6  Atari 7800 - games",
-    "c  Color test",
-    "l  List ROMs (UART)",
+    "Atari 2600 - games (SD)",
+    "Atari 5200 - games (SD)",
+    "Atari 7800 - games (SD)",
+    "Test: Atari 2600 (kernel)",
+    "Test: Atari 5200 (chessboard)",
+    "Test: Atari 7800 (Asteroids)",
+    "Color test (HDMI bars)",
+    "List ROMs (UART)",
 };
 #define MENU_N (sizeof(menu_labels)/sizeof(menu_labels[0]))
 
@@ -168,7 +168,7 @@ static void show_menu(void) {
         int y = 120 + i * 30;
         fb_puts(320, y, menu_labels[i], color);
     }
-    fb_puts(320, 430, "Arrows + Enter, or number", 0x00AAAAAA);
+    fb_puts(320, 430, "Arrows + Enter", 0x00AAAAAA);
     fb_puts(320, 460, "In game: ESC = back to menu", 0x00AAAAAA);
     fb_flush();
 }
@@ -330,6 +330,12 @@ static void run_sd_game(int plat, int* sd_ok) {
 
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = list_roms(plat, list, FAT_MAX_ENTRIES);
+    // Сортировка по имени (FAT отдаёт в порядке создания — выглядит хаотично)
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (strcmp(list[i].name, list[j].name) > 0) {
+                fat_entry_t t = list[i]; list[i] = list[j]; list[j] = t;
+            }
     int pick = pick_rom(plat, list, n);
     if (pick < 0) { uart_puts("games: back\n"); return; }
 
@@ -393,6 +399,12 @@ static void list_all_roms(int* sd_ok) {
     const char* labels[3] = {" [2600]", " [5200]", " [7800]"};
     for (int d = 0; d < 3; d++) {
         int n = fat_list(dirs[d], list, FAT_MAX_ENTRIES);
+        // Сортировка по имени
+        for (int i = 0; i < n - 1; i++)
+            for (int j = i + 1; j < n; j++)
+                if (strcmp(list[i].name, list[j].name) > 0) {
+                    fat_entry_t t = list[i]; list[i] = list[j]; list[j] = t;
+                }
         for (int i = 0; i < n; i++) {
             uart_puts(list[i].name); uart_puts(labels[d]); uart_puts("\n");
         }

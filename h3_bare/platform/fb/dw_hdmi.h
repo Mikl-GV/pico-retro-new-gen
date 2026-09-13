@@ -128,6 +128,8 @@ typedef unsigned long	ulong;
 #define HDMI_FC_AUDICONF3                       0x1028
 #define HDMI_FC_VSDIEEEID0                      0x1029
 #define HDMI_FC_VSDSIZE                         0x102A
+#define HDMI_FC_DATAUTO0                        0x102B
+#define HDMI_FC_DATAUTO1                        0x102C
 
 /* HDMI Source PHY Registers */
 #define HDMI_PHY_CONF0                          0x3000

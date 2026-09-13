@@ -196,6 +196,28 @@ static void hdmi_av_composer(struct dw_hdmi *hdmi, const struct display_timing *
 
 	hdmi_write(hdmi, inv_val, HDMI_FC_INVIDCONF);
 
+	/* AVI InfoFrame: принудительно RGB (не YUV) + полный диапазон 0-255.
+	 * Без этого большинство дисплеев (Waveshare 1024x600 в т.ч.) уходят
+	 * в YUV/limited и белый становится грязно-жёлтым. */
+	hdmi_write(hdmi, HDMI_FC_AVICONF0_PIX_FMT_RGB |
+			HDMI_FC_AVICONF0_ACTIVE_FMT_INFO_PRESENT |
+			HDMI_FC_AVICONF0_SCAN_INFO_UNDERSCAN |
+			HDMI_FC_AVICONF0_BAR_DATA_NO_DATA,
+			HDMI_FC_AVICONF0);
+	hdmi_write(hdmi, HDMI_FC_AVICONF1_CODED_ASPECT_RATIO_16_9 |
+			HDMI_FC_AVICONF1_ACTIVE_ASPECT_RATIO_16_9 |
+			HDMI_FC_AVICONF1_COLORIMETRY_NO_DATA,
+			HDMI_FC_AVICONF1);
+	hdmi_write(hdmi, HDMI_FC_AVICONF2_RGB_QUANT_FULL_RANGE |
+			HDMI_FC_AVICONF2_SCALING_NONE |
+			HDMI_FC_AVICONF2_IT_CONTENT_VALID,
+			HDMI_FC_AVICONF2);
+	hdmi_write(hdmi, HDMI_FC_AVICONF3_IT_CONTENT_TYPE_GRAPHICS |
+			HDMI_FC_AVICONF3_QUANT_RANGE_FULL,
+			HDMI_FC_AVICONF3);
+	/* включить автопередачу AVI InfoFrame (bit0 = AVI auto-send) */
+	hdmi_write(hdmi, 0x01, HDMI_FC_DATAUTO0);
+
 	/* set up horizontal active pixel width */
 	hdmi_write(hdmi, edid->hactive.typ >> 8, HDMI_FC_INHACTV1);
 	hdmi_write(hdmi, edid->hactive.typ, HDMI_FC_INHACTV0);
