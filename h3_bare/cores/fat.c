@@ -182,6 +182,10 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
                 int r = parse_dir_entry(e, &out[count], lfn, &lfn_len);
                 if (r < 0) return count;
                 if (r > 0) {
+                    // пропускаем служебные . и ..
+                    if (out[count].name[0] == '.' &&
+                        (out[count].name[1] == 0 || (out[count].name[1] == '.' && out[count].name[2] == 0)))
+                        continue;
                     count++;
                     if (count >= max) return count;
                 }
@@ -198,7 +202,7 @@ int fat_init(void) {
     uint32_t part_lba = 0;
 
     if (sd_read_sector(0, g_sector) >= 0) {
-        if (le16(g_sector + 510) == 0x55AA && (g_sector[446 + 4] == 0x0B ||
+        if (le16(g_sector + 510) == 0xAA55 && (g_sector[446 + 4] == 0x0B ||
                                                 g_sector[446 + 4] == 0x0C ||
                                                 g_sector[446 + 4] == 0x06)) {
             // тип: FAT32 / FAT32 LBA / FAT16
@@ -211,7 +215,7 @@ int fat_init(void) {
     if (sd_read_sector(part_lba, g_sector) < 0) return -1;
 
     // проверка сигнатуры FAT32
-    if (le16(g_sector + 510) != 0x55AA) { uart_puts("fat: no 55AA\n"); return -1; }
+    if (le16(g_sector + 510) != 0xAA55) { uart_puts("fat: no 55AA\n"); return -1; }
     // BPB
     uint16_t bps = le16(g_sector + 11);
     if (bps != 512) { uart_puts("fat: bps!=512\n"); return -1; }
@@ -237,11 +241,18 @@ int fat_init(void) {
     return 0;
 }
 
-// имя без ведущих пробелов (для сравнения)
+// имя без ведущих пробелов (для сравнения); FAT-имена регистронезависимы
 static int name_eq(const char* a, const char* b) {
     while (*a == ' ' || *a == '\t') a++;
     while (*b == ' ' || *b == '\t') b++;
-    return strcmp(a, b) == 0;
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return (*a == 0 && *b == 0);
 }
 
 // Пройти по пути из компонентов (разделены '/'), начиная от корня.

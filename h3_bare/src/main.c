@@ -262,14 +262,23 @@ void main(void) {
     timing.hdmi_monitor = 0;   // DVI mode: панель Waveshare ждёт чистый RGB 0-255
                                // без AVI-инфофреймов (иначе уводит в YUV/limited -> жёлтый)
     timing.pixelclock.typ = 51200000;
-    timing.hactive.typ = 1024; timing.hfront_porch.typ = 160;
-    timing.hback_porch.typ = 88; timing.hsync_len.typ = 40;
-    timing.vactive.typ = 600; timing.vfront_porch.typ = 12;
-    timing.vback_porch.typ = 20; timing.vsync_len.typ = 3;
+    // CVT-тайминги для RTD2660 1024x600@60 (как у Raspberry Pi):
+    // H: 1024 + 40 + 32 + 248 = 1344,  V: 600 + 1 + 8 + 26 = 635
+    timing.hactive.typ = 1024; timing.hfront_porch.typ = 40;
+    timing.hback_porch.typ = 248; timing.hsync_len.typ = 32;
+    timing.vactive.typ = 600; timing.vfront_porch.typ = 1;
+    timing.vback_porch.typ = 26; timing.vsync_len.typ = 8;
+    // Полярность синхры Negative (активный низкий) — критична для RTD2660
     timing.flags = (DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW);
 
     if (h3_de2_init(&timing, FB_ADDR) != 0) { uart_puts("HDMI FAILED\n"); while (1) udelay(1000000); }
     uart_puts("HDMI ok\n");
+
+    // Сразу заливаем фреймбуфер чёрным: DE2 начинает сканировать память
+    // сразу после инициализации, и без этого на экране мелькает мусор
+    // из неинициализированной DRAM (синий/цветной фон до первого меню).
+    fb_clear();
+    fb_flush();
 
     touch_init();
     uart_puts("USB kbd init...\n");
