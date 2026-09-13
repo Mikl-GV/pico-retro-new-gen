@@ -196,9 +196,10 @@ static void hdmi_av_composer(struct dw_hdmi *hdmi, const struct display_timing *
 
 	hdmi_write(hdmi, inv_val, HDMI_FC_INVIDCONF);
 
-	/* AVI InfoFrame: принудительно RGB (не YUV) + полный диапазон 0-255.
-	 * Без этого большинство дисплеев (Waveshare 1024x600 в т.ч.) уходят
-	 * в YUV/limited и белый становится грязно-жёлтым. */
+	/* AVI InfoFrame: принудительно RGB (Y0Y1=00), а не YUV; и RGB Full Range
+	 * (0-255). Allwinner H3 по умолчанию уводит сигнал в YUV/limited,
+	 * Waveshare 1024x600 ждёт компьютерный RGB Full Range — из-за этого
+	 * белый становится грязно-жёлтым везде (меню, тесты, игры). */
 	hdmi_write(hdmi, HDMI_FC_AVICONF0_PIX_FMT_RGB |
 			HDMI_FC_AVICONF0_ACTIVE_FMT_INFO_PRESENT |
 			HDMI_FC_AVICONF0_SCAN_INFO_NODATA |
@@ -215,7 +216,7 @@ static void hdmi_av_composer(struct dw_hdmi *hdmi, const struct display_timing *
 	hdmi_write(hdmi, HDMI_FC_AVICONF3_IT_CONTENT_TYPE_GRAPHICS |
 			HDMI_FC_AVICONF3_QUANT_RANGE_FULL,
 			HDMI_FC_AVICONF3);
-	/* включить автопередачу AVI InfoFrame (bit0 = AVI auto-send) */
+	/* автопередача AVI (bit0 = AVI auto-send) */
 	hdmi_write(hdmi, 0x01, HDMI_FC_DATAUTO0);
 
 	/* set up horizontal active pixel width */

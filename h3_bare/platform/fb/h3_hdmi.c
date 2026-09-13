@@ -50,6 +50,7 @@
 #include "display_timing.h"
 
 #include "dw_hdmi.h"
+#include "media_bus_format.h"
 
 struct sunxi_dw_hdmi_priv {
 	struct dw_hdmi hdmi;
@@ -347,6 +348,13 @@ static int hdmi_phy_cfg(__attribute__((unused)) struct dw_hdmi *hdmi, uint mpixe
 __attribute__((cold)) int h3_hdmi_enable(uint32_t panel_bpp, const struct display_timing *edid) {
 	struct sunxi_dw_hdmi_priv *priv = &_sunxi_dw_hdmi_priv;
 	int ret;
+
+	/* Явно задаём RGB888 на вход и выход видео-пути DW-HDMI.
+	 * Без этого enc_in/out_bus_format = 0, hdmi_video_csc() выходит
+	 * ДО программирования CSC-регистров, и хардверные дефолты уводят
+	 * сигнал в YUV -> глобальная желтизна на всём экране. */
+	priv->hdmi.hdmi_data.enc_in_bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+	priv->hdmi.hdmi_data.enc_out_bus_format = MEDIA_BUS_FMT_RGB888_1X24;
 
 	ret = dw_hdmi_enable(&priv->hdmi, edid);
 

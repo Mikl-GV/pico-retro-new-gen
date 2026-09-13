@@ -137,6 +137,60 @@ void fb_puts(int x, int y, const char* s, uint32_t color) {
     }
 }
 
+// Залить прямоугольник (x,y=верхний левый угол, w,h=размер)
+void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > FB_W) w = FB_W - x;
+    if (y + h > FB_H) h = FB_H - y;
+    if (w <= 0 || h <= 0) return;
+    for (int yy = y; yy < y + h; yy++)
+        for (int xx = x; xx < x + w; xx++)
+            fb[yy * FB_W + xx] = color;
+}
+
+// Масштабированный символ scale=1..4 (8*scale x 8*scale)
+static void fb_putchar_s(int x, int y, char c, int scale, uint32_t color) {
+    if (c < 0x20 || c > 0x7F) c = '.';
+    const uint8_t* glyph = font8x8[c - 0x20];
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
+        for (int col = 0; col < 8; col++) {
+            if (!(bits & (0x80 >> col))) continue;
+            for (int dy = 0; dy < scale; dy++)
+                for (int dx = 0; dx < scale; dx++) {
+                    int px = x + col * scale + dx;
+                    int py = y + row * scale + dy;
+                    if (px >= 0 && px < FB_W && py >= 0 && py < FB_H)
+                        fb[py * FB_W + px] = color;
+                }
+        }
+    }
+}
+
+// Масштабированная строка. Возвращает новую x-координату.
+int fb_puts_s(int x, int y, const char* s, int scale, uint32_t color) {
+    int adv = 8 * scale + 2 * scale;
+    while (*s) {
+        fb_putchar_s(x, y, *s, scale, color);
+        x += adv;
+        s++;
+    }
+    return x;
+}
+
+// Текст по центру (scale; центрируется по ширине экрана)
+void fb_text_center(const char* s, int y, int scale, uint32_t color) {
+    int len = 0;
+    while (s[len]) len++;
+    int w = len * (8 * scale + 2 * scale) - 2 * scale;
+    int x = (FB_W - w) / 2;
+    if (x < 0) x = 0;
+    fb_puts_s(x, y, s, scale, color);
+}
+
 // Очистить экран в чёрный
 void fb_clear(void) {
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
