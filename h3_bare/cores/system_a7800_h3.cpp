@@ -1,4 +1,4 @@
-// system_a7800_h3.cpp — host-слой ProSystem (Atari 7800) для H3 bare-metal.
+// system_a7800_h3.cpp — host-слой ProSystem (Atari 7800) для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -46,10 +46,6 @@ void maria_LineReady(const byte* line, int length) {
     for (int y = y0; y < y1; y++)
         for (int x = 0; x < length; x++)
             EMU_FB[y * EMU_W + x] = a7_pal_rgb565[line[x] & 0xFF];
-}
-
-extern "C" {
-#include "fb_text.h"
 }
 
 static void a7_build_input(byte* input, uint8_t pad) {

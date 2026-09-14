@@ -1,4 +1,4 @@
-// system_a5200_h3.cpp — host-слой Atari 5200 для H3 bare-metal.
+// system_a5200_h3.cpp — host-слой Atari 5200 для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -9,14 +9,10 @@ extern "C" {
 #include "usb_kbd.h"
 }
 
-#define FB_ADDR  ((volatile uint32_t*)0x5F900000)
-#define PHYS_W   1024
-#define PHYS_H   600
 #define EMU_FB   ((uint16_t*)0x5F800000)
 #define EMU_W    320
 #define EMU_H    240
 
-#include "fb_text.h"
 extern "C" {
 #include "a5200/atari.h"
 #include "a5200/atari5200.h"

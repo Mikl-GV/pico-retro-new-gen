@@ -1,5 +1,4 @@
-// system_atari_h3.cpp — host-слой MCUME (Virtual VCS) для H3 bare-metal.
-// Заменяет pico-retro display/joypad на HDMI-фреймбуфер и USB-клавиатуру.
+// system_atari_h3.cpp — host-слой MCUME (Virtual VCS) для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,12 +9,10 @@ extern "C" {
 #include "usb_kbd.h"
 }
 
-// framebuffer для эмулятора: 160x192 RGB565
 #define EMU_FB ((uint16_t*)0x5F800000)
 #define EMU_W 160
 #define EMU_H 192
 
-// MCUME core headers
 extern "C" {
 #include "mcume/options.h"
 #include "mcume/types.h"
@@ -27,9 +24,6 @@ extern "C" {
 #include "mcume/memory.h"
 }
 
-#define RGBVAL16(r, g, b) (((((r) >> 3) & 0x1F) << 11) | ((((g) >> 2) & 0x3F) << 5) | ((((b) >> 3) & 0x1F) << 0))
-
-// Статический пул памяти для emu_Malloc
 static uint8_t pool[160 * 192 + 8 + 4096 + 4096 + 1024 + 28 * 8];
 static uint8_t* pool_ptr = pool;
 
@@ -61,13 +55,13 @@ extern "C" int emu_GetPad(void) {
     int k = 0;
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
-        if (sc == 82) k |= 0x0004;  // Up
-        if (sc == 81) k |= 0x0008;  // Down
-        if (sc == 80) k |= 0x0002;  // Left
-        if (sc == 79) k |= 0x0001;  // Right
-        if (sc == 29) k |= 0x0010;  // Z = fire
-        if (sc == 22) k |= 0x0040;  // S = Select
-        if (sc == 40) k |= 0x0020;  // Enter = Reset
+        if (sc == 82) k |= 0x0004;
+        if (sc == 81) k |= 0x0008;
+        if (sc == 80) k |= 0x0002;
+        if (sc == 79) k |= 0x0001;
+        if (sc == 29) k |= 0x0010;
+        if (sc == 22) k |= 0x0040;
+        if (sc == 40) k |= 0x0020;
     }
     return k;
 }
@@ -80,7 +74,7 @@ static uint16_t atari_rgb565_lut[256];
 extern "C" int tv_draw_count = 0;
 
 extern "C" void emu_SetPaletteEntry(unsigned char r, unsigned char g, unsigned char b, int index) {
-    atari_rgb565_lut[index] = RGBVAL16(r, g, b);
+    atari_rgb565_lut[index] = ((((r) >> 3) & 0x1F) << 11) | ((((g) >> 2) & 0x3F) << 5) | ((((b) >> 3) & 0x1F) << 0);
 }
 
 extern "C" void emu_DrawScreenPal16(unsigned char* VBuf, int width, int height, int stride) {

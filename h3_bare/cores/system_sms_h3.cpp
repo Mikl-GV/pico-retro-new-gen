@@ -1,4 +1,4 @@
-// system_sms_h3.cpp — host-слой Sega Master System / Game Gear для H3 bare-metal.
+// system_sms_h3.cpp — host-слой SMS/GG для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -15,8 +15,6 @@ extern "C" {
 #define SCR_W   256
 #define SCR_H   192
 
-// Не включаем shared.h — он тянет <math.h>, который ломается в freestanding C++.
-// Включаем только нужные заголовки ядра.
 extern "C" {
 #include "smsplus/types.h"
 #include "smsplus/system.h"
