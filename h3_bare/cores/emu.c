@@ -56,14 +56,16 @@ static void emu_wait_key(void) {
     }
 }
 
-// Throttle 60 FPS: ждать до 16667 мкс от начала кадра
+// Throttle 60 FPS: ждать до 16667 мкс от начала кадра.
+// ВАЖНО: h3_hs_timer_delay ждёт счётчики 100 МГц (10 нс), а не мкс —
+// поэтому множим на 100 (как делает udelay через тот же таймер).
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
     if (elapsed < 16667)
-        h3_hs_timer_delay(16667 - elapsed);
+        h3_hs_timer_delay((16667 - elapsed) * 100);
     emu_ts0 = h3_hs_timer_lo_us();
 }
 
