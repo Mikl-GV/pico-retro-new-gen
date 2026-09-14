@@ -19,4 +19,7 @@ void de2_set_ui_mode(uint32_t fb_addr);
 // Текущий режим: 1=emu, 0=UI
 int de2_is_emu_mode(void);
 
+// Тест: заполнить EMU_FB градиентом и включить VI+scale (из Settings)
+void de2_scale_test(void);
+
 #endif

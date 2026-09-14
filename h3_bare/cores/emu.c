@@ -5,6 +5,7 @@
 #include "fb_text.h"
 #include "uart.h"
 #include "usb_kbd.h"
+#include "h3_de2_scaler.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -52,6 +53,22 @@ static void emu_wait_key(void) {
         uint8_t keys[6];
         if (usb_kbd_get_raw(keys, 6) > 0) return;
     }
+}
+
+// Включить аппаратный DE2-скейлер для эмулятора.
+// src_w/h — родное разрешение, dst_w/h — окно на экране (целый множитель).
+// fb — адрес маленького фреймбуфера RGB565.
+static void emu_enter_scale(int src_w, int src_h, int dst_w, int dst_h, uint32_t fb) {
+    int dst_x = (1024 - dst_w) / 2;
+    int dst_y = (600 - dst_h) / 2;
+    de2_set_emu_mode(src_w, src_h, dst_w, dst_h, dst_x, dst_y, fb, 1);
+}
+
+// Выключить скейлер, вернуться в UI-режим (меню).
+static void emu_exit_scale(void) {
+    de2_set_ui_mode(0x5F900000); // HDMI FB адрес
+    fb_clear();
+    fb_flush();
 }
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {

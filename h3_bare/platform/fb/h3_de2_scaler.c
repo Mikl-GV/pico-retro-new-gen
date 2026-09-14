@@ -6,6 +6,8 @@
 #include <string.h>
 #include "h3_de2.h"
 
+extern int printf(const char* fmt, ...);
+
 // VSU register offsets (от mixer base)
 #define VSU_CTRL        0x00
 #define VSU_YINSIZE     0x40
@@ -39,7 +41,7 @@ static int g_emu_w = 0, g_emu_h = 0;
 // Включить режим эмулятора: фреймбуфер fb_addr размером src_w×src_h
 // растягивается в dst_w×dst_h с позицией (dst_x, dst_y) на экране.
 // format_rgb565=1 → RGB565, 0 → XRGB8888.
-// Возвращает 0 при успехе, -1 если VSU не отвечает.
+// Возвращает 0 при успехе, -1 если что-то пошло не так.
 int de2_set_emu_mode(int src_w, int src_h, int dst_w, int dst_h,
                      int dst_x, int dst_y, uint32_t fb_addr,
                      int format_rgb565) {
@@ -47,10 +49,18 @@ int de2_set_emu_mode(int src_w, int src_h, int dst_w, int dst_h,
         ? H3_DE2_UI_CFG_ATTR_FMT(H3_DE2_UI_FORMAT_RGB_565)
         : H3_DE2_UI_CFG_ATTR_FMT(H3_DE2_UI_FORMAT_XRGB_8888);
     int bpp = format_rgb565 ? 2 : 4;
-    uint32_t vsu_base = VSU_BASE;
+
+    printf("DE2: emu_mode src=%dx%d dst=%dx%d pos=%d,%d fb=0x%X fmt=%s\n",
+           src_w, src_h, dst_w, dst_h, dst_x, dst_y, fb_addr,
+           format_rgb565 ? "RGB565" : "XRGB8888");
+
+    printf("DE2: VSU_BASE=0x%X VI_BASE=0x%X\n", VSU_BASE, VI_BASE);
+printf("DE2: BLDR ROUTE=%u OUTSIZE=0x%X\n",
+           H3_DE2_MUX0_BLD->ROUTE, H3_DE2_MUX0_BLD->OUTPUT_SIZE);
 
     // 1. Отключаем UI-канал (channel 1)
     H3_DE2_MUX0_UI->CFG[0].ATTR = 0;
+    printf("DE2: UI disabled\n");
 
     // 2. Настраиваем VI-канал (channel 0)
     volatile H3_DE2_VI_TypeDef *vi = (H3_DE2_VI_TypeDef*)VI_BASE;
@@ -61,66 +71,79 @@ int de2_set_emu_mode(int src_w, int src_h, int dst_w, int dst_h,
     vi->CFG[0].COORD = (dst_y << 16) | dst_x;
     vi->CFG[0].PITCH[0] = bpp * src_w;
     vi->CFG[0].TOP_LADDR[0] = fb_addr;
+    printf("DE2: VI ATTR=0x%X SIZE=0x%X COORD=0x%X PITCH=%d LADDR=0x%X\n",
+           vi->CFG[0].ATTR, vi->CFG[0].SIZE, vi->CFG[0].COORD,
+           vi->CFG[0].PITCH[0], vi->CFG[0].TOP_LADDR[0]);
 
     // 3. Настраиваем выходной размер для скейлера
     vi->OVL_SIZE[0] = H3_DE2_WH(dst_w, dst_h);
+    printf("DE2: OVL_SIZE=0x%X\n", vi->OVL_SIZE[0]);
 
     // 4. Настраиваем VSU скейлер
-    // Step = (src << SCALE_FRAC) / dst. SCALE_FRAC = 20 (как в ядре Linux).
-    // Для Integer scale: step = (1 << 20) / scale_factor
-    // scale_factor = dst / src
     uint32_t hstep = ((uint32_t)src_w << 20) / (uint32_t)dst_w;
     uint32_t vstep = ((uint32_t)src_h << 20) / (uint32_t)dst_h;
     uint32_t insize = H3_DE2_WH(src_w, src_h);
     uint32_t outsize = H3_DE2_WH(dst_w, dst_h);
+    printf("DE2: VSU hstep=0x%X vstep=0x%X insize=0x%X outsize=0x%X\n",
+           hstep, vstep, insize, outsize);
 
-    VSU_REG(VSU_CTRL) = 0;  // disable first
+    VSU_REG(VSU_CTRL) = 0;
     VSU_REG(VSU_YINSIZE) = insize;
-    VSU_REG(VSU_YHPHASE) = 0;
-    VSU_REG(VSU_YVPHASE) = 0;
     VSU_REG(VSU_YHSTEP) = hstep;
     VSU_REG(VSU_YVSTEP) = vstep;
-    VSU_REG(VSU_CINSIZE) = insize;  // RGB: chroma = luma
-    VSU_REG(VSU_CHPHASE) = 0;
-    VSU_REG(VSU_CVPHASE) = 0;
+    VSU_REG(VSU_CINSIZE) = insize;
     VSU_REG(VSU_CHSTEP) = hstep;
     VSU_REG(VSU_CVSTEP) = vstep;
     VSU_REG(VSU_OUTSIZE) = outsize;
 
-    // Коэффициенты для nearest-neighbour при integer scale:
-    // Простейшие: все weight на одном tap (первый коэффициент = 0x40000000, остальные 0)
-    // Для 32-tap polyphase: tap0=0x40000000, остальные 0
-    // Нам нужно 32 коэффициента на каждый тип. Записываем все нули, потом tap0=0x40000000
-    // (коэф. 1.0 в 30.2 формате = 0x40000000)
-    // Упрощаем: обнуляем кучу и ставим один ненулевой
+    printf("DE2: VSU CTRL=0x%X YINS=0x%X YHS=0x%X YVS=0x%X OUTS=0x%X\n",
+           VSU_REG(VSU_CTRL), VSU_REG(VSU_YINSIZE), VSU_REG(VSU_YHSTEP),
+           VSU_REG(VSU_YVSTEP), VSU_REG(VSU_OUTSIZE));
+
+    // nearest-neighbour coefficients
     volatile uint32_t *coeff = (volatile uint32_t*)(VSU_BASE + 0x200);
     for (int i = 0; i < 32 * 8; i++) coeff[i] = 0;
-    // Y horizontal coeff 0: tap[0] = 1.0
     coeff[0] = 0x40000000;
-    coeff[32] = 0x40000000; // Y horizontal coeff 1
-    coeff[64] = 0x40000000; // Y vertical
-    coeff[96] = 0x40000000; // C horizontal 0
-    coeff[128] = 0x40000000; // C horizontal 1
-    coeff[160] = 0x40000000; // C vertical
+    coeff[32] = 0x40000000;
+    coeff[64] = 0x40000000;
+    coeff[96] = 0x40000000;
+    coeff[128] = 0x40000000;
+    coeff[160] = 0x40000000;
 
-    // Включаем VSU
     VSU_REG(VSU_CTRL) = VSU_CTRL_EN | VSU_CTRL_COEFF_RDY;
+    printf("DE2: VSU enabled, CTRL=0x%X\n", VSU_REG(VSU_CTRL));
 
-    // 5. Обновляем blender: route = 0 (VI channel 0 outputs to pipe)
+    // 5. Blender route = 0 (VI)
     H3_DE2_MUX0_BLD->ROUTE = 0;
-
-    // 6. Обновляем размеры blender (выходной размер экрана остаётся 1024×600)
     uint32_t screen_size = H3_DE2_WH(1024, 600);
     H3_DE2_MUX0_BLD->OUTPUT_SIZE = screen_size;
     H3_DE2_MUX0_BLD->ATTR[0].INSIZE = screen_size;
+    printf("DE2: BLD ROUTE=%u OUTSIZE=0x%X\n",
+           H3_DE2_MUX0_BLD->ROUTE, H3_DE2_MUX0_BLD->OUTPUT_SIZE);
 
-    // Apply
     H3_DE2_MUX0_GLB->DBUFFER = 1;
+    printf("DE2: applied\n");
 
     g_emu_mode = 1;
     g_emu_w = src_w;
     g_emu_h = src_h;
     return 0;
+}
+
+// Тест DE2-скейлера: заполнить RGB565-буфер градиентом и включить VI+scale.
+// Вызывается из Settings.
+void de2_scale_test(void) {
+    uint16_t *fb = (uint16_t*)0x5F800000;
+    for (int y = 0; y < 240; y++) {
+        for (int x = 0; x < 320; x++) {
+            uint16_t r = (x * 32) / 320;
+            uint16_t g = (y * 64) / 240;
+            uint16_t b = 16;
+            fb[y * 320 + x] = (r << 11) | (g << 5) | b;
+        }
+    }
+    printf("DE2: test fb filled\n");
+    de2_set_emu_mode(320, 240, 640, 480, 192, 60, 0x5F800000, 1);
 }
 
 // Вернуться в UI-режим (меню): фреймбуфер 1024×600 XRGB8888
