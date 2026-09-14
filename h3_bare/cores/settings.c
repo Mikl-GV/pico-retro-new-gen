@@ -4,7 +4,6 @@
 #include "systems.h"
 #include "uart.h"
 #include "usb_kbd.h"
-#include "h3_de2_scaler.h"
 extern int printf(const char* fmt, ...);
 
 #define PHYS_W 1024
@@ -183,9 +182,8 @@ void settings_run(void) {
 
         fb_puts_s(80, 110, "1 - Create default ROM folders", 1, 0x00FFFF00);
         fb_puts_s(80, 135, "2 - Input Test for NES / A2600", 1, 0x00FFFF00);
-        fb_puts_s(80, 160, "3 - DE2 Scale Test (N-to-2x)", 1, 0x00FFFF00);
 
-        fb_puts(60, FOOTER_Y, "  1/2/3: select    ESC: back", 0x00888888);
+        fb_puts(60, FOOTER_Y, "  1/2: select    ESC: back", 0x00888888);
         fb_flush();
 
         int k = input_wait();
@@ -197,15 +195,6 @@ void settings_run(void) {
         } else if (k == 31) {
             // "2" -> Input Test
             input_test_run();
-        } else if (k == 32) {
-            // "3" -> DE2 Scale Test
-            fb_clear();
-            fb_flush();
-            de2_scale_test();
-            while (input_wait() != 41) {}  // ждём ESC
-            de2_set_ui_mode(0x5F900000);
-            fb_clear();
-            fb_flush();
         }
     }
 create_folders:

@@ -9,13 +9,11 @@ extern "C" {
 #include "usb_kbd.h"
 }
 
-#define FB_ADDR  ((volatile uint32_t*)0x5F900000)
-#define PHYS_W   1024
-#define PHYS_H   600
-#define SCR_W    256
-#define SCR_H    192
-#define OFS_X    ((PHYS_W - SCR_W) / 2)
-#define OFS_Y    ((PHYS_H - SCR_H) / 2)
+#define EMU_FB  ((uint16_t*)0x5F800000)
+#define EMU_W   320
+#define EMU_H   240
+#define SCR_W   256
+#define SCR_H   192
 
 // Не включаем shared.h — он тянет <math.h>, который ломается в freestanding C++.
 // Включаем только нужные заголовки ядра.
@@ -67,15 +65,9 @@ extern "C" void sms_render_line(int line, const uint8_t* buffer) {
 }
 
 static void blit_fb(void) {
-    for (int y = 0; y < SCR_H; y++) {
-        for (int x = 0; x < SCR_W; x++) {
-            uint16_t c = sms_pal_rgb565[last_fb[y][x]];
-            uint32_t r = ((c >> 11) & 0x1F) << 3;
-            uint32_t g = ((c >> 5) & 0x3F) << 2;
-            uint32_t b = (c & 0x1F) << 3;
-            FB_ADDR[(OFS_Y + y) * PHYS_W + (OFS_X + x)] = (r << 16) | (g << 8) | b;
-        }
-    }
+    for (int y = 0; y < SCR_H; y++)
+        for (int x = 0; x < SCR_W; x++)
+            EMU_FB[y * EMU_W + x] = sms_pal_rgb565[last_fb[y][x]];
 }
 
 static void sms_poll_input(void) {

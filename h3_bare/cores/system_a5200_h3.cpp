@@ -12,10 +12,9 @@ extern "C" {
 #define FB_ADDR  ((volatile uint32_t*)0x5F900000)
 #define PHYS_W   1024
 #define PHYS_H   600
-#define SCR_W    320
-#define SCR_H    240
-#define OFS_X    ((PHYS_W - SCR_W) / 2)
-#define OFS_Y    ((PHYS_H - SCR_H) / 2)
+#define EMU_FB   ((uint16_t*)0x5F800000)
+#define EMU_W    320
+#define EMU_H    240
 
 #include "fb_text.h"
 extern "C" {
@@ -75,14 +74,9 @@ extern "C" void a5_PaletteEntry(unsigned char r, unsigned char g, unsigned char 
 
 extern "C" void a5_DrawLinePal16(unsigned char *VBuf, int width, int height, int line) {
     (void)width; (void)height;
-    if (line < 0 || line >= SCR_H) return;
-    for (int x = 0; x < 320; x++) {
-        uint16_t c = a5_pal_rgb565[VBuf[x] & 0xFF];
-        uint32_t r = ((c >> 11) & 0x1F) << 3;
-        uint32_t g = ((c >> 5) & 0x3F) << 2;
-        uint32_t b = (c & 0x1F) << 3;
-        FB_ADDR[(OFS_Y + line) * PHYS_W + (OFS_X + x)] = (r << 16) | (g << 8) | b;
-    }
+    if (line < 0 || line >= EMU_H) return;
+    for (int x = 0; x < 320; x++)
+        EMU_FB[line * EMU_W + x] = a5_pal_rgb565[VBuf[x] & 0xFF];
 }
 
 extern "C" void a5_DrawVsync(void) {}

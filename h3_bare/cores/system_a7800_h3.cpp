@@ -9,13 +9,9 @@ extern "C" {
 #include "usb_kbd.h"
 }
 
-#define FB_ADDR  ((volatile uint32_t*)0x5F900000)
-#define PHYS_W   1024
-#define PHYS_H   600
-#define SCR_W    320
-#define SCR_H    240
-#define OFS_X    ((PHYS_W - SCR_W) / 2)
-#define OFS_Y    ((PHYS_H - SCR_H) / 2)
+#define EMU_FB  ((uint16_t*)0x5F800000)
+#define EMU_W   320
+#define EMU_H   240
 
 #include "fb_text.h"
 #include "a7800/ProSystem.h"
@@ -43,19 +39,13 @@ void maria_LineReady(const byte* line, int length) {
     int h   = (int)maria_visibleArea.bottom - top + 1;
     int sy  = (int)maria_scanline - top;
     if (sy < 0 || h <= 0) return;
-    int y0 = (sy * SCR_H) / h;
-    int y1 = ((sy + 1) * SCR_H) / h;
-    if (y0 >= SCR_H) return;
-    if (y1 > SCR_H) y1 = SCR_H;
-    for (int y = y0; y < y1; y++) {
-        for (int x = 0; x < length; x++) {
-            uint16_t c = a7_pal_rgb565[line[x] & 0xFF];
-            uint32_t r = ((c >> 11) & 0x1F) << 3;
-            uint32_t g = ((c >> 5) & 0x3F) << 2;
-            uint32_t b = (c & 0x1F) << 3;
-            FB_ADDR[(OFS_Y + y) * PHYS_W + (OFS_X + x)] = (r << 16) | (g << 8) | b;
-        }
-    }
+    int y0 = (sy * EMU_H) / h;
+    int y1 = ((sy + 1) * EMU_H) / h;
+    if (y0 >= EMU_H) return;
+    if (y1 > EMU_H) y1 = EMU_H;
+    for (int y = y0; y < y1; y++)
+        for (int x = 0; x < length; x++)
+            EMU_FB[y * EMU_W + x] = a7_pal_rgb565[line[x] & 0xFF];
 }
 
 extern "C" {

@@ -1,5 +1,5 @@
 // nes_host.cpp — хост-слой InfoNES для H3 (bare-metal Orange Pi Lite).
-// InfoNES_System.h callbacks: ROM loading, frame buffer 256×240 → HDMI, input.
+// InfoNES_System.h callbacks: ROM loading, frame buffer 256×240 → EMU_FB, input.
 
 #include "InfoNES_System.h"
 #include "InfoNES.h"
@@ -14,17 +14,17 @@
 
 extern "C" {
 extern int printf(const char* fmt, ...);
-void fb_flush(void);
 int usb_kbd_get_raw(uint8_t* buf, int max);
 int uart_rx_ready(void);
+void fb_flush(void);
 void emu_throttle(void);
+
+extern void emu_scale(int src_w, int src_h, int scale);
 }
 
-#define FB_ADDR   ((volatile uint32_t*)0x5F900000)
-#define PHYS_W    1024
-#define PHYS_H    600
-#define OFS_X     ((PHYS_W - NES_DISP_WIDTH) / 2)   // 384
-#define OFS_Y     ((PHYS_H - NES_DISP_HEIGHT) / 2)  // 180
+#define EMU_FB  ((uint16_t*)0x5F800000)
+#define EMU_W   320
+#define EMU_H   240
 
 // per-line render buffer (set by InfoNES_SetLineBuffer)
 static uint16_t line_buf[NES_DISP_WIDTH];
@@ -71,18 +71,12 @@ void InfoNES_PostDrawLine(int line) {
 }
 
 int InfoNES_LoadFrame(void) {
+    // Render 256×240 in left-top corner of EMU_FB
+    for (int y = 0; y < NES_DISP_HEIGHT; y++)
+        for (int x = 0; x < NES_DISP_WIDTH; x++)
+            EMU_FB[y * EMU_W + x] = nes_pal_rgb565[screen[y][x] & 0x3F];
     emu_throttle();
-
-    // blit indexed screen[][] to HDMI FB (centered XRGB8888)
-    for (int y = 0; y < NES_DISP_HEIGHT; y++) {
-        for (int x = 0; x < NES_DISP_WIDTH; x++) {
-            uint16_t c = nes_pal_rgb565[screen[y][x] & 0x3F];
-            uint32_t r = ((c >> 11) & 0x1F) << 3;
-            uint32_t g = ((c >> 5) & 0x3F) << 2;
-            uint32_t b = (c & 0x1F) << 3;
-            FB_ADDR[(OFS_Y + y) * PHYS_W + (OFS_X + x)] = (r << 16) | (g << 8) | b;
-        }
-    }
+    emu_scale(256, 240, 2);
     fb_flush();
 
     if (++frame_cnt % 60 == 0)
@@ -150,23 +144,13 @@ void nes_stop(void) {
     InfoNES_ReleaseRom();
 }
 
-// main loop for the NES system. Инфоновский цикл сам гоняет кадры и сам
-// выходит по ESC. Throttle 60 FPS — в InfoNES_LoadFrame().
+// main loop for NES. InfoNES_Cycle() runs frame loop internally,
+// exits on PAD_SYS_QUIT (ESC). Throttle + scale in InfoNES_LoadFrame.
 void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
-    {
-        volatile uint32_t* d = FB_ADDR;
-        for (int i = 0; i < PHYS_W * PHYS_H; i++) d[i] = 0x000000FF;
-        fb_flush();
-    }
     nes_init(rom, size);
     nes_frame();
     nes_stop();
-    {
-        volatile uint32_t* d = FB_ADDR;
-        for (int i = 0; i < PHYS_W * PHYS_H; i++) d[i] = 0;
-        fb_flush();
-    }
 }
 
-}
+} // extern "C"
