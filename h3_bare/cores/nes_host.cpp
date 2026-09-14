@@ -20,7 +20,7 @@ void fb_flush(void);
 void fb_clear(void);
 void emu_throttle(void);
 
-extern void emu_scale(int src_w, int src_h, int scale);
+extern void emu_scale(int src_w, int src_h);
 }
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
@@ -77,7 +77,7 @@ int InfoNES_LoadFrame(void) {
         for (int x = 0; x < NES_DISP_WIDTH; x++)
             EMU_FB[y * EMU_W + x] = nes_pal_rgb565[screen[y][x] & 0x3F];
     emu_throttle();
-    emu_scale(256, 240, 2);
+    emu_scale(256, 240);
     fb_flush();
 
     if (++frame_cnt % 60 == 0)

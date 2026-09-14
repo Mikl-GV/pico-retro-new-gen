@@ -17,28 +17,24 @@ extern int printf(const char* fmt, ...);
 #define FB_H    600
 
 // ---- единый nearest-neighbour скейлер ----
-// src_w/h — родное разрешение (в левом верхнем углу EMU_FB)
-// scale — целый множитель
-void emu_scale(int src_w, int src_h, int scale) {
-    int dst_w = src_w * scale;
-    int dst_h = src_h * scale;
+// src_w/src_h — родное разрешение кадра (в левом верхнем углу EMU_FB).
+// Картинка растягивается на ВСЮ высоту экрана (600), ширина — пропорционально,
+// по бокам остаются чёрные поля. Маппинг dst->src, один источник на пиксель.
+void emu_scale(int src_w, int src_h) {
+    int dst_w = (src_w * FB_H) / src_h;
+    int dst_h = FB_H;
     int dst_x = (FB_W - dst_w) / 2;
-    int dst_y = (FB_H - dst_h) / 2;
     volatile uint32_t* dst = (volatile uint32_t*)FB_ADDR;
 
-    for (int sy = 0; sy < src_h; sy++) {
-        uint16_t* row = EMU_FB + sy * EMU_W;
-        for (int dy = 0; dy < scale; dy++) {
-            int py = dst_y + sy * scale + dy;
-            for (int sx = 0; sx < src_w; sx++) {
-                uint16_t p = row[sx];
-                uint32_t r = ((p >> 11) & 0x1F) << 3;
-                uint32_t g = ((p >> 5) & 0x3F) << 2;
-                uint32_t b = (p & 0x1F) << 3;
-                uint32_t px = (r << 16) | (g << 8) | b;
-                for (int dx = 0; dx < scale; dx++)
-                    dst[py * FB_W + dst_x + sx * scale + dx] = px;
-            }
+    for (int dy = 0; dy < dst_h; dy++) {
+        int sy = (dy * src_h) / dst_h;
+        for (int dx = 0; dx < dst_w; dx++) {
+            int sx = (dx * src_w) / dst_w;
+            uint16_t p = EMU_FB[sy * EMU_W + sx];
+            uint32_t r = ((p >> 11) & 0x1F) << 3;
+            uint32_t g = ((p >> 5) & 0x3F) << 2;
+            uint32_t b = (p & 0x1F) << 3;
+            dst[dy * FB_W + dst_x + dx] = (r << 16) | (g << 8) | b;
         }
     }
 }
@@ -88,7 +84,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        a7800_run_frame(); emu_throttle(); emu_scale(320, 240, 2); fb_flush();
+        a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if ((fc % 60) == 0) printf("a7800 f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
@@ -106,7 +102,7 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        a5200_run_frame(); emu_throttle(); emu_scale(320, 240, 2); fb_flush();
+        a5200_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if ((fc % 60) == 0) printf("a5200 f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
@@ -124,7 +120,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        sms_run_frame(); sms_render_frame(); emu_throttle(); emu_scale(256, 192, 3); fb_flush();
+        sms_run_frame(); sms_render_frame(); emu_throttle(); emu_scale(256, 192); fb_flush();
         if ((fc % 60) == 0) printf("sms f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
@@ -140,7 +136,7 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        atari2600_run_frame(); emu_throttle(); emu_scale(160, 192, 3); fb_flush();
+        atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if ((fc % 60) == 0) printf("mcume f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
