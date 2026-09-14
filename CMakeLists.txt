@@ -86,6 +86,7 @@ set(SRCS
     h3_bare/platform/fb/h3_hdmi.c
     h3_bare/platform/fb/dw_hdmi.c
     h3_bare/platform/fb/h3_lcd.c
+    h3_bare/platform/fb/h3_de2_scaler.c
 )
 
 add_executable(h3_bare.elf ${SRCS})
