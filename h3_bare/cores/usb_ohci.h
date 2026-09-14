@@ -17,4 +17,9 @@ int  usb_ohci_port_reset(uint32_t base, int port);
 int  usb_ohci_port_low_speed(uint32_t base, int port);
 uint32_t usb_ohci_port_status(uint32_t base, int port);
 
+// Периодический interrupt-IN (для HID-тача)
+int  usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
+                            uint8_t* buf, uint16_t len);
+int  usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len);
+
 #endif

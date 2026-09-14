@@ -4,11 +4,33 @@
 #include "fat.h"
 #include "uart.h"
 #include "usb_kbd.h"
+#include "emu.h"
 
 #define PHYS_W 1024
 #define PHYS_H 600
 #define ROW_H 18
 #define FOOTER_Y (PHYS_H - 30)
+
+#define ROM_BUF 0x50000000
+#define ROM_MAX (24 * 1024 * 1024)
+
+static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t* size) {
+    fat_entry_t f;
+    if (!fat_find(path, name, &f)) return -1;
+    if (f.size == 0 || f.size > ROM_MAX) return -1;
+    uint8_t* buf = (uint8_t*)ROM_BUF;
+    int r = fat_read_file(&f, 0, buf, f.size);
+    if (r <= 0) return -1;
+    // SD-DMA писала в DRAM, а D-cache (write-back, on) содержит старые
+    // данные — надо инвалидировать, чтобы CPU читал настоящий ROM
+    uint32_t a = (uint32_t)buf & ~0x1Fu;
+    uint32_t end = a + f.size + 32;
+    for (; a < end; a += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(a));
+    __asm volatile("dsb" ::: "memory");
+    *rom = buf; *size = f.size;
+    return 0;
+}
 
 static void sort_entries(fat_entry_t *list, int n) {
     for (int i = 0; i < n - 1; i++)
@@ -21,15 +43,16 @@ static void sort_entries(fat_entry_t *list, int n) {
 static int input_wait(void) {
     for (;;) {
         if (uart_rx_ready()) return uart_getc();
-        int k = usb_kbd_poll();
+        int k = usb_input_poll();
         if (k) return k;
     }
 }
 
-void rom_browser_run(const char *sys_id, const char *sys_name) {
+void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_dir) {
+    (void)sys_id;   // диспетчер эмуляторов по sys_id появится позже
     char path[32];
     strcpy(path, "/roms/");
-    strcat(path, sys_id);
+    strcat(path, rom_dir);
 
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
@@ -40,14 +63,16 @@ void rom_browser_run(const char *sys_id, const char *sys_name) {
     int max_rows = (FOOTER_Y - 100) / ROW_H;
 
     for (;;) {
-        fb_clear();
+        fb_draw_stars();
         fb_puts_s(60, 30, sys_name, 2, 0x00FF0000);
         fb_fill_rect(60, 60, 200, 2, 0x00FFFFFF);
 
         if (n <= 0) {
-            fb_puts_s(60, 120, "No ROMs found on SD card", 1, 0x00FF4444);
-            fb_puts_s(60, 140, "Put ROM files in:", 1, 0x00AAAAAA);
-            fb_puts_s(60, 158, path, 1, 0x00AAAAAA);
+            fb_puts_s(60, 120, "Folder is empty", 1, 0x00FFAA00);
+            fb_puts_s(60, 145, "Put your ROM files here:", 1, 0x00AAAAAA);
+            fb_puts_s(60, 163, path, 1, 0x00AAAAAA);
+            char ext[24] = "Supports: .bin .rom .sms";
+            fb_puts_s(60, 185, ext, 1, 0x00666666);
         } else {
             int y = 85;
             for (int i = scroll; i < n && i < scroll + max_rows; i++) {
@@ -76,16 +101,37 @@ void rom_browser_run(const char *sys_id, const char *sys_name) {
             if (cursor < n - 1) cursor++;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
         } else if (k == 40 || k == '\n' || k == '\r') {
-            if (n > 0) {
-                fb_clear();
-                fb_text_center("Loading emulator...", 200, 2, 0x0000FF00);
-                fb_text_center("Not yet implemented", 250, 1, 0x00FFFFFF);
-                fb_text_center("Press any key to return", 300, 1, 0x00888888);
-                fb_flush();
-                while (input_wait()) {}
+if (n > 0) {
+                uint8_t* rom = 0;
+                uint32_t size = 0;
+                if (load_rom(path, list[cursor].name, &rom, &size) == 0) {
+                    emu_clear_fb();
+                    if (strcmp(sys_id, "a2600") == 0)
+                        emu_run_a2600_mcume(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "a7800") == 0)
+                        emu_run_a7800(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "a5200") == 0)
+                        emu_run_a5200(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "sms") == 0)
+                        emu_run_sms(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "nes") == 0)
+                        emu_run_nes(rom, size, list[cursor].name);
+                    else {
+                        fb_clear();
+                        fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
+                        fb_text_center("Press any key", 250, 1, 0x00FFFFFF);
+                        fb_flush();
+                        input_wait();
+                    }
+                } else {
+                    fb_clear();
+                    fb_text_center("Failed to load ROM", 200, 2, 0x00FF4444);
+                    fb_flush();
+                    input_wait();
+                }
                 return;
             }
-        } else if (k == 41 || k == 27 || k == 'q') {
+        } else if (k == 41) {
             return;
         }
     }

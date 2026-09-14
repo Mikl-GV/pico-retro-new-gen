@@ -28,14 +28,16 @@ if [ "${1:-}" = "clean" ]; then
 fi
 mkdir -p "$BUILD"
 CC="${PREFIX}gcc"
+CXX="${PREFIX}g++"
 AS="${PREFIX}gcc"
 OBJCOPY="${PREFIX}objcopy"
 
 CFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm"
 CFLAGS="$CFLAGS -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG"
-INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/nes -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+CXXFLAGS="$CFLAGS -fno-exceptions -fno-rtti -fno-threadsafe-statics"
 
-SRC_CORE="$TOP/h3_bare/cores/menu.c $TOP/h3_bare/cores/rom_browser.c $TOP/h3_bare/cores/sd.c $TOP/h3_bare/cores/fat.c $TOP/h3_bare/cores/usb_ohci.c $TOP/h3_bare/cores/usb_kbd.c $TOP/h3_bare/cores/fb_text.c"
+SRC_CORE="$TOP/h3_bare/cores/menu.c $TOP/h3_bare/cores/rom_browser.c $TOP/h3_bare/cores/settings.c $TOP/h3_bare/cores/sd.c $TOP/h3_bare/cores/fat.c $TOP/h3_bare/cores/usb_ohci.c $TOP/h3_bare/cores/usb_kbd.c $TOP/h3_bare/cores/fb_text.c"
 SRC_PLATFORM="$TOP/h3_bare/platform/udelay.c $TOP/h3_bare/platform/h3_hs_timer.c $TOP/h3_bare/platform/h3_ccu.c $TOP/h3_bare/platform/h3.c"
 SRC_FB="$TOP/h3_bare/platform/fb/h3_de2.c $TOP/h3_bare/platform/fb/h3_hdmi.c $TOP/h3_bare/platform/fb/dw_hdmi.c $TOP/h3_bare/platform/fb/h3_lcd.c"
 SRC_SRC="$TOP/h3_bare/src/uart.c $TOP/h3_bare/src/printf.c $TOP/h3_bare/src/libc_min.c $TOP/h3_bare/src/main.c"
@@ -46,11 +48,23 @@ $AS $CFLAGS -x assembler-with-cpp -c -o "$BUILD/startup.o" "$TOP/h3_bare/platfor
 # Ядро каркаса
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/menu.o" "$TOP/h3_bare/cores/menu.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/rom_browser.o" "$TOP/h3_bare/cores/rom_browser.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/settings.o" "$TOP/h3_bare/cores/settings.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/sd.o" "$TOP/h3_bare/cores/sd.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fat.o" "$TOP/h3_bare/cores/fat.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_ohci.o" "$TOP/h3_bare/cores/usb_ohci.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_kbd.o" "$TOP/h3_bare/cores/usb_kbd.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fb_text.o" "$TOP/h3_bare/cores/fb_text.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/cpu6502.o" "$TOP/h3_bare/cores/cpu6502.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/a2600.o" "$TOP/h3_bare/cores/a2600.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/emu.o" "$TOP/h3_bare/cores/emu.c"
+
+# NES
+NES="$TOP/h3_bare/cores/nes"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_core.o" "$NES/InfoNES.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_mapper.o" "$NES/InfoNES_Mapper.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_papu.o" "$NES/InfoNES_pAPU.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_cpu.o" "$NES/K6502.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_host.o" "$TOP/h3_bare/cores/nes_host.cpp"
 
 # Служебные
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/uart.o" "$TOP/h3_bare/src/uart.c"
@@ -69,11 +83,13 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_hdmi.o" "$TOP/h3_bare/platform/fb/h3_hdmi
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/dw_hdmi.o" "$TOP/h3_bare/platform/fb/dw_hdmi.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_lcd.o" "$TOP/h3_bare/platform/fb/h3_lcd.c"
 
-# Линковка
-$CC -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
+# Линковка (g++ для подтягивания libstdc++)
+$CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     -o "$BUILD/h3_bare.elf" \
     "$BUILD/startup.o" \
-    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/sd.o" "$BUILD/fat.o" \
+    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/settings.o" "$BUILD/cpu6502.o" "$BUILD/a2600.o" "$BUILD/emu.o" \
+    "$BUILD/nes_core.o" "$BUILD/nes_mapper.o" "$BUILD/nes_papu.o" "$BUILD/nes_cpu.o" "$BUILD/nes_host.o" \
+    "$BUILD/sd.o" "$BUILD/fat.o" \
     "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/fb_text.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
@@ -106,14 +122,16 @@ EOF
     mkimage -A arm -T script -C none -n "pico-retro V7" \
         -d "$BUILD/boot.cmd" "$BUILD/boot.scr"
 
-    # Сборка образа без sudo: raw 64MB + SPL(8K) + U-Boot(32K) + FAT32(16M..64M) + MBR
+    # Сборка образа без sudo: raw 64MB + u-boot-sunxi-with-spl.bin(на 8K) + FAT32(16M..64M) + MBR
     SDK_IMG="$BUILD/h3_bare.img"
     dd if=/dev/zero bs=1M count=64 of="$SDK_IMG" 2>/dev/null
-    # SPL и U-Boot — по sunxi раскладке (взять из объединённого bin: SPL первые 8K, U-Boot на 32K)
-    dd if="$BUILD/u-boot/u-boot-sunxi-with-spl.bin" of="$SDK_IMG" bs=1k seek=0 conv=notrunc 2>/dev/null
+    # sunxi: BROM ищет eGON.BT0 на секторе 16 (8K) SD-карты. Штатный
+    # u-boot-sunxi-with-spl.bin кладём целиком на 8K — SPL и U-Boot proper
+    # лягут на правильные офсеты (SPL @8K, U-Boot @32K = сектор 0x40).
+    dd if="$BUILD/u-boot/u-boot-sunxi-with-spl.bin" of="$SDK_IMG" bs=1k seek=8 conv=notrunc 2>/dev/null
     FATPART="$BUILD/fatpart.bin"
     dd if=/dev/zero bs=1M count=48 of="$FATPART" 2>/dev/null
-    mkfs.vfat -n H3_RETRO "$FATPART" >/dev/null 2>&1
+    mkfs.vfat -F 32 -n H3_RETRO "$FATPART" >/dev/null 2>&1
     export MTOOLS_SKIP_CHECK=1
     mcopy -i "$FATPART" "$BUILD/boot.scr" ::boot.scr
     mcopy -i "$FATPART" "$BIN" ::h3_bare.bin

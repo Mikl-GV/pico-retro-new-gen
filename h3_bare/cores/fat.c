@@ -43,7 +43,7 @@ static uint32_t le32(const uint8_t* p) { return p[0] | ((uint32_t)p[1] << 8) | (
 
 // ---- кластер -> сектор (с учётом сдвига раздела) ----
 static uint32_t cluster_to_sector(uint32_t cl) {
-    return g_part_lba + g_data_start + (cl - 2) * g_sec_per_cluster;
+    return g_data_start + (cl - 2) * g_sec_per_cluster;
 }
 
 // ---- чтение следующего кластера по FAT ----
@@ -90,42 +90,41 @@ static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t 
 
 // ---- обработка одной записи директории ----
 // Возвращает 1 если запись обработана (файл/папка), 0 если пустая, -1 конец.
-// LFN-записи копятся в lfn_buf. lfn_len обновляется через указатель.
+// LFN-записи копятся в lfn_buf.
+// Порядок на диске: последний фрагмент (0x40|n) идёт ПЕРВЫМ, за ним
+// фрагменты в обратном порядке, затем 8.3-запись.
+// Пример: "Adventure (Color Scrolling Hack).a26" (>13 символов):
+//   seq=0x43: "ng Hack).a26"    (pos=2, последний фрагмент)
+//   seq=0x02: "r Scrolling Ha"  (pos=1)
+//   seq=0x01: "Adventure (Co"   (pos=0, ближайший к 8.3)
+// После всех фрагментов собираем: [pos0][pos1][pos2] → null-terminate.
 static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* lfn_len) {
     uint8_t attr = e[11];
     // LFN запись
     if (attr == 0x0F) {
         uint8_t seq = e[0];
-        int idx = (seq & 0x0F) - 1;              // 0..19, идём сверху вниз (seq 0x41,0x42..)
-        if (idx >= 0 && idx < 20) {
-            // берём по 13 символов с этой LFN-записи
-            char tmp[14];
-            int n = 0;
-            for (int i = 0; i < 10 && n < 13; i += 2) {
+        if (seq == 0xE5) return 0;
+        int pos = (seq & 0x0F) - 1;
+        if (pos >= 0 && pos < 20) {
+            int off = pos * 13;
+            int idx = 0;
+            for (int i = 0; i < 10; i += 2) {
                 uint16_t c = e[1 + i] | ((uint16_t)e[2 + i] << 8);
-                if (c == 0) break;
-                tmp[n++] = (c >= 0x80) ? '?' : (char)c;
+                if (c == 0 || c == 0xFFFF) break;
+                lfn[off + idx++] = (char)c;
             }
-            for (int i = 0; i < 12 && n < 13; i += 2) {
+            for (int i = 0; i < 12; i += 2) {
                 uint16_t c = e[14 + i] | ((uint16_t)e[15 + i] << 8);
-                if (c == 0) break;
-                tmp[n++] = (c >= 0x80) ? '?' : (char)c;
+                if (c == 0 || c == 0xFFFF) break;
+                lfn[off + idx++] = (char)c;
             }
-            for (int i = 0; i < 4 && n < 13; i += 2) {
+            for (int i = 0; i < 4; i += 2) {
                 uint16_t c = e[28 + i] | ((uint16_t)e[29 + i] << 8);
-                if (c == 0) break;
-                tmp[n++] = (c >= 0x80) ? '?' : (char)c;
+                if (c == 0 || c == 0xFFFF) break;
+                lfn[off + idx++] = (char)c;
             }
-            tmp[n] = 0;
-            // записываем на своё место: seq 0x41 = последний фрагмент (индекс 0 в LFN)
-            int pos = (seq & 0x0F) - 1;
-            memcpy(lfn + pos * 13, tmp, n + 1);
-            *lfn_len += n;
-            // если это последний (0x40), сдвигаем в начало
-            if (seq & 0x40) {
-                memmove(lfn, lfn + pos * 13, n + 1);
-                *lfn_len = n;
-            }
+            int end = off + idx;
+            if (end > *lfn_len) *lfn_len = end;
         }
         return 0;
     }
@@ -141,7 +140,8 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
     }
 
     // имя: LFN если есть, иначе 8.3
-if (lfn[0]) {
+    if (lfn[0]) {
+        lfn[*lfn_len] = 0;   // null-terminate LFN
         strncpy(out->name, lfn, FAT_NAME_LEN - 1);
         out->name[FAT_NAME_LEN - 1] = 0;
     } else {
@@ -193,32 +193,25 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
         }
         cl = fat_next_cluster(cl);
     }
-    return count;
+return count;
 }
 
 int fat_init(void) {
-    // Карта с MBR: FAT32 живёт в разделе 1 (обычно LBA 2048).
-    // Сначала читаем MBR (сектор 0), находим начало раздела.
     uint32_t part_lba = 0;
 
     if (sd_read_sector(0, g_sector) >= 0) {
         if (le16(g_sector + 510) == 0xAA55 && (g_sector[446 + 4] == 0x0B ||
                                                 g_sector[446 + 4] == 0x0C ||
                                                 g_sector[446 + 4] == 0x06)) {
-            // тип: FAT32 / FAT32 LBA / FAT16
-            part_lba = le32(g_sector + 446 + 8);   // LBA начала раздела
+            part_lba = le32(g_sector + 446 + 8);
             g_part_lba = part_lba;
-            if (part_lba > 0) uart_puts("fat: MBR part1 @ lba\n");
         }
     }
 
     if (sd_read_sector(part_lba, g_sector) < 0) return -1;
-
-    // проверка сигнатуры FAT32
-    if (le16(g_sector + 510) != 0xAA55) { uart_puts("fat: no 55AA\n"); return -1; }
-    // BPB
+    if (le16(g_sector + 510) != 0xAA55) return -1;
     uint16_t bps = le16(g_sector + 11);
-    if (bps != 512) { uart_puts("fat: bps!=512\n"); return -1; }
+    if (bps != 512) return -1;
 
     g_sec_per_cluster = g_sector[13];
     g_reserved        = le16(g_sector + 14);
@@ -226,18 +219,142 @@ int fat_init(void) {
     g_fat_size        = le32(g_sector + 36);
     g_root_cluster    = le32(g_sector + 44);
 
-    if (!g_fat_size || g_fat_size == 0xFFFFFFFF) {
-        // FAT16/FAT12?
-        uart_puts("fat: not FAT32\n");
-        return -1;
-    }
+    if (!g_fat_size || g_fat_size == 0xFFFFFFFF) return -1;
 
     g_data_start = part_lba + g_reserved + g_num_fats * g_fat_size;
-
     uint32_t total_sectors = le32(g_sector + 32);
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
 
-    uart_puts("fat: ok\n");
+    return 0;
+}
+
+// ---- вспомогательные для записи ----
+
+// forward declaration (определена ниже)
+static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen);
+
+// 8.3 имя из строки (верхний регистр, без расширения если папка)
+static void make_short_name(const char* name, uint8_t* out83) {
+    for (int i = 0; i < 11; i++) out83[i] = ' ';
+    int n = 0;
+    for (int i = 0; name[i] && n < 8; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') c -= 32;
+        out83[n++] = (uint8_t)c;
+    }
+    // расширение не заполняем — это папка
+}
+
+// поиск свободного кластера (по FAT), возвращает номер или 0
+static uint32_t find_free_cluster(void) {
+    for (uint32_t cl = 2; cl < 2 + g_total_clusters; cl++) {
+        uint32_t fat_off = cl * 4;
+        uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
+        if (sd_read_sector(sec, g_sector) < 0) return 0;
+        uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
+        if (v == 0) return cl;
+    }
+    return 0;
+}
+
+// записать значение в FAT (обе копии)
+static int fat_set_cluster(uint32_t cl, uint32_t val) {
+    uint32_t fat_off = cl * 4;
+    uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
+    uint32_t off = fat_off % 512;
+    for (uint32_t copy = 0; copy < g_num_fats; copy++) {
+        uint32_t s = sec + copy * g_fat_size;
+        if (sd_read_sector(s, g_sector) < 0) return -1;
+        uint32_t v = le32(g_sector + off) & 0xF0000000; // сохранить старшие 4 бита
+        v |= (val & 0x0FFFFFFF);
+        g_sector[off] = v & 0xFF;
+        g_sector[off+1] = (v >> 8) & 0xFF;
+        g_sector[off+2] = (v >> 16) & 0xFF;
+        g_sector[off+3] = (v >> 24) & 0xFF;
+        if (sd_write_sector(s, g_sector) < 0) return -1;
+    }
+    return 0;
+}
+
+// создать пустую запись директории (32 байта) в g_sector+off
+static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int is_dot) {
+    memset(e, 0, 32);
+    if (is_dot) {
+        // ".", ".." — специальные
+        make_short_name(is_dot == 1 ? "." : "..", e);
+    } else {
+        make_short_name(name, e);
+    }
+    e[11] = 0x10; // directory attr
+    e[20] = (cluster >> 16) & 0xFF;
+    e[21] = (cluster >> 24) & 0xFF;
+    e[26] = cluster & 0xFF;
+    e[27] = (cluster >> 8) & 0xFF;
+}
+
+// найти свободное место в директории (пустая/удалённая запись)
+static int find_free_entry(uint32_t cl, uint32_t* sec_out, int* off_out) {
+    while (cl && cl < 0x0FFFFFF8) {
+        uint32_t base = cluster_to_sector(cl);
+        for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
+            if (sd_read_sector(base + s, g_sector) < 0) return -1;
+            for (int i = 0; i < 512; i += 32) {
+                uint8_t first = g_sector[i];
+                if (first == 0x00 || first == 0xE5) {
+                    *sec_out = base + s;
+                    *off_out = i;
+                    return 0;
+                }
+            }
+        }
+        cl = fat_next_cluster(cl);
+    }
+    return -1;
+}
+
+// Создать папку name в parent_path (например "/roms").
+// Возвращает 0 при успехе, -1 при ошибке.
+int fat_mkdir(const char* parent_path, const char* name) {
+    // 1. Найти родительскую директорию
+    fat_entry_t parent;
+    char buf[FAT_NAME_LEN];
+    if (!path_lookup(parent_path, &parent, buf, FAT_NAME_LEN))
+        return -1;
+    if (parent.size != 0) return -1;
+
+    // 2. Свободный кластер для новой папки
+    uint32_t new_cl = find_free_cluster();
+    if (new_cl == 0) return -1;
+
+    // 3. Инициализировать кластер: ".", ".."
+    uint32_t new_sec = cluster_to_sector(new_cl);
+    // читаем сектор (может содержать мусор), пишем заново
+    uint8_t zero[512];
+    memset(zero, 0, 512);
+    // первая запись "."
+    make_dir_entry(zero, ".", new_cl, 1);
+    // вторая ".."
+    make_dir_entry(zero + 32, "..", parent.first_cluster, 2);
+    if (sd_write_sector(new_sec, zero) < 0) return -1;
+    // остальные секторы кластера обнуляем
+    for (uint32_t s = 1; s < g_sec_per_cluster; s++) {
+        if (sd_write_sector(new_sec + s, zero) < 0) return -1;
+    }
+
+    // 4. Отметить в FAT: новый кластер = END (0x0FFFFFFF)
+    if (fat_set_cluster(new_cl, 0x0FFFFFFF) < 0) return -1;
+
+    // 5. Создать запись в родительской папке
+    uint32_t dummy_sec;
+    int off;
+    if (find_free_entry(parent.first_cluster, &dummy_sec, &off) < 0) {
+        // нет места — не получится (упрощённо)
+        return -1;
+    }
+    if (sd_read_sector(dummy_sec, g_sector) < 0) return -1;
+    make_dir_entry(g_sector + off, name, new_cl, 0);
+    if (sd_write_sector(dummy_sec, g_sector) < 0) return -1;
+
     return 0;
 }
 
@@ -255,15 +372,11 @@ static int name_eq(const char* a, const char* b) {
     return (*a == 0 && *b == 0);
 }
 
-// Пройти по пути из компонентов (разделены '/'), начиная от корня.
-// Возвращает запись последней папки (или файла) по пути.
-// buf — временный буфер для компонента.
 static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen) {
     uint32_t cluster = g_root_cluster;
     const char* p = path;
     while (*p == '/') p++;
     if (*p == 0) {
-        // корень
         out->first_cluster = cluster;
         out->size = 0;
         strcpy(out->name, "/");
@@ -275,46 +388,35 @@ static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen
         int n = (int)(slash - p);
         if (n == 0 || n >= buflen) return 0;
         memcpy(buf, p, n); buf[n] = 0;
-
         fat_entry_t entries[FAT_MAX_ENTRIES];
         int cnt = read_dir(cluster, entries, FAT_MAX_ENTRIES);
         int found = 0;
         for (int i = 0; i < cnt; i++) {
-            if (name_eq(entries[i].name, buf)) {
-                *out = entries[i];
-                found = 1;
-                break;
-            }
+            if (name_eq(entries[i].name, buf)) { *out = entries[i]; found = 1; break; }
         }
         if (!found) return 0;
-
-        if (*slash == 0) return 1;          // это последний компонент
-        if (out->size != 0) return 0;       // не папка — дальше идти нельзя
+        if (*slash == 0) return 1;
+        if (out->size != 0) return 0;
         cluster = out->first_cluster;
         p = slash + 1;
     }
 }
 
 int fat_list(const char* dir, fat_entry_t* out, int max) {
-    if (!dir || dir[0] == 0 || strcmp(dir, "/") == 0) {
+    if (!dir || dir[0] == 0 || strcmp(dir, "/") == 0)
         return read_dir(g_root_cluster, out, max);
-    }
     fat_entry_t d;
     char buf[FAT_NAME_LEN];
     if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return 0;
-    if (d.size != 0) return 0;   // это файл, не папка
+    if (d.size != 0) return 0;
     return read_dir(d.first_cluster, out, max);
 }
 
 int fat_find(const char* dir, const char* name, fat_entry_t* out) {
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = fat_list(dir, list, FAT_MAX_ENTRIES);
-    for (int i = 0; i < n; i++) {
-        if (name_eq(list[i].name, name)) {
-            *out = list[i];
-            return 1;
-        }
-    }
+    for (int i = 0; i < n; i++)
+        if (name_eq(list[i].name, name)) { *out = list[i]; return 1; }
     return 0;
 }
 

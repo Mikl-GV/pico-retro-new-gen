@@ -5,5 +5,6 @@
 
 int  sd_init(void);
 int  sd_read_sector(uint32_t lba, void* buf);
+int  sd_write_sector(uint32_t lba, const void* buf);
 
 #endif

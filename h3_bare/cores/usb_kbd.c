@@ -1,14 +1,19 @@
-// usb_kbd.c — USB HID Boot Protocol клавиатура через OHCI (Full/Low-Speed).
-// Энумерация: GetDeviceDesc, SetAddress, GetConfigDesc, SetConfig, SetProtocol.
-// Опрос: GET_REPORT через intr-передачу (либо GET_REPORT control если intr не реализован).
-// Макет: просто периодически читаем 8 байт отчета (modifiers + reserved + 6 keycodes).
+// usb_kbd.c — USB HID клавиатура + тач (GT911) через OHCI (Full/Low-Speed).
+// Два устройства могут сидеть на двух разных портах (OHCI1/OHCI2).
+// Классификация по HID-интерфейсу:
+//   boot keyboard (class=3, subclass=1, protocol=1) -> клавиатура
+//   generic HID  (class=3, subclass=0)               -> тач
+// Энумерация обоих портов последовательно (общие ED/TD, по одному за раз).
 #include <string.h>
 #include "h3.h"
+#include "h3_hs_timer.h"
 #include "uart.h"
 #include "usb_ohci.h"
 
-#define OHCI_BASE  OHCI1_BASE   // USB-A порт 1 (первый физический разъём)
-#define TIMEOUT_MS 5000
+#define OHCI1_BASE  0x01C1B400
+#define OHCI2_BASE  0x01C1C400
+#define TIMEOUT_MS  5000
+#define TOUCH_BUF   16
 
 // ---- Стандартные дескрипторы USB ----
 typedef struct __attribute__((packed)) {
@@ -60,17 +65,6 @@ typedef struct __attribute__((packed)) {
     uint8_t  bInterval;
 } usb_ep_desc_t;
 
-// ---- HID дескриптор ----
-typedef struct __attribute__((packed)) {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;   // 33 = HID
-    uint16_t bcdHID;
-    uint8_t  bCountryCode;
-    uint8_t  bNumDescriptors;
-    uint8_t  bDescriptorTypeExtra;
-    uint16_t wDescriptorLength;
-} usb_hid_desc_t;
-
 // ---- Стандартные setup-запросы ----
 typedef struct __attribute__((packed)) {
     uint8_t  bmRequestType;
@@ -83,321 +77,371 @@ typedef struct __attribute__((packed)) {
 #define GET_DESCRIPTOR    6
 #define SET_ADDRESS       5
 #define SET_CONFIGURATION 9
-#define HID_SET_PROTOCOL  0x0B   // request is class-specific to HID
+#define HID_SET_PROTOCOL  0x0B
 #define HID_GET_REPORT    0x01
 
 #define RT_DEVICE     (0x80 | 0x00)
-#define RT_INTERFACE  (0x80 | 0x01)
 
-static int g_addr = 0;
-static uint8_t g_in_ep = 0;
-static uint16_t g_in_maxpkt = 0;
-static int g_device_found = 0;
-static uint32_t g_ohci_base = OHCI1_BASE;
+extern int printf(const char* fmt, ...);
 
-// ---- USB HID report (8 байт) ----
-static uint8_t g_report[8];
-static int g_wait_release = 0;   // после срабатывания ждём отпускания всех клавиш
+// ---- Одно HID-устройство ----
+typedef struct {
+    uint32_t base;
+    uint8_t  addr;
+    uint8_t  in_ep;
+    uint16_t in_maxpkt;
+    uint8_t  mps0;          // ep0 max packet size
+    uint8_t  report[8];     // клавиатурный отчёт
+    int      found;
+    int      type;          // 1=kbd, 2=touch
+} usb_dev_t;
 
-// GET_REPORT — короткий таймаут (200ms) чтобы не блокировать цикл
-static int get_report(uint8_t* buf, int len);
+static usb_dev_t g_kbd;
+static usb_dev_t g_touch;
 
-// Чтение отчёта + инвалидация D-cache (DMA-запись). Возвращает 0/-1.
-static int kbd_read_report(void) {
-    if (!g_device_found || !g_in_ep) return -1;
-    if (get_report(g_report, 8) < 0) {
-        uart_puts("kbd: get_report fail\n");
-        return -1;
-    }
-    // Инвалидируем D-cache: GET_REPORT записал данные через DMA в DRAM,
-    // а D-cache (DCACHE=ON) хранит старые нули → читаем мусор без invalidate
-    uint32_t addr = (uint32_t)g_report & ~0x1Fu;
-    uint32_t end = addr + 8 + 32;
+static uint8_t g_touch_report[TOUCH_BUF];
+static uint32_t g_repeat_start = 0;
+static int g_repeat_sc = 0;
+static int g_was_repeat = 0;
+
+#define KBD_REPEAT_DELAY_US 200000
+#define KBD_REPEAT_RATE_US  50000
+
+// forward
+static void dump_hid_report_desc(usb_dev_t* d);
+static int usb_touch_poll(int* x, int* y, int* pressed);
+
+// ---- Control-передача для конкретного устройства ----
+static int ctrl_req_dev(usb_dev_t* d, const usb_setup_t* req, uint8_t* data,
+                        uint16_t data_len, int dir_in, uint32_t timeout_ms) {
+    usb_ohci_set_mps(d->mps0 ? d->mps0 : 8);
+    return usb_ohci_ctrl_transfer(d->base, d->addr, 0,
+                                  (const uint8_t*)req, sizeof(*req),
+                                  data, data_len, dir_in, timeout_ms);
+}
+
+// ---- GET_REPORT — короткий таймаут, чтобы не блокировать цикл ----
+static int get_report_dev(usb_dev_t* d, uint8_t* buf, int len) {
+    usb_setup_t req = {
+        .bmRequestType = 0xA1,
+        .bRequest      = HID_GET_REPORT,
+        .wValue        = 0x0100,
+        .wIndex        = 0,
+        .wLength       = (uint16_t)len,
+    };
+    return ctrl_req_dev(d, &req, buf, len, 1, 200);
+}
+
+static void cache_inv(uint32_t addr, uint32_t size) {
+    addr &= ~0x1Fu;
+    uint32_t end = addr + size + 32;
     for (; addr < end; addr += 32)
         __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr));
     __asm volatile("dsb" ::: "memory");
-    return 0;
 }
 
-// Динамический выбор порта (выбирается при enum)
-static uint32_t ohci_active(void) { return g_ohci_base; }
-
-static int ctrl_req_to(const usb_setup_t* req, uint8_t* data, uint16_t data_len,
-                       int dir_in, uint32_t timeout_ms) {
-    return usb_ohci_ctrl_transfer(ohci_active(), g_addr, 0,
-                                   (const uint8_t*)req, sizeof(*req),
-                                   data, data_len, dir_in, timeout_ms);
-}
-
-static int ctrl_req(const usb_setup_t* req, uint8_t* data, uint16_t data_len, int dir_in) {
-    return ctrl_req_to(req, data, data_len, dir_in, TIMEOUT_MS);
-}
-
-// Получить дескриптор устройства
-static int get_dev_desc(uint8_t* buf) {
-    usb_setup_t req = {
-        .bmRequestType = RT_DEVICE,
-        .bRequest      = GET_DESCRIPTOR,
-        .wValue        = (1 << 8),  // descriptor type 1 = device
-        .wLength       = 8,         // первый фрагмент (min, чтобы узнать bMaxPacketSize0)
-    };
-    return ctrl_req(&req, buf, 8, 1);
-}
-
-// Полный дескриптор устройства
-static int get_dev_desc_full(uint8_t* buf, int len) {
-    usb_setup_t req = {
-        .bmRequestType = RT_DEVICE,
-        .bRequest      = GET_DESCRIPTOR,
-        .wValue        = (1 << 8),
-        .wLength       = (uint16_t)len,
-    };
-    return ctrl_req(&req, buf, len, 1);
-}
-
-// Получить конфигурационный дескриптор
-static int get_cfg_desc_full(uint8_t* buf, int len) {
-    usb_setup_t req = {
-        .bmRequestType = RT_DEVICE,
-        .bRequest      = GET_DESCRIPTOR,
-        .wValue        = (2 << 8),  // type 2 = configuration
-        .wIndex        = 0,
-        .wLength       = (uint16_t)len,
-    };
-    return ctrl_req(&req, buf, len, 1);
-}
-
-// Установить адрес
-static int set_addr(int addr) {
-    usb_setup_t req = {
-        .bmRequestType = 0x00,
-        .bRequest      = SET_ADDRESS,
-        .wValue        = (uint16_t)addr,
-    };
-    int r = ctrl_req(&req, 0, 0, 0);
-    if (r >= 0) g_addr = addr;
-    return r;
-}
-
-// Установить конфигурацию
-static int set_config(int val) {
-    usb_setup_t req = {
-        .bmRequestType = 0x00,
-        .bRequest      = SET_CONFIGURATION,
-        .wValue        = (uint16_t)val,
-    };
-    return ctrl_req(&req, 0, 0, 0);
-}
-
-// Установить HID Boot Protocol
-static int set_boot_protocol(void) {
-    usb_setup_t req = {
-        .bmRequestType = 0x21, // Host-to-Device, Class, Interface (HID)
-        .bRequest      = HID_SET_PROTOCOL,
-        .wValue        = 0,    // boot protocol
-        .wIndex        = 0,
-    };
-    return ctrl_req(&req, 0, 0, 0);
-}
-
-// GET_REPORT — короткий таймаут (200ms) чтобы не блокировать цикл
-static int get_report(uint8_t* buf, int len) {
-    usb_setup_t req = {
-        .bmRequestType = 0xA1, // Device-to-Host, Class, Interface (HID)
-        .bRequest      = HID_GET_REPORT,
-        .wValue        = 0x0100, // report type INPUT, id 0
-        .wIndex        = 0,
-        .wLength       = (uint16_t)len,
-    };
-    return ctrl_req_to(&req, buf, len, 1, 200);
-}
-
-int usb_kbd_init(void) {
+// ---- Энумерация одного порта. Возвращает тип: 1=kbd, 2=touch, 0=fail ----
+static int enum_port(uint32_t base, usb_dev_t* dev) {
     uint8_t buf[256];
     int r;
 
-    // 1. Инициализация обоих OHCI-портов (frame timing + OPER + PPS)
-    uart_puts("usb: init ohci1...\n");
-    usb_ohci_init(OHCI1_BASE);
-    uart_puts("usb: init ohci2...\n");
-    usb_ohci_init(OHCI2_BASE);
+    memset(dev, 0, sizeof(*dev));
+    dev->base = base;
 
-    // 2. Ищем устройство на любом порту (до 5 сек на медленный донгл)
-    int found_port = -1;
-    extern int uart0_printf(const char* fmt, ...);
-    for (int trial = 0; trial < 500 && found_port < 0; trial++) {
-        if (usb_ohci_root_port_connected(OHCI1_BASE, 0)) { found_port = 1; break; }
-        if (usb_ohci_root_port_connected(OHCI2_BASE, 0)) { found_port = 2; break; }
-        if ((trial % 50) == 0) {
-            uart0_printf("usb: wait p1=0x%X p2=0x%X\n",
-                         usb_ohci_port_status(OHCI1_BASE, 0),
-                         usb_ohci_port_status(OHCI2_BASE, 0));
-        }
-        udelay(10000);
-    }
-    if (found_port < 0) {
-        uart_puts("usb: no device on any port\n");
-        return -1;
-    }
-    uart_puts("usb: device on port "); uart_putc('0' + found_port); uart_puts("\n");
-    g_ohci_base = (found_port == 1) ? OHCI1_BASE : OHCI2_BASE;
-
-    // 3. Port reset: PRS -> ждём автоклир HC -> HC сам включит PES.
-    //    После reset устройство на адресе 0, энумерируем сами.
-    uart_puts("usb: port reset...\n");
-    if (usb_ohci_port_reset(g_ohci_base, 0) < 0) {
+    if (usb_ohci_port_reset(base, 0) < 0) {
         uart_puts("usb: port reset fail\n");
-        return -1;
+        return 0;
     }
 
-    // 4. Энумерация с адреса 0
-    g_addr = 0;
-    memset(buf, 0, 64);
-    r = ctrl_req_to((usb_setup_t[]){{
-        .bmRequestType = RT_DEVICE,
-        .bRequest      = GET_DESCRIPTOR,
-        .wValue        = (1 << 8),
-        .wLength       = 8,
-    }}, buf, 8, 1, 1000);
-    if (r < 0) {
-        uart_puts("usb: get_dev_desc @0 fail\n");
-        return -1;
-    }
+    // 1. дескриптор на адресе 0 (первые 8 байт, узнаём ep0 mps)
+    dev->addr = 0;
+    r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
+                                          .bRequest = GET_DESCRIPTOR,
+                                          .wValue = (1 << 8), .wLength = 8 },
+                     buf, 8, 1, 1000);
+    if (r < 0) { uart_puts("usb: get_dev_desc @0 fail\n"); return 0; }
     int mps = buf[7];
-    usb_ohci_set_mps(mps);
-    uart0_printf("usb: dev @0 mps=%d\n", mps);
+    if (mps < 8) mps = 8;
+    if (mps > 64) mps = 64;
+    dev->mps0 = (uint8_t)mps;
+    usb_ohci_set_mps((uint16_t)mps);
 
-    // 5. SET_ADDRESS(1)
-    r = set_addr(1);
-    if (r < 0) { uart_puts("usb: set_addr fail\n"); return -1; }
-    g_addr = 1;
+    // 2. SET_ADDRESS(1)
+    r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = 0x00,
+                                          .bRequest = SET_ADDRESS, .wValue = 1 },
+                     0, 0, 0, 1000);
+    if (r < 0) { uart_puts("usb: set_addr fail\n"); return 0; }
+    dev->addr = 1;
     udelay(5000);
-    uart_puts("usb: addr=1 set\n");
 
-    // 6. Полный дескриптор устройства
-    r = get_dev_desc_full(buf, mps > 18 ? mps : 18);
-    if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return -1; }
+    // 3. полный дескриптор устройства (VID/PID)
+    r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
+                                          .bRequest = GET_DESCRIPTOR,
+                                          .wValue = (1 << 8),
+                                          .wLength = (uint16_t)(mps > 18 ? mps : 18) },
+                     buf, mps > 18 ? mps : 18, 1, 1000);
+    if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return 0; }
+    uint16_t vid = (uint16_t)(buf[8] | (buf[9] << 8));
+    uint16_t pid = (uint16_t)(buf[10] | (buf[11] << 8));
+    printf("usb: port=0x%X VID=%04X PID=%04X class=%02X mps=%d\n",
+           (unsigned)base, vid, pid, (unsigned)buf[5], mps);
 
-    // 7. Конфигурация (выделяем 256 байт)
-    r = get_cfg_desc_full(buf, 256);
-    if (r < 0) { uart_puts("usb: get_cfg fail\n"); return -1; }
+    // 4. конфигурация
+    r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
+                                          .bRequest = GET_DESCRIPTOR,
+                                          .wValue = (2 << 8), .wLength = 256 },
+                     buf, 256, 1, 1000);
+    if (r < 0) { uart_puts("usb: get_cfg fail\n"); return 0; }
 
-    // 8. Парсинг конфигурации: обходим ВСЕ интерфейсы.
-    // Предпочитаем Boot Keyboard (HID subclass=1 protocol=1), но принимаем
-    // любой HID-интерфейс с IN-эндпоинтом (2.4ГГц донглы часто generic HID
-    // или multimedia-контроллер первым интерфейсом).
+    // 5. парсинг: ищем boot keyboard (3,1,1); иначе generic HID (3,0,x) = тач
     int pos = 0;
-    int cur_hid = 0;        // текущий интерфейс — HID?
-    int cur_boot_kbd = 0;   // текущий интерфейс — Boot Keyboard?
-    int best_ep = 0;
-    uint16_t best_maxpkt = 0;
-    g_in_ep = 0;
+    int type = 0;
+    int cur_boot = 0;
+    dev->in_ep = 0;
+    dev->in_maxpkt = 0;
     while (pos < r && pos < 254) {
-        uint8_t len = buf[pos];
-        uint8_t type = buf[pos+1];
+        uint8_t len = buf[pos], t = buf[pos + 1];
         if (len == 0) break;
-        if (type == 4) { // interface descriptor
+        if (t == 4) { // interface
             usb_intf_desc_t* intf = (usb_intf_desc_t*)(buf + pos);
-            cur_hid = (intf->bInterfaceClass == 3);
-            cur_boot_kbd = cur_hid &&
-                           (intf->bInterfaceSubClass == 1) &&
-                           (intf->bInterfaceProtocol == 1);
-            if (cur_boot_kbd) { best_ep = 0; best_maxpkt = 0; }
-        } else if (type == 5 && cur_hid) { // endpoint inside HID interface
+            if (intf->bInterfaceClass == 3 && intf->bInterfaceSubClass == 1 &&
+                intf->bInterfaceProtocol == 1) {
+                cur_boot = 1;
+                type = 1;
+                dev->in_ep = 0; dev->in_maxpkt = 0;
+            } else if (intf->bInterfaceClass == 3 && !type) {
+                cur_boot = 0;
+                type = 2; // generic HID — кандидат в тач
+                dev->in_ep = 0; dev->in_maxpkt = 0;
+            } else {
+                cur_boot = 0;
+            }
+        } else if (t == 5 && type) { // endpoint внутри HID-интерфейса
             usb_ep_desc_t* ep = (usb_ep_desc_t*)(buf + pos);
-            if (ep->bEndpointAddress & 0x80) { // IN endpoint
-                if (cur_boot_kbd || !best_ep) {
-                    best_ep = ep->bEndpointAddress;
-                    best_maxpkt = ep->wMaxPacketSize;
+            if (ep->bEndpointAddress & 0x80) { // IN
+                if (!dev->in_ep) {
+                    dev->in_ep = ep->bEndpointAddress;
+                    dev->in_maxpkt = ep->wMaxPacketSize;
                 }
             }
         }
         pos += len;
     }
+    (void)cur_boot;
 
-    if (!best_ep) {
-        uart_puts("usb: no HID keyboard interface\n");
+    if (!dev->in_ep) {
+        printf("usb: port=0x%X no HID IN ep, type=%d\n", (unsigned)base, type);
+        return 0;
+    }
+
+    // 6. Set config
+    r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = 0x00,
+                                          .bRequest = SET_CONFIGURATION, .wValue = 1 },
+                     0, 0, 0, 1000);
+    if (r < 0) { uart_puts("usb: set_config fail\n"); return 0; }
+
+    dev->found = 1;
+    dev->type = type;
+
+    if (type == 1) {
+        // boot protocol — для generic может не поддержаться, не критично
+        ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = 0x21,
+                                          .bRequest = HID_SET_PROTOCOL, .wValue = 0,
+                                          .wIndex = 0 }, 0, 0, 0, 1000);
+        uart_puts("usb:   -> KEYBOARD\n");
+    } else {
+        uart_puts("usb:   -> TOUCH\n");
+    }
+    return type;
+}
+
+int usb_kbd_init(void) {
+    usb_ohci_init(0x01C1B400);   // OHCI1
+    usb_ohci_init(0x01C1C400);   // OHCI2
+
+    // ждём устройства на любом порту
+    for (int trial = 0; trial < 500; trial++) {
+        if (usb_ohci_root_port_connected(0x01C1B400, 0) ||
+            usb_ohci_root_port_connected(0x01C1C400, 0))
+            break;
+        udelay(10000);
+    }
+
+    // энумерируем оба порта во временные структуры, потом распределяем по типу
+    usb_dev_t d1, d2;
+    memset(&d1, 0, sizeof(d1));
+    memset(&d2, 0, sizeof(d2));
+    int t1 = 0, t2 = 0;
+    if (usb_ohci_root_port_connected(0x01C1B400, 0)) {
+        t1 = enum_port(0x01C1B400, &d1);
+    }
+    if (usb_ohci_root_port_connected(0x01C1C400, 0)) {
+        t2 = enum_port(0x01C1C400, &d2);
+    }
+    // клавиатура (type=1) приоритетна для g_kbd; тач (type=2) — в g_touch
+    if (t1 == 1) { memcpy(&g_kbd, &d1, sizeof(g_kbd)); }
+    else if (t1 == 2) { memcpy(&g_touch, &d1, sizeof(g_touch)); }
+    if (t2 == 1) {
+        if (!g_kbd.found) memcpy(&g_kbd, &d2, sizeof(g_kbd));
+    } else if (t2 == 2) {
+        if (!g_touch.found) memcpy(&g_touch, &d2, sizeof(g_touch));
+    }
+
+    if (!g_kbd.found) {
+        uart_puts("usb: no keyboard found\n");
         return -1;
     }
-    g_in_ep = best_ep;
-    g_in_maxpkt = best_maxpkt;
 
-    // 5. Set config (value 1)
-    if (set_config(1) < 0) { uart_puts("usb: set_config fail\n"); return -1; }
-
-    // 6. Set boot protocol — для generic HID может не поддержаться, не критично
-    if (set_boot_protocol() < 0) {
-        uart_puts("usb: boot protocol not supported (ok)\n");
+    // Диагностика тача: HID Report Descriptor (только один раз)
+    if (g_touch.found && g_touch.in_ep) {
+        dump_hid_report_desc(&g_touch);
     }
 
-    g_device_found = 1;
     uart_puts("usb: keyboard ready\n");
     return 0;
 }
 
-// Сканкод -> ASCII (EN)
-static uint8_t scancode_to_ascii(uint8_t sc, int shift) {
-    // Только основные, остальные mapping расширится
-    static const uint8_t base[128] = {
-        [0]    = 0,    [4]  = 'a', [5]  = 'b', [6]  = 'c', [7]  = 'd',
-        [8]    = 'e',  [9]  = 'f', [10] = 'g', [11] = 'h', [12] = 'i',
-        [13]   = 'j',  [14] = 'k', [15] = 'l', [16] = 'm', [17] = 'n',
-        [18]   = 'o',  [19] = 'p', [20] = 'q', [21] = 'r', [22] = 's',
-        [23]   = 't',  [24] = 'u', [25] = 'v', [26] = 'w', [27] = 'x',
-        [28]   = 'y',  [29] = 'z', [30] = '1', [31] = '2', [32] = '3',
-        [33]   = '4',  [34] = '5', [35] = '6', [36] = '7', [37] = '8',
-        [38]   = '9',  [39] = '0', [40] = '\n', [42] = '\x08', // Backspace
-        [44]   = ' ',  [43] = '\t',
-    };
-    static const uint8_t shifted[128] = {
-        [4]  = 'A', [5]  = 'B', [6]  = 'C', [7]  = 'D', [8]  = 'E',
-        [9]  = 'F', [10] = 'G', [11] = 'H', [12] = 'I', [13] = 'J',
-        [14] = 'K', [15] = 'L', [16] = 'M', [17] = 'N', [18] = 'O',
-        [19] = 'P', [20] = 'Q', [21] = 'R', [22] = 'S', [23] = 'T',
-        [24] = 'U', [25] = 'V', [26] = 'W', [27] = 'X', [28] = 'Y',
-        [29] = 'Z', [30] = '!', [31] = '@', [32] = '#', [33] = '$',
-        [34] = '%', [35] = '^', [36] = '&', [37] = '*', [38] = '(',
-        [39] = ')', [40] = '\n', [42] = '\x08', [44] = ' ',
-    };
-    if (sc >= 128) return 0;
-    return shift ? shifted[sc] : base[sc];
+// ---- Клавиатура ----
+static int kbd_read_report(void) {
+    if (!g_kbd.found || !g_kbd.in_ep) return -1;
+    if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
+    cache_inv((uint32_t)g_kbd.report, 8);
+    return 0;
 }
 
 int usb_kbd_poll(void) {
-    // Режим «ждём полного отпускания»: после срабатывания клавиши не
-    // возвращаем новые сканкоды, пока все клавиши не отпущены.
-    if (!g_device_found || !g_in_ep) return 0;
-
+    if (!g_kbd.found || !g_kbd.in_ep) return 0;
     uint8_t cur[8];
-    memcpy(cur, g_report, 8);
+    memcpy(cur, g_kbd.report, 8);
     if (kbd_read_report() < 0) return 0;
 
-    // Проверка: все ли клавиши отпущены (кроме модификаторов)
-    int all_released = 1;
-    for (int i = 2; i < 8; i++)
-        if (g_report[i]) { all_released = 0; break; }
+    // первая нажатая клавиша (приоритет по порядку в отчёте)
+    int sc = 0;
+    for (int i = 2; i < 8; i++) {
+        if (g_kbd.report[i]) { sc = g_kbd.report[i]; break; }
+    }
 
-    if (g_wait_release) {
-        if (all_released) g_wait_release = 0;
+    uint32_t now = h3_hs_timer_lo_us();
+
+    if (!sc) {
+        g_repeat_sc = 0;
+        g_was_repeat = 0;
         return 0;
     }
 
-    // Ищем новое нажатие (edge-детект)
-    for (int i = 2; i < 8; i++) {
-        uint8_t sc = g_report[i];
-        if (!sc) continue;
-        int in_prev = 0;
-        for (int j = 2; j < 8; j++)
-            if (cur[j] == sc) { in_prev = 1; break; }
-        if (!in_prev) {
-            // Проверка модификаторов: если нажата не стрелка/enter/esc — не ждём отпускания
-            // Стрелки: 82(up), 81(down), 80(left), 79(right), 40(enter), 41(esc)
-            if (sc == 82 || sc == 81 || sc == 80 || sc == 79 ||
-                sc == 40 || sc == 41 || sc == '\n' || sc == '\r' ||
-                sc == 27 || sc == 'q' || sc == 'w' || sc == 's')
-                g_wait_release = 1;
-            return sc;
+    // была ли эта клавиша в предыдущем отчёте (удержание)?
+    int in_prev = 0;
+    for (int j = 2; j < 8; j++)
+        if (cur[j] == sc) { in_prev = 1; break; }
+
+    if (!in_prev) {
+        // новое нажатие
+        g_repeat_sc = sc;
+        g_repeat_start = now;
+        g_was_repeat = 0;
+        return sc;
+    }
+
+    // удержание той же клавиши — автоповтор
+    if (sc == g_repeat_sc) {
+        uint32_t elapsed = now - g_repeat_start;
+        if (g_was_repeat) {
+            if (elapsed >= KBD_REPEAT_RATE_US) {
+                g_repeat_start = now;
+                return sc;
+            }
+        } else {
+            if (elapsed >= KBD_REPEAT_DELAY_US) {
+                g_repeat_start = now;
+                g_was_repeat = 1;
+                return sc;
+            }
         }
     }
     return 0;
+}
+
+int usb_kbd_get_raw(uint8_t* buf, int max_buf) {
+    if (!g_kbd.found || !g_kbd.in_ep) return 0;
+    uint8_t cur[8];
+    memcpy(cur, g_kbd.report, 8);
+    if (kbd_read_report() < 0) {
+        memcpy(cur, g_kbd.report, 8);
+    }
+    int cnt = 0;
+    for (int i = 2; i < 8 && cnt < max_buf; i++)
+        if (cur[i]) buf[cnt++] = cur[i];
+    return cnt;
+}
+
+uint8_t usb_kbd_get_mods(void) {
+    if (!g_kbd.found) return 0;
+    return g_kbd.report[0]; // modifiers: bit0=LCtrl bit1=LShift bit2=LAlt bit3=LGui bit4=RCtrl bit5=RShift
+}
+
+// Чтение HID Report Descriptor (type 0x22) — точный формат отчёта тача
+static void dump_hid_report_desc(usb_dev_t* d) {
+    uint8_t buf[64];
+    memset(buf, 0, sizeof(buf));
+    usb_setup_t req = {
+        .bmRequestType = 0x81,      // host->dev, standard, device
+        .bRequest      = GET_DESCRIPTOR,
+        .wValue        = (0x22 << 8),  // HID report descriptor
+        .wIndex        = 0,
+        .wLength       = 64,
+    };
+    int r = ctrl_req_dev(d, &req, buf, 64, 1, 1000);
+    printf("hid_report_desc r=%d:", r);
+    if (r > 0) {
+        for (int i = 0; i < r; i++) printf(" %02X", buf[i]);
+    }
+    printf("\n");
+}
+
+// ---- Тач (eGalax MT, 0eef:0005) через GET_REPORT ----
+// Опрос только по запросу (джойстик эмулятора), без печати в UART.
+int usb_touch_poll(int* x, int* y, int* pressed) {
+    if (!g_touch.found || !g_touch.in_ep) return 0;
+    usb_setup_t req = {
+        .bmRequestType = 0xA1,
+        .bRequest      = HID_GET_REPORT,
+        .wValue        = 0x0100,
+        .wIndex        = 0,
+        .wLength       = (uint16_t)16,
+    };
+    int r = ctrl_req_dev(&g_touch, &req, g_touch_report, 16, 1, 50);
+    if (r < 0) return 0;
+    cache_inv((uint32_t)g_touch_report, TOUCH_BUF);
+
+    int count = g_touch_report[0];
+    *pressed = count > 0;
+    if (count > 0) {
+        *x = (g_touch_report[2] << 8) | g_touch_report[3];
+        *y = (g_touch_report[4] << 8) | g_touch_report[5];
+        *x &= 0x07FF; *y &= 0x07FF;
+        if (*x > 1024) *x >>= 1;
+        if (*y > 1024) *y >>= 1;
+    }
+    return 1;
+}
+
+// ---- Объединённый ввод для меню: ТОЛЬКО клавиатура (тач не мешает) ----
+int usb_input_poll(void) {
+    return usb_kbd_poll();
+}
+
+// ---- Тач как джойстик для эмулятора ----
+// Зоны: верх 30% = up, низ 30% = down, иначе левая/правая половина = left/right.
+// Касание в любом месте = fire.
+void usb_touch_joy(uint8_t* dir, uint8_t* fire) {
+    int x = 0, y = 0, p = 0;
+    if (!usb_touch_poll(&x, &y, &p)) return;
+    if (!p) return;
+    *fire = 1;
+    // диапазон неизвестен (0..1023 или 0..4095) — используем доли
+    uint32_t yfrac = (uint32_t)y * 10u / 4096u;
+    if (yfrac < 3u) { *dir |= 1; return; }          // up
+    if (yfrac > 7u) { *dir |= 2; return; }          // down
+    if ((uint32_t)x * 10u / 4096u < 5u) *dir |= 4;  // left
+    else                               *dir |= 8;  // right
 }

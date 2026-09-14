@@ -7,6 +7,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 set(TOOLCHAIN_PREFIX C:/ARM/gcc-arm-none-eabi-15.2.1/bin/arm-none-eabi-)
 
 set(CMAKE_C_COMPILER ${TOOLCHAIN_PREFIX}gcc.exe)
+set(CMAKE_CXX_COMPILER ${TOOLCHAIN_PREFIX}g++.exe)
 set(CMAKE_ASM_COMPILER ${TOOLCHAIN_PREFIX}gcc.exe)
 set(CMAKE_OBJCOPY ${TOOLCHAIN_PREFIX}objcopy.exe)
 
@@ -22,4 +23,5 @@ set(CMAKE_ASM_IMPLICIT_LINK_DIRECTORIES "")
 # Базовые флаги компиляции для A7
 set(ARCH_FLAGS "-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm")
 set(CMAKE_C_FLAGS "${ARCH_FLAGS} -ffreestanding -Wall -Wextra -O2" CACHE STRING "H3 C flags")
+set(CMAKE_CXX_FLAGS "${ARCH_FLAGS} -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wall -Wextra -O2" CACHE STRING "H3 CXX flags")
 set(CMAKE_ASM_FLAGS "${ARCH_FLAGS} -x assembler-with-cpp" CACHE STRING "H3 ASM flags")

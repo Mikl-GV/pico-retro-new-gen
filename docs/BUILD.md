@@ -1,35 +1,29 @@
-# Сборка (Linux)
+# Сборка (Linux, bare-metal H3)
 
 ## Требования
 
-Нужен кросс-тулчейн ARMv7-A (hard float). Подойдёт любой из:
+ARM-тулчейн (любой из):
 
 ```bash
-# Вариант 1 — arm-none-eabi (рекомендуется)
+# Рекомендуется
 sudo apt install gcc-arm-none-eabi
-
-# Вариант 2 — arm-linux-gnueabihf
+# Альтернатива
 sudo apt install gcc-arm-linux-gnueabihf
 ```
 
-Остальное: `make`, `cmake` (не обязателен — есть `build.sh`), `git`.
-Для SD-образа дополнительно: `wget`, `mkimage` (u-boot-tools), `parted`, `dosfstools`, `sudo`.
+Для SD-образа:
 
 ```bash
-sudo apt install build-essential cmake ninja-build wget u-boot-tools parted dosfstools
+sudo apt install u-boot-tools mtools
 ```
 
 ## Сборка бинарника
 
 ```bash
-git clone https://github.com/Mikl-GV/pico-retro
-cd pico-retro
 ./build.sh
 ```
 
-Результат:
-- `build/h3_bare.bin` — исполняемый бинарник (загрузка через U-Boot/fel)
-- `build/h3_bare.elf` — ELF (для отладки, gdb)
+Результат: `build/h3_bare.bin` (загрузка через U-Boot или FEL).
 
 ## Сборка SD-образа
 
@@ -37,35 +31,37 @@ cd pico-retro
 ./build.sh sd
 ```
 
-Собирает `build/h3_bare.img` (64 MB) — **готовый образ для Rufus/dd**:
-- U-Boot SPL + U-Boot в первых секторах
-- FAT-раздел с `boot.scr` + `h3_bare.bin`
+Собирает `build/h3_bare.img` (64 МБ) с U-Boot + FAT32 + ROM-папками.
 
-U-Boot скачивается автоматически (релиз v2024.10). Если скачивание не работает —
-соберите вручную:
+## Запись на флешку (без образа)
 
-```bash
-git clone https://github.com/u-boot/u-boot.git
-cd u-boot
-make orangepi_lite_defconfig
-make
-# результат: u-boot-sunxi-with-spl.bin — положить в build/u-boot/
-```
-
-## Альтернативные способы сборки
-
-Сборка через CMake (если хотите IDE/та больше контроля):
+Если на флешке уже есть U-Boot и FAT32 — обновить только бинарник:
 
 ```bash
-cmake -B build -G Ninja --toolchain h3_bare/toolchain-h3.cmake
-cmake --build build
+sudo mount /dev/sdX1 /mnt
+sudo cp build/h3_bare.bin /mnt/
+sudo sync; sudo umount /mnt
 ```
 
-## Что собирается где
+## Полный SD-образ (с нуля)
+
+```bash
+sudo dd if=build/h3_bare.img of=/dev/sdX bs=1M conv=fsync
+```
+
+## Загрузка через FEL (USB, без SD)
+
+```bash
+sudo sunxi-fel write 0x40000000 build/h3_bare.bin execute 0x40000000
+```
+
+## Файлы сборки
 
 | Цель | Файл |
-|---|---|
+|------|------|
 | Бинарник | `build/h3_bare.bin` |
-| ELF | `build/h3_bare.elf` |
+| ELF (отладка) | `build/h3_bare.elf` |
 | SD-образ | `build/h3_bare.img` |
 | boot-скрипт | `build/boot.scr` |
+
+Сборка CMake (опциональна): `cmake -B build && cmake --build build`

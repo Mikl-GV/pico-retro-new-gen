@@ -86,10 +86,78 @@ typedef struct __attribute__((aligned(256))) {
     uint8_t  reserved[120];
 } ohci_hcca_t;
 
-static ohci_hcca_t g_hcca;
+static ohci_hcca_t g_hcca[2];       // по одной на OHCI-порт
 static ohci_ed_t   g_head_ed;   // control head ED (постоянный, skip=1 по умолчанию)
 static ohci_td_t   g_td[8];
 static uint16_t    g_mps = 8;
+
+// ---- периодический interrupt-IN (для HID-тача), по ED/TD на порт ----
+static ohci_ed_t   g_int_ed[2];
+static ohci_td_t   g_int_td[2];
+
+static int ohci_idx(uint32_t base) {
+    return (base == 0x01C1B400u) ? 0 : 1;
+}
+
+// ---- D-cache maintenance по MVA (Cortex-A7) ----
+static inline void cache_clean(uint32_t addr, uint32_t size);
+static inline void cache_invalidate(uint32_t addr, uint32_t size);
+
+// ---- периодический interrupt-IN (для HID-тача) ----
+
+int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
+                           uint8_t* buf, uint16_t len) {
+    int idx = ohci_idx(base);
+    ohci_regs_t* ohci = (ohci_regs_t*)base;
+    int low_speed = usb_ohci_port_low_speed(base, 0) ? 1 : 0;
+
+    memset(&g_int_ed[idx], 0, sizeof(g_int_ed[0]));
+    memset(&g_int_td[idx], 0, sizeof(g_int_td[0]));
+
+    g_int_ed[idx].cfg = (addr & 0x7f)
+                 | ((uint32_t)(ep & 0x0f) << 7)
+                 | (2u << 11)            // DIR=IN
+                 | (1u << 25)            // toggle carry
+                 | (low_speed ? ED_LOWSPEED : 0)
+                 | ((uint32_t)len << 16);
+    g_int_ed[idx].head = (uint32_t)&g_int_td[idx];
+    g_int_ed[idx].tail = (uint32_t)&g_int_td[idx];
+
+    g_int_td[idx].cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA0 | TD_DP_IN | TD_R;
+    g_int_td[idx].cbp = (uint32_t)buf;
+    g_int_td[idx].be  = (uint32_t)(buf + len - 1);
+    g_int_td[idx].next = (uint32_t)&g_int_td[idx];
+
+    cache_clean((uint32_t)&g_int_ed[idx], sizeof(g_int_ed[0]));
+    cache_clean((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
+    cache_clean((uint32_t)buf, len);
+
+    // периодическая таблица HCCA этого порта -> ED
+    for (int i = 0; i < 32; i++) g_hcca[idx].intr[i] = (uint32_t)&g_int_ed[idx];
+    cache_clean((uint32_t)&g_hcca[idx], sizeof(g_hcca[0]));
+
+    // Правильный PLE: OHCI HcControl bit 2 (Periodic List Enable)
+    // также надо записать HcPeriodicCurrentED
+    ohci->peried = (uint32_t)&g_int_ed[idx];
+    ohci->ctrl |= (1u << 2);   // PLE
+    return 0;
+}
+
+int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len) {
+    int idx = ohci_idx(base);
+    (void)len;
+    cache_invalidate((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
+    uint32_t cc = g_int_td[idx].cfg >> TD_CC_SHIFT;
+    if (cc != TD_CC_NOERR)
+        return 0;
+    cache_invalidate((uint32_t)buf, 64);
+    // re-arm
+    uint32_t cfg = g_int_td[idx].cfg;
+    cfg = (cfg & ~(0xFu << TD_CC_SHIFT)) | (TD_CC_NOTACC << TD_CC_SHIFT);
+    g_int_td[idx].cfg = cfg;
+    cache_clean((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
+    return 1;
+}
 
 void usb_ohci_set_mps(uint16_t mps) {
     if (mps >= 8 && mps <= 64) g_mps = mps;
@@ -169,7 +237,8 @@ int usb_ohci_init(uint32_t base) {
 
     ohci->intrdisable = 0xFFFFFFFFu;
 
-    memset(&g_hcca, 0, sizeof(g_hcca));
+    int idx = ohci_idx(base);
+    memset(&g_hcca[idx], 0, sizeof(g_hcca[0]));
     memset(&g_head_ed, 0, sizeof(g_head_ed));
     memset(&g_td, 0, sizeof(g_td));
 
@@ -177,7 +246,7 @@ int usb_ohci_init(uint32_t base) {
     g_head_ed.head = 1;
     g_head_ed.tail = 1;
 
-    ohci->hcca = (uint32_t)&g_hcca;
+    ohci->hcca = (uint32_t)&g_hcca[idx];
 
     uint32_t fi = 0x2edf;
     uint32_t fsmps = (6 * (fi - 210)) / 7;
@@ -329,14 +398,6 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
         if ((last->cfg >> TD_CC_SHIFT) != TD_CC_NOTACC) break;
         udelay(1000);
         if (++elapsed > timeout_ms) {
-            uint32_t head = ohci->ctrlhead;
-            uint32_t cur  = ohci->ctrlcur;
-            uart0_printf("usb: TO a=%u ctrl=0x%X fm=%u\n", addr, ohci->ctrl, ohci->fmnumber);
-            uart0_printf("usb:   hd=0x%X cu=0x%X ed=0x%X cc s=%u d=%u t=%u\n",
-                         head, cur, (uint32_t)&g_head_ed,
-                         t_setup->cfg >> TD_CC_SHIFT,
-                         t_data->cfg >> TD_CC_SHIFT,
-                         t_stat->cfg >> TD_CC_SHIFT);
             return -1;
         }
     }

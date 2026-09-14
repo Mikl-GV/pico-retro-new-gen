@@ -2,16 +2,20 @@
 #define SYSTEMS_H
 
 typedef enum {
-    GROUP_PORTABLE,  // Портативные консоли
-    GROUP_CONSOLE,   // Консоли
-    GROUP_COMPUTER,  // Компьютеры
+    GROUP_PORTABLE,
+    GROUP_CONSOLE,
+    GROUP_ARCADE,
+    GROUP_COMPUTER,
+    GROUP_OTHER,
     GROUP_COUNT,
 } system_group_t;
 
 static const char* const group_names[GROUP_COUNT] = {
-    "Портативные консоли",
-    "Консоли",
-    "Компьютеры",
+    "Portable",
+    "Consoles",
+    "Arcade",
+    "Computers",
+    "Other",
 };
 
 typedef enum {
@@ -23,41 +27,56 @@ typedef enum {
 typedef struct {
     const char *id;
     const char *name;
+    const char *dir;      // основная папка в /roms/ (NULL = id)
+    const char *alt_dir;  // альтернативная папка, если dir нет (NULL = нет)
     system_group_t group;
     system_status_t status;
 } system_entry_t;
 
-#define SYS(id, name, group, status) { id, name, GROUP_##group, STATUS_##status }
+#define SYS(id, name, group, status) { id, name, NULL, NULL, GROUP_##group, STATUS_##status }
+#define SYS_DIR(id, name, dir, group, status) { id, name, dir, NULL, GROUP_##group, STATUS_##status }
+#define SYS_ALT(id, name, dir, alt, group, status) { id, name, dir, alt, GROUP_##group, STATUS_##status }
 
 static const system_entry_t systems[] = {
     // -- Портативные консоли --
-    SYS("gameboy",    "Game Boy / GBC",            PORTABLE, PLANNED),
-    SYS("gamegear",   "Sega Game Gear",            PORTABLE, PLANNED),
+    SYS("gameboy",    "Game Boy / Game Boy Color",   PORTABLE, PLANNED),
+    SYS("gamegear",   "Sega Game Gear",              PORTABLE, PLANNED),
 
     // -- Консоли --
-    SYS("a2600",      "Atari 2600",                CONSOLE,  READY),
-    SYS("a5200",      "Atari 5200",                CONSOLE,  READY),
-    SYS("a7800",      "Atari 7800",                CONSOLE,  READY),
-    SYS("sms",        "Sega Master System",        CONSOLE,  PLANNED),
-    SYS("coleco",     "ColecoVision",              CONSOLE,  PLANNED),
-    SYS("nes",        "NES / Famicom (Dendy)",     CONSOLE,  PLANNED),
-    SYS("galaxian",   "Galaxian / Frogger / Dig Dug", CONSOLE, PLANNED),
-    SYS("cps1",       "CPS-1 (Capcom)",            CONSOLE,  PLANNED),
-    SYS("cps2",       "CPS-2 (Capcom)",            CONSOLE,  PLANNED),
-    SYS("neogeo",     "Neo Geo MVS",               CONSOLE,  PLANNED),
-    SYS("toaplan",    "Toaplan 1",                 CONSOLE,  PLANNED),
-    SYS("segasys",    "Sega System 1/2/16",        CONSOLE,  PLANNED),
-    SYS("megadrive",  "Sega Mega Drive",           CONSOLE,  PLANNED),
-    SYS("snes",       "SNES (Super Nintendo)",     CONSOLE,  PLANNED),
-    SYS("pce",        "PC Engine",                 CONSOLE,  PLANNED),
+    SYS("a2600",      "Atari 2600",                  CONSOLE,  READY),
+    SYS("a5200",      "Atari 5200",                  CONSOLE,  READY),
+    SYS("a7800",      "Atari 7800",                  CONSOLE,  READY),
+    SYS_ALT("sms",    "Sega Master System",        NULL, "sms_roms", CONSOLE, READY),
+    SYS("coleco",     "ColecoVision",                CONSOLE,  PLANNED),
+    SYS_ALT("nes",    "NES / Famicom (Dendy)",     NULL, "nes_roms", CONSOLE, READY),
+    SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  PLANNED),
+    SYS("snes",       "SNES / Super Famicom",        CONSOLE,  PLANNED),
+    SYS("megadrive",  "Sega Mega Drive",             CONSOLE,  PLANNED),
+    SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, PLANNED),
+    SYS_DIR("jaguar", "Atari Jaguar", "jaguar_roms", CONSOLE, PLANNED),
+
+    // -- Аркадные автоматы --
+    SYS("galaxian",   "Galaxian / Frogger / Dig Dug",ARCADE,   PLANNED),
+    SYS("cps1",       "CPS-1 (Capcom)",               ARCADE,   PLANNED),
+    SYS("cps2",       "CPS-2 (Capcom)",               ARCADE,   PLANNED),
+    SYS("neogeo",     "Neo Geo MVS",                  ARCADE,   PLANNED),
+    SYS("segasys",    "Sega System 1/2/16",           ARCADE,   PLANNED),
+    SYS("toaplan",    "Toaplan 1",                    ARCADE,   PLANNED),
 
     // -- Компьютеры --
-    SYS("zxspectrum", "ZX Spectrum 48k/128k",      COMPUTER, PLANNED),
-    SYS("msx",        "MSX / MSX2",                COMPUTER, PLANNED),
-    SYS("radio86rk",  "Радио-86РК",                COMPUTER, PLANNED),
-    SYS("bk0010",     "БК-0010/0011М",             COMPUTER, PLANNED),
+    SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, PLANNED),
+    SYS("msx",        "MSX / MSX2",                  COMPUTER, PLANNED),
+    SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
+    SYS("bk0010",     "BK-0010/0011M",               COMPUTER, PLANNED),
+    SYS("portfolio",  "Atari Portfolio",             COMPUTER, PLANNED),
+    SYS("ms1504",     "MS 1504",                     COMPUTER, PLANNED),
 };
 
 #define NUM_SYSTEMS (sizeof(systems) / sizeof(systems[0]))
+
+// папка системы: dir если задан, иначе id
+static inline const char* system_rom_dir(int idx) {
+    return systems[idx].dir ? systems[idx].dir : systems[idx].id;
+}
 
 #endif

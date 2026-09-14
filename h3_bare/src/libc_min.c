@@ -68,6 +68,12 @@ char* strncpy(char* dst, const char* src, size_t n) {
     return dst;
 }
 
+int strncmp(const char* a, const char* b, size_t n) {
+    while (n > 0 && *a && *a == *b) { a++; b++; n--; }
+    if (n == 0) return 0;
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 char* strstr(const char* haystack, const char* needle) {
     if (!*needle) return (char*)haystack;
     for (; *haystack; haystack++) {
@@ -90,4 +96,54 @@ int __sync_val_compare_and_swap_4(volatile void* ptr, int oldval, int newval) {
 
 void __sync_synchronize(void) {
     __asm volatile("dmb ish" ::: "memory");
+}
+
+// ---- LCG rand/srand для MCUME (ядра используют rand()) ----
+static uint32_t g_rand_seed = 1;
+
+int rand(void) {
+    g_rand_seed = g_rand_seed * 1664525u + 1013904223u;
+    return (int)((g_rand_seed >> 16) & 0x7FFF);
+}
+
+void srand(unsigned int seed) {
+    g_rand_seed = seed ? seed : 1;
+}
+
+// ---- sprintf (очень минимальный, только для %s/%d/%x) ----
+#include <stdarg.h>
+int sprintf(char* buf, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char* d = buf;
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { *d++ = *fmt; continue; }
+        fmt++;
+        switch (*fmt) {
+        case 's': { const char* s = va_arg(ap, const char*);
+                    while (*s) *d++ = *s++; break; }
+        case 'd': {
+            int v = va_arg(ap, int);
+            if (v < 0) { *d++ = '-'; v = -v; }
+            char tmp[16]; int i = 0;
+            do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+            while (i) *d++ = tmp[--i];
+            break; }
+        case 'x': case 'X': {
+            unsigned v = va_arg(ap, unsigned);
+            char tmp[16]; int i = 0;
+            do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
+            while (i) *d++ = tmp[--i];
+            break; }
+        default: *d++ = *fmt; break;
+        }
+    }
+    *d = 0;
+    va_end(ap);
+    return (int)(d - buf);
+}
+
+void exit(int code) {
+    (void)code;
+    while (1) __asm volatile("wfi");
 }

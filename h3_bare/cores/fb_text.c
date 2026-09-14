@@ -1,6 +1,7 @@
 // fb_text.c — простой растровый текст на HDMI-фреймбуфере (1024x600, XRGB8888).
 // Шрифт 8x8, только ASCII 0x20-0x7F. Белые символы на чёрном.
 #include <stdint.h>
+#include "fb_text.h"
 
 #define FB_ADDR  0x5F900000
 #define FB_W     1024
@@ -118,8 +119,6 @@ void fb_putchar(int x, int y, char c, uint32_t color) {
             if (px >= 0 && px < FB_W && py >= 0 && py < FB_H) {
                 if (bits & (0x80 >> col))
                     fb[py * FB_W + px] = color;
-                else
-                    fb[py * FB_W + px] = 0;
             }
         }
     }
@@ -179,7 +178,36 @@ int fb_puts_s(int x, int y, const char* s, int scale, uint32_t color) {
     return x;
 }
 
-// Текст по центру (scale; центрируется по ширине экрана)
+void fb_pixel(int x, int y, uint32_t color) {
+    if (x < 0 || x >= FB_W || y < 0 || y >= FB_H) return;
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    fb[y * FB_W + x] = color;
+}
+
+// ---- детерминированное звёздное небо ----
+static uint32_t s_seed;
+
+static uint32_t s_rand(void) {
+    s_seed = s_seed * 1664525u + 1013904223u;
+    return s_seed;
+}
+
+void fb_draw_stars(void) {
+    fb_clear();
+    s_seed = 0x2C92714B;
+    const uint32_t cols[5] = { 0x00202028, 0x00383844, 0x00585868, 0x00808090, 0x00C0C0D0 };
+    for (int i = 0; i < 140; i++) {
+        int x = (int)((s_rand() >> 16) % 1024u);
+        int y = (int)((s_rand() >> 16) % 600u);
+        uint32_t c = cols[(s_rand() >> 29) & 3];
+        fb_pixel(x, y, c);
+        if ((s_rand() & 0xFF) < 10) {
+            fb_pixel(x + 1, y, c);
+            fb_pixel(x, y + 1, c);
+            fb_pixel(x + 1, y + 1, c);
+        }
+    }
+}
 void fb_text_center(const char* s, int y, int scale, uint32_t color) {
     int len = 0;
     while (s[len]) len++;

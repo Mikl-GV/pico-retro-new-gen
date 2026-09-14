@@ -1,0 +1,334 @@
+// ----------------------------------------------------------------------------
+//   ___  ___  ___  ___       ___  ____  ___  _  _
+//  /__/ /__/ /  / /__  /__/ /__    /   /_   / |/ /
+// /    / \  /__/ ___/ ___/ ___/   /   /__  /    /  emulator
+//
+// ----------------------------------------------------------------------------
+// Copyright 2005 Greg Stanton
+// 
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program; if not, write to the Free Software
+// Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+// ----------------------------------------------------------------------------
+// Cartridge.cpp
+// ----------------------------------------------------------------------------
+#include "Cartridge.h"
+
+byte cartridge_type;
+byte cartridge_region;
+bool cartridge_pokey;
+byte cartridge_controller[2];
+byte cartridge_bank;
+uint cartridge_flags;
+
+/* pico-retro: pointer into the flash (XIP) cartridge image (past any A78
+ * header), not a heap copy. NULL means "not loaded". */
+static const byte* cartridge_buffer = NULL;
+static uint cartridge_size = 0;
+
+// ----------------------------------------------------------------------------
+// HasHeader
+// ----------------------------------------------------------------------------
+static bool cartridge_HasHeader(const byte* header) {
+  const char HEADER_ID[ ] = {"ATARI7800"};
+  for(int index = 0; index < 9; index++) {
+    if(HEADER_ID[index] != header[index + 1]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// Header for CC2 hack
+// ----------------------------------------------------------------------------
+static bool cartridge_CC2(const byte* header) {
+  const char HEADER_ID[ ] = {">>"};
+  for(int index = 0; index < 2; index++) {
+    if(HEADER_ID[index] != header[index+1]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+// GetBankOffset
+// ----------------------------------------------------------------------------
+static uint cartridge_GetBankOffset(byte bank) {
+  return bank * 16384;
+}
+
+// ----------------------------------------------------------------------------
+// WriteBank
+// ----------------------------------------------------------------------------
+static void cartridge_WriteBank(word address, byte bank) {
+  uint offset = cartridge_GetBankOffset(bank);
+  if(offset < cartridge_size) {
+    memory_WriteROM(address, 16384, cartridge_buffer + offset);
+    cartridge_bank = bank;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// ReadHeader
+// ----------------------------------------------------------------------------
+static void cartridge_ReadHeader(const byte* header) {
+  cartridge_size  = (uint)header[49] << 24;
+  cartridge_size |= (uint)header[50] << 16;
+  cartridge_size |= (uint)header[51] << 8;
+  cartridge_size |= (uint)header[52];
+
+  /* Type detection follows the updated js7800 interpretation of the A78
+   * header (raz0red), which is what real 7800 games expect. ProSystem 1.3
+   * used the legacy mapping (header[53]==1 -> ABSOLUTE, ==2 -> ACTIVISION)
+   * which mis-detects e.g. Double Dragon (header[53]=0x01 -> ACTIVISION). */
+  if(header[53] == 0) {
+    if(cartridge_size > 131072) {
+      cartridge_type = CARTRIDGE_TYPE_SUPERCART_LARGE;
+    }
+    else if(header[54] == 2 || header[54] == 3) {
+      cartridge_type = CARTRIDGE_TYPE_SUPERCART;
+    }
+    else if(header[54] == 4 || header[54] == 5 || header[54] == 6 || header[54] == 7) {
+      cartridge_type = CARTRIDGE_TYPE_SUPERCART_RAM;
+    }
+    else if(header[54] == 8 || header[54] == 9 || header[54] == 10 || header[54] == 11) {
+      cartridge_type = CARTRIDGE_TYPE_SUPERCART_ROM;
+    }
+    else {
+      cartridge_type = CARTRIDGE_TYPE_NORMAL;
+    }
+  }
+  else {
+    if(header[53] & 0x02) {
+      cartridge_type = CARTRIDGE_TYPE_ABSOLUTE;
+    }
+    else if(header[53] & 0x01) {
+      cartridge_type = CARTRIDGE_TYPE_ACTIVISION;
+    }
+    else {
+      cartridge_type = CARTRIDGE_TYPE_NORMAL;
+    }
+  }
+
+  /* Refine: a non-zero low nibble of header[54] that is NOT a pokey flag
+   * means some kind of supercart banking (banksets convention). */
+  if(cartridge_type == CARTRIDGE_TYPE_NORMAL && (header[54] & 0x0e)) {
+    byte ct1 = header[54];
+    if((ct1 & 0x0a) == 0x0a)      cartridge_type = CARTRIDGE_TYPE_SUPERCART_LARGE;
+    else if((ct1 & 0x12) == 0x12) cartridge_type = CARTRIDGE_TYPE_SUPERCART_ROM;
+    else if((ct1 & 0x06) == 0x06) cartridge_type = CARTRIDGE_TYPE_SUPERCART_RAM;
+    else if((ct1 & 0x02) == 0x02) cartridge_type = CARTRIDGE_TYPE_SUPERCART;
+  }
+  
+  cartridge_pokey = (header[54] & 1)? true: false;
+  cartridge_controller[0] = header[55];
+  cartridge_controller[1] = header[56];
+  cartridge_region = header[57] & 0x01;
+  cartridge_flags = 0;
+}
+
+// ----------------------------------------------------------------------------
+// Load (from flash XIP image)
+// ----------------------------------------------------------------------------
+bool cartridge_Load(const byte* data, uint size) {
+  if(size <= 128) {
+    return false;
+  }
+
+  cartridge_Release( );
+  
+  const byte* header = data;
+
+  if (cartridge_CC2(header)) {
+    return false;
+  }
+
+  uint offset = 0;
+  if(cartridge_HasHeader(header)) {
+    cartridge_ReadHeader(header);
+    size -= 128;
+    offset = 128;
+  }
+  else {
+    cartridge_size = size;
+  }
+  
+  /* Keep pointing at the image in flash; no copy. */
+  cartridge_buffer = data + offset;
+  
+  return true;
+}
+// ----------------------------------------------------------------------------
+// Store
+// ----------------------------------------------------------------------------
+void cartridge_Store( ) {
+  switch(cartridge_type) {
+    case CARTRIDGE_TYPE_NORMAL:
+      memory_WriteROM(65536 - cartridge_size, cartridge_size, cartridge_buffer);
+      break;
+    case CARTRIDGE_TYPE_SUPERCART:
+      if(cartridge_size >= 32768) {
+        uint off = cartridge_size - 16384;
+        memory_WriteROM(49152, 16384, cartridge_buffer + off);
+        cartridge_StoreBank(0);
+      }
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_LARGE:
+      if(cartridge_GetBankOffset(8) < cartridge_size) {
+        memory_WriteROM(49152, 16384, cartridge_buffer + cartridge_GetBankOffset(8));
+        memory_WriteROM(16384, 16384, cartridge_buffer + cartridge_GetBankOffset(0));
+        cartridge_StoreBank(0);
+      }
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_RAM:
+      if(cartridge_size >= 32768) {
+        uint off = cartridge_size - 16384;
+        memory_WriteROM(49152, 16384, cartridge_buffer + off);
+        memory_ClearROM(16384, 16384);
+        cartridge_StoreBank(0);
+      }
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_ROM:
+      if(cartridge_size >= 32768) {
+        uint off = cartridge_size - 16384;
+        memory_WriteROM(49152, 16384, cartridge_buffer + off);
+        memory_WriteROM(16384, 16384, cartridge_buffer + cartridge_GetBankOffset(0));
+        cartridge_StoreBank(0);
+      }
+      break;
+    case CARTRIDGE_TYPE_ABSOLUTE:
+      memory_WriteROM(16384, 16384, cartridge_buffer);
+      memory_WriteROM(32768, 32768, cartridge_buffer + cartridge_GetBankOffset(2));
+      break;
+    case CARTRIDGE_TYPE_ACTIVISION:
+      if(122880 < cartridge_size) {
+        memory_WriteROM(40960, 16384, cartridge_buffer);
+        memory_WriteROM(16384, 8192, cartridge_buffer + 106496);
+        memory_WriteROM(24576, 8192, cartridge_buffer + 98304);
+        memory_WriteROM(32768, 8192, cartridge_buffer + 122880);
+        memory_WriteROM(57344, 8192, cartridge_buffer + 114688);
+      }
+      break;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Write
+// ----------------------------------------------------------------------------
+void cartridge_Write(word address, byte data) {
+  switch(cartridge_type) {
+    case CARTRIDGE_TYPE_SUPERCART:
+    case CARTRIDGE_TYPE_SUPERCART_RAM:
+    case CARTRIDGE_TYPE_SUPERCART_ROM:
+      if(address >= 32768 && address < 49152) {
+        uint maxbank = cartridge_size / 16384;
+        if(data < maxbank) {
+          cartridge_StoreBank(data);
+        }
+      }
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_LARGE:
+      if(address >= 32768 && address < 49152) {
+        uint maxbank = cartridge_size / 16384;
+        if(data < maxbank) {
+          cartridge_StoreBank(data + 1);
+        }
+      }
+      break;
+    case CARTRIDGE_TYPE_ABSOLUTE:
+      if(address == 32768 && (data == 1 || data == 2)) {
+        cartridge_StoreBank(data - 1);
+      }
+      break;
+    case CARTRIDGE_TYPE_ACTIVISION:
+      if(address >= 65408) {
+        cartridge_StoreBank(address & 7);
+      }
+      break;
+  }
+
+  if(cartridge_pokey && address >= 0x4000 && address < 0x4009) {
+    switch(address) {
+      case POKEY_AUDF1:
+        pokey_SetRegister(POKEY_AUDF1, data);
+        break;
+      case POKEY_AUDC1:
+        pokey_SetRegister(POKEY_AUDC1, data);
+        break;
+      case POKEY_AUDF2:
+        pokey_SetRegister(POKEY_AUDF2, data);
+        break;
+      case POKEY_AUDC2:
+        pokey_SetRegister(POKEY_AUDC2, data);
+        break;
+      case POKEY_AUDF3:
+        pokey_SetRegister(POKEY_AUDF3, data);
+        break;
+      case POKEY_AUDC3:
+        pokey_SetRegister(POKEY_AUDC3, data);
+        break;
+      case POKEY_AUDF4:
+        pokey_SetRegister(POKEY_AUDF4, data);
+        break;
+      case POKEY_AUDC4:
+        pokey_SetRegister(POKEY_AUDC4, data);
+        break;
+      case POKEY_AUDCTL:
+        pokey_SetRegister(POKEY_AUDCTL, data);
+        break;
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// StoreBank
+// ----------------------------------------------------------------------------
+void cartridge_StoreBank(byte bank) {
+  switch(cartridge_type) {
+    case CARTRIDGE_TYPE_SUPERCART:
+      cartridge_WriteBank(32768, bank);
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_RAM:
+      cartridge_WriteBank(32768, bank);
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_ROM:
+      cartridge_WriteBank(32768, bank);
+      break;
+    case CARTRIDGE_TYPE_SUPERCART_LARGE:
+      cartridge_WriteBank(32768, bank);        
+      break;
+    case CARTRIDGE_TYPE_ABSOLUTE:
+      cartridge_WriteBank(16384, bank);
+      break;
+    case CARTRIDGE_TYPE_ACTIVISION:
+      cartridge_WriteBank(40960, bank);
+      break;
+  }  
+}
+
+// ----------------------------------------------------------------------------
+// IsLoaded
+// ----------------------------------------------------------------------------
+bool cartridge_IsLoaded( ) {
+  return (cartridge_buffer != NULL)? true: false;
+}
+
+// ----------------------------------------------------------------------------
+// Release
+// ----------------------------------------------------------------------------
+void cartridge_Release( ) {
+  cartridge_buffer = NULL;
+  cartridge_size = 0;
+}

@@ -18,5 +18,6 @@ int  fat_find(const char* dir, const char* name, fat_entry_t* out);
 
 // Чтение файла по байтам. Возвращает количество прочитанных (или -1).
 int  fat_read_file(const fat_entry_t* f, uint32_t offset, uint8_t* buf, uint32_t len);
+int  fat_mkdir(const char* parent_path, const char* name);
 
 #endif
