@@ -17,7 +17,7 @@ extern int printf(const char* fmt, ...);
 void fb_flush(void);
 int usb_kbd_get_raw(uint8_t* buf, int max);
 int uart_rx_ready(void);
-void udelay(uint32_t us);
+void emu_throttle(void);
 }
 
 #define FB_ADDR   ((volatile uint32_t*)0x5F900000)
@@ -35,7 +35,6 @@ static uint8_t screen[NES_DISP_HEIGHT][NES_DISP_WIDTH];
 
 static uint16_t nes_pal_rgb565[64];
 static bool pal_ready = false;
-static uint32_t frame_t0 = 0;   // для throttle
 static uint32_t frame_cnt = 0;
 
 static void init_palette(void) {
@@ -72,13 +71,7 @@ void InfoNES_PostDrawLine(int line) {
 }
 
 int InfoNES_LoadFrame(void) {
-    // throttle to ~60 FPS (called once per frame on scanline 240)
-    uint32_t now = h3_hs_timer_lo_us();
-    if (!frame_t0) frame_t0 = now;
-    uint32_t elapsed = now - frame_t0;
-    if (elapsed < 16667)
-        udelay(16667 - elapsed);
-    frame_t0 = h3_hs_timer_lo_us();
+    emu_throttle();
 
     // blit indexed screen[][] to HDMI FB (centered XRGB8888)
     for (int y = 0; y < NES_DISP_HEIGHT; y++) {

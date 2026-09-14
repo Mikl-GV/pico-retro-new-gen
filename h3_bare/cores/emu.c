@@ -58,7 +58,7 @@ static void emu_wait_key(void) {
 
 // Throttle 60 FPS: ждать до 16667 мкс от начала кадра
 static uint32_t emu_ts0 = 0;
-static void emu_throttle(void) {
+void emu_throttle(void) {
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
