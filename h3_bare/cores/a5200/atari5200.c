@@ -584,13 +584,13 @@ void at5_Step(void)
   else
       which->up = 0;
   if (k & MASK_JOY2_RIGHT)
-      which->left = 1;
-  else
-      which->left = 0;
-  if (k & MASK_JOY2_LEFT)
       which->right = 1;
   else
-      which->right = 0; 
+      which->right = 0;
+  if (k & MASK_JOY2_LEFT)
+      which->left = 1;
+  else
+      which->left = 0; 
 
 
 #ifdef ANALOGJOY
