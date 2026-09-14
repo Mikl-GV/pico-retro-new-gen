@@ -17,6 +17,7 @@ extern int printf(const char* fmt, ...);
 int usb_kbd_get_raw(uint8_t* buf, int max);
 int uart_rx_ready(void);
 void fb_flush(void);
+void fb_clear(void);
 void emu_throttle(void);
 
 extern void emu_scale(int src_w, int src_h, int scale);
@@ -80,7 +81,7 @@ int InfoNES_LoadFrame(void) {
     fb_flush();
 
     if (++frame_cnt % 60 == 0)
-        printf("nes f=%u pc=%04X\n", (unsigned)frame_cnt, (unsigned)PC);
+        printf("nes f=%u\n", (unsigned)frame_cnt);
     return 0;
 }
 
@@ -148,9 +149,11 @@ void nes_stop(void) {
 // exits on PAD_SYS_QUIT (ESC). Throttle + scale in InfoNES_LoadFrame.
 void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
+    fb_clear(); fb_flush();
     nes_init(rom, size);
     nes_frame();
     nes_stop();
+    fb_clear(); fb_flush();
 }
 
 } // extern "C"

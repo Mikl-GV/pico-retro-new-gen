@@ -73,7 +73,6 @@ BYTE RAM[RAM_SIZE];
 // Share with romselect.cpp
 void *InfoNes_GetRAM(size_t *size)
 {
-  printf("Acquired RAM Buffer from emulator: %d bytes\n", RAM_SIZE);
   *size = RAM_SIZE;
   return SRAM;
 }
@@ -86,7 +85,6 @@ BYTE ChrBuf[CHRBUF_SIZE];
 // Share with romselect.cpp
 void *InfoNes_GetChrBuf(size_t *size)
 {
-  printf("Acquired ChrBuf Buffer from emulator: %d bytes\n", CHRBUF_SIZE);
   *size = CHRBUF_SIZE;
   return ChrBuf;
 }
@@ -95,7 +93,6 @@ BYTE PPURAM[PPURAM_SIZE];
 // Share with romselect.cpp
 void *InfoNes_GetPPURAM(size_t *size)
 {
-  printf("Acquired PPURAM Buffer from emulator: %d bytes\n", PPURAM_SIZE);
   *size = PPURAM_SIZE;
   return PPURAM;
 }
@@ -106,7 +103,6 @@ BYTE SPRRAM[SPRRAM_SIZE];
 // Share with romselect.cpp
 void *InfoNes_GetSPRRAM(size_t *size)
 {
-  printf("Acquired SPRRAM Buffer from emulator: %d bytes\n", SPRRAM_SIZE);
   *size = SPRRAM_SIZE;
   return SPRRAM;
 }

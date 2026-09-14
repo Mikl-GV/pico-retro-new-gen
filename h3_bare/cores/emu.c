@@ -80,7 +80,7 @@ static void emu_wait_key(void) {
 }
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb();
+    emu_clear_fb(); fb_clear(); fb_flush();
     if (a7800_init_game(rom, size) != 1) {
         printf("A7800: init failed\n"); return;
     }
@@ -98,7 +98,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb();
+    emu_clear_fb(); fb_clear(); fb_flush();
     if (a5200_init_game(rom, size) != 1) {
         printf("A5200: init failed\n"); return;
     }
@@ -116,7 +116,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb();
+    emu_clear_fb(); fb_clear(); fb_flush();
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }

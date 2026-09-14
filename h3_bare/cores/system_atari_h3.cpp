@@ -10,8 +10,8 @@ extern "C" {
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
-#define EMU_W 160
-#define EMU_H 192
+#define EMU_W 320
+#define EMU_H 240
 
 extern "C" {
 #include "mcume/options.h"
