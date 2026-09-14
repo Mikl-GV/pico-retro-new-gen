@@ -1,7 +1,6 @@
 #include <stdint.h>
 #include <string.h>
 #include "emu.h"
-#include "a2600.h"
 #include "fb_text.h"
 #include "uart.h"
 #include "usb_kbd.h"
@@ -150,19 +149,8 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
 exit: fb_clear(); fb_flush();
 }
 
-// Запасное самописное ядро A2600 (больше не используется, но код цел)
+// Запасное самописное ядро A2600 (не используется — rom_browser вызывает MCUME)
 void emu_run_a2600(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb();
-    a2600_t a;
-    a2600_init(&a, rom, size, EMU_FB);
-    printf("A2600 native: \"%s\" size=%d mapper=%s\n", rom_name ? rom_name : "?", (int)size, a.mapper_label);
-    uint8_t raw_keys[6]; uint32_t fc = 0; emu_ts0 = 0;
-    for (;;) {
-        a2600_frame(&a); emu_throttle(); emu_scale(160, 192, 3); fb_flush();
-        if ((fc % 60) == 0) printf("a2600 f=%u\n", (unsigned)fc); fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
-    }
-exit: fb_clear(); fb_flush();
+    (void)rom; (void)size; (void)rom_name;
+    printf("A2600 native: not compiled (use MCUME)\n");
 }

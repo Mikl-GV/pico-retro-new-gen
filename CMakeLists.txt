@@ -24,8 +24,6 @@ set(SRCS
     h3_bare/cores/menu.c
     h3_bare/cores/rom_browser.c
     h3_bare/cores/settings.c
-    h3_bare/cores/cpu6502.c
-    h3_bare/cores/a2600.c
     h3_bare/cores/emu.c
     h3_bare/cores/system_atari_h3.cpp
     h3_bare/cores/mcume/Vcsemu.c
