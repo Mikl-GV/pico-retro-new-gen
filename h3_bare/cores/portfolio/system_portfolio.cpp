@@ -1056,70 +1056,124 @@ static int pofo_cmd_check(void)
     return 0;
 }
 
+/* Обработка одного символа (нормализованного) → нажатие клавиши Portfolio.
+ * Источники: UART (pofo_uart_input) и USB-клавиатура (pofo_usbkbd_input).
+ * Спец-коды: 0x0B = стрелка вверх, 0x0C = стрелка вниз (для APPS-хаба). */
+static void pofo_char_input(int c)
+{
+    /* Built-in APPS hub: стрелки/Enter/Backspace */
+    if (pofo_apps_active && pofo_app_current < 0) {
+        if (c == 0x0B) pofo_apps_sel = (pofo_apps_sel + APPS_MAX - 1) % APPS_MAX;
+        else if (c == 0x0C) pofo_apps_sel = (pofo_apps_sel + 1) % APPS_MAX;
+        else if (c == '\r' || c == '\n') pofo_app_current = pofo_apps_sel;
+        else if (c == 0x7F || c == '\b') { pofo_apps_active = 0; display_fill(LCD_OFF_RGB); key_make(2,6); exec86(4000); key_break(2,6); }
+        return;
+    }
+
+    /* Built-in APPS: символ в активное текстовое поле. */
+    if (pofo_apps_active && pofo_app_current >= 0) {
+        pofo_app_uart_char(c);
+        return;
+    }
+
+    /* Built-in screens: только ENTER выходит из PIN/HELP. */
+    if (pofo_pin_active || pofo_help_active) {
+        if (c == '\r' || c == '\n') {
+            pofo_pin_active = 0;
+            pofo_help_active = 0;
+            display_fill(LCD_OFF_RGB);
+        }
+        return;
+    }
+
+    /* Отслеживание команды "PIN" / "APPS" / "HELP". */
+    if (c == '\r' || c == '\n') {
+        if (pofo_cmd_check()) return;
+    } else if (c == 0x7F || c == '\b') {
+        if (pofo_cmd_len > 0) pofo_cmd_len--;
+        c = 0x08;
+    } else if (pofo_cmd_len < 15) {
+        pofo_cmd[pofo_cmd_len++] = (char)c;
+    }
+
+    uint8_t row, col; int shift = 0;
+    if (!pofo_ascii_key((char)c, &row, &col, &shift)) return;
+
+    if (shift) {
+        key_make(3, 3);              /* Shift down */
+        exec86(4000);                /* BIOS handles Shift INT 09h */
+        key_make(row, col);          /* base key */
+        exec86(4000);                /* BIOS handles letter INT 09h */
+        key_break(row, col);         /* letter up */
+        key_break(3, 3);             /* Shift up */
+    } else {
+        key_make(row, col);
+        exec86(4000);
+        key_break(row, col);
+    }
+}
+
 /* Pull any pending UART bytes and turn them into key presses.
- * Для shifted-символа: Shift make → exec86 (BIOS ставит флаг 0x40:0x17) →
- * base key make → exec86 → base key break → Shift break — всё в одном
- * вызове. exec86 между make и break даёт BIOS время обработать INT 09h. */
+ * ANSI-стрелки (ESC[A / ESC[B) конвертируются в 0x0B/0x0C. */
 static void pofo_uart_input(void)
 {
     while (uart_is_readable(uart0)) {
         int c = uart_getc(uart0);
         if (c < 0) break;
-
-        /* Built-in APPS hub: arrows + Enter from UART */
-        if (pofo_apps_active && pofo_app_current < 0) {
-            if (c == 0x1B) {
-                int c2 = uart_getc(uart0);
-                if (c2 == '[') {
-                    int c3 = uart_getc(uart0);
-                    if (c3 == 'A') pofo_apps_sel = (pofo_apps_sel + APPS_MAX - 1) % APPS_MAX;
-                    else if (c3 == 'B') pofo_apps_sel = (pofo_apps_sel + 1) % APPS_MAX;
-                }
-                continue;
-            }
-            if (c == '\r' || c == '\n') { pofo_app_current = pofo_apps_sel; continue; }
-            if (c == 0x7F || c == '\b') { pofo_apps_active = 0; display_fill(LCD_OFF_RGB); key_make(2,6); exec86(4000); key_break(2,6); continue; }
-            continue;
-        }
-
-        /* Built-in APPS: UART types into the focused text field. */
-        if (pofo_apps_active && pofo_app_current >= 0) {
-            pofo_app_uart_char(c);
-            continue;
-        }
-
-        /* Built-in screens: only ENTER resumes DOS. */
-        if (pofo_pin_active || pofo_help_active) {
-            if (c == '\r' || c == '\n') {
-                pofo_pin_active = 0;
-                pofo_help_active = 0;
-                display_fill(LCD_OFF_RGB);
+        if (c == 0x1B) {
+            int c2 = uart_getc(uart0);
+            if (c2 == '[') {
+                int c3 = uart_getc(uart0);
+                if (c3 == 'A') pofo_char_input(0x0B);
+                else if (c3 == 'B') pofo_char_input(0x0C);
+                else pofo_char_input(0x1B);
+            } else {
+                pofo_char_input(0x1B);
+                if (c2 >= 0) pofo_char_input(c2);
             }
             continue;
         }
+        pofo_char_input(c);
+    }
+}
 
-        /* Track the typed command to catch "PIN" / "APPS" / "HELP". */
-        if (c == '\r' || c == '\n') {
-            if (pofo_cmd_check()) continue;
-        } else if (pofo_cmd_len < 15) {
-            pofo_cmd[pofo_cmd_len++] = (char)c;
-        }
+/* USB HID scancodes (boot protocol) -> ASCII. base = без Shift, shifted = с Shift. */
+static const char pofo_hid_base[57] = {
+    0,0,0,0,                             /* 0-3: нет */
+    'a','b','c','d','e','f','g','h','i','j','k','l','m',   /* 4-16 */
+    'n','o','p','q','r','s','t','u','v','w','x','y','z',   /* 17-29 */
+    '1','2','3','4','5','6','7','8','9','0',               /* 30-39 */
+    '\r',0x1B,0x7F,'\t',' ',                               /* 40-44 */
+    '-','=','[',']','\\',                                  /* 45-49 */
+    ';','\'','`',',','.','/'                               /* 51-56 */
+};
+static const char pofo_hid_shift[57] = {
+    0,0,0,0,
+    'A','B','C','D','E','F','G','H','I','J','K','L','M',
+    'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+    '!','@','#','$','%','^','&','*','(',')',
+    '\r',0x1B,0x7F,'\t',' ',
+    '_','+','{','}','|',
+    ':','"','~','<','>','?'
+};
 
-        uint8_t row, col; int shift = 0;
-        if (!pofo_ascii_key((char)c, &row, &col, &shift)) continue;
+/* USB-клавиатура как источник ввода (тот же канал, что и UART). */
+static void pofo_usbkbd_input(void)
+{
+    uint8_t keys[6];
+    int n = usb_kbd_get_raw(keys, 6);
+    if (n <= 0) return;
+    uint8_t mods = usb_kbd_get_mods();
+    int shift = (mods & 0x02) || (mods & 0x20);   /* LShift/RShift */
 
-        if (shift) {
-            key_make(3, 3);              /* Shift down */
-            exec86(4000);                /* BIOS handles Shift INT 09h */
-            key_make(row, col);          /* base key */
-            exec86(4000);                /* BIOS handles letter INT 09h */
-            key_break(row, col);         /* letter up */
-            key_break(3, 3);             /* Shift up */
-        } else {
-            key_make(row, col);
-            exec86(4000);
-            key_break(row, col);
-        }
+    for (int i = 0; i < n; i++) {
+        uint8_t sc = keys[i];
+        if (sc == 82) { pofo_char_input(0x0B); continue; }   /* Up */
+        if (sc == 81) { pofo_char_input(0x0C); continue; }   /* Down */
+        if (sc == 80 || sc == 79) continue;                  /* Left/Right — игнор */
+        if (sc >= 57) continue;                              /* F1-F12 и прочее */
+        char ch = shift ? pofo_hid_shift[sc] : pofo_hid_base[sc];
+        if (ch) pofo_char_input(ch);
     }
 }
 
@@ -1726,6 +1780,7 @@ extern "C" void portfolio_run_frame(void)
         if (vk_visible) vk_handle(pad);
         else pofo_apps_handle(pad);
         pofo_uart_input();
+        pofo_usbkbd_input();
         pofo_apps_draw();
         pofo_render();
         if (vk_visible && vk_dirty) { vk_render(); vk_dirty = 0; }
@@ -1735,6 +1790,7 @@ extern "C" void portfolio_run_frame(void)
 
     /* Normal DOS mode */
     pofo_uart_input();
+    pofo_usbkbd_input();
 
     if (vk_visible) vk_handle(pad);
     else kbd_poll();
