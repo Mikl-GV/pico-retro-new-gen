@@ -43,14 +43,15 @@ void emu_clear_fb(void) {
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
 }
 
-// ---- throttle 60 FPS ----
+// ---- throttle 60/50 FPS ----
+#include "settings.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
-    if (elapsed < 16667)
-        h3_hs_timer_delay((16667 - elapsed) * 100);
+    if (elapsed < emu_period_us)
+        h3_hs_timer_delay((emu_period_us - elapsed) * 100);
     emu_ts0 = h3_hs_timer_lo_us();
 }
 
@@ -58,6 +59,7 @@ void emu_throttle(void) {
 
 extern void atari2600_init(const uint8_t* rom, uint32_t size);
 extern void atari2600_run_frame(void);
+extern void atari2600_set_difficulty(int p1_expert);
 extern int a7800_init_game(const uint8_t* rom, uint32_t size);
 extern void a7800_run_frame(void);
 extern int a5200_init_game(const uint8_t* rom, uint32_t size);
@@ -65,6 +67,8 @@ extern void a5200_run_frame(void);
 extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
 extern void sms_render_frame(void);
+extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
+extern void portfolio_run_frame(void);
 
 static void emu_wait_key(void) {
     for (;;) {
@@ -132,12 +136,34 @@ exit: fb_clear(); fb_flush();
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_clear_fb();
     atari2600_init(rom, size);
-    printf("MCUME: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    atari2600_set_difficulty(a2600_diff_expert);
+    printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
+           a2600_diff_expert ? "Expert" : "Novice");
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if ((fc % 60) == 0) printf("mcume f=%u\n", (unsigned)fc); fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (uart_rx_ready()) break;
+    }
+exit: fb_clear(); fb_flush();
+}
+
+void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (portfolio_init_game(rom, size) != 1) {
+        printf("Portfolio: init failed\n"); return;
+    }
+    printf("Portfolio: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    uint8_t raw_keys[6]; uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        portfolio_run_frame();
+        emu_throttle();
+        fb_flush();
+        if ((fc % 60) == 0) printf("portfolio f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
         if (uart_rx_ready()) break;

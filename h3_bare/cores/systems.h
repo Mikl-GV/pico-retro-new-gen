@@ -68,7 +68,7 @@ static const system_entry_t systems[] = {
     SYS("msx",        "MSX / MSX2",                  COMPUTER, PLANNED),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
     SYS("bk0010",     "BK-0010/0011M",               COMPUTER, PLANNED),
-    SYS("portfolio",  "Atari Portfolio",             COMPUTER, PLANNED),
+    SYS("portfolio",  "Atari Portfolio",             COMPUTER, READY),
     SYS("ms1504",     "MS 1504",                     COMPUTER, PLANNED),
 };
 

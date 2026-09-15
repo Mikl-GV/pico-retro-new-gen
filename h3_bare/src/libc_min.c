@@ -2,6 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+extern void uart_putc(char c);
+
 void* memset(void* dst, int c, size_t n) {
     uint8_t* d = (uint8_t*)dst;
     while (n--) *d++ = (uint8_t)c;
@@ -146,4 +148,57 @@ int sprintf(char* buf, const char* fmt, ...) {
 void exit(int code) {
     (void)code;
     while (1) __asm volatile("wfi");
+}
+
+int abs(int x) { return x < 0 ? -x : x; }
+
+int putchar(int c) {
+    uart_putc((char)c);   // из uart.h — но libc_min не включает его; объявим ниже
+    return c;
+}
+
+int snprintf(char* buf, size_t n, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char* d = buf;
+    size_t left = n;
+    for (; *fmt && left > 1; fmt++) {
+        if (*fmt != '%') { *d++ = *fmt; left--; continue; }
+        fmt++;
+        switch (*fmt) {
+        case 's': { const char* s = va_arg(ap, const char*);
+                    while (*s && left > 1) { *d++ = *s++; left--; } break; }
+        case 'd': { int v = va_arg(ap, int);
+                    if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
+                    char tmp[16]; int i = 0;
+                    do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    break; }
+        case 'u': { unsigned v = va_arg(ap, unsigned);
+                    char tmp[16]; int i = 0;
+                    do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    break; }
+        case 'l': {
+            fmt++;
+            if (*fmt == 'u') {
+                unsigned long v = va_arg(ap, unsigned long);
+                char tmp[24]; int i = 0;
+                do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                while (i && left > 1) { *d++ = tmp[--i]; left--; }
+            } else if (*fmt == 'd' || *fmt == 'i') {
+                long v = va_arg(ap, long);
+                if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
+                char tmp[24]; int i = 0;
+                do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                while (i && left > 1) { *d++ = tmp[--i]; left--; }
+            }
+            break; }
+        case 'c': { if (left > 1) { *d++ = (char)va_arg(ap, int); left--; } break; }
+        default: if (left > 1) { *d++ = *fmt; left--; } break;
+        }
+    }
+    if (left > 0) *d = 0;
+    va_end(ap);
+    return (int)(d - buf);
 }

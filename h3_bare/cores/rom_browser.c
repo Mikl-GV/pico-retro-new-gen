@@ -116,6 +116,8 @@ if (n > 0) {
                         emu_run_sms(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "nes") == 0)
                         emu_run_nes(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "portfolio") == 0)
+                        emu_run_portfolio(rom, size, list[cursor].name);
                     else {
                         fb_clear();
                         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);

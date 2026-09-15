@@ -11,6 +11,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a7800
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a5200
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/portfolio
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/src
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/platform/fb
 )
@@ -67,6 +68,10 @@ set(SRCS
     h3_bare/cores/smsplus/sn76496.c
     h3_bare/cores/smsplus/z80.c
     h3_bare/cores/nes_host.cpp
+    h3_bare/cores/portfolio/cpu.cpp
+    h3_bare/cores/portfolio/i8253.cpp
+    h3_bare/cores/portfolio/i8259.cpp
+    h3_bare/cores/portfolio/system_portfolio.cpp
     h3_bare/cores/nes/InfoNES.cpp
     h3_bare/cores/nes/InfoNES_Mapper.cpp
     h3_bare/cores/nes/InfoNES_pAPU.cpp

@@ -6,6 +6,9 @@
 #include "usb_kbd.h"
 extern int printf(const char* fmt, ...);
 
+uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
+uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
+
 #define PHYS_W 1024
 #define PHYS_H 600
 
@@ -182,8 +185,21 @@ void settings_run(void) {
 
         fb_puts_s(80, 110, "1 - Create default ROM folders", 1, 0x00FFFF00);
         fb_puts_s(80, 135, "2 - Input Test for NES / A2600", 1, 0x00FFFF00);
+        fb_puts_s(80, 160, "3 - Video Mode", 1, 0x00FFFF00);
+        {
+            char buf[32];
+            int l = 0;
+            const char* p = emu_period_us == 16667 ? "60 Hz (NTSC)" : "50 Hz (PAL)";
+            while (*p) buf[l++] = *p++;
+            buf[l] = 0;
+            fb_puts_s(280, 160, buf, 1, 0x00AAAAAA);
+        }
+        fb_puts_s(80, 185, "4 - Atari 2600 Difficulty", 1, 0x00FFFF00);
+        {
+            fb_puts_s(320, 185, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
+        }
 
-        fb_puts(60, FOOTER_Y, "  1/2: select    ESC: back", 0x00888888);
+        fb_puts(60, FOOTER_Y, "  1/2/3/4: select    ESC: back", 0x00888888);
         fb_flush();
 
         int k = input_wait();
@@ -195,6 +211,12 @@ void settings_run(void) {
         } else if (k == 31) {
             // "2" -> Input Test
             input_test_run();
+        } else if (k == 32) {
+            // "3" -> Video Mode 50/60 Гц
+            emu_period_us = (emu_period_us == 16667) ? 20000 : 16667;
+        } else if (k == 33) {
+            // "4" -> Atari 2600 Difficulty
+            a2600_diff_expert = !a2600_diff_expert;
         }
     }
 create_folders:
