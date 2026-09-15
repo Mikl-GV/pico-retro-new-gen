@@ -1267,8 +1267,11 @@ static void pofo_usbkbd_input(void)
             } else {
                 /* DIP DOS: стрелки как сканкоды (матрица Portfolio):
                  * Up=Y3/bit5, Down=Y4/bit5, Left=Y5/bit3, Right=Y5/bit4 */
-                uint8_t row = (sc == 82) ? 3 : (sc == 81) ? 4 : 5;
-                uint8_t col = (sc == 80) ? 3 : 4;
+                uint8_t row, col;
+                if (sc == 82) { row = 3; col = 5; }
+                else if (sc == 81) { row = 4; col = 5; }
+                else if (sc == 80) { row = 5; col = 3; }
+                else { row = 5; col = 4; }
                 key_make(row, col); exec86(4000); key_break(row, col);
             }
             continue;

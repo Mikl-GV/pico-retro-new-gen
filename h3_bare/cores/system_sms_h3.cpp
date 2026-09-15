@@ -26,15 +26,17 @@ extern "C" {
 
 static uint16_t sms_pal_rgb565[PALETTE_SIZE];
 
+static uint8_t sms_heap[128 * 1024];
+static int sms_heap_pos = 0;
+
 extern "C" void* frens_f_malloc(size_t size) {
-    static uint8_t sms_heap[128 * 1024];
-    static int pos = 0;
-    if (pos + (int)size > (int)sizeof(sms_heap)) return NULL;
-    void* p = sms_heap + pos;
-    pos += (int)size;
+    if (sms_heap_pos + (int)size > (int)sizeof(sms_heap)) return NULL;
+    void* p = sms_heap + sms_heap_pos;
+    sms_heap_pos += (int)size;
     return p;
 }
 extern "C" void frens_f_free(void*) {}
+extern "C" void sms_heap_reset(void) { sms_heap_pos = 0; }
 
 extern "C" uint8 read_rom(int) { return 0xFF; }
 extern "C" void write_rom(int, uint8) {}
@@ -88,6 +90,8 @@ static void sms_poll_input(void) {
 }
 
 extern "C" int sms_init_game(const uint8_t* rom, uint32_t size) {
+    extern void sms_heap_reset(void);
+    sms_heap_reset();
     for (int i = 0; i < PALETTE_SIZE; i++) sms_pal_rgb565[i] = 0;
     memset(last_fb, 0, sizeof(last_fb));
 

@@ -15,9 +15,9 @@ static size_t gb_heap_pos = 0;
 
 static void* gb_alloc(size_t sz) {
     sz = (sz + 3) & ~3;
+    if (gb_heap_pos + sz > sizeof(gb_heap)) return 0;
     void* p = (void*)(gb_heap + gb_heap_pos);
     gb_heap_pos += sz;
-    if (gb_heap_pos > sizeof(gb_heap)) { while (1) {} }
     return p;
 }
 
@@ -27,11 +27,17 @@ void* malloc(size_t sz) { return gb_alloc(sz); }
 void* calloc(size_t count, size_t sz) {
     size_t n = count * sz;
     void* p = gb_alloc(n);
+    if (!p) return p;
     unsigned char* cp = (unsigned char*)p;
     for (size_t i = 0; i < n; i++) cp[i] = 0;
     return p;
 }
-void* realloc(void* p, size_t sz) { (void)p; return gb_alloc(sz); }
+void* realloc(void* p, size_t sz) {
+    if (!p) return gb_alloc(sz);
+    /* bump-аллокатор: копировать неоткуда, но данные лежат в пуле —
+       перераспределение вниз по позиции не требуется для нашего использования */
+    return gb_alloc(sz);
+}
 void free(void*) {}
 
 void* memchr(const void* s, int c, size_t n) {
@@ -52,5 +58,5 @@ void __assert_fail(const char*, const char*, int, const char*) { while (1) {} }
 struct FileData { unsigned char* data; unsigned long size; };
 void file_data_resize(struct FileData* fd, unsigned long new_sz) { fd->size = new_sz; }
 void file_data_delete(struct FileData* fd) { fd->data = 0; fd->size = 0; }
-int file_read(const char* name, struct FileData* out) { (void)name; (void)out; return 1; }
+int file_read(const char* name, struct FileData* out) { (void)name; (void)out; return 0; }
 int file_write(const char* name, const struct FileData* fd) { (void)name; (void)fd; return 1; }

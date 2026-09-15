@@ -21,7 +21,10 @@ extern int printf(const char* fmt, ...);
 // Картинка растягивается на ВСЮ высоту экрана (600), ширина — пропорционально,
 // по бокам остаются чёрные поля. Маппинг dst->src, один источник на пиксель.
 void emu_scale(int src_w, int src_h) {
+    if (src_w <= 0 || src_h <= 0) return;
     int dst_w = (src_w * FB_H) / src_h;
+    if (dst_w > FB_W) dst_w = FB_W;
+    if (dst_w <= 0) return;
     int dst_h = FB_H;
     int dst_x = (FB_W - dst_w) / 2;
     volatile uint32_t* dst = (volatile uint32_t*)FB_ADDR;

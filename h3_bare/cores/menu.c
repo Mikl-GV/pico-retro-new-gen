@@ -54,10 +54,16 @@ static int find_system(const char* dir_name) {
     return -1;
 }
 
+// глобальный буфер для копирования имён папок с SD
+// build_menu() копирует сюда имена, и g_items[].dir указывает сюда
+static char g_dir_names[MAX_MENU_ITEMS][FAT_NAME_LEN];
+static int g_dir_name_used = 0;
+
 static void build_menu(void) {
     g_item_count = 0;
+    g_dir_name_used = 0;
 
-    // Builtin-системы (BIOS вшит, ROM не нужен) — показываем всегда
+    // Builtin-системы — показываем всегда
     for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
         if (!systems[i].builtin) continue;
         g_items[g_item_count].id = systems[i].id;
@@ -92,15 +98,34 @@ static void build_menu(void) {
 
             g_items[g_item_count].id = systems[sys_idx].id;
             g_items[g_item_count].name = systems[sys_idx].name;
-            // dir = реально найденная папка на карте (может быть alt_dir)
-            g_items[g_item_count].dir = dn;
+            // копируем имя папки в статический буфер (не висящий указатель)
+            if (g_dir_name_used < MAX_MENU_ITEMS) {
+                int k = g_dir_name_used++;
+                int len = strlen(dn);
+                if (len >= FAT_NAME_LEN) len = FAT_NAME_LEN - 1;
+                memcpy(g_dir_names[k], dn, len);
+                g_dir_names[k][len] = 0;
+                g_items[g_item_count].dir = g_dir_names[k];
+            } else {
+                g_items[g_item_count].dir = NULL;
+            }
             g_items[g_item_count].group = systems[sys_idx].group;
             g_items[g_item_count].status = systems[sys_idx].status;
             g_items[g_item_count].present = 1;
         } else {
             g_items[g_item_count].id = dn;
             g_items[g_item_count].name = dn;
-            g_items[g_item_count].dir = dn;
+            // копируем в статический буфер
+            if (g_dir_name_used < MAX_MENU_ITEMS) {
+                int k = g_dir_name_used++;
+                int len = strlen(dn);
+                if (len >= FAT_NAME_LEN) len = FAT_NAME_LEN - 1;
+                memcpy(g_dir_names[k], dn, len);
+                g_dir_names[k][len] = 0;
+                g_items[g_item_count].dir = g_dir_names[k];
+            } else {
+                g_items[g_item_count].dir = NULL;
+            }
             g_items[g_item_count].group = GROUP_OTHER;
             g_items[g_item_count].status = STATUS_PLANNED;
             g_items[g_item_count].present = 1;
@@ -131,7 +156,7 @@ static void sort_items(void) {
         }
 }
 
-#define MAX_ROWS (GROUP_COUNT + MAX_MENU_ITEMS + 2)
+#define MAX_ROWS (GROUP_COUNT + MAX_MENU_ITEMS + 10)
 
 typedef struct { int item; int group; } row_t;
 static row_t rows[MAX_ROWS];

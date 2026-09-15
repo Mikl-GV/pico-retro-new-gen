@@ -62,7 +62,7 @@ static uint32_t fat_next_cluster(uint32_t cl) {
 
 // ---- чтение по байтам из цепочки кластеров ----
 static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t len) {
-    // пропуск до offset
+    if (g_sec_per_cluster == 0) return 0;
     uint32_t cl_size = g_sec_per_cluster * 512;
     uint32_t skip = offset;
     while (skip >= cl_size) {
@@ -495,9 +495,9 @@ int fat_delete_file(const char* dir, const char* name) {
     uint32_t fc = target_first;
     while (fc >= 2 && fc < 0x0FFFFFF8) {
         uint32_t next = fat_next_cluster(fc);
-        fat_set_cluster(fc, 0);   // пишет в обе копии FAT
-        if (next == fc) break;
-        if (next >= 0x0FFFFFF8) break;
+        if (next == 0) { fat_set_cluster(fc, 0); break; } // кластер 0 — стоп
+        fat_set_cluster(fc, 0);
+        if (next == fc || next >= 0x0FFFFFF8) break;
         fc = next;
     }
     return 0;

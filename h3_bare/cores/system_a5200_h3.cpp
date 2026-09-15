@@ -70,7 +70,7 @@ extern "C" void a5_PaletteEntry(unsigned char r, unsigned char g, unsigned char 
 
 extern "C" void a5_DrawLinePal16(unsigned char *VBuf, int width, int height, int line) {
     (void)width; (void)height;
-    if (line < 0 || line >= EMU_H) return;
+    if (!VBuf || line < 0 || line >= EMU_H) return;
     for (int x = 0; x < 320; x++)
         EMU_FB[line * EMU_W + x] = a5_pal_rgb565[VBuf[x] & 0xFF];
 }
