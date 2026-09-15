@@ -209,12 +209,14 @@ int fat_init(void) {
     if (sd_read_sector(0, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
 
-    // 1. Ищем раздел с папкой /roms в корне (приоритет 2→1→3→4)
+    // 1. Ищем раздел с папкой /roms в корне. Системный раздел (0) в поиске
+    //    НЕ участвует — ROM-раздел всегда отдельный (1..3).
     int priority[4];
-    priority[0] = 1; priority[1] = 0; priority[2] = 3; priority[3] = 2;
+    priority[0] = 1; priority[1] = 2; priority[2] = 3; priority[3] = 0;
 
     for (int pi = 0; pi < 4; pi++) {
         int n = priority[pi];
+        if (n == 0) continue;   // системный раздел пропускаем
         int off = 446 + n * 16;
         uint8_t type = g_sector[off + 4];
         if (type != 0x0B && type != 0x0C && type != 0x06) continue;
@@ -269,7 +271,7 @@ int fat_init(void) {
         }
     }
 
-    // 3. Если нет второго раздела — падаем на первый (не создаём /roms)
+    // 3. Если нет не-system раздела — падаем на первый (не создаём /roms)
     if (part_idx < 0) {
         for (int n = 0; n < 4; n++) {
             int off = 446 + n * 16;
