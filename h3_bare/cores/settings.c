@@ -1,10 +1,12 @@
 #include <string.h>
 #include "fb_text.h"
 #include "fat.h"
+#include "sd.h"
 #include "systems.h"
 #include "uart.h"
 #include "usb_kbd.h"
 extern int printf(const char* fmt, ...);
+extern int fat_create_rom_partition(void);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
@@ -183,7 +185,7 @@ void settings_run(void) {
         fb_puts_s(60, 40, "Settings", 2, 0x00FF0000);
         fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
 
-        fb_puts_s(80, 110, "1 - Create default ROM folders", 1, 0x00FFFF00);
+        fb_puts_s(80, 110, "1 - Create ROM system folders", 1, 0x00FFFF00);
         fb_puts_s(80, 135, "2 - Input Test for NES / A2600", 1, 0x00FFFF00);
         fb_puts_s(80, 160, "3 - Video Mode", 1, 0x00FFFF00);
         {
@@ -198,16 +200,17 @@ void settings_run(void) {
         {
             fb_puts_s(320, 185, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
         }
+        fb_puts_s(80, 210, "5 - Create 2nd FAT32 partition", 1, 0x00FFFF00);
 
-        fb_puts(60, FOOTER_Y, "  1/2/3/4: select    ESC: back", 0x00888888);
+        fb_puts(60, FOOTER_Y, "  1/2/3/4/5: select    ESC: back", 0x00888888);
         fb_flush();
 
         int k = input_wait();
         if (k == 41) {
             return;
         } else if (k == 40 || k == '\n' || k == '\r' || k == 30) {
-            // Enter or "1" -> create folders
-            goto create_folders;
+            // "1" -> создать папки ROM на текущем разделе
+            goto create_folders_only;
         } else if (k == 31) {
             // "2" -> Input Test
             input_test_run();
@@ -217,15 +220,18 @@ void settings_run(void) {
         } else if (k == 33) {
             // "4" -> Atari 2600 Difficulty
             a2600_diff_expert = !a2600_diff_expert;
+        } else if (k == 34) {
+            // "5" -> создать ROM-раздел
+            goto create_partition;
         }
     }
-create_folders:
+create_folders_only:
     {
+        // Создать папки /roms/<system>/ на текущем разделе
         fb_clear();
-        fb_puts_s(60, 100, "Create all ROM folders?", 2, 0x00FFAA00);
+        fb_puts_s(60, 70, "Create ROM folders?", 2, 0x00FFAA00);
         fb_puts_s(60, 140, "This will create /roms/<system>/", 1, 0x00FFFFFF);
         fb_puts_s(60, 170, "for all registered systems.", 1, 0x00FFFFFF);
-        fb_puts_s(60, 210, "", 1, 0x00FFFFFF);
         fb_puts_s(80, 230, "  Enter: confirm    ESC: cancel", 1, 0x00888888);
         fb_flush();
 
@@ -241,21 +247,84 @@ create_folders:
             while (*fmt) buf[len++] = *fmt++;
             buf[len] = 0;
             char ok_str[12];
-            int ok_tmp = ok, i = 11;
+            int ok_tmp = ok, ii = 11;
             ok_str[11] = 0;
-            do { ok_str[--i] = '0' + (ok_tmp % 10); ok_tmp /= 10; } while (ok_tmp);
-            memcpy(buf + len, ok_str + i, 11 - i); len += 11 - i;
+            do { ok_str[--ii] = '0' + (ok_tmp % 10); ok_tmp /= 10; } while (ok_tmp);
+            memcpy(buf + len, ok_str + ii, 11 - ii); len += 11 - ii;
             const char* fmt2 = "   Failed: ";
             while (*fmt2) buf[len++] = *fmt2++;
             char fail_str[12];
-            int fail_tmp = fail; i = 11; fail_str[11] = 0;
-            do { fail_str[--i] = '0' + (fail_tmp % 10); fail_tmp /= 10; } while (fail_tmp);
-            memcpy(buf + len, fail_str + i, 11 - i);
+            int fail_tmp = fail; ii = 11; fail_str[11] = 0;
+            do { fail_str[--ii] = '0' + (fail_tmp % 10); fail_tmp /= 10; } while (fail_tmp);
+            memcpy(buf + len, fail_str + ii, 11 - ii);
             fb_clear();
             fb_puts_s(60, 100, buf, 2, fail ? 0x00FF4444 : 0x0000FF00);
             fb_puts_s(60, 140, "Press any key", 1, 0x00AAAAAA);
             fb_flush();
             input_wait();
         }
+        return;
+    }
+create_partition:
+    {
+        fb_clear();
+        fb_puts_s(60, 70, "Create 2nd partition for ROMs?", 2, 0x00FFAA00);
+        fb_puts_s(60, 110, "This will create a new FAT32 partition", 1, 0x00FFFFFF);
+        fb_puts_s(60, 135, "on the SD card with /roms/ folder.", 1, 0x00FFFFFF);
+        fb_puts_s(60, 195, "WARNING: any data on that partition", 1, 0x00FF4444);
+        fb_puts_s(60, 220, "will be LOST! System partition is safe.", 1, 0x00FFAA00);
+        fb_puts_s(80, 260, "  Enter: confirm    ESC: cancel", 1, 0x00888888);
+        fb_flush();
+
+        int confirm = input_wait();
+        if (confirm != 40 && confirm != '\n' && confirm != '\r') return;
+
+        fb_clear();
+        fb_puts_s(60, 90, "Type YES and press Enter", 2, 0x00FFAA00);
+        fb_puts_s(60, 140, "to create partition.", 1, 0x00FFFFFF);
+        fb_flush();
+        char yesbuf[8] = {0};
+        int yl = 0;
+        for (;;) {
+            int k = input_wait();
+            if (k == 41 || k == 27) return;
+            if (k == 40 || k == '\n' || k == '\r') {
+                if (yl == 3 && strcmp(yesbuf, "YES") == 0) break;
+                return;
+            }
+            if (k == 42) { if (yl > 0) yl--; yesbuf[yl] = 0; continue; }
+            if (k >= 4 && k <= 29 && yl < 3) {
+                char ch = 'A' + (k - 4);
+                if (ch == 'Y' || ch == 'E' || ch == 'S') { yesbuf[yl++] = ch; yesbuf[yl] = 0; }
+            }
+            char disp[16];
+            int d = 0;
+            const char* s = yesbuf;
+            while (*s) disp[d++] = *s++;
+            disp[d] = 0;
+            fb_fill_rect(0, 180, 320, 30, 0);
+            fb_puts_s(60, 180, disp, 2, 0x00FFFFFF);
+            fb_flush();
+        }
+
+        fb_clear();
+        fb_puts_s(60, 100, "Creating partition...", 2, 0x00FFAA00);
+        fb_flush();
+
+        int r = fat_create_rom_partition();
+
+        fb_clear();
+        if (r == 0) {
+            fb_text_center("Partition created!", 120, 2, 0x0000FF00);
+            fb_puts_s(60, 160, "Reboot the console to mount it,", 1, 0x00FFFFFF);
+            fb_puts_s(60, 185, "then re-enter Settings > 1", 1, 0x00FFFFFF);
+            fb_puts_s(60, 210, "to create system folders", 1, 0x00FFFFFF);
+            fb_puts_s(60, 235, "in /roms/.", 1, 0x00FFFFFF);
+        } else {
+            fb_text_center("FAILED!", 120, 2, 0x00FF4444);
+        }
+        fb_puts_s(80, 280, "Press any key", 1, 0x00888888);
+        fb_flush();
+        input_wait();
     }
 }
