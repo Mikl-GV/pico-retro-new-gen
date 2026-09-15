@@ -346,7 +346,8 @@ int fat_init(void) {
     uint32_t total_sectors = le32(g_sector + 32);
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
 
-    // 4. Если раздел не-system и нет /roms — создаём /roms автоматически
+    // 4. Если раздел не-system и нет /roms — создаём ТОЛЬКО /roms
+    //    (подпапки систем создаются вручную через Settings → 1)
     if (!has_roms && part_idx != 0) {
         int r = fat_mkdir("/", "roms");
         if (r >= 0) { printf("FAT: /roms created on partition %d\n", part_idx); }
