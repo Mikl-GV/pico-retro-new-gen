@@ -37,7 +37,7 @@
 #define CARTRIDGE_WSYNC_MASK 2
 #define CARTRIDGE_CYCLE_STEALING_MASK 1
 
-#include <Stdio.h>
+#include <stdio.h>
 #include "Equates.h"
 #include "Memory.h"
 #include "Pokey.h"

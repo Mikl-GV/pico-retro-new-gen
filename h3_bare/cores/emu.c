@@ -5,6 +5,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "h3_hs_timer.h"
+#include "led.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -17,9 +18,6 @@ extern int printf(const char* fmt, ...);
 #define FB_H    600
 
 // ---- единый nearest-neighbour скейлер ----
-// src_w/src_h — родное разрешение кадра (в левом верхнем углу EMU_FB).
-// Картинка растягивается на ВСЮ высоту экрана (600), ширина — пропорционально,
-// по бокам остаются чёрные поля. Маппинг dst->src, один источник на пиксель.
 void emu_scale(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;
     int dst_w = (src_w * FB_H) / src_h;
@@ -46,10 +44,13 @@ void emu_clear_fb(void) {
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
 }
 
-// ---- throttle 60/50 FPS ----
+// ---- throttle ----
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
+    // Мигаем светодиодом: видно, что код жив и кадры идут
+    static uint32_t led_fc = 0;
+    if ((++led_fc & 0x1F) == 0) led_set(led_fc & 0x20);
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
@@ -59,7 +60,6 @@ void emu_throttle(void) {
 }
 
 // ---- эмуляторы ----
-
 extern void atari2600_init(const uint8_t* rom, uint32_t size);
 extern void atari2600_run_frame(void);
 extern void atari2600_set_difficulty(int p1_expert);
@@ -76,10 +76,12 @@ extern int portfolio_exit_requested(void);
 extern int gb_init_game(const uint8_t* rom, uint32_t size);
 extern void gb_run_frame(void);
 extern void gb_render_frame(void);
+extern int lynx_init_game(const uint8_t* rom, uint32_t size);
+extern void lynx_run_frame(void);
+extern void lynx_render_frame(void);
 
 static void emu_wait_key(void) {
     for (;;) {
-        if (uart_rx_ready()) { uart_getc(); return; }
         uint8_t keys[6];
         int n = usb_kbd_get_raw(keys, 6);
         if (n > 0) return;
@@ -96,10 +98,9 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_ts0 = 0;
     for (;;) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
-        if ((fc % 60) == 0) printf("a7800 f=%u\n", (unsigned)fc); fc++;
+        fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -113,11 +114,13 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        a5200_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
-        if ((fc % 60) == 0) printf("a5200 f=%u\n", (unsigned)fc); fc++;
+        a5200_run_frame();
+        emu_throttle();
+        emu_scale(320, 240);
+        fb_flush();
+        fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -131,11 +134,14 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
     for (;;) {
-        sms_run_frame(); sms_render_frame(); emu_throttle(); emu_scale(256, 192); fb_flush();
-        if ((fc % 60) == 0) printf("sms f=%u\n", (unsigned)fc); fc++;
+        sms_run_frame();
+        sms_render_frame();
+        emu_throttle();
+        emu_scale(256, 192);
+        fb_flush();
+        fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -150,10 +156,9 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
     emu_ts0 = 0;
     for (;;) {
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
-        if ((fc % 60) == 0) printf("mcume f=%u\n", (unsigned)fc); fc++;
+        fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -166,15 +171,13 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
     printf("Portfolio: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     uint32_t fc = 0;
     emu_ts0 = 0;
-    /* Клавиатурой полностью владеет Portfolio (pofo_usbkbd_input).
-     * Выход — только когда он сам выставил pofo_exit_requested (ESC в DOS). */
     for (;;) {
         portfolio_run_frame();
         if (portfolio_exit_requested()) break;
         emu_throttle();
-        emu_scale(320, 240);   /* Portfolio рисует в EMU_FB → масштаб на весь экран */
+        emu_scale(320, 240);
         fb_flush();
-        if ((fc % 60) == 0) printf("portfolio f=%u\n", (unsigned)fc); fc++;
+        fc++;
     }
     fb_clear(); fb_flush();
 }
@@ -193,10 +196,30 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         emu_throttle();
         emu_scale(160, 144);
         fb_flush();
-        if ((fc % 60) == 0) printf("gb f=%u\n", (unsigned)fc); fc++;
+        fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
+    }
+exit: fb_clear(); fb_flush();
+}
+
+void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (lynx_init_game(rom, size) != 1) {
+        printf("Lynx: init failed\n"); return;
+    }
+    printf("Lynx: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    uint8_t raw_keys[6]; uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        lynx_run_frame();
+        lynx_render_frame();
+        emu_throttle();
+        emu_scale(160, 102);
+        fb_flush();
+        fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }

@@ -5,6 +5,7 @@
 #include "h3.h"
 #include "uart.h"
 #include "sd.h"
+#include "led.h"
 
 typedef struct {
     volatile uint32_t gctrl;
@@ -130,13 +131,15 @@ int sd_init(void) {
 }
 
 int sd_read_sector(uint32_t lba, void* buf) {
+    led_sd_on();
     uint32_t addr = g_sdhc ? lba : (lba << 9);
     mmc_clr_rint();
     MMC->blksz = 512;
     MMC->bytecnt = 512;
     if (mmc_send_cmd(17, addr, CMD_RESP_EXPIRE | CMD_CHECK_CRC | CMD_DATA_EXPIRE | CMD_WAIT_PRE) < 0)
-        return -1;
-    if (mmc_read_data((uint8_t*)buf, 512) < 0) return -1;
+        { led_sd_off(); return -1; }
+    if (mmc_read_data((uint8_t*)buf, 512) < 0) { led_sd_off(); return -1; }
+    led_sd_off();
     return 0;
 }
 

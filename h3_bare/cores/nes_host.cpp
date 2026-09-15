@@ -80,8 +80,7 @@ int InfoNES_LoadFrame(void) {
     emu_scale(256, 240);
     fb_flush();
 
-    if (++frame_cnt % 60 == 0)
-        printf("nes f=%u\n", (unsigned)frame_cnt);
+    frame_cnt++;
     return 0;
 }
 

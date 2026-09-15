@@ -8,8 +8,9 @@
 
 extern int printf(const char* fmt, ...);
 
-// forward: создание записи директории (определена ниже)
+// forward: создание записи директории, сравнение имён (определены ниже)
 static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int is_dot);
+static int name_eq(const char* a, const char* b);
 
 // ---- BPB (загрузочный сектор) ----
 typedef struct {
@@ -277,7 +278,7 @@ int fat_init(void) {
             printf("FAT: GPT found, %u entries usable\n", part_count);
         }
     }
-    printf("FAT: found %d FAT partitions\n", part_count);
+    printf("FAT: found %d FAT partitions, using part %d LBA=%u has_roms=%d\n", part_count, part_idx, part_lba, has_roms);
     if (part_count == 0) return -1;
 
     // --- 1. Ищем раздел с /roms. Системный (первый) в поиске НЕ участвует. ---
@@ -305,7 +306,7 @@ int fat_init(void) {
         int dn = read_dir(rc, dirs, FAT_MAX_ENTRIES);
         int found = 0;
         for (int d = 0; d < dn; d++)
-            if (dirs[d].size == 0 && strcmp(dirs[d].name, "roms") == 0) { found = 1; break; }
+            if (dirs[d].size == 0 && name_eq(dirs[d].name, "roms")) { found = 1; break; }
 
         g_part_lba = old_pl; g_sec_per_cluster = old_sc;
         g_reserved = old_rs; g_num_fats = old_nf;
@@ -334,6 +335,7 @@ int fat_init(void) {
     if (le16(g_sector + 510) != 0xAA55) return -1;
     if (le16(g_sector + 11) != 512) return -1;
 
+    g_part_lba      = part_lba;
     g_sec_per_cluster = g_sector[13];
     g_reserved        = le16(g_sector + 14);
     g_num_fats        = g_sector[16];
@@ -346,13 +348,9 @@ int fat_init(void) {
     uint32_t total_sectors = le32(g_sector + 32);
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
 
-    // 4. Если раздел не-system и нет /roms — создаём ТОЛЬКО /roms
-    //    (подпапки систем создаются вручную через Settings → 1)
-    if (!has_roms && part_idx != 0) {
-        int r = fat_mkdir("/", "roms");
-        if (r >= 0) { printf("FAT: /roms created on partition %d\n", part_idx); }
-        else { printf("FAT: mkdir /roms on part %d failed\n", part_idx); }
-    }
+    printf("FAT: part LBA=%u sec/clu=%u reserved=%u fats=%u fat_size=%u root_clu=%u data_start=%u total_clu=%u\n",
+           part_lba, g_sec_per_cluster, g_reserved, g_num_fats, g_fat_size,
+           g_root_cluster, g_data_start, g_total_clusters);
 
     return 0;
 }
@@ -361,7 +359,6 @@ int fat_init(void) {
 
 // forward declaration (определена ниже)
 static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen);
-static int name_eq(const char* a, const char* b);
 
 // 8.3 имя из строки (верхний регистр, без расширения если папка)
 static void make_short_name(const char* name, uint8_t* out83) {
@@ -422,6 +419,49 @@ static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int i
     e[27] = (cluster >> 8) & 0xFF;
 }
 
+// checksum по 8.3 имени (для LFN-записи)
+static uint8_t lfn_checksum(const uint8_t* shortname11) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++)
+        sum = ((sum & 1) << 7) + (sum >> 1) + shortname11[i];
+    return sum;
+}
+
+// ОДИН LFN-фрагмент: seq = 1..N (0x40|N для последнего на диске),
+// хранит 13 UTF-16 символов имени с позиции start.
+static void make_lfn_fragment(uint8_t* e, int seq, const char* name, int start, uint8_t chksum) {
+    memset(e, 0, 32);
+    e[0] = (uint8_t)seq;
+    e[11] = 0x0F;
+    e[13] = chksum;
+    int len = (int)strlen(name);
+    for (int i = 0; i < 13; i++) {
+        uint16_t c = 0xFFFF;
+        int idx = start + i;
+        if (idx < len) c = (uint16_t)(uint8_t)name[idx];
+        int off = (i < 5) ? 1 + i * 2 : (i < 11) ? 14 + (i - 5) * 2 : 28 + (i - 11) * 2;
+        e[off] = c & 0xFF;
+        e[off + 1] = (c >> 8) & 0xFF;
+    }
+}
+
+// Найти count подряд свободных записей ВНУТРИ одного сектора директории.
+static int find_free_entries(uint32_t cl, int count, uint32_t* first_sec, int* first_off) {
+    uint32_t base = cluster_to_sector(cl);
+    for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
+        if (sd_read_sector(base + s, g_sector) < 0) return -1;
+        for (int off = 0; off + 32 * count <= 512; off += 32) {
+            int ok = 1;
+            for (int j = 0; j < count; j++) {
+                uint8_t b = g_sector[off + j * 32];
+                if (b != 0x00 && b != 0xE5) { ok = 0; break; }
+            }
+            if (ok) { *first_sec = base + s; *first_off = off; return 0; }
+        }
+    }
+    return -1;
+}
+
 // найти свободное место в директории (пустая/удалённая запись)
 static int find_free_entry(uint32_t cl, uint32_t* sec_out, int* off_out) {
     while (cl && cl < 0x0FFFFFF8) {
@@ -474,15 +514,57 @@ int fat_mkdir(const char* parent_path, const char* name) {
     // 4. Отметить в FAT: новый кластер = END (0x0FFFFFFF)
     if (fat_set_cluster(new_cl, 0x0FFFFFFF) < 0) return -1;
 
-    // 5. Создать запись в родительской папке
+    // 5. Создать запись(и) в родительской папке: LFN-фрагменты + 8.3
+    int namelen = (int)strlen(name);
+    int lfn_count = 0;
+    // LFN нужен, если имя длиннее 8 (капс 8.3 обрежет)
+    {
+        char upper[9];
+        int u = 0;
+        for (int i = 0; name[i] && i < 8; i++) {
+            char c = name[i];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            upper[u++] = c;
+        }
+        upper[u] = 0;
+        (void)upper; // достаточно проверить длину ниже
+    }
+    if (namelen > 8) {
+        lfn_count = (namelen + 12) / 13;   // фрагменты по 13 символов
+    }
+
     uint32_t dummy_sec;
     int off;
-    if (find_free_entry(parent.first_cluster, &dummy_sec, &off) < 0) {
-        // нет места — не получится (упрощённо)
-        return -1;
+    if (lfn_count > 0) {
+        // Нужны lfn_count + 1 (8.3) подряд свободных записей
+        if (find_free_entries(parent.first_cluster, lfn_count + 1, &dummy_sec, &off) < 0)
+            return -1;
+    } else {
+        if (find_free_entry(parent.first_cluster, &dummy_sec, &off) < 0)
+            return -1;
     }
     if (sd_read_sector(dummy_sec, g_sector) < 0) return -1;
-    make_dir_entry(g_sector + off, name, new_cl, 0);
+
+    // 8.3 имя (заглавное, короткое) — им же считаем checksum
+    uint8_t short83[11];
+    make_short_name(name, short83);
+    uint8_t chk = lfn_checksum(short83);
+
+    if (lfn_count > 0) {
+        // LFN-фрагменты идут от последнего (seq с 0x40) к первому,
+        // непосредственно ПЕРЕД 8.3-записью (последний фрагмент сразу перед ней).
+        for (int i = lfn_count - 1; i >= 0; i--) {
+            int seq = i + 1;
+            if (i == lfn_count - 1) seq |= 0x40;    // последний фрагмент — бит 0x40
+            make_lfn_fragment(g_sector + off, seq, name, i * 13, chk);
+            off += 32;
+        }
+        make_dir_entry(g_sector + off, name, new_cl, 0);
+        // 8.3 запись уже считана в буфере; низкие байты кластера
+        // make_dir_entry сама выставит.
+    } else {
+        make_dir_entry(g_sector + off, name, new_cl, 0);
+    }
     if (sd_write_sector(dummy_sec, g_sector) < 0) return -1;
 
     return 0;

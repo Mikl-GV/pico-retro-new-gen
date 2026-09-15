@@ -23,19 +23,20 @@ USB-клавиатура (Boot HID, Logitech 046D:C52B и аналоги).
 
 ## Эмуляторы (игровой маппинг)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG |
-|---------|:---:|:-------------:|:-----:|:-----:|:------:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 |
-| X | B | — | Pause | B2 (B) | Button 2 |
-| S | Select | Select | Start | Select | Pause |
-| Enter | Start | Game Reset | Key 3 | Start | — |
-| ESC | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx |
+|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A |
+| X | B | — | Pause | B2 (B) | Button 2 | A | B |
+| S | Select | Select | Start | Select | Pause | Select | Option 1 |
+| Enter | Start | Game Reset | Key 3 | Start | — | Start | Option 2 |
+| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 Удерживание ESC ~1 сек — выход в меню.  
 В A2600 также работает сложность (Settings → 4).  
 A2600: Z=Fire, S=Select, Enter=Game Reset (запуск игры заново).  
 A5200: Z=Fire, X=Pause, S=Start.
+Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad (порт в работе).
 
 ## Atari Portfolio (полная клавиатура)
 

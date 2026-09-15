@@ -6,6 +6,8 @@
 #include "usb_kbd.h"
 #include "emu.h"
 
+extern int printf(const char* fmt, ...);
+
 #define PHYS_W 1024
 #define PHYS_H 600
 #define ROW_H 18
@@ -16,11 +18,12 @@
 
 static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t* size) {
     fat_entry_t f;
-    if (!fat_find(path, name, &f)) return -1;
-    if (f.size == 0 || f.size > ROM_MAX) return -1;
+    if (!fat_find(path, name, &f)) { printf("load_rom: not found %s/%s\n", path, name); return -1; }
+    if (f.size == 0 || f.size > ROM_MAX) { printf("load_rom: bad size %u\n", f.size); return -1; }
     uint8_t* buf = (uint8_t*)ROM_BUF;
+    printf("load_rom: %s/%s size=%u cl=%u\n", path, name, f.size, f.first_cluster);
     int r = fat_read_file(&f, 0, buf, f.size);
-    if (r <= 0) return -1;
+    printf("load_rom: got %d bytes\n", r);
     // SD-DMA писала в DRAM, а D-cache (write-back, on) содержит старые
     // данные — надо инвалидировать, чтобы CPU читал настоящий ROM
     uint32_t a = (uint32_t)buf & ~0x1Fu;
@@ -42,7 +45,6 @@ static void sort_entries(fat_entry_t *list, int n) {
 
 static int input_wait(void) {
     for (;;) {
-        if (uart_rx_ready()) return uart_getc();
         int k = usb_input_poll();
         if (k) return k;
     }
@@ -120,6 +122,8 @@ if (n > 0) {
                         emu_run_portfolio(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "gameboy") == 0)
                         emu_run_gameboy(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "lynx") == 0)
+                        emu_run_lynx(rom, size, list[cursor].name);
                     else {
                         fb_clear();
                         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -138,30 +142,45 @@ if (n > 0) {
         } else if (k == 41) {
             return;
         } else if (k == 42 || k == 76 || k == 49) {
-            // Backspace / Delete / или "D" — удалить ROM
+            // Backspace / Delete / или "D" — удалить ROM (двойное подтверждение)
             if (n > 0) {
+                // Подтверждение 1: намерение
                 fb_clear();
                 fb_puts_s(60, 100, "Delete this ROM?", 2, 0x00FFAA00);
                 fb_puts_s(60, 140, list[cursor].name, 1, 0x00FFFFFF);
                 fb_puts_s(60, 180, "", 1, 0x00FFFFFF);
-                fb_puts_s(80, 220, "  Enter: delete    ESC: cancel", 1, 0x00888888);
+                fb_puts_s(80, 220, "  Enter: continue    ESC: cancel", 1, 0x00888888);
                 fb_flush();
 
                 int confirm = input_wait();
-                if (confirm == 40 || confirm == '\n' || confirm == '\r') {
-                    int r = fat_delete_file(path, list[cursor].name);
-                    if (r == 0) {
-                        // перечитываем список
-                        n = fat_list(path, list, FAT_MAX_ENTRIES);
-                        sort_entries(list, n);
-                        if (cursor >= n) cursor = n - 1;
-                        if (cursor < 0) cursor = 0;
-                    } else {
-                        fb_clear();
-                        fb_text_center("Delete failed!", 200, 2, 0x00FF4444);
-                        fb_flush();
-                        input_wait();
-                    }
+                if (confirm == 41) continue;   // ESC
+                if (confirm != 40 && confirm != '\n' && confirm != '\r') continue;
+
+                // Подтверждение 2: финальное
+                fb_clear();
+                fb_puts_s(60, 100, "Are you SURE?", 2, 0x00FF4444);
+                fb_puts_s(60, 140, list[cursor].name, 1, 0x00FFFFFF);
+                fb_puts_s(60, 180, "This will delete the file from SD", 1, 0x00FFFFFF);
+                fb_puts_s(60, 200, "and is not reversible.", 1, 0x00FFFFFF);
+                fb_puts_s(80, 240, "  Enter: DELETE    ESC: cancel", 1, 0x00888888);
+                fb_flush();
+
+                confirm = input_wait();
+                if (confirm == 41) continue;   // ESC
+                if (confirm != 40 && confirm != '\n' && confirm != '\r') continue;
+
+                int r = fat_delete_file(path, list[cursor].name);
+                if (r == 0) {
+                    // перечитываем список
+                    n = fat_list(path, list, FAT_MAX_ENTRIES);
+                    sort_entries(list, n);
+                    if (cursor >= n) cursor = n - 1;
+                    if (cursor < 0) cursor = 0;
+                } else {
+                    fb_clear();
+                    fb_text_center("Delete failed!", 200, 2, 0x00FF4444);
+                    fb_flush();
+                    input_wait();
                 }
             }
         }

@@ -263,10 +263,13 @@ static void render_menu(void) {
 }
 
 static int input_wait(void) {
+    uint32_t fc = 0;
     for (;;) {
-        if (uart_rx_ready()) return uart_getc();
         int k = usb_input_poll();
         if (k) return k;
+        // мигаем LED, пока ждём ввод (видно, что не зависли)
+        extern void led_set(int);
+        if ((++fc & 0x1FFFF) == 0) led_set(fc & 0x20000);
     }
 }
 
@@ -298,8 +301,8 @@ int menu_run(void) {
             do {
                 if (r <= 0) break;
                 r--;
-            } while (r > 0 && rows[r].item < 0);
-            if (rows[r].item >= 0 || rows[r].item == -2) {
+            } while (r > 0 && rows[r].item == -1);
+            if (rows[r].item != -1) {
                 sel_row = r;
                 if (sel_row < scroll_top) scroll_top = sel_row;
             }
@@ -308,8 +311,8 @@ int menu_run(void) {
             do {
                 if (r >= row_count - 1) break;
                 r++;
-            } while (r < row_count - 1 && rows[r].item < 0);
-            if (rows[r].item >= 0 || rows[r].item == -2) {
+            } while (r < row_count - 1 && rows[r].item == -1);
+            if (rows[r].item != -1) {
                 sel_row = r;
                 if (sel_row >= scroll_top + max_visible)
                     scroll_top = sel_row - max_visible + 1;
@@ -397,10 +400,23 @@ void menu_help(void) {
         "Commands: PIN APPS HELP",
         "EXIT or ESC hold = menu",
         0,
+        // страница 7: структура диска и папок
+        "--- SD CARD LAYOUT ---",
+        "SD: 2 partitions (FAT32)",
+        "  sda1 - boot (U-Boot +",
+        "         h3_bare.bin)",
+        "  sda2 - ROMs (14.8GB)",
+        "",
+        "Must contain folder 'roms'",
+        "  /roms/<system>/game.rom",
+        "Folders are created manually:",
+        "  Settings -> Create folders",
+        "Auto-create is DISABLED",
+        0,
     };
 
     int page = 0;
-    int total = 7;
+    int total = 8;
 
     for (;;) {
         fb_clear();

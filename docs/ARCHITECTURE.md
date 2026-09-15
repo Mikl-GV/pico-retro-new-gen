@@ -9,18 +9,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ┌───────────────────────────────────────────────────────────────┐
 │                         main.c                                │
 │          меню → браузер ROM → диспетчер эмуляторов            │
-│     (a2600 / a5200 / a7800 / nes / sms / portfolio)           │
+│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/portfolio)          │
 ├───────────────────────────────────────────────────────────────┤
 │  mcume/    a5200/    a7800/    nes/    smsplus/  portfolio/   │
-│  (A2600)   (A5200)   (A7800)   (NES)   (SMS/GG) (8088)       │
+│  (A2600)   (A5200)   (A7800)   (NES)   (SMS)     (8088)      │
+│  gameboy/ (binjgb)   lynx/ (Handy — в работе)                 │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host.cpp  system_sms_h3.cpp         │
+│  gameboy_host.cpp  lynx_host.cpp                              │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
-│  usb_kbd.c  usb_ohci.c  sd.c  fat.c                           │
-│  fb_text.c  uart.c  printf.c  libc_min.c                      │
+│  usb_kbd.c  usb_ohci.c  sd.c  fat.c  led.c  fb_text.c         │
+│  uart.c  printf.c  libc_min.c  cxx_runtime.cpp                │
 ├───────────────────────────────────────────────────────────────┤
 │  HDMI: h3_de2 + h3_hdmi + dw_hdmi + h3_lcd                    │
 │  (1024×600, DE2 → TCON1 → HDMI PHY)                            │
@@ -36,9 +38,11 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 |---------|------|:----:|--------|------|
 | Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw |
 | Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw |
-| Atari 7800 | ProSystem | C++17 | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw |
+| Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw |
 | NES | InfoNES | C++ | 256×240 → EMU_FB | usb_kbd_get_raw |
-| SMS/GG | smsplus | C (gnu89) | 256×192 через sms_render_line → EMU_FB | usb_kbd_get_raw |
+| SMS | smsplus | C (gnu89) | 256×192 через sms_render_line → EMU_FB | usb_kbd_get_raw |
+| Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
+| Atari Lynx | Handy | C++ | 160×102 → EMU_FB (в работе) | usb_kbd_get_raw |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 
 Каждый эмулятор:
@@ -81,6 +85,30 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Рендер: SCREEN[240][256] → построчно через palette LUT → EMU_FB
 - Throttle через emu_throttle, 60/50 FPS (настройка в Settings)
 
+### gameboy_host.cpp (Game Boy / GBC, binjgb)
+
+- Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
+- Менеджер памяти — bump-аллокатор `gb_heap` (1 МБ) в gameboy_stubs.c, `gb_heap_reset()`
+- Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
+- Ввод: USB-клавиатура → кнопки Game Boy (Z=A, X=B, S=Select, Enter=Start, стрелки=D-Pad)
+- Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
+
+### lynx_host.cpp (Atari Lynx, Handy)
+
+- Порт Handy (K. Wilkins) — в работе, экран чёрный (нужен фикс рендера/декрипта .lnx)
+- `handy_compat.h` — заглушки libretro-common (filestream/strlcpy/string) для bare-metal
+- C++ runtime — `cxx_runtime.cpp` (operator new/delete поверх malloc, __cxa_pure_virtual)
+- Рендер: Handy рисует в собственный буфер 160×102 через callback → EMU_FB
+- Ввод: USB-клавиатура → кнопки Lynx
+
+### led.c (светодиоды)
+
+- PA15 — «код жив» (мигает в emu_throttle, по таймеру кадров)
+- PL10 — «обращение к SD» (led_sd_on/off в sd_read_sector)
+- Активный уровень HIGH (проверено на железе: горит при DAT=1)
+- R_PIO требует включения тактирования (PRCM) — PL10 может не заводиться из bare-metal,
+  настраивается через U-Boot `gpio set PL10` в boot.scr
+
 ### system_atari_h3.cpp (A2600, MCUME)
 
 - Пул: статический bump-аллокатор
@@ -102,15 +130,15 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Полная карта — в `docs/CONTROLS.md`. Кратко:
 
-| Клавиша | NES | A2600 | A5200 | A7800 | SMS/GG | Portfolio |
-|---------|:---:|:-----:|:-----:|:-----:|:------:|:---------:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
-| Z | A | Fire | Fire | B1(A) | Btn1 | буква Z |
-| X | B | — | Pause | B2(B) | Btn2 | буква X |
-| S | Select | Select | Start | Select | Pause | буква S |
-| Enter | Start | Reset | Key3 | Start | — | Enter |
-| Insert | — | — | — | — | — | VK (экранная клава) |
-| ESC | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
+| Клавиша | NES | A2600 | A5200 | A7800 | SMS | Game Boy | Lynx | Portfolio |
+|---------|:---:|:-----:|:-----:|:-----:|:---:|:--------:|:----:|:---------:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
+| Z | A | Fire | Fire | B1(A) | Btn1 | A | A | буква Z |
+| X | B | — | Pause | B2(B) | Btn2 | B | B | буква X |
+| S | Select | Select | Start | Select | Pause | Select | Opt1 | буква S |
+| Enter | Start | Reset | Key3 | Start | — | Start | Opt2 | Enter |
+| Insert | — | — | — | — | — | — | — | VK (экранная клава) |
+| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
 
 ## Настройки (Settings)
 
@@ -144,7 +172,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ## Загрузка
 
 ```
-U-Boot SPL → U-Boot → fatload mmc 0 0x40000000 h3_bare.bin → go 0x40000000
+U-Boot SPL → U-Boot → (boot.scr: gpio-настройка светодиодов) → fatload mmc 0 0x40000000 h3_bare.bin → go 0x40000000
 → startup.S → SVC mode → BSS=0 → main()
 ```
 

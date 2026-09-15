@@ -25,7 +25,7 @@
 #ifndef PRO_SYSTEM_H
 #define PRO_SYSTEM_H
 
-#include <Stdio.h>
+#include <stdio.h>
 #include "Equates.h"
 #include "Bios.h"
 #include "Cartridge.h"

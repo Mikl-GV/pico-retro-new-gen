@@ -1699,18 +1699,22 @@ static void pofo_uart_echo(void)
     if (rows > 10) rows = 10;
     int cols = lcdc.hn;
     if (cols > 40) cols = 40;
-    int n = cols * rows;
 
+    uint16_t base = (lcdc.dsa & 0xfff);   // display start address, как в рендере
+
+    int n = cols * rows;
     uint32_t crc = 0xFFFFFFFF;
     for (int i = 0; i < n && i < HD61830_VRAM_SIZE; i++)
-        crc = (crc >> 8) ^ ((crc ^ lcdc.vram[i]) * 0x100);
+        crc = (crc >> 8) ^ ((crc ^ lcdc.vram[base + i]) * 0x100);
 
     if (crc == pofo_uart_crc) return;
     pofo_uart_crc = crc;
 
     for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            uint8_t ch = lcdc.vram[r * lcdc.hn + c];
+        int end = cols;
+        while (end > 0 && lcdc.vram[base + r * lcdc.hn + end - 1] < 0x20) end--;
+        for (int c = 0; c < end; c++) {
+            uint8_t ch = lcdc.vram[base + r * lcdc.hn + c];
             if (ch < 0x20) ch = '.';
             if (ch >= 0x7f) ch = '.';
             putchar(ch);

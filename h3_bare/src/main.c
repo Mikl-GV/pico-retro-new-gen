@@ -12,6 +12,7 @@
 #include "rom_browser.h"
 #include "settings.h"
 #include "emu.h"
+#include "led.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -26,6 +27,9 @@ void main(void) {
 
     uart_init();
     uart_puts("\nMultiTool Retro boot\n");
+
+    led_init();
+    led_set(0);
 
     h3_hs_timer_init();
 

@@ -37,7 +37,6 @@ static const char* key_name(uint8_t sc) {
 
 static int input_wait(void) {
     for (;;) {
-        if (uart_rx_ready()) return uart_getc();
         int k = usb_input_poll();
         if (k) return k;
     }
@@ -175,118 +174,176 @@ static int ensure_dir(const char* name) {
     return r >= 0 ? 1 : 0;
 }
 
-void settings_run(void) {
-    for (;;) {
-        fb_draw_stars();
-        fb_puts_s(60, 40, "Settings", 2, 0x00FF0000);
-        fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
+// Пункты меню настроек
+enum {
+    SET_CREATE_FOLDERS = 0,
+    SET_INPUT_TEST,
+    SET_VIDEO_MODE,
+    SET_A2600_DIFF,
+    SET_PART_INFO,
+    SET_COUNT,
+};
 
-        fb_puts_s(80, 110, "1 - Create ROM system folders", 1, 0x00FFFF00);
-        fb_puts_s(80, 135, "2 - Input Test for NES / A2600", 1, 0x00FFFF00);
-        fb_puts_s(80, 160, "3 - Video Mode", 1, 0x00FFFF00);
-        {
-            char buf[32];
-            int l = 0;
-            const char* p = emu_period_us == 16667 ? "60 Hz (NTSC)" : "50 Hz (PAL)";
-            while (*p) buf[l++] = *p++;
-            buf[l] = 0;
-            fb_puts_s(280, 160, buf, 1, 0x00AAAAAA);
-        }
-        fb_puts_s(80, 185, "4 - Atari 2600 Difficulty", 1, 0x00FFFF00);
-        {
-            fb_puts_s(320, 185, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
-        }
-        fb_puts_s(80, 210, "5 - Info: ROM partition setup", 1, 0x00FFFF00);
+static const char* const set_labels[SET_COUNT] = {
+    "Create ROM system folders",
+    "Input Test for NES / A2600",
+    "Video Mode (60/50 Hz)",
+    "Atari 2600 Difficulty",
+    "ROM partition info",
+};
 
-        fb_puts(60, FOOTER_Y, "  1/2/3/4/5: select    ESC: back", 0x00888888);
-        fb_flush();
+// Рисуем меню настроек с курсором
+static void settings_draw(int sel) {
+    fb_draw_stars();
+    fb_puts_s(60, 40, "Settings", 2, 0x00FF0000);
+    fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
 
-        int k = input_wait();
-        if (k == 41) {
-            return;
-        } else if (k == 40 || k == '\n' || k == '\r' || k == 30) {
-            // "1" -> создать папки ROM на текущем разделе
-            // Проверяем, есть ли /roms
-            fat_entry_t dummy;
-            int has_roms = fat_find("/", "roms", &dummy);
-            if (!has_roms) {
-                fb_clear();
-                fb_text_center("ROM partition not found!", 100, 2, 0x00FF4444);
-                fb_puts_s(60, 160, "Create a FAT32 partition in Windows", 1, 0x00FFFFFF);
-                fb_puts_s(60, 185, "with label H3_ROM and folder /roms", 1, 0x00FFFFFF);
-                fb_puts_s(60, 210, "in its root. Then press 1 again.", 1, 0x00FFFFFF);
-                fb_puts_s(60, 260, "Press any key", 1, 0x00888888);
-                fb_flush();
-                input_wait();
-            } else {
-                goto create_folders_only;
-            }
-        } else if (k == 31) {
-            // "2" -> Input Test
-            input_test_run();
-        } else if (k == 32) {
-            // "3" -> Video Mode 50/60 Гц
-            emu_period_us = (emu_period_us == 16667) ? 20000 : 16667;
-        } else if (k == 33) {
-            // "4" -> Atari 2600 Difficulty
-            a2600_diff_expert = !a2600_diff_expert;
-        } else if (k == 34) {
-            // "5" -> справка по разделу
-            goto partition_info;
+    int y = 110;
+    for (int i = 0; i < SET_COUNT; i++) {
+        int is_sel = (i == sel);
+        uint32_t clr = is_sel ? 0x00FFFF00 : 0x00FFFFFF;
+        if (is_sel)
+            fb_fill_rect(50, y - 4, PHYS_W - 100, 28, 0x00181818);
+        // маркер курсора
+        if (is_sel)
+            fb_puts_s(58, y, ">", 1, 0x00FFFF00);
+        fb_puts_s(80, y, set_labels[i], 1, clr);
+
+        // Значение справа (для переключаемых)
+        if (i == SET_VIDEO_MODE) {
+            const char* v = emu_period_us == 16667 ? "60 Hz (NTSC)" : "50 Hz (PAL)";
+            fb_puts_s(440, y, v, 1, 0x00AAAAAA);
+        } else if (i == SET_A2600_DIFF) {
+            fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
         }
+        y += 34;
     }
-create_folders_only:
-    {
-        // Создать папки /roms/<system>/ на текущем разделе
-        fb_clear();
-        fb_puts_s(60, 70, "Create ROM folders?", 2, 0x00FFAA00);
-        fb_puts_s(60, 140, "This will create /roms/<system>/", 1, 0x00FFFFFF);
-        fb_puts_s(60, 170, "for all registered systems.", 1, 0x00FFFFFF);
-        fb_puts_s(80, 230, "  Enter: confirm    ESC: cancel", 1, 0x00888888);
-        fb_flush();
 
-        int confirm = input_wait();
-        if (confirm == 40 || confirm == '\n' || confirm == '\r') {
-            int created = 0, existing = 0, fail = 0;
-            for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
-                int r = ensure_dir(system_rom_dir(i));
-                if (r == 1) created++;
-                else if (r == 2) existing++;
-                else fail++;
-            }
-            fb_clear();
-            if (created > 0) {
-                char buf[64];
-                int len = 0;
-                const char* p = "Created: ";
-                while (*p) buf[len++] = *p++;
-                char s[12]; int tmp = created, ii = 11;
-                s[11] = 0;
-                do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
-                memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
-                buf[len] = 0;
-                fb_puts_s(60, 80, buf, 2, 0x0000FF00);
-            }
-            if (existing > 0) {
-                char buf[64];
-                int len = 0;
-                const char* p = "Already exist: ";
-                while (*p) buf[len++] = *p++;
-                char s[12]; int tmp = existing, ii = 11;
-                s[11] = 0;
-                do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
-                memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
-                buf[len] = 0;
-                fb_puts_s(60, 110, buf, 1, 0x00AAAAAA);
-            }
-            if (fail > 0)
-                fb_puts_s(60, 140, "Some folders failed! Check UART", 1, 0x00FF4444);
-            fb_puts_s(60, 200, "Press any key", 1, 0x00AAAAAA);
-            fb_flush();
-            input_wait();
-        }
+    fb_puts(60, FOOTER_Y, "  ^v : select    Enter : action    ESC : back", 0x00888888);
+    fb_flush();
+}
+
+// Создание папок с ДВОЙНЫМ подтверждением
+static void create_folders_flow(void) {
+    // Проверяем, есть ли /roms
+    fat_entry_t dummy;
+    int has_roms = fat_find("/", "roms", &dummy);
+    if (!has_roms) {
+        fb_clear();
+        fb_text_center("ROM partition not found!", 100, 2, 0x00FF4444);
+        fb_puts_s(60, 160, "Create a FAT32 partition on the SD", 1, 0x00FFFFFF);
+        fb_puts_s(60, 185, "and create folder 'roms' in its root.", 1, 0x00FFFFFF);
+        fb_puts_s(60, 210, "Then come back and try again.", 1, 0x00FFFFFF);
+        fb_puts_s(60, 260, "Press any key", 1, 0x00888888);
+        fb_flush();
+        input_wait();
         return;
     }
+
+    // Подтверждение 1: предупреждение
+    for (;;) {
+        fb_clear();
+        fb_puts_s(60, 60, "Create ROM system folders?", 2, 0x00FFAA00);
+        fb_puts_s(60, 120, "This will create /roms/<system>/", 1, 0x00FFFFFF);
+        fb_puts_s(60, 145, "for ALL registered systems on SD.", 1, 0x00FFFFFF);
+        fb_puts_s(60, 175, "No data will be deleted.", 1, 0x00AAAAAA);
+        fb_puts_s(80, 260, "  Enter: continue    ESC: cancel", 1, 0x00888888);
+        fb_flush();
+        int k = input_wait();
+        if (k == 41) return;                    // ESC -> отмена
+        if (k == 40 || k == '\n' || k == '\r') break;  // Enter -> дальше
+    }
+
+    // Подтверждение 2: финальное
+    for (;;) {
+        fb_clear();
+        fb_puts_s(60, 80, "Are you SURE?", 2, 0x00FF4444);
+        fb_puts_s(60, 140, "This writes folders to the SD card", 1, 0x00FFFFFF);
+        fb_puts_s(60, 165, "and is not reversible.", 1, 0x00FFFFFF);
+        fb_puts_s(80, 260, "  Enter: CREATE    ESC: cancel", 1, 0x00888888);
+        fb_flush();
+        int k = input_wait();
+        if (k == 41) return;                    // ESC -> отмена
+        if (k == 40 || k == '\n' || k == '\r') break;  // Enter -> создаём
+    }
+
+    // Создание
+    int created = 0, existing = 0, fail = 0;
+    for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
+        int r = ensure_dir(system_rom_dir(i));
+        if (r == 1) created++;
+        else if (r == 2) existing++;
+        else fail++;
+    }
+
+    fb_clear();
+    char buf[64];
+    if (created > 0) {
+        int len = 0;
+        const char* p = "Created: ";
+        while (*p) buf[len++] = *p++;
+        int tmp = created, ii = 11; char s[12];
+        s[11] = 0;
+        do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
+        memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
+        buf[len] = 0;
+        fb_puts_s(60, 80, buf, 2, 0x0000FF00);
+    }
+    if (existing > 0) {
+        int len = 0;
+        const char* p = "Already exist: ";
+        while (*p) buf[len++] = *p++;
+        int tmp = existing, ii = 11; char s[12];
+        s[11] = 0;
+        do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
+        memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
+        buf[len] = 0;
+        fb_puts_s(60, 110, buf, 1, 0x00AAAAAA);
+    }
+    if (fail > 0)
+        fb_puts_s(60, 140, "Some folders failed! Check UART", 1, 0x00FF4444);
+    fb_puts_s(60, 200, "Press any key", 1, 0x00AAAAAA);
+    fb_flush();
+    input_wait();
+}
+
+void settings_run(void) {
+    int sel = 0;
+
+    for (;;) {
+        settings_draw(sel);
+        int k = input_wait();
+
+        if (k == 41) return;                       // ESC -> выход
+        else if (k == 82) { sel--; if (sel < 0) sel = SET_COUNT - 1; }  // Up
+        else if (k == 81) { sel++; if (sel >= SET_COUNT) sel = 0; }      // Down
+
+        else if (k == 40 || k == '\n' || k == '\r') {
+            switch (sel) {
+            case SET_CREATE_FOLDERS:
+                create_folders_flow();
+                break;
+            case SET_INPUT_TEST:
+                input_test_run();
+                break;
+            case SET_VIDEO_MODE:
+                emu_period_us = (emu_period_us == 16667) ? 20000 : 16667;
+                break;
+            case SET_A2600_DIFF:
+                a2600_diff_expert = !a2600_diff_expert;
+                break;
+            case SET_PART_INFO:
+                goto partition_info;
+            }
+        }
+        // клавиши 1..5 тоже работают для быстрого доступа
+        else if (k == 30) { sel = SET_CREATE_FOLDERS; }
+        else if (k == 31) { sel = SET_INPUT_TEST; }
+        else if (k == 32) { sel = SET_VIDEO_MODE; }
+        else if (k == 33) { sel = SET_A2600_DIFF; }
+        else if (k == 34) { sel = SET_PART_INFO; }
+    }
+
 partition_info:
     {
         fb_clear();
@@ -297,7 +354,7 @@ partition_info:
         fb_puts_s(60, 145, "2. Create folder 'roms' in its root", 1, 0x00FFFFFF);
         fb_puts_s(60, 175, "3. Put ROM files in /roms/<system>/", 1, 0x00FFFFFF);
         fb_puts_s(60, 205, "4. Insert & reboot the console", 1, 0x00FFFFFF);
-        fb_puts_s(60, 240, "Then press 1 to create system folders", 1, 0x00FFFF00);
+        fb_puts_s(60, 240, "Then Settings -> Create folders", 1, 0x00FFFF00);
         fb_puts_s(60, 270, "Press any key", 1, 0x00888888);
         fb_flush();
         input_wait();

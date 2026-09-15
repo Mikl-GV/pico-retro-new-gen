@@ -30,7 +30,8 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     memset(&init, 0, sizeof(init));
     init.rom.data = (uint8_t*)rom;  // ROM напрямую, без копирования
     init.rom.size = size;
-    init.audio_frequency = 0;
+    init.audio_frequency = 44100;
+    init.audio_frames = 1024;
     init.random_seed = 42;
     init.force_dmg = FALSE;
     init.cgb_color_curve = CGB_COLOR_CURVE_NONE;
@@ -44,6 +45,25 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
 
 extern "C" void gb_run_frame(void) {
     if (!g_emu) return;
+
+    // Ввод: USB-клавиатура -> Game Boy кнопки
+    uint8_t keys[6];
+    int n = usb_kbd_get_raw(keys, 6);
+    JoypadButtons jp;
+    memset(&jp, 0, sizeof(jp));
+    for (int i = 0; i < n; i++) {
+        uint8_t sc = keys[i];
+        if (sc == 82) jp.up = TRUE;
+        if (sc == 81) jp.down = TRUE;
+        if (sc == 80) jp.left = TRUE;
+        if (sc == 79) jp.right = TRUE;
+        if (sc == 29) jp.B = TRUE;      // Z
+        if (sc == 27) jp.A = TRUE;      // X
+        if (sc == 22) jp.select = TRUE; // S
+        if (sc == 40) jp.start = TRUE;  // Enter
+    }
+    emulator_set_joypad_buttons(g_emu, &jp);
+
     EmulatorEvent events;
     do {
         events = emulator_run_until(g_emu, emulator_get_ticks(g_emu) + PPU_FRAME_TICKS);
