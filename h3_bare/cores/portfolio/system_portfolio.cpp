@@ -1420,14 +1420,14 @@ static int vk_handle(uint8_t pad)
 
 static void vk_render(void)
 {
-    display_fill_rect(0, 128, 320, 112, RGB565(0, 0, 6));
+    display_fill_rect(0, 120, 320, 100, RGB565(0, 0, 6));
 
     for (int r = 0; r < VK_ROWS; r++) {
         for (int c = 0; c < VK_COLS; c++) {
             int is_func = (r == VK_ROWS - 1);
             if (is_func && c >= 6) continue;
             int x = is_func ? (8 + c * 52) : (8 + c * 26);
-            int y = 130 + r * 20;
+            int y = 122 + r * 18;
             int w = is_func ? 50 : 24;
             int sel = (r == vk_cur_r && c == vk_cur_c);
             int sh_on = (vk_shift == 1) && is_func && (c == 4);
@@ -1621,9 +1621,9 @@ static uint8_t hd61830_rd(int offset)
  * (its keyboard occupies 128..240). */
 static int lcd_out_h(void)
 {
-    if (vk_visible) return 128;
-    if (pofo_apps_active && pofo_app_current == APP_CALC) return 128;
-    return 240;
+    if (vk_visible) return 120;         /* полосы под VK */
+    if (pofo_apps_active && pofo_app_current == APP_CALC) return 120;
+    return 224;                         /* 16px внизу для футера */
 }
 
 static uint16_t pofo_line_rgb[240];
@@ -1716,11 +1716,12 @@ static void pofo_uart_echo(void)
     }
 }
 
-/* Справка внизу экрана: команды и кнопки */
+/* Справка внизу: компактный футер (LCD-область уже сдвинута на 224,
+ * чтобы справка не перекрывала символы DIP DOS) */
 static void pofo_draw_footer(void)
 {
     display_fill_rect(0, 224, 320, 16, RGB565(0, 0, 6));
-    display_text_at_nobg("DIP DOS: PIN APPS HELP  INS:VK  Z:ENT X:BS  ESC:EXIT", 4, 224, 1, RGB565(28, 32, 38));
+    display_text_at_nobg("PIN APPS HELP EXIT   INS:VK   ESC(hold):menu", 4, 225, 1, RGB565(28, 32, 38));
 }
 
 /* draw one text scanline (MAME draw_char). Returns pixel columns for row y. */
