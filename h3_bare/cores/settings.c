@@ -165,17 +165,14 @@ static void input_test_run(void) {
 }
 
 // --- Создать одну папку ---
+// Возвращает: 1 = создана, 2 = уже существует, 0 = ошибка
 static int ensure_dir(const char* name) {
-    char path[32];
-    strcpy(path, "/roms/");
-    strcat(path, name);
-
     fat_entry_t e;
-    if (fat_find("/roms", name, &e)) return 1;
+    if (fat_find("/roms", name, &e)) return 2;
 
     int r = fat_mkdir("/roms", name);
     if (r < 0) printf("mkdir fail: %s\n", name);
-    return r >= 0;
+    return r >= 0 ? 1 : 0;
 }
 
 void settings_run(void) {
@@ -250,29 +247,41 @@ create_folders_only:
 
         int confirm = input_wait();
         if (confirm == 40 || confirm == '\n' || confirm == '\r') {
-            int ok = 0, fail = 0;
+            int created = 0, existing = 0, fail = 0;
             for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
-                if (ensure_dir(system_rom_dir(i))) ok++; else fail++;
+                int r = ensure_dir(system_rom_dir(i));
+                if (r == 1) created++;
+                else if (r == 2) existing++;
+                else fail++;
             }
-            char buf[64];
-            int len = 0;
-            const char* fmt = "Created: ";
-            while (*fmt) buf[len++] = *fmt++;
-            buf[len] = 0;
-            char ok_str[12];
-            int ok_tmp = ok, ii = 11;
-            ok_str[11] = 0;
-            do { ok_str[--ii] = '0' + (ok_tmp % 10); ok_tmp /= 10; } while (ok_tmp);
-            memcpy(buf + len, ok_str + ii, 11 - ii); len += 11 - ii;
-            const char* fmt2 = "   Failed: ";
-            while (*fmt2) buf[len++] = *fmt2++;
-            char fail_str[12];
-            int fail_tmp = fail; ii = 11; fail_str[11] = 0;
-            do { fail_str[--ii] = '0' + (fail_tmp % 10); fail_tmp /= 10; } while (fail_tmp);
-            memcpy(buf + len, fail_str + ii, 11 - ii);
             fb_clear();
-            fb_puts_s(60, 100, buf, 2, fail ? 0x00FF4444 : 0x0000FF00);
-            fb_puts_s(60, 140, "Press any key", 1, 0x00AAAAAA);
+            if (created > 0) {
+                char buf[64];
+                int len = 0;
+                const char* p = "Created: ";
+                while (*p) buf[len++] = *p++;
+                char s[12]; int tmp = created, ii = 11;
+                s[11] = 0;
+                do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
+                memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
+                buf[len] = 0;
+                fb_puts_s(60, 80, buf, 2, 0x0000FF00);
+            }
+            if (existing > 0) {
+                char buf[64];
+                int len = 0;
+                const char* p = "Already exist: ";
+                while (*p) buf[len++] = *p++;
+                char s[12]; int tmp = existing, ii = 11;
+                s[11] = 0;
+                do { s[--ii] = '0' + (tmp % 10); tmp /= 10; } while (tmp);
+                memcpy(buf + len, s + ii, 11 - ii); len += 11 - ii;
+                buf[len] = 0;
+                fb_puts_s(60, 110, buf, 1, 0x00AAAAAA);
+            }
+            if (fail > 0)
+                fb_puts_s(60, 140, "Some folders failed! Check UART", 1, 0x00FF4444);
+            fb_puts_s(60, 200, "Press any key", 1, 0x00AAAAAA);
             fb_flush();
             input_wait();
         }
