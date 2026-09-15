@@ -227,7 +227,15 @@ int fat_init(void) {
 
         uint32_t rc = le32(g_sector + 44);
         uint32_t ds = lba + le16(g_sector + 14) + g_sector[16] * le32(g_sector + 36);
-        uint32_t old_rc = g_root_cluster, old_ds = g_data_start;
+        // Временно переключаем ВСЕ глобалы на проверяемый раздел
+        uint32_t old_pl = g_part_lba, old_sc = g_sec_per_cluster;
+        uint32_t old_rs = g_reserved, old_nf = g_num_fats;
+        uint32_t old_fs = g_fat_size;
+        g_part_lba = lba;
+        g_sec_per_cluster = g_sector[13];
+        g_reserved = le16(g_sector + 14);
+        g_num_fats = g_sector[16];
+        g_fat_size = le32(g_sector + 36);
         g_root_cluster = rc; g_data_start = ds;
 
         fat_entry_t dirs[FAT_MAX_ENTRIES];
@@ -236,7 +244,11 @@ int fat_init(void) {
         for (int d = 0; d < dn; d++)
             if (dirs[d].size == 0 && strcmp(dirs[d].name, "roms") == 0) { found = 1; break; }
 
-        g_root_cluster = old_rc; g_data_start = old_ds;
+        // Восстанавливаем старые глобалы
+        g_part_lba = old_pl; g_sec_per_cluster = old_sc;
+        g_reserved = old_rs; g_num_fats = old_nf;
+        g_fat_size = old_fs;
+        g_root_cluster = 0; g_data_start = 0;  // сброс — будут установлены после выбора раздела
 
         if (found) {
             part_lba = lba; part_idx = n; has_roms = 1;
