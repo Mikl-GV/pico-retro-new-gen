@@ -166,7 +166,8 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         if ((fc % 60) == 0) printf("portfolio f=%u\n", (unsigned)fc); fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        if (uart_rx_ready()) break;
+        // БЕЗ uart_rx_ready(): для Portfolio UART — это ввод с клавиатуры
+        // (pofo_uart_input), а не стоп-сигнал.
     }
 exit: fb_clear(); fb_flush();
 }

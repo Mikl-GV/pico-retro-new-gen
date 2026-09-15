@@ -1549,39 +1549,7 @@ static uint8_t pofo_cg_read(int cl, uint8_t md)
     return pofo_chargen[((md & 0xff) << 4) | (cl & 0x0f)];
 }
 
-/* UART echo: dump HD61830 VRAM text to terminal whenever it changes */
-static uint32_t pofo_uart_crc = 0xFFFFFFFF;
-static int pofo_uart_dirty = 1;
-
-static void pofo_uart_echo(void)
-{
-    int rows = lcdc.nx / lcdc.vp;
-    if (rows <= 0) rows = 8;
-    if (rows > 10) rows = 10;
-    int cols = lcdc.hn;
-    if (cols > 40) cols = 40;
-    int n = cols * rows;
-
-    uint32_t crc = 0xFFFFFFFF;
-    for (int i = 0; i < n && i < HD61830_VRAM_SIZE; i++)
-        crc = (crc >> 8) ^ ((crc ^ lcdc.vram[i]) * 0x100);
-
-    if (crc == pofo_uart_crc && !pofo_uart_dirty) return;
-    pofo_uart_crc = crc;
-    pofo_uart_dirty = 0;
-
-    /* ANSI: home cursor, clear screen */
-    printf("\033[H");
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            uint8_t ch = lcdc.vram[r * lcdc.hn + c];
-            if (ch < 0x20) ch = '.';
-            if (ch >= 0x7f) ch = '.';
-            putchar(ch);
-        }
-        printf("\033[K\n");
-    }
-}
+/* UART echo: отключена — вывод ANSI-экрана конфликтовал с ESC-обработкой */
 
 /* draw one text scanline (MAME draw_char). Returns pixel columns for row y. */
 static void pofo_draw_char_line(int cl, uint8_t md, int x0)
@@ -1735,8 +1703,6 @@ extern "C" void portfolio_run_frame(void)
         return;
     }
 
-    pofo_uart_echo();
-
     /* ---------- single shared edge detection ---------- */
     enum { DB = 3 };
     static uint8_t db_cand = 0xFF, db_stable = 0xFF;
@@ -1797,7 +1763,6 @@ extern "C" void portfolio_run_frame(void)
 
     pofo_timer_tick();
     exec86(20000);
-    pofo_uart_echo();
 
     if (pofo_pin_active) {
         pofo_pin_draw();
