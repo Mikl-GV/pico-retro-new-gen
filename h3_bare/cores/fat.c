@@ -209,27 +209,88 @@ int fat_init(void) {
     if (sd_read_sector(0, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
 
-    // 1. Ищем раздел с папкой /roms в корне. Системный раздел (0) в поиске
-    //    НЕ участвует — ROM-раздел всегда отдельный (1..3).
-    int priority[4];
-    priority[0] = 1; priority[1] = 2; priority[2] = 3; priority[3] = 0;
+    // --- Сбор всех FAT32-разделов (MBR + GPT) в список ---
+    // Каждый: lba начала, индекс. Системный раздел (первый, где U-Boot) —
+    // под индекс 0, остальные — ROM-кандидаты.
+    enum { MAX_PART = 16 };
+    uint32_t plt_start[MAX_PART];
+    int plt_idx[MAX_PART];       // MBR-слот или GPT-номер
+    int plt_is_gpt[MAX_PART];
+    int part_count = 0;
 
-    for (int pi = 0; pi < 4; pi++) {
-        int n = priority[pi];
-        if (n == 0) continue;   // системный раздел пропускаем
+    // MBR-разделы
+    for (int n = 0; n < 4; n++) {
         int off = 446 + n * 16;
         uint8_t type = g_sector[off + 4];
-        if (type != 0x0B && type != 0x0C && type != 0x06) continue;
-        uint32_t lba = le32(g_sector + off + 8);
-        if (lba == 0) continue;
+        if (type == 0x0B || type == 0x0C || type == 0x06) {
+            uint32_t lba = le32(g_sector + off + 8);
+            if (lba != 0 && part_count < MAX_PART) {
+                plt_start[part_count] = lba;
+                plt_idx[part_count] = n;
+                plt_is_gpt[part_count] = 0;
+                part_count++;
+            }
+        }
+    }
 
+    // GPT-разделы (если MBR не дал результата или защитный 0xEE)
+    int mbr_is_protective = 0;
+    for (int n = 0; n < 4; n++) {
+        if (g_sector[446 + n * 16 + 4] == 0xEE) { mbr_is_protective = 1; break; }
+    }
+    if (mbr_is_protective) {
+        uint8_t gpthdr[512];
+        // GPT header в LBA 1
+        if (sd_read_sector(1, gpthdr) == 0 &&
+            memcmp(gpthdr, "EFI PART", 8) == 0) {
+            uint32_t tbl_lba = le32(gpthdr + 72); // partition entry array LBA
+            uint32_t nentries = le32(gpthdr + 80);
+            uint32_t esize = le32(gpthdr + 84);
+            if (esize < 128) esize = 128;
+            if (nentries > 512) nentries = 512;
+            // Читаем таблицу: nentries * esize, читаем по секторам
+            uint8_t tbl[512];
+            uint32_t base = tbl_lba;
+            for (uint32_t e = 0; e < nentries && part_count < MAX_PART; e++) {
+                uint32_t sec = base + (e * esize) / 512;
+                uint32_t off = (e * esize) % 512;
+                if (off == 0) {
+                    if (sd_read_sector(sec, tbl) < 0) break;
+                }
+                // Тип GUID — FAT32 / basic data: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
+                // LBA первое (48 бит) на offset 32 в запись
+                const uint8_t* en = tbl + off;
+                // проверяем GUID на валидность (не нули)
+                int nonzero = 0;
+                for (int b = 0; b < 16; b++) if (en[b]) { nonzero = 1; break; }
+                if (!nonzero) continue;
+                uint64_t first = (uint64_t)en[32] | ((uint64_t)en[33] << 8) |
+                                 ((uint64_t)en[34] << 16) | ((uint64_t)en[35] << 24) |
+                                 ((uint64_t)en[36] << 32) | ((uint64_t)en[37] << 40) |
+                                 ((uint64_t)en[38] << 48) | ((uint64_t)en[39] << 56);
+                if (first == 0) continue;
+                plt_start[part_count] = (uint32_t)first;
+                plt_idx[part_count] = e;
+                plt_is_gpt[part_count] = 1;
+                part_count++;
+            }
+            printf("FAT: GPT found, %u entries usable\n", part_count);
+        }
+    }
+    printf("FAT: found %d FAT partitions\n", part_count);
+    if (part_count == 0) return -1;
+
+    // --- 1. Ищем раздел с /roms. Системный (первый) в поиске НЕ участвует. ---
+    // Приоритет: сначала ищем в не-system, потом если только один — он.
+    // Сначала проверяем все кроме первого (системный = первый по счёту)
+    for (int pi = 1; pi < part_count; pi++) {
+        uint32_t lba = plt_start[pi];
         if (sd_read_sector(lba, g_sector) < 0) continue;
         if (le16(g_sector + 510) != 0xAA55) continue;
         if (le16(g_sector + 11) != 512) continue;
 
         uint32_t rc = le32(g_sector + 44);
         uint32_t ds = lba + le16(g_sector + 14) + g_sector[16] * le32(g_sector + 36);
-        // Временно переключаем ВСЕ глобалы на проверяемый раздел
         uint32_t old_pl = g_part_lba, old_sc = g_sec_per_cluster;
         uint32_t old_rs = g_reserved, old_nf = g_num_fats;
         uint32_t old_fs = g_fat_size;
@@ -246,44 +307,29 @@ int fat_init(void) {
         for (int d = 0; d < dn; d++)
             if (dirs[d].size == 0 && strcmp(dirs[d].name, "roms") == 0) { found = 1; break; }
 
-        // Восстанавливаем старые глобалы
         g_part_lba = old_pl; g_sec_per_cluster = old_sc;
         g_reserved = old_rs; g_num_fats = old_nf;
         g_fat_size = old_fs;
-        g_root_cluster = 0; g_data_start = 0;  // сброс — будут установлены после выбора раздела
 
         if (found) {
-            part_lba = lba; part_idx = n; has_roms = 1;
+            part_lba = lba; part_idx = pi; has_roms = 1;
             break;
         }
     }
 
-    // 2. Если с /roms не нашли — ищем второй (не-system) FAT32-раздел
-    if (part_idx < 0) {
-        for (int n = 1; n < 4; n++) {  // skip 0
-            int off = 446 + n * 16;
-            uint8_t type = g_sector[off + 4];
-            if (type != 0x0B && type != 0x0C && type != 0x06) continue;
-            part_lba = le32(g_sector + off + 8);
-            if (part_lba != 0) {
-                part_idx = n; has_roms = 0; break;
-            }
-        }
+    // --- 2. Если с /roms не нашли — берём первый не-system раздел ---
+    if (part_idx < 0 && part_count > 1) {
+        part_lba = plt_start[1];
+        part_idx = 1; has_roms = 0;
     }
 
-    // 3. Если нет не-system раздела — падаем на первый (не создаём /roms)
+    // --- 3. Если нет других разделов — падаем на первый (не создаём /roms) ---
     if (part_idx < 0) {
-        for (int n = 0; n < 4; n++) {
-            int off = 446 + n * 16;
-            uint8_t type = g_sector[off + 4];
-            if (type != 0x0B && type != 0x0C && type != 0x06) continue;
-            part_lba = le32(g_sector + off + 8);
-            if (part_lba != 0) { part_idx = n; has_roms = 0; break; }
-        }
-        if (part_idx < 0) return -1;
+        part_lba = plt_start[0];
+        part_idx = 0; has_roms = 0;
     }
 
-    // Инициализруем выбранный раздел
+    // Инициализируем выбранный раздел
     if (sd_read_sector(part_lba, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
     if (le16(g_sector + 11) != 512) return -1;
