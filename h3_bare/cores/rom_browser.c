@@ -137,6 +137,33 @@ if (n > 0) {
             }
         } else if (k == 41) {
             return;
+        } else if (k == 42 || k == 76 || k == 49) {
+            // Backspace / Delete / или "D" — удалить ROM
+            if (n > 0) {
+                fb_clear();
+                fb_puts_s(60, 100, "Delete this ROM?", 2, 0x00FFAA00);
+                fb_puts_s(60, 140, list[cursor].name, 1, 0x00FFFFFF);
+                fb_puts_s(60, 180, "", 1, 0x00FFFFFF);
+                fb_puts_s(80, 220, "  Enter: delete    ESC: cancel", 1, 0x00888888);
+                fb_flush();
+
+                int confirm = input_wait();
+                if (confirm == 40 || confirm == '\n' || confirm == '\r') {
+                    int r = fat_delete_file(path, list[cursor].name);
+                    if (r == 0) {
+                        // перечитываем список
+                        n = fat_list(path, list, FAT_MAX_ENTRIES);
+                        sort_entries(list, n);
+                        if (cursor >= n) cursor = n - 1;
+                        if (cursor < 0) cursor = 0;
+                    } else {
+                        fb_clear();
+                        fb_text_center("Delete failed!", 200, 2, 0x00FF4444);
+                        fb_flush();
+                        input_wait();
+                    }
+                }
+            }
         }
     }
 }

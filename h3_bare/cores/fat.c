@@ -300,6 +300,7 @@ int fat_init(void) {
 
 // forward declaration (определена ниже)
 static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen);
+static int name_eq(const char* a, const char* b);
 
 // 8.3 имя из строки (верхний регистр, без расширения если папка)
 static void make_short_name(const char* name, uint8_t* out83) {
@@ -423,6 +424,68 @@ int fat_mkdir(const char* parent_path, const char* name) {
     make_dir_entry(g_sector + off, name, new_cl, 0);
     if (sd_write_sector(dummy_sec, g_sector) < 0) return -1;
 
+    return 0;
+}
+
+// Удалить файл: dir = например "/roms/nes", name = "game.nes".
+// Помечает первую запись 0xE5 (удалена) и освобождает кластеры в обеих FAT.
+int fat_delete_file(const char* dir, const char* name) {
+    fat_entry_t d;
+    char buf[FAT_NAME_LEN];
+    if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return -1;
+    if (d.size != 0) return -1;  // не директория
+
+    // Найти запись файла в директории
+    uint32_t cl = d.first_cluster;
+    uint32_t target_first = 0;
+    int found = 0;
+
+    while (cl && cl < 0x0FFFFFF8) {
+        uint32_t base = cluster_to_sector(cl);
+        for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
+            if (sd_read_sector(base + s, g_sector) < 0) return -1;
+            for (int i = 0; i < 512; i += 32) {
+                uint8_t first = g_sector[i];
+                if (first == 0x00) return -1;  // конец
+                if (first == 0xE5) continue;
+                // имя из 8.3
+                char n[13];
+                int pi = 0;
+                for (int c = 0; c < 8 && g_sector[i + c] != ' ' && pi < 12; c++)
+                    n[pi++] = (char)g_sector[i + c];
+                if (g_sector[i + 11] != 0x10) {  // файл (не папка)
+                    if (g_sector[i + 8] != ' ') {
+                        n[pi++] = '.';
+                        for (int c = 0; c < 3 && g_sector[i + 8 + c] != ' ' && pi < 12; c++)
+                            n[pi++] = (char)g_sector[i + 8 + c];
+                    }
+                    n[pi] = 0;
+                    if (name_eq(n, name)) {
+                        // помечаем удалённой
+                        g_sector[i] = 0xE5;
+                        if (sd_write_sector(base + s, g_sector) < 0) return -1;
+                        target_first = le16(g_sector + i + 26) | (le16(g_sector + i + 20) << 16);
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        if (found) break;
+        cl = fat_next_cluster(cl);
+    }
+    if (!found || target_first == 0) return -1;
+
+    // Освободить кластеры файла в обеих FAT
+    uint32_t fc = target_first;
+    while (fc >= 2 && fc < 0x0FFFFFF8) {
+        uint32_t next = fat_next_cluster(fc);
+        fat_set_cluster(fc, 0);   // пишет в обе копии FAT
+        if (next == fc) break;
+        if (next >= 0x0FFFFFF8) break;
+        fc = next;
+    }
     return 0;
 }
 
