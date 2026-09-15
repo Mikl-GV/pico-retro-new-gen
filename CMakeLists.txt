@@ -12,6 +12,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a5200
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/portfolio
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/src
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/platform/fb
 )
@@ -72,6 +73,11 @@ set(SRCS
     h3_bare/cores/portfolio/i8253.cpp
     h3_bare/cores/portfolio/i8259.cpp
     h3_bare/cores/portfolio/system_portfolio.cpp
+    h3_bare/cores/gameboy_host.cpp
+    h3_bare/cores/gameboy_stubs.c
+    h3_bare/cores/gameboy/emulator.c
+    h3_bare/cores/gameboy/memory.c
+    h3_bare/cores/gameboy/joypad.c
     h3_bare/cores/nes/InfoNES.cpp
     h3_bare/cores/nes/InfoNES_Mapper.cpp
     h3_bare/cores/nes/InfoNES_pAPU.cpp
@@ -151,6 +157,14 @@ set_source_files_properties(
 set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/z80.c
     PROPERTIES COMPILE_OPTIONS "-std=gnu89;-O2"
+)
+# Game Boy (binjgb): C99, stubs для malloc, нет inttypes.h — определяем PRI-макросы
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/emulator.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/common.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/memory.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/joypad.c
+    PROPERTIES COMPILE_OPTIONS "-std=gnu99;-DTRACE_MEMORY;-DPRIu64=\"llu\";-DPRIx64=\"llx\";-DPRId64=\"lld\""
 )
 target_link_libraries(h3_bare.elf PRIVATE -lgcc)
 

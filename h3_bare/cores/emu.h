@@ -19,6 +19,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
 

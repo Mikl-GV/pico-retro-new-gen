@@ -70,6 +70,9 @@ extern void sms_render_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
 extern int portfolio_exit_requested(void);
+extern int gb_init_game(const uint8_t* rom, uint32_t size);
+extern void gb_run_frame(void);
+extern void gb_render_frame(void);
 
 static void emu_wait_key(void) {
     for (;;) {
@@ -171,6 +174,28 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         if ((fc % 60) == 0) printf("portfolio f=%u\n", (unsigned)fc); fc++;
     }
     fb_clear(); fb_flush();
+}
+
+void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (gb_init_game(rom, size) != 1) {
+        printf("GameBoy: init failed\n"); return;
+    }
+    printf("GameBoy: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    uint8_t raw_keys[6]; uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        gb_run_frame();
+        gb_render_frame();
+        emu_throttle();
+        emu_scale(160, 144);
+        fb_flush();
+        if ((fc % 60) == 0) printf("gb f=%u\n", (unsigned)fc); fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (uart_rx_ready()) break;
+    }
+exit: fb_clear(); fb_flush();
 }
 
 // Запасное самописное ядро A2600 (не используется — rom_browser вызывает MCUME)
