@@ -1,6 +1,7 @@
 # pico-retro-new-gen
 
-Bare-metal мультисистемный эмулятор на Orange Pi Lite (Allwinner H3, 512 МБ).
+**Новая генерация V5** — bare-metal мультисистемный эмулятор на Orange Pi Lite
+(Allwinner H3, 512 МБ), переписанный с нуля.
 
 Без Linux, без ОС: один бинарник загружается U-Boot'ом. HDMI 1024×600,
 USB-клавиатура, ROM — с SD-карты (FAT32).

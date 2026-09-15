@@ -450,7 +450,7 @@ void menu_help(void) {
 // ---- About: информация о проекте ----
 void menu_about(void) {
     static const char* lines[] = {
-        "MultiTool Retro v8",
+        "MultiTool Retro v9.0",
         "Orange Pi Lite (Allwinner H3)",
         "512 MB, HDMI 1024x600",
         "Bare-metal, no OS",
