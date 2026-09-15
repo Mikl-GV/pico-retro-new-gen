@@ -37,23 +37,24 @@ sudo sync; sudo umount /mnt
 
 ### Эмуляторы (в игре)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG |
-|---------|:---:|:-------------:|:-----:|:-----:|:------:|
-| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 |
-| **X** | B | — | Pause | B2 (B) | Button 2 |
-| **S** | Select | Select | Start | Select | Pause |
-| **Enter** | Start | Game Reset | Key 3 | Start | — |
-| **ESC** | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Portfolio |
+|---------|:---:|:-------------:|:-----:|:-----:|:------:|:---------:|
+| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стрелки/мыш |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | Enter |
+| **X** | B | — | Pause | B2 (B) | Button 2 | Back |
+| **S** | Select | Select | Start | Select | Pause | — |
+| **Enter** | Start | Game Reset | Key 3 | Start | — | — |
+| **ESC** | Выход | Выход | Выход | Выход | Выход | Выход |
 
 ## Системы
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, NES / Famicom, Sega Master System / Game Gear |
-| 🔲 План | GB/GBC, ColecoVision, PC Engine, SNES, Mega Drive, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504, Atari Portfolio |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, NES / Famicom, Sega Master System / Game Gear, **Atari Portfolio** (BIOS вшит, без ROM) |
+| 🔲 План | GB/GBC, ColecoVision, PC Engine, SNES, Mega Drive, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504 |
 
 ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`.
+Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
 
 ## Документация
 
