@@ -133,9 +133,11 @@ extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
 extern "C" void atari2600_run_frame(void) {
     if (!mcume_ready) return;
     extern void mainloop(void);
+    extern void vcs_Input(int key);
     int before = tv_draw_count;
     int guard = 0;
     while (tv_draw_count == before && guard < 40) {
+        vcs_Input(0);   // обновляет k = emu_GetPad() — иначе кнопки «застывают»
         mainloop();
         guard++;
     }
