@@ -129,19 +129,6 @@ int sd_init(void) {
     return 0;
 }
 
-// ---- CMD9 (SEND_CSD) — получение ёмкости карты ----
-int sd_get_capacity_mb(void) {
-    mmc_clr_rint();
-    MMC->arg = 0;
-    MMC->cmd = (9 & 0x3F) | CMD_START | CMD_CHECK_CRC | CMD_RESP_EXPIRE;
-    if (mmc_wait_rint(RINT_CMD_DONE) < 0) return -1;
-    // CSD v2.0 (SDHC/SDXC): C_SIZE в битах 69..48
-    // resp1[31..16] = C_SIZE[21:16], resp2[15..0] = C_SIZE[15:0]
-    uint32_t csize = ((MMC->resp1 >> 16) & 0x3F) << 16 | (MMC->resp2 & 0xFFFF);
-    uint32_t sectors = (csize + 1) * 1024;  // для SDHC
-    return (int)(sectors / 2048);            // sectors * 512 / 1M
-}
-
 int sd_read_sector(uint32_t lba, void* buf) {
     uint32_t addr = g_sdhc ? lba : (lba << 9);
     mmc_clr_rint();

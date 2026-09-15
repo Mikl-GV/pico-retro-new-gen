@@ -6,7 +6,6 @@
 #include "uart.h"
 #include "usb_kbd.h"
 extern int printf(const char* fmt, ...);
-extern int fat_create_rom_partition(void);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
@@ -200,7 +199,7 @@ void settings_run(void) {
         {
             fb_puts_s(320, 185, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
         }
-        fb_puts_s(80, 210, "5 - Create 2nd FAT32 partition", 1, 0x00FFFF00);
+        fb_puts_s(80, 210, "5 - Info: ROM partition setup", 1, 0x00FFFF00);
 
         fb_puts(60, FOOTER_Y, "  1/2/3/4/5: select    ESC: back", 0x00888888);
         fb_flush();
@@ -210,7 +209,21 @@ void settings_run(void) {
             return;
         } else if (k == 40 || k == '\n' || k == '\r' || k == 30) {
             // "1" -> создать папки ROM на текущем разделе
-            goto create_folders_only;
+            // Проверяем, есть ли /roms
+            fat_entry_t dummy;
+            int has_roms = fat_find("/", "roms", &dummy);
+            if (!has_roms) {
+                fb_clear();
+                fb_text_center("ROM partition not found!", 100, 2, 0x00FF4444);
+                fb_puts_s(60, 160, "Create a FAT32 partition in Windows", 1, 0x00FFFFFF);
+                fb_puts_s(60, 185, "with label H3_ROM and folder /roms", 1, 0x00FFFFFF);
+                fb_puts_s(60, 210, "in its root. Then press 1 again.", 1, 0x00FFFFFF);
+                fb_puts_s(60, 260, "Press any key", 1, 0x00888888);
+                fb_flush();
+                input_wait();
+            } else {
+                goto create_folders_only;
+            }
         } else if (k == 31) {
             // "2" -> Input Test
             input_test_run();
@@ -221,8 +234,8 @@ void settings_run(void) {
             // "4" -> Atari 2600 Difficulty
             a2600_diff_expert = !a2600_diff_expert;
         } else if (k == 34) {
-            // "5" -> создать ROM-раздел
-            goto create_partition;
+            // "5" -> справка по разделу
+            goto partition_info;
         }
     }
 create_folders_only:
@@ -265,65 +278,18 @@ create_folders_only:
         }
         return;
     }
-create_partition:
+partition_info:
     {
         fb_clear();
-        fb_puts_s(60, 70, "Create 2nd partition for ROMs?", 2, 0x00FFAA00);
-        fb_puts_s(60, 110, "This will create a new FAT32 partition", 1, 0x00FFFFFF);
-        fb_puts_s(60, 135, "on the SD card with /roms/ folder.", 1, 0x00FFFFFF);
-        fb_puts_s(60, 195, "WARNING: any data on that partition", 1, 0x00FF4444);
-        fb_puts_s(60, 220, "will be LOST! System partition is safe.", 1, 0x00FFAA00);
-        fb_puts_s(80, 260, "  Enter: confirm    ESC: cancel", 1, 0x00888888);
-        fb_flush();
-
-        int confirm = input_wait();
-        if (confirm != 40 && confirm != '\n' && confirm != '\r') return;
-
-        fb_clear();
-        fb_puts_s(60, 90, "Type YES and press Enter", 2, 0x00FFAA00);
-        fb_puts_s(60, 140, "to create partition.", 1, 0x00FFFFFF);
-        fb_flush();
-        char yesbuf[8] = {0};
-        int yl = 0;
-        for (;;) {
-            int k = input_wait();
-            if (k == 41 || k == 27) return;
-            if (k == 40 || k == '\n' || k == '\r') {
-                if (yl == 3 && strcmp(yesbuf, "YES") == 0) break;
-                return;
-            }
-            if (k == 42) { if (yl > 0) yl--; yesbuf[yl] = 0; continue; }
-            if (k >= 4 && k <= 29 && yl < 3) {
-                char ch = 'A' + (k - 4);
-                if (ch == 'Y' || ch == 'E' || ch == 'S') { yesbuf[yl++] = ch; yesbuf[yl] = 0; }
-            }
-            char disp[16];
-            int d = 0;
-            const char* s = yesbuf;
-            while (*s) disp[d++] = *s++;
-            disp[d] = 0;
-            fb_fill_rect(0, 180, 320, 30, 0);
-            fb_puts_s(60, 180, disp, 2, 0x00FFFFFF);
-            fb_flush();
-        }
-
-        fb_clear();
-        fb_puts_s(60, 100, "Creating partition...", 2, 0x00FFAA00);
-        fb_flush();
-
-        int r = fat_create_rom_partition();
-
-        fb_clear();
-        if (r == 0) {
-            fb_text_center("Partition created!", 120, 2, 0x0000FF00);
-            fb_puts_s(60, 160, "Reboot the console to mount it,", 1, 0x00FFFFFF);
-            fb_puts_s(60, 185, "then re-enter Settings > 1", 1, 0x00FFFFFF);
-            fb_puts_s(60, 210, "to create system folders", 1, 0x00FFFFFF);
-            fb_puts_s(60, 235, "in /roms/.", 1, 0x00FFFFFF);
-        } else {
-            fb_text_center("FAILED!", 120, 2, 0x00FF4444);
-        }
-        fb_puts_s(80, 280, "Press any key", 1, 0x00888888);
+        fb_puts_s(60, 40, "ROM partition setup", 2, 0x00FFAA00);
+        fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
+        fb_puts_s(60, 90, "1. Create FAT32 partition in Windows", 1, 0x00FFFFFF);
+        fb_puts_s(60, 115, "   (DiskPart / GUI / second partition)", 1, 0x00AAAAAA);
+        fb_puts_s(60, 145, "2. Create folder 'roms' in its root", 1, 0x00FFFFFF);
+        fb_puts_s(60, 175, "3. Put ROM files in /roms/<system>/", 1, 0x00FFFFFF);
+        fb_puts_s(60, 205, "4. Insert & reboot the console", 1, 0x00FFFFFF);
+        fb_puts_s(60, 240, "Then press 1 to create system folders", 1, 0x00FFFF00);
+        fb_puts_s(60, 270, "Press any key", 1, 0x00888888);
         fb_flush();
         input_wait();
     }
