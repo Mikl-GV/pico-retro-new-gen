@@ -197,17 +197,82 @@ return count;
 }
 
 int fat_init(void) {
-    uint32_t part_lba = 0;
+    uint32_t part_lba = 0; // найденный FAT32-раздел
+    int part_idx = -1;
 
-    if (sd_read_sector(0, g_sector) >= 0) {
-        if (le16(g_sector + 510) == 0xAA55 && (g_sector[446 + 4] == 0x0B ||
-                                                g_sector[446 + 4] == 0x0C ||
-                                                g_sector[446 + 4] == 0x06)) {
-            part_lba = le32(g_sector + 446 + 8);
-            g_part_lba = part_lba;
+    if (sd_read_sector(0, g_sector) < 0) return -1;
+    if (le16(g_sector + 510) != 0xAA55) return -1;
+
+    // Сначала ищем второй раздел (partition 1, MBR-слот 446+16) с FAT32,
+    // в корне которого есть папка /roms. Если нет — первый раздел.
+    // partition 0 подробные данные? mbr_partition_offset + 16 * n
+    int entries[4] = { 0, 1, 2, 3 };
+    int priority[4];
+    // приоритет: второй раздел → первый → третий → четвёртый
+    priority[0] = 1; priority[1] = 0; priority[2] = 2; priority[3] = 3;
+
+    for (int pi = 0; pi < 4; pi++) {
+        int n = priority[pi];
+        int off = 446 + n * 16;
+        uint8_t type = g_sector[off + 4];
+        if (type != 0x0B && type != 0x0C && type != 0x06) continue;
+        part_lba = le32(g_sector + off + 8);
+        if (part_lba == 0) continue;
+
+        // Пробуем инициализировать этот раздел
+        if (sd_read_sector(part_lba, g_sector) < 0) continue;
+        if (le16(g_sector + 510) != 0xAA55) continue;
+        uint16_t bps = le16(g_sector + 11);
+        if (bps != 512) continue;
+        uint32_t sec_per_cluster = g_sector[13];
+        uint32_t reserved = le16(g_sector + 14);
+        uint32_t num_fats = g_sector[16];
+        uint32_t fat_size = le32(g_sector + 36);
+        uint32_t root_cluster = le32(g_sector + 44);
+        if (!fat_size || fat_size == 0xFFFFFFFF) continue;
+        uint32_t data_start = part_lba + reserved + num_fats * fat_size;
+
+        // Сохраняем временно
+        g_part_lba = part_lba;
+        g_sec_per_cluster = sec_per_cluster;
+        g_reserved = reserved;
+        g_num_fats = num_fats;
+        g_fat_size = fat_size;
+        g_root_cluster = root_cluster;
+        g_data_start = data_start;
+
+        // Проверяем наличие /roms в корне этого раздела
+        char buf[8];
+        fat_entry_t e;
+        int found = 0;
+        int cnt = read_dir(root_cluster, &e, 1);
+        // перебираем корень в поисках папки roms
+        fat_entry_t dirs[FAT_MAX_ENTRIES];
+        int dn = read_dir(root_cluster, dirs, FAT_MAX_ENTRIES);
+        for (int di = 0; di < dn; di++) {
+            if (dirs[di].size == 0 && strcmp(dirs[di].name, "roms") == 0) { found = 1; break; }
+        }
+
+        if (found) {
+            part_idx = n;
+            break; // нашли раздел с ROMs!
         }
     }
 
+    // Если не нашли со /roms — берём первый FAT32 (старое поведение)
+    part_lba = 0;
+    if (part_idx < 0) {
+        for (int n = 0; n < 4; n++) {
+            int off = 446 + n * 16;
+            uint8_t type = g_sector[off + 4];
+            if (type != 0x0B && type != 0x0C && type != 0x06) continue;
+            part_lba = le32(g_sector + off + 8);
+            if (part_lba != 0) { part_idx = n; break; }
+        }
+        if (part_idx < 0) return -1;
+    }
+
+    // Окончательно инициализируем выбранный раздел
     if (sd_read_sector(part_lba, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
     uint16_t bps = le16(g_sector + 11);
