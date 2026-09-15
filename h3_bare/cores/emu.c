@@ -69,6 +69,7 @@ extern void sms_run_frame(void);
 extern void sms_render_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
+extern int portfolio_exit_requested(void);
 
 static void emu_wait_key(void) {
     for (;;) {
@@ -157,19 +158,19 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         printf("Portfolio: init failed\n"); return;
     }
     printf("Portfolio: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
-    uint8_t raw_keys[6]; uint32_t fc = 0;
+    uint32_t fc = 0;
     emu_ts0 = 0;
+    /* Клавиатурой полностью владеет Portfolio (pofo_usbkbd_input).
+     * Выход — только когда он сам выставил pofo_exit_requested (ESC в DOS). */
     for (;;) {
         portfolio_run_frame();
+        if (portfolio_exit_requested()) break;
         emu_throttle();
+        emu_scale(320, 240);   /* Portfolio рисует в EMU_FB → масштаб на весь экран */
         fb_flush();
         if ((fc % 60) == 0) printf("portfolio f=%u\n", (unsigned)fc); fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
-        // БЕЗ uart_rx_ready(): для Portfolio UART — это ввод с клавиатуры
-        // (pofo_uart_input), а не стоп-сигнал.
     }
-exit: fb_clear(); fb_flush();
+    fb_clear(); fb_flush();
 }
 
 // Запасное самописное ядро A2600 (не используется — rom_browser вызывает MCUME)

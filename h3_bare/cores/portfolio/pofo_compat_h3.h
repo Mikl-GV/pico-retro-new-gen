@@ -16,59 +16,36 @@ extern "C" {
 
 #define RGB565(r, g, b) ((((r) & 0x1F) << 11) | (((g) & 0x3F) << 5) | ((b) & 0x1F))
 
-// HDMI-фреймбуфер для рендера
-#define POFO_HMIDI_FB  ((volatile uint32_t*)0x5F900000)
-#define POFO_FB_W      1024
-#define POFO_FB_H      600
-// Портфолио рисует в 320×240 — смещаем в центр
-#define POFO_OFX       ((POFO_FB_W - 320) / 2)
-#define POFO_OFY       ((POFO_FB_H - 240) / 2)
+// Рендер Portfolio идёт В ОБЩИЙ emu-буфер 320×240 RGB565 (EMU_FB).
+// emu_run_portfolio() масштабирует его на весь экран через emu_scale(320,240).
+#define POFO_FB   ((uint16_t*)0x5F800000)
+#define POFO_W    320
+#define POFO_H    240
 
-// 1. display_fill: залить всё окно 320×240 в центре
+// 1. display_fill: залить весь буфер
 static inline void display_fill(uint16_t color) {
-    uint32_t c = (((color >> 11) & 0x1F) << 3) << 16 |
-                 (((color >> 5) & 0x3F) << 2) << 8 |
-                 ((color & 0x1F) << 3);
-    for (int y = 0; y < 240; y++)
-        for (int x = 0; x < 320; x++)
-            POFO_HMIDI_FB[(POFO_OFY + y) * POFO_FB_W + (POFO_OFX + x)] = c;
+    for (int y = 0; y < POFO_H; y++)
+        for (int x = 0; x < POFO_W; x++)
+            POFO_FB[y * POFO_W + x] = color;
 }
 
 // 2. display_fill_rect
 static inline void display_fill_rect(int x0, int y0, int w, int h, uint16_t color) {
-    uint32_t c = (((color >> 11) & 0x1F) << 3) << 16 |
-                 (((color >> 5) & 0x3F) << 2) << 8 |
-                 ((color & 0x1F) << 3);
-    for (int y = y0; y < y0 + h && y < 240; y++) {
+    for (int y = y0; y < y0 + h && y < POFO_H; y++) {
         if (y < 0) continue;
-        for (int x = x0; x < x0 + w && x < 320; x++) {
+        for (int x = x0; x < x0 + w && x < POFO_W; x++) {
             if (x < 0) continue;
-            POFO_HMIDI_FB[(POFO_OFY + y) * POFO_FB_W + (POFO_OFX + x)] = c;
+            POFO_FB[y * POFO_W + x] = color;
         }
     }
 }
 
-// 3. display_stream_begin / pixels16 / end — для LCD-строки
+// 3. display_stream_begin / pixels16 / end — LCD-строка в общий EMU_FB
 static inline void display_stream_begin(int x, int y, int w, int h) {
     (void)x; (void)y; (void)w; (void)h;
 }
-static inline void display_stream_pixels16(const uint16_t* src, int w, int h) {
-    for (int dy = 0; dy < h; dy++)
-        for (int x = 0; x < w; x++) {
-            uint16_t p = src[x + dy * w];
-            uint32_t r = ((p >> 11) & 0x1F) << 3;
-            uint32_t g = ((p >> 5) & 0x3F) << 2;
-            uint32_t b = (p & 0x1F) << 3;
-            // y — текущая строка экрана, передана через begin (но мы игнорируем begin)
-            // Используем curry_y из статической переменной, установленной stream_begin
-            // НУЖЕН КОНТЕКСТ. См. ниже: pofo_stream_line задаёт gl_y.
-        }
-}
-static inline void display_stream_end(void) {}
-
-// Для stream нужен контекст строки — pofo_stream_line устанавливает `g_stream_y`
-// перед вызовом display_stream_begin/pixels16/end. Это единственный поток.
 static int g_stream_y = 0;
+
 // Переопределяем макросы для Portfolio: stream_begin запоминает y, pixels16 пишет
 #undef display_stream_begin
 #undef display_stream_pixels16
@@ -77,11 +54,8 @@ static int g_stream_y = 0;
 #define display_stream_pixels16(src, w, h) do { \
     int sy_ = g_stream_y; \
     for (int dx_ = 0; dx_ < (w); dx_++) { \
-        uint16_t p_ = (src)[dx_]; \
-        uint32_t r_ = ((p_ >> 11) & 0x1F) << 3; \
-        uint32_t g_ = ((p_ >> 5) & 0x3F) << 2; \
-        uint32_t b_ = (p_ & 0x1F) << 3; \
-        POFO_HMIDI_FB[(POFO_OFY + sy_) * POFO_FB_W + (POFO_OFX + dx_)] = (r_ << 16) | (g_ << 8) | b_; \
+        if (sy_ >= 0 && sy_ < POFO_H && dx_ < POFO_W) \
+            POFO_FB[sy_ * POFO_W + dx_] = (src)[dx_]; \
     } \
 } while(0)
 #define display_stream_end() do {} while(0)
@@ -90,24 +64,33 @@ static int g_stream_y = 0;
 static inline void display_stream_pixels(const uint8_t*, const uint16_t*, int, int) {}
 static inline void display_stream_pixels_full(const uint8_t*, const uint16_t*, int, int) {}
 
-// 5. display_text_at_nobg — через fb_text
+// 5. display_text_at_nobg — рисуем шрифт 8×8 прямо в EMU_FB
 static inline void display_text_at_nobg(const char* s, int x, int y, int scale, uint16_t color) {
-    uint32_t c = (((color >> 11) & 0x1F) << 3) << 16 |
-                 (((color >> 5) & 0x3F) << 2) << 8 |
-                 ((color & 0x1F) << 3);
-    fb_puts_s(POFO_OFX + x, POFO_OFY + y, s, scale, c);
+    (void)scale;
+    for (int ci = 0; s[ci]; ci++) {
+        unsigned char ch = (unsigned char)s[ci];
+        if (ch < 0x20 || ch > 0x7F) ch = '.';
+        const uint8_t* glyph = font8x8[ch - 0x20];
+        for (int row = 0; row < 8; row++) {
+            int py = y + row;
+            if (py < 0 || py >= POFO_H) continue;
+            for (int col = 0; col < 8; col++) {
+                int px = x + ci * 8 + col;
+                if (px < 0 || px >= POFO_W) continue;
+                if (glyph[row] & (0x80 >> col))
+                    POFO_FB[py * POFO_W + px] = color;
+            }
+        }
+    }
 }
 
 // 6. display_text_center_nobg
 static inline void display_text_center_nobg(const char* s, int y, int scale, uint16_t color) {
-    uint32_t c = (((color >> 11) & 0x1F) << 3) << 16 |
-                 (((color >> 5) & 0x3F) << 2) << 8 |
-                 ((color & 0x1F) << 3);
     int len = 0; while (s[len]) len++;
-    int w = len * (8 * scale + 2 * scale) - 2 * scale;
-    int x = (320 - w) / 2;
+    int w = len * 8;
+    int x = (POFO_W - w) / 2;
     if (x < 0) x = 0;
-    fb_puts_s(POFO_OFX + x, POFO_OFY + y, s, scale, c);
+    display_text_at_nobg(s, x, y, scale, color);
 }
 
 // 7. joypad_buttons: 0 = pressed, NES bit order
@@ -145,10 +128,8 @@ static inline void display_flush(void) {}
 
 // 11. display_set_pixel — не используется, но пусть будет
 static inline void display_set_pixel(int x, int y, uint16_t color) {
-    uint32_t c = (((color >> 11) & 0x1F) << 3) << 16 |
-                 (((color >> 5) & 0x3F) << 2) << 8 |
-                 ((color & 0x1F) << 3);
-    POFO_HMIDI_FB[(POFO_OFY + y) * POFO_FB_W + (POFO_OFX + x)] = c;
+    if (x >= 0 && x < POFO_W && y >= 0 && y < POFO_H)
+        POFO_FB[y * POFO_W + x] = color;
 }
 
 #endif

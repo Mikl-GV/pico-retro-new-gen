@@ -6,7 +6,8 @@ Bare-metal мультисистемный эмулятор на Orange Pi Lite (
 USB-клавиатура, ROM — с SD-карты (FAT32).
 
 **Работает сейчас:** Atari 2600 (MCUME), Atari 5200, Atari 7800,
-NES / Famicom (InfoNES), Sega Master System / Game Gear (smsplus).
+NES / Famicom (InfoNES), Sega Master System / Game Gear (smsplus),
+Atari Portfolio (8088, BIOS вшит — без ROM на SD).
 
 ## Сборка и запись
 
@@ -26,6 +27,8 @@ sudo sync; sudo umount /mnt
 
 ## Управление
 
+Подробная карта кнопок — в [`docs/CONTROLS.md`](docs/CONTROLS.md).
+
 ### Меню (глобальное)
 
 | Действие | Клавиша |
@@ -37,14 +40,19 @@ sudo sync; sudo umount /mnt
 
 ### Эмуляторы (в игре)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Portfolio |
-|---------|:---:|:-------------:|:-----:|:-----:|:------:|:---------:|
-| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стрелки/мыш |
-| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | Enter |
-| **X** | B | — | Pause | B2 (B) | Button 2 | Back |
-| **S** | Select | Select | Start | Select | Pause | — |
-| **Enter** | Start | Game Reset | Key 3 | Start | — | — |
-| **ESC** | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG |
+|---------|:---:|:-------------:|:-----:|:-----:|:------:|
+| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 |
+| **X** | B | — | Pause | B2 (B) | Button 2 |
+| **S** | Select | Select | Start | Select | Pause |
+| **Enter** | Start | Game Reset | Key 3 | Start | — |
+| **ESC** (удерж. ~1с) | Выход | Выход | Выход | Выход | Выход |
+
+### Atari Portfolio
+
+Портативный «компьютер» DIP DOS — **полная клавиатура, без игрового маппинга**:
+ввод с USB и UART, Insert — экранная клавиатура, ESC (удерж ~1с) или команда `EXIT` — выход в меню.
 
 ## Системы
 
@@ -60,5 +68,6 @@ Atari Portfolio — **builtin**, запускается из меню без ROM
 
 - `docs/ARCHITECTURE.md` — устройство кода
 - `docs/ROADMAP.md` — статус систем и план
+- `docs/CONTROLS.md` — управление (полная карта кнопок)
 - `docs/BUILD.md` — сборка
 - `docs/HARDWARE.md` — железо

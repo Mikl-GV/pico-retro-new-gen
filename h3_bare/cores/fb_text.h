@@ -4,6 +4,9 @@
 
 #include <stdint.h>
 
+// Общий 8x8 шрифт (0x20..0x7F) — доступен другим модулям
+extern const uint8_t font8x8[96][8];
+
 void fb_putchar(int x, int y, char c, uint32_t color);
 void fb_puts(int x, int y, const char* s, uint32_t color);
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color);

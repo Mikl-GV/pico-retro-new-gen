@@ -1037,6 +1037,10 @@ static void pofo_help_draw(void)
 
 /* return 1 if the current line matched a built-in command and it was
  * consumed (the DOS prompt must not receive the Enter). */
+static int pofo_exit_req = 0;   /* выход из Portfolio */
+static uint32_t pofo_esc_hold_us = 0;  /* 0 = ESC не нажат, иначе время начала */
+extern "C" int portfolio_exit_requested(void) { return pofo_exit_req; }
+
 static int pofo_cmd_check(void)
 {
     int len = pofo_cmd_len;
@@ -1050,6 +1054,12 @@ static int pofo_cmd_check(void)
         (pofo_cmd[2]=='P'||pofo_cmd[2]=='p') && (pofo_cmd[3]=='S'||pofo_cmd[3]=='s')) {
         pofo_cmd_len = 0;
         pofo_run_apps();
+        return 1;
+    }
+    if (len == 4 && (pofo_cmd[0]=='E'||pofo_cmd[0]=='e') && (pofo_cmd[1]=='X'||pofo_cmd[1]=='x') &&
+        (pofo_cmd[2]=='I'||pofo_cmd[2]=='i') && (pofo_cmd[3]=='T'||pofo_cmd[3]=='t')) {
+        pofo_cmd_len = 0;
+        pofo_exit_req = 1;   /* команда EXIT → выход в меню */
         return 1;
     }
     pofo_cmd_len = 0;
@@ -1157,24 +1167,150 @@ static const char pofo_hid_shift[57] = {
     ':','"','~','<','>','?'
 };
 
-/* USB-клавиатура как источник ввода (тот же канал, что и UART). */
+/* Выбор текущей клавиши VK (Enter / клик A). Общий для vk_handle и USB-клавы. */
+static void vk_select_current(void)
+{
+    if (vk_cur_r == VK_ROWS - 1) {
+        switch (vk_cur_c) {
+        case 0: /* Enter */
+            if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char('\r');
+            else if (!pofo_cmd_check()) vk_key_press_rc(2, 6);
+            break;
+        case 1: /* Backspace */
+            if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char('\b');
+            else { if (pofo_cmd_len > 0) pofo_cmd_len--; vk_key_press_rc(1, 6); }
+            break;
+        case 2: /* Space */
+            if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char(' ');
+            else vk_key_press_rc(6, 2);
+            break;
+        case 3: /* Esc → закрыть VK */
+            vk_key_press_rc(7, 7);
+            vk_visible = 0;
+            if (vk_shift) { write86(0x00417, read86(0x00417) & ~0x41); vk_shift = 0; vk_shift_oneshot = 0; }
+            break;
+        case 4: /* Shift toggle: 0→1→2→0 */
+            if (vk_shift == 0) {
+                vk_shift = 1; vk_shift_oneshot = 1;
+                write86(0x00417, read86(0x00417) | 0x01);
+            } else if (vk_shift == 1) {
+                vk_shift = 2; vk_shift_oneshot = 0;
+                write86(0x00417, (read86(0x00417) & ~0x01) | 0x40);
+            } else {
+                vk_shift = 0; vk_shift_oneshot = 0;
+                write86(0x00417, read86(0x00417) & ~0x41);
+            }
+            break;
+        case 5: /* RUS toggle */
+            pofo_ru_mode = !pofo_ru_mode;
+            break;
+        }
+    } else {
+        const struct vk_key_t *k = &vk_keys[vk_cur_r][vk_cur_c];
+        if (pofo_cmd_len < 15 && k->label >= 0x20 && k->label < 0x7f) {
+            char ch = k->label;
+            if (pofo_cmd_len == 0 && ch == ' ') return;
+            pofo_cmd[pofo_cmd_len++] = ch;
+        }
+        vk_key_press(k);
+    }
+    vk_dirty = 1;
+}
+
+/* USB-клавиатура как источник ввода — ПОЛНАЯ клавиатура, без игровых маппингов.
+ * VK открывается только по Insert (73). Когда VK открыта:
+ *   стрелки двигают курсор, Enter выбирает клавишу, Esc/Insert закрывают,
+ *   буквы/цифры всё равно печатаются напрямую в DIP DOS.
+ *
+ * Edge-детект: usb_kbd_get_raw() возвращает СОСТОЯНИЕ (все зажатые клавиши),
+ * а не события. Без трекинга удержание клавиши печатает её каждый кадр
+ * (пачки символов). Сравниваем с предыдущим отчётом и обрабатываем
+ * только НОВЫЕ нажатия. */
+static uint8_t pofo_prev_keys[6] = {0,0,0,0,0,0};
+static int pofo_prev_n = 0;
+
 static void pofo_usbkbd_input(void)
 {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
-    if (n <= 0) return;
+    if (n <= 0) { pofo_prev_n = 0; return; }
+
     uint8_t mods = usb_kbd_get_mods();
-    int shift = (mods & 0x02) || (mods & 0x20);   /* LShift/RShift */
+    int shift = (mods & 0x02) || (mods & 0x20);
+    int hub = pofo_apps_active && pofo_app_current < 0;
+
+    /* Проверка отпускания ESC: если ESC нет в сыром отчёте — сброс таймера */
+    int esc_held = 0;
+    for (int k = 0; k < n; k++) if (keys[k] == 41) esc_held = 1;
+    if (!esc_held) pofo_esc_hold_us = 0;
 
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
-        if (sc == 82) { pofo_char_input(0x0B); continue; }   /* Up */
-        if (sc == 81) { pofo_char_input(0x0C); continue; }   /* Down */
-        if (sc == 80 || sc == 79) continue;                  /* Left/Right — игнор */
-        if (sc >= 57) continue;                              /* F1-F12 и прочее */
+
+        /* Новое ли это нажатие? (не было в предыдущем отчёте) */
+        int is_new = 1;
+        for (int j = 0; j < pofo_prev_n; j++)
+            if (pofo_prev_keys[j] == sc) { is_new = 0; break; }
+        if (!is_new) continue;
+
+        /* Стрелки */
+        if (sc == 82 || sc == 81 || sc == 80 || sc == 79) {
+            if (vk_visible) {
+                if (sc == 82) vk_cur_r = (vk_cur_r + VK_ROWS - 1) % VK_ROWS;
+                else if (sc == 81) vk_cur_r = (vk_cur_r + 1) % VK_ROWS;
+                else if (sc == 80) vk_cur_c = (vk_cur_c + VK_COLS - 1) % VK_COLS;
+                else vk_cur_c = (vk_cur_c + 1) % VK_COLS;
+                vk_dirty = 1;
+            } else if (hub) {
+                if (sc == 82) pofo_char_input(0x0B);
+                else if (sc == 81) pofo_char_input(0x0C);
+            } else {
+                /* DIP DOS: стрелки как сканкоды (матрица Portfolio):
+                 * Up=Y3/bit5, Down=Y4/bit5, Left=Y5/bit3, Right=Y5/bit4 */
+                uint8_t row = (sc == 82) ? 3 : (sc == 81) ? 4 : 5;
+                uint8_t col = (sc == 80) ? 3 : 4;
+                key_make(row, col); exec86(4000); key_break(row, col);
+            }
+            continue;
+        }
+
+        /* Enter (40): VK → выбор; APPS-хаб → запуск; DOS → Enter */
+        if (sc == 40) {
+            if (vk_visible) { vk_select_current(); continue; }
+            pofo_char_input('\r');
+            continue;
+        }
+
+        /* Esc (41): VK → закрыть; DOS → удержание ~1 сек для выхода */
+        if (sc == 41) {
+            if (vk_visible) {
+                vk_visible = 0; vk_dirty = 1; display_fill(LCD_OFF_RGB);
+            } else {
+                pofo_esc_hold_us = h3_hs_timer_lo_us();   /* начало удержания */
+            }
+            continue;
+        }
+
+        /* Insert (73): открыть/закрыть VK */
+        if (sc == 73) {
+            vk_visible = !vk_visible;
+            vk_dirty = 1;
+            pofo_cmd_len = 0;
+            display_fill(LCD_OFF_RGB);
+            if (vk_visible && vk_shift) { write86(0x00417, read86(0x00417) | 0x01); }
+            if (!vk_visible && vk_shift) { write86(0x00417, read86(0x00417) & ~0x41); vk_shift = 0; vk_shift_oneshot = 0; }
+            continue;
+        }
+
+        /* Остальные клавиши — обычный текст (полная клавиатура) */
+        if (sc >= 57) continue;
         char ch = shift ? pofo_hid_shift[sc] : pofo_hid_base[sc];
         if (ch) pofo_char_input(ch);
     }
+
+    /* Запомнить текущий отчёт для edge-детекта в следующем кадре */
+    for (int i = 0; i < n && i < 6; i++) pofo_prev_keys[i] = keys[i];
+    pofo_prev_n = (n > 6) ? 6 : n;
 }
 
 /* Shared single-frame edge detector (active-LOW buttons, bitmask) */
@@ -1549,7 +1685,43 @@ static uint8_t pofo_cg_read(int cl, uint8_t md)
     return pofo_chargen[((md & 0xff) << 4) | (cl & 0x0f)];
 }
 
-/* UART echo: отключена — вывод ANSI-экрана конфликтовал с ESC-обработкой */
+/* UART echo: вывод VRAM-текста в терминал (без ANSI-escape, построчно).
+ * Каждый раз, когда содержимое VRAM меняется, выводим строки как текст. */
+static uint32_t pofo_uart_crc = 0xFFFFFFFF;
+
+static void pofo_uart_echo(void)
+{
+    int rows = lcdc.nx / lcdc.vp;
+    if (rows <= 0) rows = 8;
+    if (rows > 10) rows = 10;
+    int cols = lcdc.hn;
+    if (cols > 40) cols = 40;
+    int n = cols * rows;
+
+    uint32_t crc = 0xFFFFFFFF;
+    for (int i = 0; i < n && i < HD61830_VRAM_SIZE; i++)
+        crc = (crc >> 8) ^ ((crc ^ lcdc.vram[i]) * 0x100);
+
+    if (crc == pofo_uart_crc) return;
+    pofo_uart_crc = crc;
+
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            uint8_t ch = lcdc.vram[r * lcdc.hn + c];
+            if (ch < 0x20) ch = '.';
+            if (ch >= 0x7f) ch = '.';
+            putchar(ch);
+        }
+        putchar('\n');
+    }
+}
+
+/* Справка внизу экрана: команды и кнопки */
+static void pofo_draw_footer(void)
+{
+    display_fill_rect(0, 224, 320, 16, RGB565(0, 0, 6));
+    display_text_at_nobg("DIP DOS: PIN APPS HELP  INS:VK  Z:ENT X:BS  ESC:EXIT", 4, 224, 1, RGB565(28, 32, 38));
+}
 
 /* draw one text scanline (MAME draw_char). Returns pixel columns for row y. */
 static void pofo_draw_char_line(int cl, uint8_t md, int x0)
@@ -1647,6 +1819,8 @@ extern "C" void pofo_timer_tick(void)
 extern "C" int portfolio_init_game(const uint8_t *cart, uint32_t cart_size)
 {
     (void)cart; (void)cart_size;
+    pofo_exit_req = 0;
+    pofo_prev_n = 0;
     memset(pofo_ram, 0, sizeof(pofo_ram));
     memset(lcdc.vram, 0, HD61830_VRAM_SIZE);
     memset(&lcdc, 0, sizeof(lcdc));
@@ -1690,11 +1864,7 @@ extern "C" int portfolio_init_game(const uint8_t *cart, uint32_t cart_size)
 
 extern "C" void portfolio_run_frame(void)
 {
-    uint8_t raw = joypad_buttons();
-
-    /* Boot guard: игнорируем кнопки ~30 кадров, чтобы BIOS инициализировал
-     * LCD (установил mcr=0x39) ДО прихода любого INT 09h. Без этой задержки
-     * BIOS уходит в RAM-обработчик клавиатуры и LCD остаётся чёрным. */
+    /* Boot guard */
     if (pofo_boot_guard < 30) {
         pofo_boot_guard++;
         pofo_timer_tick();
@@ -1703,48 +1873,8 @@ extern "C" void portfolio_run_frame(void)
         return;
     }
 
-    /* ---------- single shared edge detection ---------- */
-    enum { DB = 3 };
-    static uint8_t db_cand = 0xFF, db_stable = 0xFF;
-    static uint8_t db_cnt = 0, db_prev = 0xFF;
-
-    if (raw == db_cand) {
-        if (db_cnt < DB) db_cnt++;
-        if (db_cnt == DB && db_stable != raw) {
-            db_stable = raw;
-            db_cnt = 0;
-        }
-    } else {
-        db_cand = raw;
-        db_cnt = 0;
-    }
-    uint8_t pad = db_stable;
-    uint8_t edge = (~pad) & ~db_prev;
-    db_prev = ~pad;
-
-    /* Select toggles the virtual keyboard — not in Calculator */
-    if (edge & 0x04 && !(pofo_apps_active && pofo_app_current == APP_CALC)) {
-        /* Select не шлёт сканкод — он только переключает VK.
-         * Если бы Select посылал 0x3F (Esc), DIP DOS эхо-вывел бы '\'. */
-        vk_visible = !vk_visible;
-        vk_dirty = 1;
-        pofo_cmd_len = 0;
-        display_fill(LCD_OFF_RGB);
-        if (vk_visible && vk_shift) { write86(0x00417, read86(0x00417) | 0x01); }
-        if (!vk_visible && vk_shift) { write86(0x00417, read86(0x00417) & ~0x41); vk_shift = 0; vk_shift_oneshot = 0; }
-    }
-
-    /* Задел: отложенный break для VK (сейчас не используется). */
-    if (pend_br_row >= 0) {
-        key_break(pend_br_row, pend_br_col);
-        if (pend_br_shift) { key_break(3, 3); pend_br_shift = 0; }
-        pend_br_row = -1;
-    }
-
-    /* Built-in APPS */
+    /* APPS mode — отдельная ветка */
     if (pofo_apps_active) {
-        if (vk_visible) vk_handle(pad);
-        else pofo_apps_handle(pad);
         pofo_uart_input();
         pofo_usbkbd_input();
         pofo_apps_draw();
@@ -1754,23 +1884,26 @@ extern "C" void portfolio_run_frame(void)
         return;
     }
 
-    /* Normal DOS mode */
+    /* Проверка удержания ESC ~1 сек */
+    if (pofo_esc_hold_us && (h3_hs_timer_lo_us() - pofo_esc_hold_us > 900000))
+        pofo_exit_req = 1;
+
+    /* Normal DOS mode — ТОЛЬКО USB-клавиатура и UART, без joypad */
     pofo_uart_input();
     pofo_usbkbd_input();
 
-    if (vk_visible) vk_handle(pad);
-    else kbd_poll();
+    if (vk_visible) {
+        /* VK-навигация стрелками с USB-клавиатуры (из pofo_usbkbd_input уже обработаны) */
+        vk_render();
+        vk_dirty = 0;
+    }
 
     pofo_timer_tick();
     exec86(20000);
 
-    if (pofo_pin_active) {
-        pofo_pin_draw();
-        pofo_render();
-    } else {
-        pofo_render();
-        if (vk_visible && vk_dirty) { vk_render(); vk_dirty = 0; }
-    }
+    pofo_render();
+    if (!vk_visible) pofo_draw_footer();
+    pofo_uart_echo();
 }
 
 
