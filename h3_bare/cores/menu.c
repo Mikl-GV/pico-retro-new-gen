@@ -56,6 +56,19 @@ static int find_system(const char* dir_name) {
 
 static void build_menu(void) {
     g_item_count = 0;
+
+    // Builtin-системы (BIOS вшит, ROM не нужен) — показываем всегда
+    for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
+        if (!systems[i].builtin) continue;
+        g_items[g_item_count].id = systems[i].id;
+        g_items[g_item_count].name = systems[i].name;
+        g_items[g_item_count].dir = NULL;
+        g_items[g_item_count].group = systems[i].group;
+        g_items[g_item_count].status = systems[i].status;
+        g_items[g_item_count].present = 1;
+        g_item_count++;
+    }
+
     fat_entry_t dirs[FAT_MAX_ENTRIES];
     int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
     if (n <= 0) return;

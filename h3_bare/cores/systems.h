@@ -31,11 +31,13 @@ typedef struct {
     const char *alt_dir;  // альтернативная папка, если dir нет (NULL = нет)
     system_group_t group;
     system_status_t status;
+    int builtin;          // 1 = работает без ROM на SD (BIOS вшит)
 } system_entry_t;
 
-#define SYS(id, name, group, status) { id, name, NULL, NULL, GROUP_##group, STATUS_##status }
-#define SYS_DIR(id, name, dir, group, status) { id, name, dir, NULL, GROUP_##group, STATUS_##status }
-#define SYS_ALT(id, name, dir, alt, group, status) { id, name, dir, alt, GROUP_##group, STATUS_##status }
+#define SYS(id, name, group, status) { id, name, NULL, NULL, GROUP_##group, STATUS_##status, 0 }
+#define SYS_DIR(id, name, dir, group, status) { id, name, dir, NULL, GROUP_##group, STATUS_##status, 0 }
+#define SYS_ALT(id, name, dir, alt, group, status) { id, name, dir, alt, GROUP_##group, STATUS_##status, 0 }
+#define SYS_BUILTIN(id, name, group, status) { id, name, NULL, NULL, GROUP_##group, STATUS_##status, 1 }
 
 static const system_entry_t systems[] = {
     // -- Портативные консоли --
@@ -68,7 +70,7 @@ static const system_entry_t systems[] = {
     SYS("msx",        "MSX / MSX2",                  COMPUTER, PLANNED),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
     SYS("bk0010",     "BK-0010/0011M",               COMPUTER, PLANNED),
-    SYS("portfolio",  "Atari Portfolio",             COMPUTER, READY),
+    SYS_BUILTIN("portfolio", "Atari Portfolio",     COMPUTER, READY),
     SYS("ms1504",     "MS 1504",                     COMPUTER, PLANNED),
 };
 

@@ -11,6 +11,7 @@
 #include "menu.h"
 #include "rom_browser.h"
 #include "settings.h"
+#include "emu.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -79,6 +80,13 @@ void main(void) {
         const char* id   = menu_get_id(sel);
         const char* name = menu_get_name(sel);
         const char* dir  = menu_get_dir(sel);
+
+        // Самодостаточные системы (BIOS вшит, ROM с SD не нужен) —
+        // запускаются напрямую из меню, минуя браузер ROM.
+        if (strcmp(id, "portfolio") == 0) {
+            emu_run_portfolio(NULL, 0, name);
+            continue;
+        }
 
         rom_browser_run(id, name, dir);
     }
