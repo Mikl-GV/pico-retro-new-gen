@@ -151,11 +151,17 @@ static void build_rows(void) {
         rows[row_count].group = cur_group;
         row_count++;
     }
-    // разделитель и пункт Settings
+    // разделитель и служебные пункты
     rows[row_count].item = -1;
     rows[row_count].group = -1;
     row_count++;
-    rows[row_count].item = -2;   // settings
+    rows[row_count].item = -2;   // Settings
+    rows[row_count].group = -1;
+    row_count++;
+    rows[row_count].item = -3;   // Help
+    rows[row_count].group = -1;
+    row_count++;
+    rows[row_count].item = -4;   // About
     rows[row_count].group = -1;
     row_count++;
 }
@@ -178,6 +184,20 @@ static void render_menu(void) {
             uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
             if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
             fb_puts_s(60 + INDENT, y, "== Settings ==", 1, clr);
+            y += ROW_H;
+        } else if (rows[r].item == -3) {
+            // Help
+            int sel = (r == sel_row);
+            uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
+            if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s(60 + INDENT, y, "== Help ==", 1, clr);
+            y += ROW_H;
+        } else if (rows[r].item == -4) {
+            // About
+            int sel = (r == sel_row);
+            uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
+            if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s(60 + INDENT, y, "== About ==", 1, clr);
             y += ROW_H;
         } else if (rows[r].item < 0) {
             // заголовок группы
@@ -272,6 +292,10 @@ int menu_run(void) {
         } else if (k == 40 || k == '\n' || k == '\r') {
             if (rows[sel_row].item == -2)
                 return -2;    // Settings
+            if (rows[sel_row].item == -3)
+                return -3;    // Help
+            if (rows[sel_row].item == -4)
+                return -4;    // About
             if (rows[sel_row].item >= 0) {
                 int idx = rows[sel_row].item;
                 return idx;
@@ -286,3 +310,138 @@ int menu_run(void) {
 const char* menu_get_id(int idx) { return g_items[idx].id; }
 const char* menu_get_dir(int idx) { return g_items[idx].dir; }
 const char* menu_get_name(int idx) { return g_items[idx].name; }
+
+// ---- Help: управление по всем эмуляторам ----
+void menu_help(void) {
+    static const char* pages[] = {
+        // страница 0: меню + общие
+        "MENU: ^v=sel Enter=open",
+        "ESC=back  Settings 1..5",
+        "50/60Hz(S3)  A2600diff(S4)",
+        "",
+        "EMULATORS: Z=A/X=B S=Sel",
+        "Enter=Start  ESC=hold-exit",
+        "--- GB/GBC ---",
+        "Z=A  X=B  S=Select",
+        "Enter=Start  ESC=exit",
+        0,
+        // страница 1: A2600
+        "--- ATARI 2600 ---",
+        "Arrows = D-Pad",
+        "Z = Fire (button)",
+        "S = Select",
+        "Enter = Game Reset",
+        "X/Space = not used",
+        "ESC hold=exit",
+        "Difficulty = Settings 4",
+        0,
+        // страница 2: A5200
+        "--- ATARI 5200 ---",
+        "Arrows = D-Pad",
+        "Z = Fire  X = Pause",
+        "S = Start  Enter = Key3",
+        "ESC hold=exit",
+        0,
+        // страница 3: A7800
+        "--- ATARI 7800 ---",
+        "Arrows = D-Pad",
+        "Z = B1(A)  X = B2(B)",
+        "S = Select  Enter=Start",
+        "ESC hold=exit",
+        0,
+        // страница 4: NES
+        "--- NES / FAMICOM ---",
+        "Arrows = D-Pad",
+        "Z = A  X = B",
+        "S = Select  Enter=Start",
+        "ESC hold=exit",
+        0,
+        // страница 5: SMS/GG
+        "--- SMS / GG ---",
+        "Arrows = D-Pad",
+        "Z = Button1  X = Button2",
+        "S = Pause",
+        "ESC hold=exit",
+        0,
+        // страница 6: Portfolio
+        "--- ATARI PORTFOLIO ---",
+        "Full keyboard, no gamepad",
+        "INS = VK(onscreen kbd)",
+        "Enter=Enter, BS=Backspace",
+        "Arrows = cursor/cmdline",
+        "Commands: PIN APPS HELP",
+        "EXIT or ESC hold = menu",
+        0,
+    };
+
+    int page = 0;
+    int total = 7;
+
+    for (;;) {
+        fb_clear();
+        fb_puts_s(60, 20, "Help (controls)", 2, 0x00FF0000);
+        fb_fill_rect(60, 50, 200, 2, 0x00FFFFFF);
+
+        int line = 0;
+        const char* p = pages[page];
+        while (p) {
+            fb_puts_s(80, 70 + line * 20, p, 1, 0x00FFFFFF);
+            line++; p = pages[page + line];
+        }
+
+        char fbuf[64];
+        int fl = 0;
+        const char* pre = "  Page: "; while (*pre) fbuf[fl++] = *pre++;
+        fbuf[fl++] = '0' + (char)(page + 1);
+        fbuf[fl++] = '/'; fbuf[fl++] = '0' + (char)total;
+        fbuf[fl] = 0;
+        fb_puts_s(60, FOOTER_Y - 30, fbuf, 1, 0x00888888);
+        fb_puts(60, FOOTER_Y, "  ^v: page    ESC: back", 0x00888888);
+        fb_flush();
+
+        int k = input_wait();
+        if (k == 41 || k == 27) return;
+        if (k == 82 && page > 0) page--;
+        if (k == 81 && page < total - 1) page++;
+    }
+}
+
+// ---- About: информация о проекте ----
+void menu_about(void) {
+    static const char* lines[] = {
+        "MultiTool Retro v8",
+        "Orange Pi Lite (Allwinner H3)",
+        "512 MB, HDMI 1024x600",
+        "Bare-metal, no OS",
+        "",
+        "7 emulators built-in:",
+        "Atari 2600/5200/7800",
+        "NES/Famicom, SMS/GG",
+        "Game Boy/GBC, Portfolio",
+        "",
+        "USB keyboard + UART input",
+        "ROMs from SD (FAT32)",
+        "",
+        "github.com/Mikl-GV/",
+        "pico-retro-new-gen",
+    };
+
+    for (;;) {
+        fb_clear();
+        fb_puts_s(60, 15, "About", 2, 0x00FF0000);
+        fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
+
+        int line = 0;
+        for (int i = 0; i < 15; i++) {
+            if (i == 0) fb_puts_s(80, 65 + line * 20, lines[i], 2, 0x00FFFFFF);
+            else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
+            line++;
+        }
+
+        fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
+        fb_flush();
+
+        int k = input_wait();
+        if (k == 41 || k == 27) return;
+    }
+}

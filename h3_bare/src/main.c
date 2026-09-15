@@ -75,6 +75,14 @@ void main(void) {
             settings_run();
             continue;
         }
+        if (sel == -3) {
+            menu_help();
+            continue;
+        }
+        if (sel == -4) {
+            menu_about();
+            continue;
+        }
         if (sel < 0) continue;
 
         const char* id   = menu_get_id(sel);
