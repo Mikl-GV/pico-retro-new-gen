@@ -30,6 +30,7 @@ extern "C" {
 
 extern "C" int printf(const char* fmt, ...);
 extern "C" void gb_heap_reset(void);
+#include "h3_hs_timer.h"
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -72,7 +73,7 @@ const char* GetKeyboard(void) { return ""; }
 // ---- FCEUD-колбэки (требует driver.h) ----
 extern "C" void FCEUD_SetPalette(uint16_t index, uint8_t r, uint8_t g, uint8_t b) {
     if (index < 512)
-        nes_pal_rgb565[index] = (r >> 3 << 11) | (g >> 2 << 5) | (b >> 3);
+        nes_pal_rgb565[index] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
 extern "C" void FCEUD_PrintError(const char* s) { printf("FCEU: %s\n", s); }
@@ -102,17 +103,22 @@ static void build_input(void) {
         if (sc == 40) g_joydata |= 0x08;   // Enter = Start
     }
 
-    // SuborKB: прямая таблица HID-scancode → индекс SuborKeyboardData[0x65]
-    // Построена по точным позициям оригинальной suborkbmap.
-    // Буквы A-Z по физической раскладке Subor-клавиатуры.
+    // SuborKB: прямая таблица HID-scancode → индекс SuborKeyboardData[0x65].
+    // Кодировка «FKB−1»: SuborKB_Update() делает memcpy(bufit+1, data, …),
+    // т.е. data[i] попадает в bufit[i+1], а SuborKB_Read индексирует bufit[FKB_*].
+    // Маппинг — ПО ФИЗИЧЕСКОЙ ПОЗИЦИИ клавиши (HID boot-протокол шлёт позиции,
+    // а не символы), поэтому он одинаково работает с английской и русской
+    // (ЙЦУКЕН) USB-клавиатурой: буква «Ф» на русской раскладке — это физическая
+    // клавиша 'A' (HID 4) → FKB_A. Кириллические глифы рисует сам картридж
+    // (Subor 1.0 Russian и т.п.).
     static const uint8_t hid_to_subor[128] = {
         0xff, 0xff, 0xff, 0xff, 0x39, 0x4c, 0x4a, 0x3b, 0x26, 0x3c, 0x3d, 0x3e, 0x2b, 0x3f, 0x40, 0x41,
         0x4e, 0x4d, 0x2c, 0x2d, 0x24, 0x27, 0x3a, 0x28, 0x2a, 0x4b, 0x25, 0x49, 0x29, 0x48, 0x0f, 0x10,
         0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x30, 0x00, 0x1b, 0x23, 0x59, 0x19, 0x1a, 0x2e,
-        0x2f, 0x52, 0xff, 0x42, 0x43, 0xff, 0x4f, 0x50, 0x51, 0x38, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-        0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0xff, 0xff, 0xff, 0x1c, 0x1d, 0x1e, 0x31, 0x32, 0x33, 0x5c,
-        0x5a, 0x5b, 0x53, 0x0d, 0x20, 0x21, 0x22, 0x37, 0xff, 0x50, 0x51, 0x52, 0x44, 0x45, 0x46, 0x34,
-        0x35, 0x36, 0x5d, 0x5e, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x2f, 0x52, 0xff, 0x42, 0x43, 0x0e, 0x4f, 0x50, 0x51, 0x38, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+        0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0xff, 0xff, 0x0d, 0x1c, 0x1d, 0x1e, 0x31, 0x32, 0x33, 0x5c,
+        0x5a, 0x5b, 0x53, 0x1f, 0x20, 0x21, 0x22, 0x37, 0xff, 0x54, 0x55, 0x56, 0x44, 0x45, 0x46, 0x34,
+        0x35, 0x36, 0x5e, 0x5d, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     };
     for (int i = 0; i < n; i++) {
@@ -122,11 +128,15 @@ static void build_input(void) {
             if (sub < 0x65) g_suborkb[sub] = 1;
         }
     }
-    // Модификаторы
+    // Модификаторы (0x65-байтовый буфер FKB-1): LCtrl=87(0x57)→FKB_LCONTROL,
+    // LShift=71(0x47)→FKB_LSHIFT, RShift=95(0x5F)→FKB_RSHIFT,
+    // LAlt=88(0x58)→FKB_LMENU, RAlt=96(0x60)→FKB_RMENU
     uint8_t mods = usb_kbd_get_mods();
     if (mods & 0x01) g_suborkb[87] = 1;   // LCtrl
     if (mods & 0x02) g_suborkb[71] = 1;   // LShift
-    if (mods & 0x20) g_suborkb[71] = 1;   // RShift
+    if (mods & 0x20) g_suborkb[95] = 1;   // RShift (было 71 — ошибочно дублировал LShift)
+    if (mods & 0x04) g_suborkb[88] = 1;   // LAlt
+    if (mods & 0x40) g_suborkb[96] = 1;   // RAlt
 }
 extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     printf("FCEUmm: init size=%u\n", (unsigned)size);
@@ -219,15 +229,28 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         printf("NES(FCEUmm): init failed\n");
         return;
     }
+    emu_set_border_color(0x00140612);   // тёмно-бордовый (Dendy/NES)
     uint8_t raw_keys[6];
+    uint32_t esc_hold_us = 0;
+    emu_throttle_reset();
     for (;;) {
         fceumm_run_frame();
         emu_throttle();
         emu_scale(256, 240);
         fb_flush();
+        // ESC: одиночное нажатие НЕ выходит — оно уходит в SuborKB
+        // (hid_to_subor[41]=FKB_ESCAPE: Break в Basic и т.п.) или игнорируется.
+        // Выход — только по УДЕРЖАНИЮ ~0.9 с (как в Portfolio).
         int nk = usb_kbd_get_raw(raw_keys, 6);
+        int esc = 0;
         for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) goto exit;   // ESC — выход
+            if (raw_keys[i] == 41) { esc = 1; break; }
+        if (esc) {
+            if (!esc_hold_us) esc_hold_us = h3_hs_timer_lo_us();
+            else if (h3_hs_timer_lo_us() - esc_hold_us > 900000) goto exit;
+        } else {
+            esc_hold_us = 0;
+        }
     }
 exit:
     fceumm_stop();

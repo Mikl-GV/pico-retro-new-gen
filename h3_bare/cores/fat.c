@@ -109,7 +109,7 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
     // LFN запись
     if (attr == 0x0F) {
         uint8_t seq = e[0];
-        if (seq == 0xE5) return 0;
+        if (seq == 0xE5) { lfn[0] = 0; *lfn_len = 0; return 0; }   // удалённая LFN — сбросить буфер
         int pos = (seq & 0x0F) - 1;
         if (pos >= 0 && pos < 20) {
             int off = pos * 13;
@@ -508,7 +508,6 @@ int fat_mkdir(const char* parent_path, const char* name) {
 
     // 3. Инициализировать кластер: ".", ".."
     uint32_t new_sec = cluster_to_sector(new_cl);
-    // читаем сектор (может содержать мусор), пишем заново
     uint8_t zero[512];
     memset(zero, 0, 512);
     // первая запись "."
@@ -516,9 +515,13 @@ int fat_mkdir(const char* parent_path, const char* name) {
     // вторая ".."
     make_dir_entry(zero + 32, "..", parent.first_cluster, 2);
     if (sd_write_sector(new_sec, zero) < 0) return -1;
-    // остальные секторы кластера обнуляем
+    // остальные секторы кластера — ЧИСТЫЕ нули. Раньше сюда писался тот же
+    // `zero` с ".", "..", из-за чего каждый сектор кластера выглядел как
+    // начало директории и на ПК/в парсерах появлялись мусорные записи.
+    uint8_t empty[512];
+    memset(empty, 0, 512);
     for (uint32_t s = 1; s < g_sec_per_cluster; s++) {
-        if (sd_write_sector(new_sec + s, zero) < 0) return -1;
+        if (sd_write_sector(new_sec + s, empty) < 0) return -1;
     }
 
     // 4. Отметить в FAT: новый кластер = END (0x0FFFFFFF)
@@ -581,61 +584,122 @@ int fat_mkdir(const char* parent_path, const char* name) {
 }
 
 // Удалить файл: dir = например "/roms/nes", name = "game.nes".
-// Помечает первую запись 0xE5 (удалена) и освобождает кластеры в обеих FAT.
+// Имя сравнивается с ПОЛНЫМ именем (LFN если есть, иначе 8.3) — браузер
+// отдаёт LFN-имена, поэтому 8.3-сравнение не находило файл.
+// Помечает 0xE5 саму запись и ВСЕ её LFN-фрагменты (в т.ч. в предыдущих
+// секторах директории), затем освобождает кластеры в обеих FAT.
 int fat_delete_file(const char* dir, const char* name) {
     fat_entry_t d;
     char buf[FAT_NAME_LEN];
     if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return -1;
     if (d.size != 0) return -1;  // не директория
 
-    // Найти запись файла в директории
+    // LFN-фрагменты копятся при обходе ВПЕРЁД (они лежат ПЕРЕД своей 8.3
+    // записью), вместе с адресами секторов — чтобы потом пометить 0xE5
+    // даже те, что перешли на предыдущий сектор.
+    char lfn[FAT_NAME_LEN] = {0};
+    int lfn_max = 0;
+    uint32_t lfn_lba[20];
+    int lfn_off[20];
+    int lfn_cnt = 0;
+
     uint32_t cl = d.first_cluster;
     uint32_t target_first = 0;
     int found = 0;
 
-    while (cl && cl < 0x0FFFFFF8) {
+    while (cl && cl < 0x0FFFFFF8 && !found) {
         uint32_t base = cluster_to_sector(cl);
-        for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
+        for (uint32_t s = 0; s < g_sec_per_cluster && !found; s++) {
             if (sd_read_sector(base + s, g_sector) < 0) return -1;
-            for (int i = 0; i < 512; i += 32) {
+            for (int i = 0; i < 512 && !found; i += 32) {
                 uint8_t first = g_sector[i];
-                if (first == 0x00) return -1;  // конец
-                if (first == 0xE5) continue;
-                // имя из 8.3
-                char n[13];
-                int pi = 0;
-                for (int c = 0; c < 8 && g_sector[i + c] != ' ' && pi < 12; c++)
-                    n[pi++] = (char)g_sector[i + c];
-                if (g_sector[i + 11] != 0x10) {  // файл (не папка)
-                    if (g_sector[i + 8] != ' ') {
+                uint8_t attr = g_sector[i + 11];
+                if (first == 0x00) return -1;    // конец директории — дальше нет
+                if (first == 0xE5) { lfn_cnt = 0; lfn_max = 0; continue; } // удалённая
+
+                if (attr == 0x0F) {
+                    // LFN-фрагмент: собираем в буфер по позиции и запоминаем адрес
+                    int pos = (first & 0x0F) - 1;
+                    if (pos >= 0 && pos < 20 && lfn_cnt < 20) {
+                        lfn_lba[lfn_cnt] = base + s;
+                        lfn_off[lfn_cnt] = i;
+                        lfn_cnt++;
+                        int dst = pos * 13;
+                        if (dst >= FAT_NAME_LEN - 1) continue;   // имя длиннее нашего буфера — не читаем
+                        int idx = 0;
+                        for (int k = 0; k < 10; k += 2) {
+                            if (dst + idx >= FAT_NAME_LEN - 1) break;
+                            uint16_t c = g_sector[i + 1 + k] | ((uint16_t)g_sector[i + 2 + k] << 8);
+                            if (c == 0 || c == 0xFFFF) break;
+                            lfn[dst + idx++] = (char)c;
+                        }
+                        for (int k = 0; k < 12; k += 2) {
+                            if (dst + idx >= FAT_NAME_LEN - 1) break;
+                            uint16_t c = g_sector[i + 14 + k] | ((uint16_t)g_sector[i + 15 + k] << 8);
+                            if (c == 0 || c == 0xFFFF) break;
+                            lfn[dst + idx++] = (char)c;
+                        }
+                        for (int k = 0; k < 4; k += 2) {
+                            if (dst + idx >= FAT_NAME_LEN - 1) break;
+                            uint16_t c = g_sector[i + 28 + k] | ((uint16_t)g_sector[i + 29 + k] << 8);
+                            if (c == 0 || c == 0xFFFF) break;
+                            lfn[dst + idx++] = (char)c;
+                        }
+                        int end = dst + idx;
+                        if (end > lfn_max) lfn_max = end;
+                    }
+                    continue;
+                }
+
+                // обычная 8.3 запись: полное имя = LFN если есть, иначе 8.3
+                char full[FAT_NAME_LEN];
+                int flen;
+                if (lfn_cnt > 0) {
+                    lfn[lfn_max] = 0;
+                    flen = lfn_max;
+                    if (flen >= FAT_NAME_LEN) flen = FAT_NAME_LEN - 1;
+                    memcpy(full, lfn, flen);
+                    full[flen] = 0;
+                } else {
+                    char n[13];
+                    int pi = 0;
+                    for (int c = 0; c < 8 && g_sector[i + c] != ' ' && pi < 12; c++)
+                        n[pi++] = (char)g_sector[i + c];
+                    if (attr != 0x10 && g_sector[i + 8] != ' ') {
                         n[pi++] = '.';
                         for (int c = 0; c < 3 && g_sector[i + 8 + c] != ' ' && pi < 12; c++)
                             n[pi++] = (char)g_sector[i + 8 + c];
                     }
-                    n[pi] = 0;
-                    if (name_eq(n, name)) {
-                        // помечаем удалённой саму запись и все LFN-фрагменты
-                        // перед ней (attr == 0x0F), идущие в том же секторе
-                        g_sector[i] = 0xE5;
-                        for (int lfn = i - 32; lfn >= 0 && g_sector[lfn + 11] == 0x0F; lfn -= 32)
-                            g_sector[lfn] = 0xE5;
-                        if (sd_write_sector(base + s, g_sector) < 0) return -1;
-                        target_first = le16(g_sector + i + 26) | (le16(g_sector + i + 20) << 16);
-                        found = 1;
-                        break;
-                    }
+                    flen = pi;
+                    memcpy(full, n, flen);
+                    full[flen] = 0;
                 }
+
+                if (attr != 0x10 && name_eq(full, name)) {   // файл (не папка)
+                    g_sector[i] = 0xE5;
+                    if (sd_write_sector(base + s, g_sector) < 0) return -1;
+                    target_first = le16(g_sector + i + 26) | (le16(g_sector + i + 20) << 16);
+                    found = 1;
+                    break;
+                }
+                lfn_cnt = 0; lfn_max = 0;   // не наш файл или директория — сброс LFN
             }
-            if (found) break;
         }
-        if (found) break;
-        cl = fat_next_cluster(cl);
+        if (!found) cl = fat_next_cluster(cl);
     }
     if (!found || target_first == 0) return -1;
 
-    // Освободить кластеры файла в обеих FAT
+    // Пометить 0xE5 все LFN-фрагменты найденного файла
+    for (int k = 0; k < lfn_cnt; k++) {
+        if (sd_read_sector(lfn_lba[k], g_sector) < 0) continue;
+        g_sector[lfn_off[k]] = 0xE5;
+        if (sd_write_sector(lfn_lba[k], g_sector) < 0) return -1;
+    }
+
+    // Освободить кластеры файла в обеих FAT (с защитой от цикла в цепочке)
     uint32_t fc = target_first;
-    while (fc >= 2 && fc < 0x0FFFFFF8) {
+    uint32_t guard = 0;
+    while (fc >= 2 && fc < 0x0FFFFFF8 && guard++ < 100000) {
         uint32_t next = fat_next_cluster(fc);
         if (next == 0) { fat_set_cluster(fc, 0); break; } // кластер 0 — стоп
         fat_set_cluster(fc, 0);

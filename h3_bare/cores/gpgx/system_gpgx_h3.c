@@ -37,6 +37,8 @@ t_config config;
 static int g_loaded = 0;
 static int g_is_md  = 0;
 static int g_force_sms = 0;
+static int g_vp_w = 320;   // последний viewport width
+static int g_vp_h = 224;   // последний viewport height
 
 // Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576])
 static uint16_t bitmap_data_[720 * 576];
@@ -75,12 +77,16 @@ static void gpgx_poll_input(void) {
 }
 
 // ---- рендер кадра из bitmap (RGB565) в EMU_FB ----
+// vp_w/vp_h — реальный размер viewport ядра на этом кадре:
+//   Mode 5: 224/240 строк (NTSC 224, PAL 240), ширина 256/320 (H32/H40)
+//   Mode 4 (SMS-совместимость): 192
+// Ядро уже сдвинуло строку: в bitmap.data на позиции (line * pitch) лежит
+// полная строка шириной vp_w + 2*vp_x, где активная область — vp_w байт,
+// начиная с vp_x.
 static void gpgx_render_emu(int max_w, int max_h) {
     uint16_t* src = (uint16_t*)bitmap.data;
     if (!src) return;
 
-    // MD: viewport может быть отрицательным или больше 256; используем w/h из
-    // viewport (устанавливается ядром), иначе bitmap.width.
     int vp_x = bitmap.viewport.x;
     int vp_y = bitmap.viewport.y;
     int vp_w = bitmap.viewport.w;
@@ -90,6 +96,9 @@ static void gpgx_render_emu(int max_w, int max_h) {
 
     int sw = vp_w > max_w ? max_w : vp_w;
     int sh = vp_h > max_h ? max_h : vp_h;
+
+    g_vp_w = vp_w;
+    g_vp_h = vp_h;
 
     for (int y = 0; y < sh; y++) {
         int sy = (vp_y < 0 ? 0 : vp_y) + y;
@@ -141,7 +150,10 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     get_region((char*)cart.rom);
     romtype = system_hw;   // критично для input_init (выбор типа геймпада)
 
-    // byte-swap ROM под 16-битный доступ (LSB_FIRST) — только для MD
+    // byte-swap ROM под 16-битный доступ (LSB_FIRST) — только для MD.
+    // Host НЕ вызывает load_rom() из loadrom.c (там swap идёт под #ifdef LSB_FIRST),
+    // поэтому swap здесь обязателен. getrominfo/get_region читают header ДО swap,
+    // как и в оригинальном load_rom().
     if (system_hw == SYSTEM_MD || (system_hw & SYSTEM_PBC) == SYSTEM_MD) {
         for (uint32_t i = 0; i + 1 < cart.romsize; i += 2) {
             uint8_t t = cart.rom[i];
@@ -195,6 +207,11 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 1;
     printf("GPGX: hw=%02X romsize=%u md=%d\n", (unsigned)system_hw,
            (unsigned)cart.romsize, g_is_md);
+    printf("GPGX: region=%s vdp_pal=%d sram=%d\n",
+           rominfo.country, vdp_pal, sram.on);
+    printf("GPGX: viewport %dx%d+%d+%d\n",
+           bitmap.viewport.w, bitmap.viewport.h,
+           bitmap.viewport.x, bitmap.viewport.y);
     return 1;
 }
 
@@ -209,9 +226,9 @@ void gpgx_run_frame(void) {
     else
         system_frame_sms(0);
 
-    // рендер в EMU_FB
+    // рендер в EMU_FB (max_h=240: PAL Mode 5 == 240 строк)
     if (g_is_md)
-        gpgx_render_emu(320, 224);
+        gpgx_render_emu(320, 240);
     else
         gpgx_render_emu(256, 192);
 }
@@ -229,11 +246,14 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
         printf("MD(GPGX): init failed\n");
         return;
     }
+    emu_set_border_color(0x000B1618);   // темно-синий (Mega Drive)
     uint8_t raw_keys[6];
+    emu_throttle_reset();
     for (;;) {
         gpgx_run_frame();
         emu_throttle();
-        emu_scale(320, 224);
+        // размер из viewport ядра: 256/320 (H32/H40) x 192/224/240
+        emu_scale(g_vp_w > 0 ? g_vp_w : 320, g_vp_h > 0 ? g_vp_h : 224);
         fb_flush();
         int nk = usb_kbd_get_raw(raw_keys, 6);
         for (int i = 0; i < nk; i++)

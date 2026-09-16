@@ -166,6 +166,7 @@ static void input_test_run(void) {
 // --- Создать одну папку ---
 // Возвращает: 1 = создана, 2 = уже существует, 0 = ошибка
 static int ensure_dir(const char* name) {
+    if (!name || !name[0]) return 2;
     fat_entry_t e;
     if (fat_find("/roms", name, &e)) return 2;
 
@@ -288,13 +289,20 @@ static void create_folders_flow(void) {
         if (k == 40 || k == '\n' || k == '\r') break;  // Enter -> создаём
     }
 
-    // Создание
+    // Создание: для систем с alt_dir создаём ОБЕ папки (dir/alt),
+    // т.к. меню может искать ROM-папку по alt_dir (nes→nes_roms, sms→sms_roms).
     int created = 0, existing = 0, fail = 0;
     for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
         int r = ensure_dir(system_rom_dir(i));
         if (r == 1) created++;
         else if (r == 2) existing++;
         else fail++;
+        if (systems[i].alt_dir) {
+            r = ensure_dir(systems[i].alt_dir);
+            if (r == 1) created++;
+            else if (r == 2) existing++;
+            else fail++;
+        }
     }
 
     fb_clear();

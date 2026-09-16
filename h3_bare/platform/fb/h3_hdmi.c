@@ -314,7 +314,7 @@ static void hdmi_pll_set(uint32_t clk_khz) {
 
 	clock_set_pll_video_factors(best_m, best_n);
 
-	printf("dotclock: %dkHz = %dkHz: (24MHz * %d) / %d / %d\n", clk_khz, (clock_get_pll_video() / 1000) / div, best_n, best_m, div);
+	printf("dotclock: %u kHz = %u kHz: (24MHz * %u) / %u / %u\n", clk_khz, (uint32_t)(clock_get_pll_video() / 1000) / div, (uint32_t)best_n, (uint32_t)best_m, (uint32_t)div);
 }
 
 /*

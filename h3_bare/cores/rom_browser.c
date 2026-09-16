@@ -63,6 +63,9 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
     sort_entries(list, n);
+    printf("rom_browser: %s n=%d\n", path, n);
+    for (int i = 0; i < n; i++)
+        printf("  [%d] '%s' size=%u\n", i, list[i].name, (unsigned)list[i].size);
 
     int cursor = 0;
     int scroll = 0;
@@ -122,6 +125,8 @@ if (n > 0) {
                         emu_run_sms(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "nes") == 0)
                         emu_run_nes(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "snes") == 0)
+                        emu_run_snes(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "portfolio") == 0)
                         emu_run_portfolio(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "gameboy") == 0)

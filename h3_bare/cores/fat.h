@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define FAT_MAX_ENTRIES 64
+#define FAT_MAX_ENTRIES 128
 #define FAT_NAME_LEN    128
 
 typedef struct {

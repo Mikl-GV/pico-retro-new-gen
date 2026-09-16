@@ -153,6 +153,17 @@ void exit(int code) {
 
 int abs(int x) { return x < 0 ? -x : x; }
 
+// newlib-заглушки (некоторые модули тянут _sbrk / _gettimeofday)
+void* _sbrk(int incr) {
+    (void)incr;
+    return (void*)-1; // не поддерживаем
+}
+
+int _gettimeofday(void* tv, void* tz) {
+    (void)tv; (void)tz;
+    return -1;
+}
+
 int putchar(int c) {
     uart_putc((char)c);   // из uart.h — но libc_min не включает его; объявим ниже
     return c;
@@ -213,4 +224,41 @@ int snprintf(char* buf, size_t n, const char* fmt, ...) {
     int r = vsnprintf(buf, n, fmt, ap);
     va_end(ap);
     return r;
+}
+
+int strcasecmp(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    while (*a && (*a | 0x20) == (*b | 0x20)) { a++; b++; }
+    return (int)((unsigned char)*a | 0x20) - (int)((unsigned char)*b | 0x20);
+}
+
+int strncasecmp(const char* a, const char* b, size_t n) {
+    while (n > 0 && *a && (*a | 0x20) == (*b | 0x20)) { a++; b++; n--; }
+    if (n == 0) return 0;
+    return (int)((unsigned char)*a | 0x20) - (int)((unsigned char)*b | 0x20);
+}
+
+unsigned long strtoul(const char* s, char** endptr, int base) {
+    const char* p = s;
+    unsigned long v = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (base == 0) {
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16; p += 2; }
+        else if (p[0] == '0') { base = 8; p++; }
+        else base = 10;
+    } else if (base == 16 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+    while (*p) {
+        int d;
+        if (*p >= '0' && *p <= '9') d = *p - '0';
+        else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+        else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        v = v * (unsigned long)base + (unsigned long)d;
+        p++;
+    }
+    if (endptr) *endptr = (char*)p;
+    return v;
 }

@@ -356,6 +356,10 @@ void menu_help(void) {
         "Arrows = D-Pad",
         "Z=A  X=B  S=Opt1",
         "Enter=Opt2  ESC=exit",
+        "--- MEGA DRIVE ---",
+        "Z=A  X=B  C=C  A=X",
+        "S=Y  D=Z  Q=Mode",
+        "Enter=Start  arrows=D-Pad",
         0,
         // страница 1: A2600
         "--- ATARI 2600 ---",
@@ -393,6 +397,7 @@ void menu_help(void) {
         "Arrows = D-Pad",
         "Z = Button1  X = Button2",
         "S = Pause",
+        "Enter = Start",
         "ESC hold=exit",
         0,
         // страница 6: Portfolio
@@ -406,10 +411,10 @@ void menu_help(void) {
         0,
         // страница 7: структура диска и папок
         "--- SD CARD LAYOUT ---",
-        "SD: 2 partitions (FAT32)",
+        "SD: FAT32 partition(s)",
         "  sda1 - boot (U-Boot +",
         "         h3_bare.bin)",
-        "  sda2 - ROMs (14.8GB)",
+        "  sda2 - ROMs",
         "",
         "Must contain folder 'roms'",
         "  /roms/<system>/game.rom",
@@ -417,10 +422,18 @@ void menu_help(void) {
         "  Settings -> Create folders",
         "Auto-create is DISABLED",
         0,
+        // страница 8: SNES
+        "--- SNES / SUPER FAMICOM ---",
+        "Arrows = D-Pad",
+        "Z = B  X = Y  A = A",
+        "S = X  Q = L  W = R",
+        "Space = Select  Enter=Start",
+        "ESC hold=exit",
+        0,
     };
 
     int page = 0;
-    int total = 8;
+    int total = 9;
 
     for (;;) {
         fb_clear();
@@ -459,10 +472,13 @@ void menu_about(void) {
         "512 MB, HDMI 1024x600",
         "Bare-metal, no OS",
         "",
-        "7 emulators built-in:",
+        "10 emulators ready:",
         "Atari 2600/5200/7800",
-        "NES/Famicom, SMS/GG",
-        "Game Boy/GBC, Portfolio",
+        "NES/Famicom (FCEUmm, 432 mappers)",
+        "SMS/GG + Mega Drive (GPGX)",
+        "Game Boy/GBC, Atari Lynx",
+        "SNES / Super Famicom (Snes9x 2005)",
+        "Atari Portfolio (builtin)",
         "",
         "USB keyboard + UART input",
         "ROMs from SD (FAT32)",
@@ -477,7 +493,7 @@ void menu_about(void) {
         fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
 
         int line = 0;
-        for (int i = 0; i < 15; i++) {
+        for (int i = 0; i < 18; i++) {
             if (i == 0) fb_puts_s(80, 65 + line * 20, lines[i], 2, 0x00FFFFFF);
             else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
             line++;

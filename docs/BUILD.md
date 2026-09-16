@@ -23,7 +23,7 @@ sudo apt install u-boot-tools mtools
 ./build.sh
 ```
 
-Результат: `build/h3_bare.bin` (загрузка через U-Boot или FEL).
+Результат: `h3_bare.bin` в **корне проекта** (дублируется в `build/`) — загрузка через U-Boot или FEL.
 
 ## Сборка SD-образа
 
@@ -39,7 +39,7 @@ sudo apt install u-boot-tools mtools
 
 ```bash
 sudo mount /dev/sdX1 /mnt
-sudo cp build/h3_bare.bin /mnt/
+sudo cp h3_bare.bin /mnt/
 sudo sync; sudo umount /mnt
 ```
 
@@ -52,14 +52,14 @@ sudo dd if=build/h3_bare.img of=/dev/sdX bs=1M conv=fsync
 ## Загрузка через FEL (USB, без SD)
 
 ```bash
-sudo sunxi-fel write 0x40000000 build/h3_bare.bin execute 0x40000000
+sudo sunxi-fel write 0x40000000 h3_bare.bin execute 0x40000000
 ```
 
 ## Файлы сборки
 
 | Цель | Файл |
 |------|------|
-| Бинарник | `build/h3_bare.bin` |
+| Бинарник | `h3_bare.bin` (корень проекта) |
 | ELF (отладка) | `build/h3_bare.elf` |
 | SD-образ | `build/h3_bare.img` |
 | boot-скрипт | `build/boot.scr` |

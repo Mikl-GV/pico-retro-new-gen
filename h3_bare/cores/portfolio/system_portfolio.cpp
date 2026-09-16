@@ -406,11 +406,50 @@ static int pofo_ascii_key(char c, uint8_t *row, uint8_t *col, int *shift)
 /* ------------------------------------------------------------------ */
 static int pofo_pin_active = 0;
 static int pofo_pin_frame = 0;
+static uint32_t pofo_pin_start_us = 0;
+
+/* forward decls — pofo_render_pin (ниже) использует их ДО их определения */
+static void pofo_put_text(int row, int col, const char *s);
+static void pofo_clear_text(void);
 
 static void pofo_run_pin(void)
 {
     pofo_pin_active = 1;
     pofo_pin_frame = 0;
+    pofo_pin_start_us = h3_hs_timer_lo_us();
+}
+
+static void pofo_render_pin(void)
+{
+    uint32_t elapsed = h3_hs_timer_lo_us() - pofo_pin_start_us;
+
+    pofo_clear_text();
+
+    if (elapsed < 500000) {
+        // Фаза 1: ">TEST.0.0`"
+        pofo_put_text(1, 2, ">TEST.0.0`");
+        pofo_put_text(3, 5, "OK");
+    } else if (elapsed < 3500000) {
+        // Фаза 2: ">ENTRY CODE" + бегущий код
+        pofo_put_text(1, 2, ">ENTRY CODE");
+        pofo_put_text(3, 5, "WAITING...");
+        int code_step = (int)((elapsed - 500000) / 200000);
+        char code[5];
+        for (int i = 0; i < 4; i++) {
+            int digit = (code_step + i * 3) % 10;
+            code[i] = '0' + digit;
+        }
+        code[4] = 0;
+        pofo_put_text(5, 10, code);
+    } else if (elapsed < 4500000) {
+        // Фаза 3: "ACCESS DENIED"
+        pofo_put_text(2, 2, ">ACCESS DENIED");
+    } else {
+        // Фаза 4: сброс в начало
+        pofo_pin_start_us = h3_hs_timer_lo_us();
+    }
+
+    (void)pofo_pin_frame;
 }
 
 /* ------------------------------------------------------------------ */
@@ -906,19 +945,24 @@ static void pofo_char_input(int c)
 }
 
 /* Pull any pending UART bytes and turn them into key presses.
- * ANSI-стрелки (ESC[A / ESC[B) конвертируются в 0x0B/0x0C. */
+ * ANSI-стрелки (ESC[A / ESC[B) конвертируются в 0x0B/0x0C.
+ * ВНИМАНИЕ: uart_getc() без проверки готовности ВЕШАЕТ систему
+ * (бесконечный спинлуп). Каждый вызов uart_getc() обязан
+ * предваряться uart_is_readable(). */
 static void pofo_uart_input(void)
 {
     while (uart_is_readable(uart0)) {
         int c = uart_getc(uart0);
         if (c < 0) break;
         if (c == 0x1B) {
+            if (!uart_is_readable(uart0)) { pofo_char_input(0x1B); continue; }
             int c2 = uart_getc(uart0);
             if (c2 == '[') {
+                if (!uart_is_readable(uart0)) continue;
                 int c3 = uart_getc(uart0);
                 if (c3 == 'A') pofo_char_input(0x0B);
                 else if (c3 == 'B') pofo_char_input(0x0C);
-                else pofo_char_input(0x1B);
+                else { pofo_char_input(0x1B); pofo_char_input(c3); }
             } else {
                 pofo_char_input(0x1B);
                 if (c2 >= 0) pofo_char_input(c2);
@@ -1331,28 +1375,28 @@ static uint8_t pofo_cg_read(int cl, uint8_t md)
 }
 
 /* UART echo: вывод VRAM-текста в терминал (без ANSI-escape, построчно).
- * Каждый раз, когда содержимое VRAM меняется, выводим строки как текст. */
-static uint32_t pofo_uart_crc = 0xFFFFFFFF;
+ * Печатаются ТОЛЬКО изменившиеся строки, каждая строка завершается \r\n
+ * (иначе в терминалах без implicit-CR строки едут «лесенкой»). */
+#define POFO_ECHO_ROWS 10
+static uint32_t pofo_echo_crc[POFO_ECHO_ROWS];
 
 static void pofo_uart_echo(void)
 {
     int rows = lcdc.nx / lcdc.vp;
     if (rows <= 0) rows = 8;
-    if (rows > 10) rows = 10;
+    if (rows > POFO_ECHO_ROWS) rows = POFO_ECHO_ROWS;
     int cols = lcdc.hn;
     if (cols > 40) cols = 40;
 
     uint16_t base = (lcdc.dsa & 0xfff);   // display start address, как в рендере
 
-    int n = cols * rows;
-    uint32_t crc = 0xFFFFFFFF;
-    for (int i = 0; i < n && i < HD61830_VRAM_SIZE; i++)
-        crc = (crc >> 8) ^ ((crc ^ lcdc.vram[base + i]) * 0x100);
-
-    if (crc == pofo_uart_crc) return;
-    pofo_uart_crc = crc;
-
     for (int r = 0; r < rows; r++) {
+        uint32_t crc = 0xFFFFFFFF;
+        for (int c = 0; c < cols && base + r * lcdc.hn + c < HD61830_VRAM_SIZE; c++)
+            crc = (crc >> 8) ^ ((crc ^ lcdc.vram[base + r * lcdc.hn + c]) * 0x100);
+        if (crc == pofo_echo_crc[r]) continue;
+        pofo_echo_crc[r] = crc;
+
         int start = 0;
         int end = cols;
         // срезаем ведущие пробелы/служебные (текст набран с позиции курсора)
@@ -1364,6 +1408,7 @@ static void pofo_uart_echo(void)
             if (ch >= 0x7f) ch = '.';
             putchar(ch);
         }
+        putchar('\r');
         putchar('\n');
     }
 }
@@ -1529,6 +1574,15 @@ extern "C" void portfolio_run_frame(void)
         pofo_render();
         if (vk_visible && vk_dirty) { vk_render(); vk_dirty = 0; }
         if (!vk_visible && pofo_app_current == APP_CALC) pofo_app_calc_draw_keys();
+        return;
+    }
+
+    /* PIN-режим: свой рендер поверх LCD, Enter/ESC выходят */
+    if (pofo_pin_active) {
+        pofo_uart_input();
+        pofo_usbkbd_input();
+        pofo_render_pin();
+        pofo_render();
         return;
     }
 

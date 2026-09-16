@@ -398,8 +398,14 @@ static void dump_hid_report_desc(usb_dev_t* d) {
     printf("\n");
 }
 
-// ---- Тач (eGalax MT, 0eef:0005) через GET_REPORT ----
-// Опрос только по запросу (джойстик эмулятора), без печати в UART.
+// ---- Тач (Waveshare GT911, 0eef:0005) через GET_REPORT ----
+// Формат HID-пакета (6 байт на точку, Report ID=0x01):
+//   byte[0] = Report ID (0x01)
+//   byte[1] = Status: bit0=TipSwitch (нажат/не нажат), bit1=InRange, bits2-7=ContactID
+//   byte[2..3] = X (Little-Endian): X = byte[2] | (byte[3] << 8)
+//   byte[4..5] = Y (Little-Endian): Y = byte[4] | (byte[5] << 8)
+//   byte[6] (опц.) = Contact Width/Height
+// Координаты: 0..4095 (12-bit матрица GT911), масштабируются под разрешение дисплея.
 int usb_touch_poll(int* x, int* y, int* pressed) {
     if (!g_touch.found || !g_touch.in_ep) return 0;
     usb_setup_t req = {
@@ -413,21 +419,47 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
     if (r < 0) return 0;
     cache_inv((uint32_t)g_touch_report, TOUCH_BUF);
 
-    int count = g_touch_report[0];
-    *pressed = count > 0;
-    if (count > 0) {
-        *x = (g_touch_report[2] << 8) | g_touch_report[3];
-        *y = (g_touch_report[4] << 8) | g_touch_report[5];
-        *x &= 0x07FF; *y &= 0x07FF;
-        if (*x > 1024) *x >>= 1;
-        if (*y > 1024) *y >>= 1;
+    // Report ID должен быть 0x01 (тач)
+    if (g_touch_report[0] != 0x01) return 0;
+
+    uint8_t status = g_touch_report[1];
+    *pressed = (status & 0x01) != 0;  // Tip Switch
+
+    if (*pressed) {
+        // X = LE: byte[2] | byte[3]<<8
+        *x = (int)g_touch_report[2] | ((int)g_touch_report[3] << 8);
+        // Y = LE: byte[4] | byte[5]<<8
+        *y = (int)g_touch_report[4] | ((int)g_touch_report[5] << 8);
+        // GT911 выдает 0..4095; экран 1024x600 — масштабировать будет
+        // вызывающая сторона (usb_touch_joy).
     }
     return 1;
 }
 
-// ---- Объединённый ввод для меню: ТОЛЬКО клавиатура (тач не мешает) ----
+// ---- Объединённый ввод для меню: клавиатура, при отсутствии — тач ----
+// Возвращает HID-сканкод (82=Up, 81=Down, 79=Right, 80=Left, 40=Enter, 41=ESC)
+// либо 0, если ничего не нажато. Тач переводится в «клавиши» по зонам экрана.
 int usb_input_poll(void) {
-    return usb_kbd_poll();
+    int k = usb_kbd_poll();
+    if (k) return k;
+
+    // Тач: только фронт нажатия (0→1), чтобы палец не «повторял» клавишу
+    static int t_prev_pressed = 0;
+    int x = 0, y = 0, p = 0;
+    if (!usb_touch_poll(&x, &y, &p)) { t_prev_pressed = 0; return 0; }
+    if (!p) { t_prev_pressed = 0; return 0; }
+    if (t_prev_pressed) return 0;   // уже обработали это касание
+    t_prev_pressed = 1;
+
+    // Экран 1024x600; матрица GT911 0..4095 — нормируем
+    int sx = (x * 1024) / 4096;
+    int sy = (y * 600)  / 4096;
+    printf("touch: %d,%d (raw %d,%d)\n", sx, sy, x, y);
+
+    if (sy < 200) return 82;                       // верх — Up
+    if (sy > 400) return 81;                       // низ — Down
+    if (sx < 512) return 41;                       // середина слева — ESC/назад
+    return 40;                                     // середина справа — Enter
 }
 
 // ---- Тач как джойстик для эмулятора ----

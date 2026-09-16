@@ -245,9 +245,43 @@ void sram_init(void)
       /* this prevents backup RAM from being mapped in place of mirrored ROM when using S&K LOCK-ON feature */
       sram.on = 0;
     }
+    else if (strstr(rominfo.international,"COMIX ZONE") != NULL)
+    {
+      /* Comix Zone (2MB, no backup RAM) */
+      sram.on = 0;
+    }
+    else if (strstr(rominfo.product,"MK-1569") != NULL)
+    {
+      /* Все версии Comix Zone (включая дампы с разным регистром имени) */
+      sram.on = 0;
+    }
+    else if (strstr(rominfo.international,"STREETS OF RAGE 2") != NULL)
+    {
+      /* Streets of Rage 2 (2MB, no backup RAM) — аналогично Comix Zone */
+      sram.on = 0;
+    }
+    else if (strstr(rominfo.international,"BEAVIS") != NULL)
+    {
+      /* Beavis & Butt-Head (2MB, no backup RAM) */
+      sram.on = 0;
+    }
+    else if (strstr(rominfo.product,"T-13901") != NULL)
+    {
+      /* Beavis & Butt-Head (пустое international в этом дампе) */
+      sram.on = 0;
+    }
+    else if (strstr(rominfo.international,"ZERO TOLERANCE") != NULL)
+    {
+      /* Zero Tolerance (2MB, no backup RAM) */
+      sram.on = 0;
+    }
 
     /* by default, enable backup RAM for ROM smaller than 2MB */
-    else if (cart.romsize <= 0x200000)
+    /* Ровно 2MB (0x200000) — нет: если бы был SRAM, заголовок содержал бы "RA"
+       на смещении 0x1B0 и ядро детектировало бы его выше. Все известные 2MB-дампы
+       без SRAM (Comix Zone, SOR2, Zero Tolerance, Beavis и т.д.) получали ложный
+       SRAM, который маппился поверх зеркала ROM в $200000, ломая игру. */
+    else if (cart.romsize < 0x200000)
     {
       /* 64KB static RAM mapped to $200000-$20ffff */
       sram.start = 0x200000;

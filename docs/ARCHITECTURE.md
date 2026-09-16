@@ -9,15 +9,15 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ┌───────────────────────────────────────────────────────────────┐
 │                         main.c                                │
 │          меню → браузер ROM → диспетчер эмуляторов            │
-│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/portfolio)          │
+│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/portfolio/megadrive) │
 ├───────────────────────────────────────────────────────────────┤
 │  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/   │
 │  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)      │
-│  gameboy/ (binjgb)   lynx/ (Handy)                              │
+│  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)         │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
-│  gameboy_host.cpp  lynx_host.cpp                              │
+│  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp                  │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
@@ -44,6 +44,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
 | Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
+| SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -61,6 +62,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   (160×192, 256×240, 256×192, 320×240)
 - `emu_scale(w, h)` — nearest neighbour на всю высоту (600), центрирование по X
 - Вызывается в `emu_run_*()` после каждого кадра
+- `emu_set_border_color(rgb888)` — цвет полей по бокам (XRGB8888), свой для каждой
+  системы: A2600 — тёмно-янтарный, A5200 — синий, A7800 — бордовый, NES — бордовый,
+  SMS — синий, MD — тёмно-синий, Game Boy — зелёный, Lynx — фиолетовый, Portfolio — оливковый,
+  SNES — тёмно-синеватый
 
 ### system_a7800_h3.cpp (A7800, ProSystem)
 
@@ -84,6 +89,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   для SMS: S=Pause (кнопка на корпусе), Enter=Start
 - Вспомогательные: `gpgx_math.c` (sin/cos/pow/log — инициализация таблиц звука),
   `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки)
+- Фикс Comix Zone: в `cart_hw/sram.c` отключён авто-SRAM для игр с `"COMIX ZONE"`
+  в заголовке (2MB картридж без батарейки — авто-SRAM по умолчанию ломал зеркало ROM в `$200000`)
 
 ### nes_host_fceumm.cpp (NES/Famicom, FCEUmm)
 
@@ -93,14 +100,24 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ввод: USB-клавиатура → геймпад (Z=A X=B S=Select Enter=Start) + SuborKB-клавиатура
   (Сюбор/LIKO-картриджи; таблица HID-сканкод → SuborKeyboardData[0x65], подключается
   только когда FCEUmm определил inputfc=SIFC_SUBORKB/FKB по CRC-базе)
+- ESC: одиночный → SuborKB (Break), выход — по удержанию ~0.9 с
 
 ### gameboy_host.cpp (Game Boy / GBC, binjgb)
 
 - Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
-- Менеджер памяти — bump-аллокатор `gb_heap` (1 МБ) в gameboy_stubs.c, `gb_heap_reset()`
+- Менеджер памяти — bump-аллокатор `gb_heap` (3 МБ) в gameboy_stubs.c, `gb_heap_reset()`
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
+
+### snes_host.cpp (SNES / Super Famicom, Snes9x 2005)
+
+- Ядро: `snes/` (Snes9x 2005, libretro, 39 C-файлов + libretro-common-заглушки)
+- `snes_init_game()`: `S9xInitMemory → InitAPU → InitDisplay → InitGFX → InitSound → LoadROM (прямое копирование в Memory.ROM) → S9xReset`. Настройки `Settings.Mute=true` (звук заглушен)
+- Рендер: `GFX.Screen` (RGB565, pitch = IMAGE_WIDTH×2 = 1024) → EMU_FB. Разрешение 256×224/240 (H32/H40, NTSC/PAL)
+- Ввод: USB-клавиатура → геймпад SNES (Z=B, X=Y, A=A, S=X, Q=L, W=R, Space=Select, Enter=Start)
+- Выход: ESC-удержание ~0.9 с
+- Сборка с `-DLAGFIX`: иначе `S9xMainLoop` не возвращается (бесконечный цикл без флага `finishedFrame`)
 
 ### lynx_host.cpp (Atari Lynx, Handy)
 
@@ -134,7 +151,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ввод: полная USB-клавиатура (HID→сканкод матрицы Portfolio), UART-канал (PuTTY),
   экранная клавиатура по Insert
 - Вывод: HD61830 VRAM → LCD-рендер → EMU_FB → emu_scale
-- UART-эхо экрана (текст DIP DOS в терминал), команды PIN/APPS/HELP/EXIT
+- UART-эхо экрана (текст DIP DOS в терминал, только изменившиеся строки, \r\n),
+  команды PIN/APPS/HELP/EXIT; `PIN` — анимированный «взлом кода» в стиле Terminator 2
+  (рендер `pofo_render_pin`: >TEST.0.0 → >ENTRY CODE + бегущий код → ACCESS DENIED)
+- Вход с UART защищён от зависания: каждый `uart_getc` предваряется `uart_is_readable()`
 
 ## Управление
 
@@ -158,11 +178,21 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | # | Функция |
 |---|---------|
-| 1 | Создать папки ROM на SD |
+| 1 | Создать папки ROM на SD (основная + alt_dir для NES/SMS) |
 | 2 | Input Test (тест кнопок) |
 | 3 | Video Mode / Throttle: 6 частот (60, 50, 45, 40, 35, 30 Hz), ←/→ или Enter — циклически |
 | 4 | Atari 2600 Difficulty: Novice ⇄ Expert |
 | 5 | ROM partition info (справка по разметке SD) |
+
+## Ввод (usb_kbd.c / usb_ohci.c)
+
+- USB-клавиатура (boot protocol), автоповтор; OHCI1/OHCI2 (два порта)
+- `usb_input_poll()` — общий ввод меню: сначала клавиатура, при отсутствии нажатий —
+  тач-экран (если устройство энумерировано), переводится в «клавиши» по зонам:
+  верх = Up, низ = Down, середина слева = ESC, справа = Enter; только фронт касания
+- Тач (Waveshare GT911, VID 0EEF / PID 0005): парсер HID-пакета — Report ID 0x01,
+  Status бит0 = нажатие, X/Y 16-бит Little-Endian, диапазон 0..4095 (матрица GT911);
+  `usb_touch_poll()` в usb_kbd.c
 
 ## HDMI
 
@@ -191,7 +221,7 @@ U-Boot SPL → U-Boot → (boot.scr: gpio-настройка светодиод�
 → startup.S → SVC mode → BSS=0 → main()
 ```
 
-Или через FEL: `sunxi-fel write 0x40000000 build/h3_bare.bin execute 0x40000000`
+Или через FEL: `sunxi-fel write 0x40000000 h3_bare.bin execute 0x40000000`
 
 ## Производительность
 

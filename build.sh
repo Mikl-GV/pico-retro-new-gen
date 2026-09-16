@@ -34,7 +34,8 @@ OBJCOPY="${PREFIX}objcopy"
 
 CFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm"
 CFLAGS="$CFLAGS -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG"
-INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/gpgx/core -I$TOP/h3_bare/cores/gpgx/libretro_inc -I$TOP/h3_bare/cores/gpgx/core/z80 -I$TOP/h3_bare/cores/gpgx/core/m68k -I$TOP/h3_bare/cores/gpgx/core/ntsc -I$TOP/h3_bare/cores/gpgx/core/sound -I$TOP/h3_bare/cores/gpgx/core/input_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw/svp -I$TOP/h3_bare/cores/gpgx/core/cd_hw -I$TOP/h3_bare/cores/fceumm -I$TOP/h3_bare/cores/fceumm/inc -I$TOP/h3_bare/cores/fceumm/input -I$TOP/h3_bare/cores/fceumm/boards -I$TOP/h3_bare/cores/fceumm/palettes -I$TOP/h3_bare/cores/fceumm/fir -I$TOP/h3_bare/cores/nes -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/smsplus -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/gpgx/core -I$TOP/h3_bare/cores/gpgx/libretro_inc -I$TOP/h3_bare/cores/gpgx/core/z80 -I$TOP/h3_bare/cores/gpgx/core/m68k -I$TOP/h3_bare/cores/gpgx/core/ntsc -I$TOP/h3_bare/cores/gpgx/core/sound -I$TOP/h3_bare/cores/gpgx/core/input_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw/svp -I$TOP/h3_bare/cores/gpgx/core/cd_hw -I$TOP/h3_bare/cores/fceumm -I$TOP/h3_bare/cores/fceumm/inc -I$TOP/h3_bare/cores/fceumm/input -I$TOP/h3_bare/cores/fceumm/boards -I$TOP/h3_bare/cores/fceumm/palettes -I$TOP/h3_bare/cores/fceumm/fir -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+SNES_INCLUDES="-I$TOP/h3_bare/cores/snes -I$TOP/h3_bare/cores/snes/libretro-common/include $INCLUDES"
 CXXFLAGS="$CFLAGS -fno-exceptions -fno-rtti -fno-threadsafe-statics"
 
 # Ассемблер
@@ -76,8 +77,6 @@ $CC $CFLAGS $INCLUDES -std=gnu11 -c -o "$BUILD/a5200_atari5200.o" "$A5200/atari5
 for fn in antic cpu crc32 gtia pokey pokeysnd; do
     $CC $CFLAGS $INCLUDES -std=gnu89 -c -o "$BUILD/a5200_$fn.o" "$A5200/$fn.c"
 done
-
-# --- SMS Plus (заменён на Genesis Plus GX SMS-режим) ---
 
 # --- Portfolio ---
 PORT="$TOP/h3_bare/cores/portfolio"
@@ -122,6 +121,22 @@ done
 for f in "$FCEUMM"/boards/*.c; do
     fn=$(basename "$f" .c)
     $CC $FCEUMM_CFLAGS $INCLUDES -c -o "$BUILD/fceumm_b_$fn.o" "$f"
+done
+
+# --- Snes9x 2005 (SNES / Super Famicom) ---
+SNES="$TOP/h3_bare/cores/snes"
+SNES_CFLAGS="$CFLAGS -DLOAD_FROM_MEMORY -DHAVE_NO_LANGEXTRA -DLAGFIX -Wno-incompatible-pointer-types"
+$CXX $CXXFLAGS $SNES_CFLAGS $SNES_INCLUDES -c -o "$BUILD/snes_host.o" "$TOP/h3_bare/cores/snes_host.cpp"
+$CC $CFLAGS $SNES_INCLUDES -c -o "$BUILD/snes_compat.o" "$TOP/h3_bare/cores/snes_compat.c"
+for fn in c4 c4emu cheats2 cheats clip cpu cpuexec cpuops data dma dsp1 fxemu fxinst gfx getset globals memmap obc1 ppu sa1 sa1cpu sdd1 sdd1emu seta010 seta011 seta018 seta spc7110 spc7110dec srtc tile; do
+    $CC $SNES_CFLAGS $SNES_INCLUDES -c -o "$BUILD/snes_$fn.o" "$SNES/$fn.c"
+done
+for fn in apu soundux spc700; do
+    $CC $SNES_CFLAGS $SNES_INCLUDES -c -o "$BUILD/snes_$fn.o" "$SNES/$fn.c"
+done
+# PPU дублируется между FCEUmm и Snes9x — переименовываем во всех snes_*.o
+for f in "$BUILD"/snes_*.o; do
+    arm-none-eabi-objcopy --redefine-sym PPU=snes_PPU "$f" "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null || true
 done
 
 # --- Sega Mega Drive / SMS (Genesis Plus GX) ---
@@ -196,6 +211,16 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/fceumm_filter.o" "$BUILD/fceumm_libretro_compat.o" \
     "$BUILD/fceumm_vsuni.o" "$BUILD/fceumm_unif.o" \
     "$BUILD/fceumm_in_"*.o "$BUILD/fceumm_b_"*.o \
+    "$BUILD/snes_host.o" "$BUILD/snes_compat.o" \
+    "$BUILD/snes_c4.o" "$BUILD/snes_c4emu.o" "$BUILD/snes_cheats2.o" "$BUILD/snes_cheats.o" \
+    "$BUILD/snes_clip.o" "$BUILD/snes_cpu.o" "$BUILD/snes_cpuexec.o" "$BUILD/snes_cpuops.o" \
+    "$BUILD/snes_data.o" "$BUILD/snes_dma.o" "$BUILD/snes_dsp1.o" "$BUILD/snes_fxemu.o" \
+    "$BUILD/snes_fxinst.o" "$BUILD/snes_gfx.o" "$BUILD/snes_getset.o" "$BUILD/snes_globals.o" \
+    "$BUILD/snes_memmap.o" "$BUILD/snes_obc1.o" "$BUILD/snes_ppu.o" "$BUILD/snes_sa1.o" \
+    "$BUILD/snes_sa1cpu.o" "$BUILD/snes_sdd1.o" "$BUILD/snes_sdd1emu.o" "$BUILD/snes_seta010.o" \
+    "$BUILD/snes_seta011.o" "$BUILD/snes_seta018.o" "$BUILD/snes_seta.o" "$BUILD/snes_spc7110.o" \
+    "$BUILD/snes_spc7110dec.o" "$BUILD/snes_srtc.o" "$BUILD/snes_tile.o" \
+    "$BUILD/snes_apu.o" "$BUILD/snes_soundux.o" "$BUILD/snes_spc700.o" \
     "$BUILD/gpgx_core_"*.o "$BUILD/gpgx_z80_"*.o "$BUILD/gpgx_m68k_"*.o "$BUILD/gpgx_ntsc_"*.o \
     "$BUILD/gpgx_sound_"*.o "$BUILD/gpgx_input_hw_"*.o "$BUILD/gpgx_cart_hw_"*.o \
     "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
@@ -205,10 +230,12 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
-    -lgcc -lc -lm
+    -lgcc -lc -lm -lgcc
 
 $OBJCOPY -O binary --remove-section .uncached "$BUILD/h3_bare.elf" "$BIN"
-echo "--- h3_bare.bin: $(stat -c%s "$BIN") байт ---"
+# Дублируем прошивку в корень проекта — чтобы не искать в build/
+cp -f "$BIN" "$TOP/h3_bare.bin"
+echo "--- h3_bare.bin: $(stat -c%s "$BIN") байт (build/ и корень) ---"
 
 # ---- SD-образ (опционально) ----
 if [ "${1:-}" = "sd" ] || [ "${1:-}" = "full" ]; then

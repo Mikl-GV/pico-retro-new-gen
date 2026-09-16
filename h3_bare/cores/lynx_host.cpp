@@ -53,29 +53,42 @@ static ULONG lynx_buttons_from_kbd(void) {
 }
 
 extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
-    // Handy (Lynx) делит глобальный bump-пул (malloc/operator new из
-    // gameboy_stubs.c) с binjgb. Сбрасываем пул перед созданием CSystem,
-    // чтобы повторный запуск Lynx (или Lynx после Game Boy) не упёрся
-    // в конец уже занятого пула.
+    if (!rom || size == 0) { printf("[lynx] no ROM data\n"); return 0; }
+    if (size < 64) { printf("[lynx] ROM too small (%u)\n", (unsigned)size); return 0; }
+
+    if (memcmp(rom, "LYNX", 4) != 0) {
+        printf("[lynx] no LYNX header (headerless ROM), size=%u\n", (unsigned)size);
+    } else {
+        printf("[lynx] LYNX header ver=%u\n", (unsigned)rom[14]);
+    }
+
     extern void gb_heap_reset(void);
     gb_heap_reset();
 
-    // Создаём CSystem, передаём ROM в gamedata (без файла)
-    // useEmu=true — BIOS эмулируется (не нужен lynxboot.img)
     g_lynx = new CSystem(NULL, rom, size, NULL, true, NULL);
     if (!g_lynx) { printf("[lynx] new CSystem failed\n"); return 0; }
 
-    // Pitch передаётся в БАЙТАХ: 16bpp -> 160 пикселей * 2 байта = 320.
-    // mikie использует mDisplayPitch как байтовое смещение строки,
-    // при 160 строки кадра накладывались бы друг на друга.
-g_lynx->DisplaySetAttributes(
-        MIKIE_NO_ROTATE,          // без поворота — кадр пишется построчно 160x102
-        MIKIE_PIXEL_FORMAT_16BPP_565, // RGB565
+    if (!g_lynx->mMikie) {
+        printf("[lynx] mMikie is NULL, cartridge init failed\n");
+        delete g_lynx; g_lynx = NULL;
+        return 0;
+    }
+
+    g_lynx->DisplaySetAttributes(
+        MIKIE_NO_ROTATE,
+        MIKIE_PIXEL_FORMAT_16BPP_565,
         LYNX_W * 2,
         display_callback,
         0
     );
 
+    printf("[lynx] cart: '%s' by '%s' mask=%u/%u EEPROM=%d rot=%d\n",
+           g_lynx->mCart->CartGetName(),
+           g_lynx->mCart->CartGetManufacturer(),
+           (unsigned)g_lynx->mCart->mMaskBank0,
+           (unsigned)g_lynx->mCart->mMaskBank1,
+           (int)g_lynx->mCart->mEEPROMType,
+           (int)g_lynx->mCart->CartGetRotate());
     printf("[lynx] init ok, size=%u\n", (unsigned)size);
     return 1;
 }
@@ -139,5 +152,3 @@ extern "C" void lynx_render_frame(void) {
         for (int x = 0; x < LYNX_W && x < EMU_W; x++)
             EMU_FB[y * EMU_W + x] = lynx_fb[y * LYNX_W + x];
 }
-
-extern "C" int lynx_exit_requested(void) { return 0; }

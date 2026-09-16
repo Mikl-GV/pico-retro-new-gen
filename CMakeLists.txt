@@ -6,11 +6,9 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/include
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/nes
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/mcume
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a7800
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a5200
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/portfolio
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/src
@@ -60,15 +58,6 @@ set(SRCS
     h3_bare/cores/a5200/gtia.c
     h3_bare/cores/a5200/pokey.c
     h3_bare/cores/a5200/pokeysnd.c
-    h3_bare/cores/system_sms_h3.cpp
-    h3_bare/cores/smsplus/sms.c
-    h3_bare/cores/smsplus/system.c
-    h3_bare/cores/smsplus/loadrom.c
-    h3_bare/cores/smsplus/render.c
-    h3_bare/cores/smsplus/vdp.c
-    h3_bare/cores/smsplus/sn76496.c
-    h3_bare/cores/smsplus/z80.c
-    h3_bare/cores/nes_host.cpp
     h3_bare/cores/portfolio/cpu.cpp
     h3_bare/cores/portfolio/i8253.cpp
     h3_bare/cores/portfolio/i8259.cpp
@@ -78,10 +67,6 @@ set(SRCS
     h3_bare/cores/gameboy/emulator.c
     h3_bare/cores/gameboy/memory.c
     h3_bare/cores/gameboy/joypad.c
-    h3_bare/cores/nes/InfoNES.cpp
-    h3_bare/cores/nes/InfoNES_Mapper.cpp
-    h3_bare/cores/nes/InfoNES_pAPU.cpp
-    h3_bare/cores/nes/K6502.cpp
     h3_bare/cores/sd.c
     h3_bare/cores/fat.c
     h3_bare/cores/usb_ohci.c
@@ -138,30 +123,9 @@ set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/a5200/atari5200.c
     PROPERTIES COMPILE_OPTIONS "-std=gnu11"
 )
-# smsplus host: shared.h тянет <math.h>, которому нужен hosted mode (freestanding
-# ломает libstdc++ headers: requires_hosted.h / tr1 gamma.tcc). -fhosted отменяет
-# глобальный -ffreestanding только для этого файла (позже в порядке флагов).
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/system_sms_h3.cpp
-    PROPERTIES COMPILE_OPTIONS "-fhosted;-O0"
-)
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/sms.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/system.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/loadrom.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/render.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/vdp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/sn76496.c
-    PROPERTIES COMPILE_OPTIONS "-std=gnu89;-O0"
-)
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/smsplus/z80.c
-    PROPERTIES COMPILE_OPTIONS "-std=gnu89;-O2"
-)
 # Game Boy (binjgb): C99, stubs для malloc, нет inttypes.h — определяем PRI-макросы
 set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/emulator.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/common.c
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/memory.c
     ${CMAKE_CURRENT_SOURCE_DIR}/h3_bare/cores/gameboy/joypad.c
     PROPERTIES COMPILE_OPTIONS "-std=gnu99;-DTRACE_MEMORY;-DPRIu64=\"llu\";-DPRIx64=\"llx\";-DPRId64=\"lld\""

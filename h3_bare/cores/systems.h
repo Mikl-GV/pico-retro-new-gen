@@ -53,7 +53,7 @@ static const system_entry_t systems[] = {
     SYS("coleco",     "ColecoVision",                CONSOLE,  PLANNED),
     SYS_ALT("nes",    "NES / Famicom (Dendy)",     NULL, "nes_roms", CONSOLE, READY),
     SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  PLANNED),
-    SYS("snes",       "SNES / Super Famicom",        CONSOLE,  PLANNED),
+    SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),
     SYS("megadrive",  "Sega Mega Drive / Genesis",     CONSOLE,  READY),
     SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, PLANNED),
     SYS_DIR("jaguar", "Atari Jaguar", "jaguar_roms", CONSOLE, PLANNED),
@@ -77,7 +77,8 @@ static const system_entry_t systems[] = {
 
 #define NUM_SYSTEMS (sizeof(systems) / sizeof(systems[0]))
 
-// папка системы: dir если задан, иначе id
+// папка системы: dir если задан, иначе id (альтернативная в alt_dir
+// используется только при ПОИСКЕ папки на SD — для СОЗДАНИЯ она не годится)
 static inline const char* system_rom_dir(int idx) {
     return systems[idx].dir ? systems[idx].dir : systems[idx].id;
 }

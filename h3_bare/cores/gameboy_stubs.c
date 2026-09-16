@@ -10,11 +10,11 @@ struct _reent _impure_ptr = { 0 };
 int fprintf(void*, const char*, ...) { return 0; }
 
 // пул-аллокатор
-// Пул 3 МБ: binjgb (Game Boy) + Handy (Atari Lynx) делят один глобальный
-// malloc/new. Handy для 512K-картриджей аллоцирует ~1.5 МБ (банки ROM +
-// mMemoryHandlers[64K] + RAM), поэтому 1 МБ не хватало — new возвращал
-// NULL и запись по нулю вешала систему.
-static uint8_t gb_heap[3 * 1024 * 1024];
+// Пул 12 МБ: binjgb (Game Boy) + Handy (Atari Lynx) + Snes9x 2005 делят один
+// глобальный malloc/new. Handy для 512K-картриджей аллоцирует ~1.5 МБ,
+// Snes9x — ~10 МБ (ROM 8МБ + RAM/VRAM/тайлы 2МБ), поэтому 3 МБ не хватало —
+// new возвращал NULL и запись по нулю вешала систему.
+static uint8_t gb_heap[12 * 1024 * 1024];
 static size_t gb_heap_pos = 0;
 
 static void* gb_alloc(size_t sz) {

@@ -10,21 +10,22 @@ USB-клавиатура, ROM — с SD-карты (FAT32).
 Atari Lynx (Handy), NES / Famicom (FCEUmm, 432 маппера, SuborKB-клавиатура),
 Sega Master System / Game Gear, Sega Mega Drive / Genesis (Genesis Plus GX),
 Game Boy / Game Boy Color (binjgb),
+SNES / Super Famicom (Snes9x 2005),
 Atari Portfolio (8088, BIOS вшит — без ROM на SD).
 
 ## Сборка и запись
 
 ```bash
 sudo apt install gcc-arm-none-eabi u-boot-tools mtools
-./build.sh                # -> build/h3_bare.bin
+./build.sh                # -> h3_bare.bin в корне проекта (и в build/)
 ./build.sh sd             # -> build/h3_bare.img (полный SD-образ)
 ```
 
-Обновление прошивки на флешке с U-Boot:
+Обновление прошивки на флешке с U-Boot (прошивка — в **корне проекта**):
 
 ```bash
 sudo mount /dev/sdX1 /mnt
-sudo cp build/h3_bare.bin /mnt/
+sudo cp h3_bare.bin /mnt/
 sudo sync; sudo umount /mnt
 ```
 
@@ -65,16 +66,21 @@ sudo sync; sudo umount /mnt
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, **Atari Lynx**, NES / Famicom, Sega Master System, Sega Game Gear, **Sega Mega Drive / Genesis**, Game Boy / GBC, Atari Portfolio |
-| 🔲 План | ColecoVision, PC Engine, SNES, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504, Game Boy Advance |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **SNES / Super Famicom**, Atari Portfolio |
+| 🔲 План | ColecoVision, PC Engine, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504, Game Boy Advance |
 
-ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.gb`/`.gbc`, `.lnx`.
+ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`.
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
+
+## Прошивка
+
+После сборки (`./build.sh`) готовый бинарник лежит в **корне проекта** — `h3_bare.bin`
+(дублируется в `build/`). Запись на флешку: `sudo mount /dev/sdX1 /mnt && sudo cp h3_bare.bin /mnt/`.
 
 ## Документация
 
 - `docs/ARCHITECTURE.md` — устройство кода
-- `docs/ROADMAP.md` — статус систем и план
+- `docs/ROADMAP.md` — статус систем, план и перспективы
 - `docs/CONTROLS.md` — управление (полная карта кнопок)
 - `docs/BUILD.md` — сборка
 - `docs/HARDWARE.md` — железо
