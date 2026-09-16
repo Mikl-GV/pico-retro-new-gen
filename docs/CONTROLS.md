@@ -34,15 +34,16 @@ USB-клавиатура (Boot HID, Logitech 046D:C52B и аналоги).
 | S | Select | Select | Start | Select | Pause | Select | Option 1 | **Y** |
 | D | — | — | — | — | — | — | — | **Z** |
 | Q | — | — | — | — | — | — | — | Mode |
-| Enter | Start | Game Reset | Key 3 | Start | — | Start | Option 2 | Start |
+| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Option 2 | Start |
 | ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 Удерживание ESC ~1 сек — выход в меню.  
 В A2600 также работает сложность (Settings → 4).  
 A2600: Z=Fire, S=Select, Enter=Game Reset (запуск игры заново).  
 Mega Drive (6-кнопочный геймпад): Z=A, X=B, C=C, A=X, S=Y, D=Z, Q=Mode, Enter=Start.  
+SMS/GG: Z=Button1, X=Button2, S=Pause (кнопка на корпусе), Enter=Start.  
 A5200: Z=Fire, X=Pause, S=Start.
-Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad (порт в работе).
+Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad.
 
 ## Atari Portfolio (полная клавиатура)
 

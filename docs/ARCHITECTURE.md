@@ -11,12 +11,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │          меню → браузер ROM → диспетчер эмуляторов            │
 │   (a2600/a5200/a7800/nes/sms/gameboy/lynx/portfolio)          │
 ├───────────────────────────────────────────────────────────────┤
-│  mcume/    a5200/    a7800/    nes/    smsplus/  portfolio/   │
-│  (A2600)   (A5200)   (A7800)   (NES)   (SMS)     (8088)      │
-│  gameboy/ (binjgb)   lynx/ (Handy — в работе)                 │
+│  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/   │
+│  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)      │
+│  gameboy/ (binjgb)   lynx/ (Handy)                              │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
-│  system_a7800_h3.cpp  nes_host.cpp  system_sms_h3.cpp         │
+│  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
 │  gameboy_host.cpp  lynx_host.cpp                              │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
@@ -39,8 +39,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw |
 | Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw |
 | Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw |
-| NES / Famicom | FCEUmm (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB |
-| SMS / GG / MG | Genesis Plus GX | C | 256×192 / 256×224 → EMU_FB | usb_kbd_get_raw |
+| NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB |
+| SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw |
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
 | Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
@@ -74,16 +74,25 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - `a5_DrawLinePal16()` — строка 320px → EMU_FB
 - Заглушки StateSav/SndSave/emuFile — ядро Atari800 тянет много legacy
 
-### system_sms_h3.cpp (SMS/GG, smsplus)
+### system_gpgx_h3.c (SMS/GG/MD, Genesis Plus GX)
 
-- Пул: статический `sms_heap[128K]` через frens_f_malloc
-- `sms_render_line()` → промежуточный `last_fb[192][256]` → `blit_fb()` в EMU_FB
-- SN76489-звук заглушен (snd.enabled=1, буферы молчат)
+- Ядро: `gpgx/core/` (genesis.c, vdp_*, mem68k, m68k/z80, sound, cart_hw, cd_hw — без CHD/MP3-декодеров)
+- `gpgx_init_game()`: копирует ROM в `cart.rom`, детект SMS (TMR SEGA) / MD, byte-swap
+  для 16-бит, конфиг `t_config`, инициализация `bitmap.data[720×576]` (как libretro.c)
+- Рендер: `bitmap.data` (RGB565) + viewport → EMU_FB, MD 320×224, SMS 256×192
+- Ввод: USB-клавиатура → 6-кнопочный геймпад MD (Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start),
+  для SMS: S=Pause (кнопка на корпусе), Enter=Start
+- Вспомогательные: `gpgx_math.c` (sin/cos/pow/log — инициализация таблиц звука),
+  `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки)
 
-### nes_host.cpp (NES, InfoNES)
+### nes_host_fceumm.cpp (NES/Famicom, FCEUmm)
 
-- Рендер: SCREEN[240][256] → построчно через palette LUT → EMU_FB
-- Throttle через emu_throttle, 60/50 FPS (настройка в Settings)
+- Ядро: `fceumm/` (fceu.c, x6502, ppu, sound, cart/ines, boards/ 432 маппера, input/ SuborKB)
+- Стаб libretro: `libretro.h` + `libretro_compat.c` (filestream/memstream/string/sscanf/ctype)
+- Рендер: XBuf[256×240] + XDBuf (деэмфазис) → palette LUT → EMU_FB
+- Ввод: USB-клавиатура → геймпад (Z=A X=B S=Select Enter=Start) + SuborKB-клавиатура
+  (Сюбор/LIKO-картриджи; таблица HID-сканкод → SuborKeyboardData[0x65], подключается
+  только когда FCEUmm определил inputfc=SIFC_SUBORKB/FKB по CRC-базе)
 
 ### gameboy_host.cpp (Game Boy / GBC, binjgb)
 
@@ -95,11 +104,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 ### lynx_host.cpp (Atari Lynx, Handy)
 
-- Порт Handy (K. Wilkins) — в работе (рендер починен: pitch в байтах, сброс heap перед init)
+- Порт Handy (K. Wilkins) — работает (рендер починен: pitch байты, сброс heap 3 МБ перед init,
+  страховка DISPCTL.DMAEnable)
 - `handy_compat.h` — заглушки libretro-common (filestream/strlcpy/string) для bare-metal
 - C++ runtime — `cxx_runtime.cpp` (operator new/delete поверх malloc, __cxa_pure_virtual)
 - Рендер: Handy рисует в собственный буфер 160×102 через callback → EMU_FB
-- Ввод: USB-клавиатура → кнопки Lynx
+- Ввод: USB-клавиатура → кнопки Lynx (Z=A X=B S=Option1 Enter=Option2)
 
 ### led.c (светодиоды)
 
@@ -130,15 +140,19 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Полная карта — в `docs/CONTROLS.md`. Кратко:
 
-| Клавиша | NES | A2600 | A5200 | A7800 | SMS | Game Boy | Lynx | Portfolio |
-|---------|:---:|:-----:|:-----:|:-----:|:---:|:--------:|:----:|:---------:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
-| Z | A | Fire | Fire | B1(A) | Btn1 | A | A | буква Z |
-| X | B | — | Pause | B2(B) | Btn2 | B | B | буква X |
-| S | Select | Select | Start | Select | Pause | Select | Opt1 | буква S |
-| Enter | Start | Reset | Key3 | Start | — | Start | Opt2 | Enter |
-| Insert | — | — | — | — | — | — | — | VK (экранная клава) |
-| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
+| Клавиша | NES | A2600 | A5200 | A7800 | SMS/GG | Game Boy | Lynx | Mega Drive | Portfolio |
+|---------|:---:|:-----:|:-----:|:-----:|:------:|:--------:|:----:|:----------:|:---------:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
+| Z | A | Fire | Fire | B1(A) | Button1 | B | A | **A** | буква Z |
+| X | B | — | Pause | B2(B) | Button2 | A | B | **B** | буква X |
+| C | — | — | — | — | — | — | — | **C** | — |
+| A | — | — | — | — | — | — | — | **X** | — |
+| S | Select | Select | Start | Select | **Pause** | Select | Opt1 | **Y** | буква S |
+| D | — | — | — | — | — | — | — | **Z** | — |
+| Q | — | — | — | — | — | — | — | Mode | — |
+| Enter | Start | Reset | Key3 | Start | Start | Start | Opt2 | Start | Enter |
+| Insert | — | — | — | — | — | — | — | — | VK (экранная клава) |
+| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
 
 ## Настройки (Settings)
 

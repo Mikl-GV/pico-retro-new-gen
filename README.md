@@ -7,7 +7,7 @@
 USB-клавиатура, ROM — с SD-карты (FAT32).
 
 **Работает сейчас:** Atari 2600 (MCUME), Atari 5200, Atari 7800,
-NES / Famicom (FCEUmm, SuborKB-клавиатура),
+Atari Lynx (Handy), NES / Famicom (FCEUmm, 432 маппера, SuborKB-клавиатура),
 Sega Master System / Game Gear, Sega Mega Drive / Genesis (Genesis Plus GX),
 Game Boy / Game Boy Color (binjgb),
 Atari Portfolio (8088, BIOS вшит — без ROM на SD).
@@ -43,14 +43,18 @@ sudo sync; sudo umount /mnt
 
 ### Эмуляторы (в игре)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx |
-|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|
-| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | A |
-| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | B |
-| **S** | Select | Select | Start | Select | Pause | Select | Option 1 |
-| **Enter** | Start | Game Reset | Key 3 | Start | — | Start | Option 2 |
-| **ESC** (удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Game Boy | Lynx | Mega Drive |
+|---------|:---:|:-------------:|:-----:|:-----:|:------:|:--------:|:----:|:----------:|
+| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | A | **A** |
+| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | B | **B** |
+| **C** | — | — | — | — | — | — | — | **C** |
+| **A** | — | — | — | — | — | — | — | **X** |
+| **S** | Select | Select | Start | Select | Pause | Select | Option 1 | **Y** |
+| **D** | — | — | — | — | — | — | — | **Z** |
+| **Q** | — | — | — | — | — | — | — | Mode |
+| **Enter** | Start | Game Reset | Key 3 | Start | Start | Start | Option 2 | Start |
+| **ESC** (удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 ### Atari Portfolio
 
@@ -61,11 +65,10 @@ sudo sync; sudo umount /mnt
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, NES / Famicom, Sega Master System, **Game Boy / GBC, Atari Portfolio** |
-| 🚧 В работе | Atari Lynx (рендер починен, нужна проверка на железе) |
-| 🔲 План | Game Gear, ColecoVision, PC Engine, SNES, Mega Drive, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504 |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, **Atari Lynx**, NES / Famicom, Sega Master System, Sega Game Gear, **Sega Mega Drive / Genesis**, Game Boy / GBC, Atari Portfolio |
+| 🔲 План | ColecoVision, PC Engine, SNES, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504, Game Boy Advance |
 
-ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gb`/`.gbc`, `.lnx` (в работе).
+ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.gb`/`.gbc`, `.lnx`.
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
 
 ## Документация

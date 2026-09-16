@@ -41,6 +41,7 @@ static int g_loaded = 0;
 // буферы ввода (их адреса регистрируются в ядре через FCEUI_SetInput*)
 static uint32_t g_joydata = 0;              // 1-я кнопка в младшем байте
 static uint8_t  g_suborkb[0x65];            // клавиатура SuborKB
+static int      has_suborkb = 0;            // 1 = активна SuborKB/FKB-клавиатура
 
 // палитра 512 записей (FCEUD_SetPalette заполняет; индексы как в libretro.c)
 static uint16_t nes_pal_rgb565[512];
@@ -101,44 +102,32 @@ static void build_input(void) {
         if (sc == 40) g_joydata |= 0x08;   // Enter = Start
     }
 
-    // SuborKB: индекс в g_suborkb = позиция сканкода в suborkbmap (0x65 записей)
-    // Ключевые для Сюбор-картриджей: буквы, цифры, Enter, Backspace, стрелки.
-    // Маппинг USB HID scancode -> позиция в suborkbmap:
-    static const struct { uint8_t usb; uint8_t sub; } kbmap[] = {
-        { 44, 0x3E },   // Space
-        { 40, 0x28 },   // Enter (RETURN)
-        { 42, 0x1B },   // Backspace
-        { 41, 0x30 },   // Esc
-        { 82, 0x2C },   // Up
-        { 81, 0x40 },   // Down
-        { 80, 0x2F },   // Left
-        { 79, 0x33 },   // Right
-        { 30, 0x05 }, { 31, 0x0A }, { 32, 0x0F }, { 33, 0x14 },  // 1 2 3 4
-        { 34, 0x19 }, { 35, 0x1E }, { 36, 0x3A }, { 37, 0x3F },  // 5 6 7 8
-        { 38, 0x44 }, { 39, 0x34 },                              // 9 0
-        { 4, 0x35 }, { 5, 0x16 }, { 6, 0x2D }, { 7, 0x0B },      // A B C D
-        { 8, 0x06 }, { 9, 0x1F }, { 10, 0x2A }, { 11, 0x20 },    // E F G H
-        { 12, 0x0C }, { 13, 0x36 }, { 14, 0x21 }, { 15, 0x2E },  // I J K L
-        { 16, 0x10 }, { 17, 0x0D }, { 18, 0x02 }, { 19, 0x07 },  // M N O P
-        { 20, 0x22 }, { 21, 0x3B }, { 22, 0x17 }, { 23, 0x34 },  // Q R S T
-        { 24, 0x03 }, { 25, 0x08 }, { 26, 0x31 }, { 27, 0x26 },  // U V W X
-        { 28, 0x11 }, { 29, 0x15 },                              // Y Z
-        { 0, 0 }
+    // SuborKB: прямая таблица HID-scancode → индекс SuborKeyboardData[0x65]
+    // Построена по точным позициям оригинальной suborkbmap.
+    // Буквы A-Z по физической раскладке Subor-клавиатуры.
+    static const uint8_t hid_to_subor[128] = {
+        0xff, 0xff, 0xff, 0xff, 0x39, 0x4c, 0x4a, 0x3b, 0x26, 0x3c, 0x3d, 0x3e, 0x2b, 0x3f, 0x40, 0x41,
+        0x4e, 0x4d, 0x2c, 0x2d, 0x24, 0x27, 0x3a, 0x28, 0x2a, 0x4b, 0x25, 0x49, 0x29, 0x48, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x30, 0x00, 0x1b, 0x23, 0x59, 0x19, 0x1a, 0x2e,
+        0x2f, 0x52, 0xff, 0x42, 0x43, 0xff, 0x4f, 0x50, 0x51, 0x38, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+        0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0xff, 0xff, 0xff, 0x1c, 0x1d, 0x1e, 0x31, 0x32, 0x33, 0x5c,
+        0x5a, 0x5b, 0x53, 0x0d, 0x20, 0x21, 0x22, 0x37, 0xff, 0x50, 0x51, 0x52, 0x44, 0x45, 0x46, 0x34,
+        0x35, 0x36, 0x5d, 0x5e, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     };
     for (int i = 0; i < n; i++) {
-        for (int k = 0; kbmap[k].usb; k++) {
-            if (keys[i] == kbmap[k].usb) { g_suborkb[kbmap[k].sub] = 1; break; }
+        uint8_t sc = keys[i];
+        if (sc < 128) {
+            uint8_t sub = hid_to_subor[sc];
+            if (sub < 0x65) g_suborkb[sub] = 1;
         }
     }
-    // Shift (левая/правая) => SuborKB позиция LSHIFT 0x47
+    // Модификаторы
     uint8_t mods = usb_kbd_get_mods();
-    if (mods & 0x02) g_suborkb[0x47] = 1;   // LShift
-    if (mods & 0x20) g_suborkb[0x47] = 1;   // RShift -> тот же
-    // CapsLock
-    if (mods & 0x04) g_suborkb[0x1A] = 0;   // не маппим CapsLock/Alt детально
+    if (mods & 0x01) g_suborkb[87] = 1;   // LCtrl
+    if (mods & 0x02) g_suborkb[71] = 1;   // LShift
+    if (mods & 0x20) g_suborkb[71] = 1;   // RShift
 }
-
-// ---- Public API ----
 extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     printf("FCEUmm: init size=%u\n", (unsigned)size);
     g_loaded = 0;
@@ -163,9 +152,23 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     FCEUI_SetInput(0, SI_GAMEPAD, &g_joydata, 0);
     FCEUI_SetInput(1, SI_GAMEPAD, &g_joydata, 0);
 
-    // FC-порт: принудительно SuborKB — картриджи Сюбора с клавиатурой.
-    // Если ROM требует другой девайс (FKB и т.п.) — можно расширить.
-    FCEUI_SetInputFC(SIFC_SUBORKB, g_suborkb, 0);
+    // FC-порт: по тому, что определил FCEUmm (inputfc из MetaDB по CRC).
+    //    -1 = неопределён (обычная игра) → SIFC_NONE
+    //     5 = SIFC_SUBORKB (Сюбор, LIKO и т.п.) → SuborKB
+    //     4 = SIFC_FKB (Family BASIC) → FKB
+    //    Другие девайсы (Arkanoid, Shadow, FTrainer) — не поддерживаем пока.
+    if (gi->inputfc == SIFC_SUBORKB) {
+        FCEUI_SetInputFC(SIFC_SUBORKB, g_suborkb, 0);
+        has_suborkb = 1;
+        printf("FCEUmm: SuborKB enabled\n");
+    } else if (gi->inputfc == SIFC_FKB) {
+        FCEUI_SetInputFC(SIFC_FKB, g_suborkb, 0);
+        printf("FCEUmm: FKB enabled\n");
+    } else {
+        FCEUI_SetInputFC(SIFC_NONE, NULL, 0);
+        has_suborkb = 0;
+        printf("FCEUmm: no FC keyboard\n");
+    }
 
     // Звук не нужен (нет DAC-вывода) — отключаем, чтобы не аллоцировать буферы
     FCEUI_Sound(0);

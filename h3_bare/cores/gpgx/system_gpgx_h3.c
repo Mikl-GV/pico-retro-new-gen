@@ -38,12 +38,14 @@ static int g_loaded = 0;
 static int g_is_md  = 0;
 static int g_force_sms = 0;
 
+// Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576])
+static uint16_t bitmap_data_[720 * 576];
+
 // ---- ввод: USB-клавиатура -> геймпад GPGX ----
 // Маппинг 6-кнопочного геймпада Mega Drive:
 //   Z=A  X=B  C=C  A=X  S=Y  D=Z  Q=Mode  Enter=Start, стрелки=D-Pad
+// Для SMS/GG: S=Pause (Pause на корпусе), Enter=Start
 static void gpgx_poll_input(void) {
-    memset(&input, 0, sizeof(input));
-
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     uint16_t pad = 0;
@@ -57,35 +59,44 @@ static void gpgx_poll_input(void) {
         if (sc == 27) pad |= INPUT_B;       // X = B
         if (sc == 6)  pad |= INPUT_C;       // C = C
         if (sc == 4)  pad |= INPUT_X;       // A = X
-        if (sc == 22) pad |= INPUT_Y;       // S = Y
         if (sc == 7)  pad |= INPUT_Z;       // D = Z
         if (sc == 20) pad |= INPUT_MODE;    // Q = Mode
         if (sc == 40) pad |= INPUT_START;   // Enter = Start
+        if (sc == 22) {
+            if (g_is_md)
+                pad |= INPUT_Y;              // S = Y (MD)
+            else
+                pad |= INPUT_START;          // S = Pause (SMS/GG)
+        }
     }
     input.pad[0] = pad;
     input.pad[1] = 0;
-    input.system[0] = 0;
-    input.system[1] = 0;
+    // ВАЖНО: input.system[] не трогаем — его выставляет input_init (SYSTEM_GAMEPAD)
 }
 
 // ---- рендер кадра из bitmap (RGB565) в EMU_FB ----
-static void gpgx_render_emu(int out_w, int out_h) {
+static void gpgx_render_emu(int max_w, int max_h) {
     uint16_t* src = (uint16_t*)bitmap.data;
-    int sw = bitmap.width;
-    int sh = bitmap.height;
-    if (sw <= 0 || sh <= 0) return;
+    if (!src) return;
 
-    int vx0 = bitmap.viewport.x < 0 ? 0 : bitmap.viewport.x;
-    int vy0 = bitmap.viewport.y < 0 ? 0 : bitmap.viewport.y;
-    int w = out_w > EMU_W ? EMU_W : out_w;
-    int h = out_h > EMU_H ? EMU_H : out_h;
+    // MD: viewport может быть отрицательным или больше 256; используем w/h из
+    // viewport (устанавливается ядром), иначе bitmap.width.
+    int vp_x = bitmap.viewport.x;
+    int vp_y = bitmap.viewport.y;
+    int vp_w = bitmap.viewport.w;
+    int vp_h = bitmap.viewport.h;
+    if (vp_w <= 0) vp_w = 256;
+    if (vp_h <= 0) vp_h = 192;
 
-    for (int y = 0; y < h; y++) {
-        int sy = vy0 + y;
-        if (sy >= sh) break;
-        for (int x = 0; x < w; x++) {
-            int sx = vx0 + x;
-            if (sx >= sw) break;
+    int sw = vp_w > max_w ? max_w : vp_w;
+    int sh = vp_h > max_h ? max_h : vp_h;
+
+    for (int y = 0; y < sh; y++) {
+        int sy = (vp_y < 0 ? 0 : vp_y) + y;
+        if (sy < 0 || sy >= bitmap.height) continue;
+        for (int x = 0; x < sw; x++) {
+            int sx = (vp_x < 0 ? 0 : vp_x) + x;
+            if (sx < 0 || sx >= bitmap.width) continue;
             EMU_FB[y * EMU_W + x] = src[(size_t)sy * bitmap.width + sx];
         }
     }
@@ -128,6 +139,7 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     // инфо из заголовка + регион
     getrominfo((char*)cart.rom);
     get_region((char*)cart.rom);
+    romtype = system_hw;   // критично для input_init (выбор типа геймпада)
 
     // byte-swap ROM под 16-битный доступ (LSB_FIRST) — только для MD
     if (system_hw == SYSTEM_MD || (system_hw & SYSTEM_PBC) == SYSTEM_MD) {
@@ -156,6 +168,25 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     config.hq_psg = 0;
     config.filter = 1;
     config.mono = 0;
+
+    // ---- настройка ввода: 6-кнопочный геймпад на порту 0 (как libretro.c) ----
+    // Единый SYSTEM_GAMEPAD + padtype включает обработку вводов в ядре
+    input.system[0] = SYSTEM_GAMEPAD;
+    input.system[1] = SYSTEM_GAMEPAD;
+    config.input[0].device = DEVICE_PAD6B;
+    config.input[0].port = 0;
+    config.input[1].device = DEVICE_PAD6B;
+    config.input[1].port = 1;
+    config.input[0].padtype = DEVICE_PAD2B | DEVICE_PAD3B | DEVICE_PAD6B;
+    config.input[1].padtype = DEVICE_PAD2B | DEVICE_PAD3B | DEVICE_PAD6B;
+
+    // ---- инициализация bitmap (как libretro.c:720x576) ----
+    // Обязательно до system_init/render_init — ядро рисует в bitmap.data
+    bitmap.width  = 720;
+    bitmap.height = 576;
+    bitmap.pitch  = 720 * 2;
+    bitmap.data   = (uint8_t *)bitmap_data_;
+    bitmap.viewport.changed = 11;
 
     // инициализация аппаратуры
     system_init();

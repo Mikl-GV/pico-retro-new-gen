@@ -33,14 +33,12 @@
 
 ## Очередь работ
 
-1. **Atari Lynx (доп.)** — порт Handy есть, рендер починен (pitch байты + DMA), проверка на железе
-2. **Game Boy Advance** — порт gpSP (ядро скопировано, host-слой написан, не собран)
-3. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
-4. **Game Gear** — smsplus уже умеет GG-режим, осталось добавить систему в реестр
-5. **Тач GT911** (USB) — interrupt-IN в OHCI, управление меню и эмулятором
-6. **Z80-системы** (ZX Spectrum, Coleco, MSX) — на smsplus-референсах
-7. **16-бит** — Mega Drive, PC Engine, SNES (на грани без JIT)
-8. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
+1. **Game Boy Advance** — порт gpSP (ядро в h3_bare/cores/gba_sp/, host-слой написан, не собран)
+2. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
+3. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
+4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
+5. **16-бит** — SNES, PC Engine (на грани без JIT)
+6. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
 
 ## Каркас (готово)
 
