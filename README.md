@@ -1,13 +1,14 @@
 # pico-retro-new-gen
 
-**Новая генерация V5** — bare-metal мультисистемный эмулятор на Orange Pi Lite
+**Новая генерация V9** — bare-metal мультисистемный эмулятор на Orange Pi Lite
 (Allwinner H3, 512 МБ), переписанный с нуля.
 
 Без Linux, без ОС: один бинарник загружается U-Boot'ом. HDMI 1024×600,
 USB-клавиатура, ROM — с SD-карты (FAT32).
 
 **Работает сейчас:** Atari 2600 (MCUME), Atari 5200, Atari 7800,
-NES / Famicom (InfoNES), Sega Master System (smsplus),
+NES / Famicom (FCEUmm, SuborKB-клавиатура),
+Sega Master System / Game Gear, Sega Mega Drive / Genesis (Genesis Plus GX),
 Game Boy / Game Boy Color (binjgb),
 Atari Portfolio (8088, BIOS вшит — без ROM на SD).
 
@@ -42,14 +43,14 @@ sudo sync; sudo umount /mnt
 
 ### Эмуляторы (в игре)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy |
-|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|
-| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | A |
-| **X** | B | — | Pause | B2 (B) | Button 2 | B |
-| **S** | Select | Select | Start | Select | Pause | Select |
-| **Enter** | Start | Game Reset | Key 3 | Start | — | Start |
-| **ESC** (удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx |
+|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|
+| ↑ / ↓ / ← / → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | A |
+| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | B |
+| **S** | Select | Select | Start | Select | Pause | Select | Option 1 |
+| **Enter** | Start | Game Reset | Key 3 | Start | — | Start | Option 2 |
+| **ESC** (удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 ### Atari Portfolio
 
@@ -61,9 +62,10 @@ sudo sync; sudo umount /mnt
 | Группа | Системы |
 |--------|---------|
 | ✅ Готово | Atari 2600, Atari 5200, Atari 7800, NES / Famicom, Sega Master System, **Game Boy / GBC, Atari Portfolio** |
+| 🚧 В работе | Atari Lynx (рендер починен, нужна проверка на железе) |
 | 🔲 План | Game Gear, ColecoVision, PC Engine, SNES, Mega Drive, Vectrex, Jaguar, аркады, ZX Spectrum, MSX, Радио-86РК, БК-0010, MS 1504 |
 
-ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gb`/`.gbc`.
+ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gb`/`.gbc`, `.lnx` (в работе).
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
 
 ## Документация

@@ -22,9 +22,6 @@ extern struct structpic {
 
 void intcall86(uint8_t intnum);
 
-static uint64_t curtimer, lasttimer, timerfreq;
-
-static char *biosfile = NULL;
 static uint8_t byteregtable[8] = { regal, regcl, regdl, regbl, regah, regch, regdh, regbh };
 
 static uint8_t parity[0x100];
@@ -32,26 +29,26 @@ static uint8_t parity[0x100];
 static _bytewordregs_ regs;
 
 static uint16_t segregs[6];
-static uint8_t opcode, segoverride, reptype, bootdrive, hdcount = 0;
+static uint8_t opcode, segoverride, reptype;
 static uint16_t savecs, saveip, ip, useseg, oldsp;
-static uint8_t tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, nt, iopriv, mode, reg, rm, msw = 0;
+static uint8_t tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
 static uint16_t oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;
-static uint8_t oper1b, oper2b, res8, disp8, temp8, nestlev, addrbyte;
-static uint16_t cr0 = 0, cr1 = 0, cr2 = 0, cr3 = 0;
-static uint32_t ldtr = 0, gdtr = 0, gdtlimit = 0, idtr = 0, idtlimit = 0;
-static uint32_t temp1, temp2, temp3, temp4, temp5, temp32, tempaddr32, ea;
-static int32_t result, speed = 0;
-static uint32_t totalexec;
-static uint32_t ips[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static uint16_t *tempwordptr;
+static uint8_t oper1b, oper2b, res8, disp8, nestlev, addrbyte;
 
-static uint8_t vidmode, cgabg, blankattr, vidgfxmode, vidcolor;
-static uint16_t cursx, cursy, cols, rows, vgapage, cursorposition, cursorvisible;
+
+static uint32_t temp1, temp2, temp3, ea;
+
+static uint32_t totalexec;
+
+
+
+
+
 static uint8_t updatedscreen, port3da, port6, portout16;
 //static uint16_t VGA_SC[0xFF], VGA_CRTC[0xFF], VGA_ATTR[0xFF], VGA_GC[0xFF];
-static uint32_t videobase, textbase, x, y;
 
-static uint8_t debugmode, showcsip, verbose, mouseemu;
+
+static uint8_t verbose;
 
 extern "C" unsigned char read_ram(int address);
 extern "C" void  write_ram(int address, unsigned char val);

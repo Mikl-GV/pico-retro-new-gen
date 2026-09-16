@@ -52,9 +52,13 @@ static int input_wait(void) {
 
 void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_dir) {
     (void)sys_id;   // диспетчер эмуляторов по sys_id появится позже
-    char path[32];
-    strcpy(path, "/roms/");
-    strcat(path, rom_dir);
+    // rom_dir — имя папки с SD (FAT_NAME_LEN до 127 символов)
+    char path[FAT_NAME_LEN + 16];
+    int pl = 0;
+    const char* pfx = "/roms/";
+    while (*pfx && pl < (int)sizeof(path) - 1) path[pl++] = *pfx++;
+    for (const char* s = rom_dir; *s && pl < (int)sizeof(path) - 1; s++) path[pl++] = *s;
+    path[pl] = 0;
 
     fat_entry_t list[FAT_MAX_ENTRIES];
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
@@ -124,6 +128,8 @@ if (n > 0) {
                         emu_run_gameboy(rom, size, list[cursor].name);
                     else if (strcmp(sys_id, "lynx") == 0)
                         emu_run_lynx(rom, size, list[cursor].name);
+                    else if (strcmp(sys_id, "megadrive") == 0)
+                        emu_run_megadrive(rom, size, list[cursor].name);
                     else {
                         fb_clear();
                         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);

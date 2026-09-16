@@ -23,5 +23,6 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 #endif

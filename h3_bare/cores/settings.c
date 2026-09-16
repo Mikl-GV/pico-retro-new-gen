@@ -174,6 +174,26 @@ static int ensure_dir(const char* name) {
     return r >= 0 ? 1 : 0;
 }
 
+// Периоды кадра в мкс для доступных частот (index = позиция цикла)
+static const uint16_t period_table[] = { 16667, 20000, 22222, 25000, 28571, 33333 };
+static const char* const freq_table[] = { "60 Hz (NTSC)", "50 Hz (PAL)", "45 Hz", "40 Hz", "35 Hz", "30 Hz" };
+#define FREQ_COUNT (sizeof(period_table) / sizeof(period_table[0]))
+
+// индекс текущей частоты по emu_period_us
+static int current_freq_idx(void) {
+    for (int i = 0; i < (int)FREQ_COUNT; i++)
+        if (emu_period_us == period_table[i]) return i;
+    return 0;   // если значение не из таблицы (старое) — считаем 60 Гц
+}
+
+// Изменение частоты по кругу: dir = +1 (вправо/дальше), -1 (влево/назад)
+static void freq_next_dir(int dir) {
+    int i = current_freq_idx();
+    i = (i + dir + (int)FREQ_COUNT) % (int)FREQ_COUNT;
+    emu_period_us = period_table[i];
+    printf("fps: %s (period=%u us)\n", freq_table[i], (unsigned)emu_period_us);
+}
+
 // Пункты меню настроек
 enum {
     SET_CREATE_FOLDERS = 0,
@@ -187,7 +207,7 @@ enum {
 static const char* const set_labels[SET_COUNT] = {
     "Create ROM system folders",
     "Input Test for NES / A2600",
-    "Video Mode (60/50 Hz)",
+    "Video Mode / Throttle",
     "Atari 2600 Difficulty",
     "ROM partition info",
 };
@@ -211,15 +231,16 @@ static void settings_draw(int sel) {
 
         // Значение справа (для переключаемых)
         if (i == SET_VIDEO_MODE) {
-            const char* v = emu_period_us == 16667 ? "60 Hz (NTSC)" : "50 Hz (PAL)";
-            fb_puts_s(440, y, v, 1, 0x00AAAAAA);
+            int fi = current_freq_idx();
+            fb_puts_s(440, y, freq_table[fi], 1, 0x00AAAAAA);
+            fb_puts_s(440, y + 16, "Enter to change", 1, 0x00666666);
         } else if (i == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
         }
         y += 34;
     }
 
-    fb_puts(60, FOOTER_Y, "  ^v : select    Enter : action    ESC : back", 0x00888888);
+    fb_puts(60, FOOTER_Y, "  ^v : select    <- -> : change    Enter : action    ESC : back", 0x00888888);
     fb_flush();
 }
 
@@ -318,6 +339,20 @@ void settings_run(void) {
         else if (k == 82) { sel--; if (sel < 0) sel = SET_COUNT - 1; }  // Up
         else if (k == 81) { sel++; if (sel >= SET_COUNT) sel = 0; }      // Down
 
+        // Стрелки влево/вправо: меняют значение выбранного переключаемого пункта
+        else if (k == 80 || k == 79) {   // LArr / RArr
+            int dir = (k == 79) ? 1 : -1;   // RArr = следующее, LArr = предыдущее
+            switch (sel) {
+            case SET_VIDEO_MODE:
+                freq_next_dir(dir);
+                break;
+            case SET_A2600_DIFF:
+                a2600_diff_expert = !a2600_diff_expert;
+                break;
+            default:
+                break;
+            }
+        }
         else if (k == 40 || k == '\n' || k == '\r') {
             switch (sel) {
             case SET_CREATE_FOLDERS:
@@ -327,7 +362,7 @@ void settings_run(void) {
                 input_test_run();
                 break;
             case SET_VIDEO_MODE:
-                emu_period_us = (emu_period_us == 16667) ? 20000 : 16667;
+                freq_next_dir(1);
                 break;
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;

@@ -64,13 +64,9 @@ extern int cpu_readport(int port);
 unsigned char *cpu_readmap[8];
 unsigned char *cpu_writemap[8];
 
-#define cpu_readmem16(a)  ((cpu_readmap[(a) >> 13] <0x80000)?read_rom(cpu_readmap[(a) >> 13]+(a & 0x1FFF)):cpu_readmap[(a) >> 13][(a) & 0x1FFF])
-#define cpu_readop(a)     ((cpu_readmap[(a) >> 13] <0x80000)?read_rom(cpu_readmap[(a) >> 13]+(a & 0x1FFF)):cpu_readmap[(a) >> 13][(a) & 0x1FFF])
-#define cpu_readop_arg(a) ((cpu_readmap[(a) >> 13] <0x80000)?read_rom(cpu_readmap[(a) >> 13]+(a & 0x1FFF)):cpu_readmap[(a) >> 13][(a) & 0x1FFF])
-
-//#define cpu_readmem16(a)        cpu_readmap[(a) >> 13][(a) & 0x1FFF]
-//#define cpu_readop(a)           cpu_readmap[(a) >> 13][(a) & 0x1FFF]
-//#define cpu_readop_arg(a)       cpu_readmap[(a) >> 13][(a) & 0x1FFF]
+#define cpu_readmem16(a)  cpu_readmap[(a) >> 13][(a) & 0x1FFF]
+#define cpu_readop(a)     cpu_readmap[(a) >> 13][(a) & 0x1FFF]
+#define cpu_readop_arg(a) cpu_readmap[(a) >> 13][(a) & 0x1FFF]
 
 /* execute main opcodes inside a big switch statement */
 #ifndef BIG_SWITCH

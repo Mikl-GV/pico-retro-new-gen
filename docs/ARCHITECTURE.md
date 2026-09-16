@@ -39,10 +39,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw |
 | Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw |
 | Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw |
-| NES | InfoNES | C++ | 256×240 → EMU_FB | usb_kbd_get_raw |
-| SMS | smsplus | C (gnu89) | 256×192 через sms_render_line → EMU_FB | usb_kbd_get_raw |
+| NES / Famicom | FCEUmm (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB |
+| SMS / GG / MG | Genesis Plus GX | C | 256×192 / 256×224 → EMU_FB | usb_kbd_get_raw |
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
-| Atari Lynx | Handy | C++ | 160×102 → EMU_FB (в работе) | usb_kbd_get_raw |
+| Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 
 Каждый эмулятор:
@@ -90,12 +90,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
 - Менеджер памяти — bump-аллокатор `gb_heap` (1 МБ) в gameboy_stubs.c, `gb_heap_reset()`
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
-- Ввод: USB-клавиатура → кнопки Game Boy (Z=A, X=B, S=Select, Enter=Start, стрелки=D-Pad)
+- Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
 
 ### lynx_host.cpp (Atari Lynx, Handy)
 
-- Порт Handy (K. Wilkins) — в работе, экран чёрный (нужен фикс рендера/декрипта .lnx)
+- Порт Handy (K. Wilkins) — в работе (рендер починен: pitch в байтах, сброс heap перед init)
 - `handy_compat.h` — заглушки libretro-common (filestream/strlcpy/string) для bare-metal
 - C++ runtime — `cxx_runtime.cpp` (operator new/delete поверх malloc, __cxa_pure_virtual)
 - Рендер: Handy рисует в собственный буфер 160×102 через callback → EMU_FB
@@ -146,8 +146,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 |---|---------|
 | 1 | Создать папки ROM на SD |
 | 2 | Input Test (тест кнопок) |
-| 3 | Video Mode: 60 Hz ⇄ 50 Hz |
+| 3 | Video Mode / Throttle: 6 частот (60, 50, 45, 40, 35, 30 Hz), ←/→ или Enter — циклически |
 | 4 | Atari 2600 Difficulty: Novice ⇄ Expert |
+| 5 | ROM partition info (справка по разметке SD) |
 
 ## HDMI
 

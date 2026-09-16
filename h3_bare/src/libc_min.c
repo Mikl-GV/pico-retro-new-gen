@@ -123,7 +123,8 @@ int sprintf(char* buf, const char* fmt, ...) {
         fmt++;
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
-                    while (*s) *d++ = *s++; break; }
+                    while (*s) *d++ = *s++;
+                    break; }
         case 'd': {
             int v = va_arg(ap, int);
             if (v < 0) { *d++ = '-'; v = -v; }
@@ -157,9 +158,7 @@ int putchar(int c) {
     return c;
 }
 
-int snprintf(char* buf, size_t n, const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
+int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
     char* d = buf;
     size_t left = n;
     for (; *fmt && left > 1; fmt++) {
@@ -167,6 +166,7 @@ int snprintf(char* buf, size_t n, const char* fmt, ...) {
         fmt++;
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
+                    if (!s) s = "(null)";
                     while (*s && left > 1) { *d++ = *s++; left--; } break; }
         case 'd': { int v = va_arg(ap, int);
                     if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
@@ -177,6 +177,11 @@ int snprintf(char* buf, size_t n, const char* fmt, ...) {
         case 'u': { unsigned v = va_arg(ap, unsigned);
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    break; }
+        case 'x': case 'X': { unsigned v = va_arg(ap, unsigned);
+                    char tmp[16]; int i = 0;
+                    do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
                     while (i && left > 1) { *d++ = tmp[--i]; left--; }
                     break; }
         case 'l': {
@@ -199,6 +204,13 @@ int snprintf(char* buf, size_t n, const char* fmt, ...) {
         }
     }
     if (left > 0) *d = 0;
-    va_end(ap);
     return (int)(d - buf);
+}
+
+int snprintf(char* buf, size_t n, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
 }

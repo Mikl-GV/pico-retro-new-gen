@@ -32,16 +32,18 @@ static UBYTE* display_callback(ULONG objref) {
 }
 
 // Ввод: USB-клавиатура -> Lynx кнопки
+// Ввод: USB-клавиатура -> Lynx кнопки (susie.h: BUTTON_UP=0x40,
+// BUTTON_DOWN=0x80, BUTTON_LEFT=0x10, BUTTON_RIGHT=0x20)
 static ULONG lynx_buttons_from_kbd(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     ULONG b = 0;
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
-        if (sc == 82) b |= 0x80;   // Up
-        if (sc == 81) b |= 0x40;   // Down
-        if (sc == 80) b |= 0x20;   // Left
-        if (sc == 79) b |= 0x10;   // Right
+        if (sc == 82) b |= 0x40;   // Up    = BUTTON_UP
+        if (sc == 81) b |= 0x80;   // Down  = BUTTON_DOWN
+        if (sc == 80) b |= 0x10;   // Left  = BUTTON_LEFT
+        if (sc == 79) b |= 0x20;   // Right = BUTTON_RIGHT
         if (sc == 29) b |= 0x01;   // Z = A
         if (sc == 27) b |= 0x02;   // X = B
         if (sc == 22) b |= 0x08;   // S = Option 1
@@ -51,15 +53,25 @@ static ULONG lynx_buttons_from_kbd(void) {
 }
 
 extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
+    // Handy (Lynx) делит глобальный bump-пул (malloc/operator new из
+    // gameboy_stubs.c) с binjgb. Сбрасываем пул перед созданием CSystem,
+    // чтобы повторный запуск Lynx (или Lynx после Game Boy) не упёрся
+    // в конец уже занятого пула.
+    extern void gb_heap_reset(void);
+    gb_heap_reset();
+
     // Создаём CSystem, передаём ROM в gamedata (без файла)
     // useEmu=true — BIOS эмулируется (не нужен lynxboot.img)
     g_lynx = new CSystem(NULL, rom, size, NULL, true, NULL);
     if (!g_lynx) { printf("[lynx] new CSystem failed\n"); return 0; }
 
+    // Pitch передаётся в БАЙТАХ: 16bpp -> 160 пикселей * 2 байта = 320.
+    // mikie использует mDisplayPitch как байтовое смещение строки,
+    // при 160 строки кадра накладывались бы друг на друга.
 g_lynx->DisplaySetAttributes(
         MIKIE_NO_ROTATE,          // без поворота — кадр пишется построчно 160x102
         MIKIE_PIXEL_FORMAT_16BPP_565, // RGB565
-        LYNX_W,
+        LYNX_W * 2,
         display_callback,
         0
     );
@@ -88,6 +100,26 @@ extern "C" void lynx_run_frame(void) {
             if (lynx_fb[i] != 0) nonzero++;
         printf("lynx: f=%u ready=%d nonzero=%u\n", (unsigned)frame_cnt,
                (int)lynx_frame_ready, (unsigned)nonzero);
+    }
+
+    // Страховка от "чёрного экрана": если игра не выставила DISPCTL.DMAEnable
+    // (Mikie::DisplayRenderLine при этом сразу выходит, буфер пуст) —
+    // принудительно включаем бит DMA через регистр DISPCTL (0xfd92).
+    // Срабатывает один раз после ~2 секунд пустого буфера; рабочие кадры не трогает.
+    {
+        static uint32_t blank_frames = 0;
+        int any = 0;
+        for (int i = 0; i < LYNX_W * LYNX_H; i++)
+            if (lynx_fb[i]) { any = 1; break; }
+        if (!any) {
+            blank_frames++;
+            if (blank_frames == 120) {
+                g_lynx->mMikie->Poke(0xfd92, 0x01);   // DISPCTL.DMAEnable = 1
+                printf("lynx: forcing DISPCTL.DMAEnable\n");
+            }
+        } else {
+            blank_frames = 0;
+        }
     }
 
     lynx_frame_ready = 0;

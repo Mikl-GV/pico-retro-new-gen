@@ -80,14 +80,6 @@ extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
 
-static void emu_wait_key(void) {
-    for (;;) {
-        uint8_t keys[6];
-        int n = usb_kbd_get_raw(keys, 6);
-        if (n > 0) return;
-    }
-}
-
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_clear_fb(); fb_clear(); fb_flush();
     if (a7800_init_game(rom, size) != 1) {

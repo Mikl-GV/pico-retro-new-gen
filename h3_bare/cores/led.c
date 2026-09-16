@@ -67,3 +67,4 @@ void led_set(int on) {
 // PL10: 1 = горит (HIGH-active)
 void led_sd_on(void)  { PL_DAT |= (1u << 10); mb(); }
 void led_sd_off(void) { PL_DAT &= ~(1u << 10); mb(); }
+void led_sd_toggle(void) { PL_DAT ^= (1u << 10); mb(); }

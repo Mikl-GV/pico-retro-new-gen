@@ -9,22 +9,23 @@
 | 1 | Atari 2600 | 6502 | ✅ работает | MCUME (Virtual VCS) |
 | 2 | Atari 5200 | 6502 | ✅ работает | pico5200 (Atari800-derived) |
 | 3 | Atari 7800 | 6502 | ✅ работает | ProSystem |
-| 4 | NES / Famicom (Dendy) | 6502 | ✅ работает | InfoNES (140 мапперов) |
-| 5 | Sega Master System | Z80 | ✅ работает | smsplus |
+| 4 | NES / Famicom (Dendy) | 6502 | ✅ работает | FCEUmm (432 маппера, SuborKB) |
+| 5 | Sega Master System | Z80 | ✅ работает | Genesis Plus GX |
 | 6 | Game Boy / Game Boy Color | Z80 | ✅ работает | binjgb |
 | 7 | Atari Portfolio | 8088 | ✅ работает | Fake86 (builtin, без ROM) |
-| 8 | Game Gear | Z80 | 🔲 план | smsplus-порт |
-| 9 | ColecoVision | Z80 | 🔲 план | — |
-| 10 | ZX Spectrum | Z80 | 🔲 план | — |
-| 11 | MSX / MSX2 | Z80 | 🔲 план | — |
-| 12 | Sega Mega Drive | 68000 | 🔲 план | — |
-| 13 | SNES | 65816 | 🔲 план | — |
-| 14 | PC Engine | HuC6280 | 🔲 план | — |
-| 15 | Аркады (CPS-1/2, Neo Geo, Galaxian, Toaplan, SegaSys) | 68000/Z80 | 🔲 план | — |
-| 16 | GCE Vectrex | 6809 | 🔲 план | — |
-| 17 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
-| 18 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
-| 19 | Game Boy Advance | ARM7TDMI | 🔲 план | gpSP (ядро в h3_bare/cores/gba_sp/, порт не доделан) |
+| 8 | Game Gear | Z80 | ✅ работает | Genesis Plus GX |
+| 9 | Sega Mega Drive / Genesis | 68000 | ✅ работает | Genesis Plus GX |
+| 10 | Atari Lynx | 6502 | ✅ работает | Handy |
+| 11 | ColecoVision | Z80 | 🔲 план | — |
+| 12 | ZX Spectrum | Z80 | 🔲 план | — |
+| 13 | MSX / MSX2 | Z80 | 🔲 план | — |
+| 14 | SNES | 65816 | 🔲 план | — |
+| 15 | PC Engine | HuC6280 | 🔲 план | — |
+| 16 | Аркады | 68000/Z80 | 🔲 план | — |
+| 17 | GCE Vectrex | 6809 | 🔲 план | — |
+| 18 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
+| 19 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
+| 20 | Game Boy Advance | ARM7TDMI | 🔲 план | gpSP (ядро в h3_bare/cores/gba_sp/, порт не доделан) |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
 
@@ -32,7 +33,7 @@
 
 ## Очередь работ
 
-1. **Atari Lynx (доп.)** — порт Handy есть, но экран чёрный (нужен фикс рендера/декрипта .lnx)
+1. **Atari Lynx (доп.)** — порт Handy есть, рендер починен (pitch байты + DMA), проверка на железе
 2. **Game Boy Advance** — порт gpSP (ядро скопировано, host-слой написан, не собран)
 3. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
 4. **Game Gear** — smsplus уже умеет GG-режим, осталось добавить систему в реестр

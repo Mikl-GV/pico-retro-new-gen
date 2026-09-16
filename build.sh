@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh — сборка v8 (мультисистемный эмулятор H3).
+# build.sh — сборка v9 (мультисистемный эмулятор H3).
 # Использование: ./build.sh [clean|sd|fel]
 set -euo pipefail
 
@@ -34,7 +34,7 @@ OBJCOPY="${PREFIX}objcopy"
 
 CFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm"
 CFLAGS="$CFLAGS -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG"
-INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/nes -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/smsplus -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/gpgx/core -I$TOP/h3_bare/cores/gpgx/libretro_inc -I$TOP/h3_bare/cores/gpgx/core/z80 -I$TOP/h3_bare/cores/gpgx/core/m68k -I$TOP/h3_bare/cores/gpgx/core/ntsc -I$TOP/h3_bare/cores/gpgx/core/sound -I$TOP/h3_bare/cores/gpgx/core/input_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw/svp -I$TOP/h3_bare/cores/gpgx/core/cd_hw -I$TOP/h3_bare/cores/fceumm -I$TOP/h3_bare/cores/fceumm/inc -I$TOP/h3_bare/cores/fceumm/input -I$TOP/h3_bare/cores/fceumm/boards -I$TOP/h3_bare/cores/fceumm/palettes -I$TOP/h3_bare/cores/fceumm/fir -I$TOP/h3_bare/cores/nes -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/smsplus -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
 CXXFLAGS="$CFLAGS -fno-exceptions -fno-rtti -fno-threadsafe-statics"
 
 # Ассемблер
@@ -77,13 +77,7 @@ for fn in antic cpu crc32 gtia pokey pokeysnd; do
     $CC $CFLAGS $INCLUDES -std=gnu89 -c -o "$BUILD/a5200_$fn.o" "$A5200/$fn.c"
 done
 
-# --- SMS Plus ---
-SMS="$TOP/h3_bare/cores/smsplus"
-$CXX $CXXFLAGS $INCLUDES -fhosted -O0 -c -o "$BUILD/system_sms_h3.o" "$TOP/h3_bare/cores/system_sms_h3.cpp"
-for fn in sms system loadrom render vdp sn76496; do
-    $CC $CFLAGS $INCLUDES -std=gnu89 -O0 -c -o "$BUILD/sms_$fn.o" "$SMS/$fn.c"
-done
-$CC $CFLAGS $INCLUDES -std=gnu89 -O2 -c -o "$BUILD/sms_z80.o" "$SMS/z80.c"
+# --- SMS Plus (заменён на Genesis Plus GX SMS-режим) ---
 
 # --- Portfolio ---
 PORT="$TOP/h3_bare/cores/portfolio"
@@ -110,13 +104,46 @@ done
 $CXX $CXXFLAGS $INCLUDES -fhosted -c -o "$BUILD/lynx_blip_buffer.o" "$LYNX/blip/Blip_Buffer.cpp"
 $CXX $CXXFLAGS $INCLUDES -fhosted -c -o "$BUILD/lynx_blip_stereo.o" "$LYNX/blip/Stereo_Buffer.cpp"
 
-# --- NES ---
-NES="$TOP/h3_bare/cores/nes"
-$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_core.o" "$NES/InfoNES.cpp"
-$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_mapper.o" "$NES/InfoNES_Mapper.cpp"
-$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_papu.o" "$NES/InfoNES_pAPU.cpp"
-$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_cpu.o" "$NES/K6502.cpp"
-$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/nes_host.o" "$TOP/h3_bare/cores/nes_host.cpp"
+# --- NES (FCEUmm: точный CPU/PPU, 250+ мапперов, SuborKB-клавиатура) ---
+FCEUMM="$TOP/h3_bare/cores/fceumm"
+FCEUMM_CFLAGS="$CFLAGS -DFRONTEND_SUPPORTS_RGB565 -DFCEU_VERSION_NUMERIC=9900"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/fceumm_host.o" "$FCEUMM/nes_host_fceumm.cpp"
+for fn in fceu x6502 ppu sound cart ines input fds fds_apu palette video file general state crc32 md5 fceu-endian fceu-memory cheat filter libretro_compat; do
+    $CC $FCEUMM_CFLAGS $INCLUDES -c -o "$BUILD/fceumm_$fn.o" "$FCEUMM/$fn.c"
+done
+# vsuni/unif: нужны для линковки (UNIFchrrama, FCEU_VSUni*). NSF заменим заглушками
+for fn in vsuni unif; do
+    $CC $FCEUMM_CFLAGS $INCLUDES -c -o "$BUILD/fceumm_$fn.o" "$FCEUMM/$fn.c"
+done
+for f in "$FCEUMM"/input/*.c; do
+    fn=$(basename "$f" .c)
+    $CC $FCEUMM_CFLAGS $INCLUDES -c -o "$BUILD/fceumm_in_$fn.o" "$f"
+done
+for f in "$FCEUMM"/boards/*.c; do
+    fn=$(basename "$f" .c)
+    $CC $FCEUMM_CFLAGS $INCLUDES -c -o "$BUILD/fceumm_b_$fn.o" "$f"
+done
+
+# --- Sega Mega Drive / SMS (Genesis Plus GX) ---
+GPGX="$TOP/h3_bare/cores/gpgx"
+GPGX_CFLAGS="$CFLAGS -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=16777216 -DUSE_16BPP_RENDERING -DFRONTEND_SUPPORTS_RGB565"
+$CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_host.o" "$GPGX/system_gpgx_h3.c"
+$CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_mathx.o" "$GPGX/gpgx_math.c"
+$CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_missing.o" "$GPGX/gpgx_missing.c"
+for f in "$GPGX"/core/*.c; do
+    fn=$(basename "$f" .c)
+    $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_core_$fn.o" "$f"
+done
+for d in z80 m68k ntsc sound input_hw cart_hw cd_hw; do
+    for f in "$GPGX"/core/$d/*.c; do
+        fn=$(basename "$f" .c)
+        $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_${d}_$fn.o" "$f"
+    done
+done
+for f in "$GPGX"/core/cart_hw/svp/*.c; do
+    fn=$(basename "$f" .c)
+    $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_svp_$fn.o" "$f"
+done
 
 # --- Служебные ---
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/uart.o" "$TOP/h3_bare/src/uart.c"
@@ -152,9 +179,6 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/system_a5200_h3.o" "$BUILD/a5200_atari5200.o" "$BUILD/a5200_antic.o" \
     "$BUILD/a5200_cpu.o" "$BUILD/a5200_crc32.o" "$BUILD/a5200_gtia.o" \
     "$BUILD/a5200_pokey.o" "$BUILD/a5200_pokeysnd.o" \
-    "$BUILD/system_sms_h3.o" "$BUILD/sms_sms.o" "$BUILD/sms_system.o" \
-    "$BUILD/sms_loadrom.o" "$BUILD/sms_render.o" "$BUILD/sms_vdp.o" \
-    "$BUILD/sms_sn76496.o" "$BUILD/sms_z80.o" \
     "$BUILD/portfolio_system.o" "$BUILD/portfolio_cpu.o" \
     "$BUILD/portfolio_i8253.o" "$BUILD/portfolio_i8259.o" \
     "$BUILD/gameboy_host.o" "$BUILD/gameboy_stubs.o" \
@@ -163,13 +187,25 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/lynx_susie.o" "$BUILD/lynx_cart.o" "$BUILD/lynx_memmap.o" \
     "$BUILD/lynx_eeprom.o" "$BUILD/lynx_rom.o" "$BUILD/lynx_ram.o" \
     "$BUILD/lynx_lynxdec.o" "$BUILD/lynx_blip_buffer.o" "$BUILD/lynx_blip_stereo.o" \
-    "$BUILD/nes_core.o" "$BUILD/nes_mapper.o" "$BUILD/nes_papu.o" "$BUILD/nes_cpu.o" "$BUILD/nes_host.o" \
+    "$BUILD/fceumm_host.o" \
+    "$BUILD/fceumm_fceu.o" "$BUILD/fceumm_x6502.o" "$BUILD/fceumm_ppu.o" "$BUILD/fceumm_sound.o" \
+    "$BUILD/fceumm_cart.o" "$BUILD/fceumm_ines.o" "$BUILD/fceumm_input.o" "$BUILD/fceumm_fds.o" \
+    "$BUILD/fceumm_fds_apu.o" "$BUILD/fceumm_palette.o" "$BUILD/fceumm_video.o" "$BUILD/fceumm_file.o" \
+    "$BUILD/fceumm_general.o" "$BUILD/fceumm_state.o" "$BUILD/fceumm_crc32.o" "$BUILD/fceumm_md5.o" \
+    "$BUILD/fceumm_fceu-endian.o" "$BUILD/fceumm_fceu-memory.o" "$BUILD/fceumm_cheat.o" \
+    "$BUILD/fceumm_filter.o" "$BUILD/fceumm_libretro_compat.o" \
+    "$BUILD/fceumm_vsuni.o" "$BUILD/fceumm_unif.o" \
+    "$BUILD/fceumm_in_"*.o "$BUILD/fceumm_b_"*.o \
+    "$BUILD/gpgx_core_"*.o "$BUILD/gpgx_z80_"*.o "$BUILD/gpgx_m68k_"*.o "$BUILD/gpgx_ntsc_"*.o \
+    "$BUILD/gpgx_sound_"*.o "$BUILD/gpgx_input_hw_"*.o "$BUILD/gpgx_cart_hw_"*.o \
+    "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
+    "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
     "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
-    -lgcc
+    -lgcc -lc -lm
 
 $OBJCOPY -O binary --remove-section .uncached "$BUILD/h3_bare.elf" "$BIN"
 echo "--- h3_bare.bin: $(stat -c%s "$BIN") байт ---"
@@ -187,7 +223,7 @@ if [ "${1:-}" = "sd" ] || [ "${1:-}" = "full" ]; then
 fatload mmc 0 0x40000000 h3_bare.bin
 go 0x40000000
 EOF
-    mkimage -A arm -T script -C none -n "pico-retro V8" \
+    mkimage -A arm -T script -C none -n "pico-retro V9" \
         -d "$BUILD/boot.cmd" "$BUILD/boot.scr"
     SDK_IMG="$BUILD/h3_bare.img"
     dd if=/dev/zero bs=1M count=64 of="$SDK_IMG" 2>/dev/null

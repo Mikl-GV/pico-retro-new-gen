@@ -37,7 +37,8 @@ static int do_printf(const char* fmt, va_list ap) {
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
                     if (!s) s = "(null)";
-                    while (*s) pputc(*s++); break; }
+                    while (*s) pputc(*s++);
+                    break; }
         case 'c': pputc((char)va_arg(ap, int)); break;
         case 'd': case 'i': {
             long v = lng ? va_arg(ap, long) : (long)va_arg(ap, int);

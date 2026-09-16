@@ -18,23 +18,29 @@ USB-клавиатура (Boot HID, Logitech 046D:C52B и аналоги).
 |--------|----------|
 | 1 | Создать папки ROM на SD |
 | 2 | Input Test (тест кнопок) |
-| 3 | Video Mode: переключение 60 Hz / 50 Hz |
+| 3 | Video Mode / Throttle: 60, 50, 45, 40, 35, 30 Hz (←/→ или Enter — циклически) |
 | 4 | Atari 2600 Difficulty: Novice / Expert |
+| 5 | ROM partition info (справка по разметке SD) |
 
 ## Эмуляторы (игровой маппинг)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx |
-|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A |
-| X | B | — | Pause | B2 (B) | Button 2 | A | B |
-| S | Select | Select | Start | Select | Pause | Select | Option 1 |
-| Enter | Start | Game Reset | Key 3 | Start | — | Start | Option 2 |
-| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx | Mega Drive |
+|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|:----------:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A | **A** |
+| X | B | — | Pause | B2 (B) | Button 2 | A | B | **B** |
+| C | — | — | — | — | — | — | — | **C** |
+| A | — | — | — | — | — | — | — | **X** |
+| S | Select | Select | Start | Select | Pause | Select | Option 1 | **Y** |
+| D | — | — | — | — | — | — | — | **Z** |
+| Q | — | — | — | — | — | — | — | Mode |
+| Enter | Start | Game Reset | Key 3 | Start | — | Start | Option 2 | Start |
+| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 Удерживание ESC ~1 сек — выход в меню.  
 В A2600 также работает сложность (Settings → 4).  
 A2600: Z=Fire, S=Select, Enter=Game Reset (запуск игры заново).  
+Mega Drive (6-кнопочный геймпад): Z=A, X=B, C=C, A=X, S=Y, D=Z, Q=Mode, Enter=Start.  
 A5200: Z=Fire, X=Pause, S=Start.
 Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad (порт в работе).
 

@@ -93,26 +93,7 @@ static inline void display_text_center_nobg(const char* s, int y, int scale, uin
     display_text_at_nobg(s, x, y, scale, color);
 }
 
-// 7. joypad_buttons: 0 = pressed, NES bit order
-static inline uint8_t joypad_buttons(void) {
-    uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
-    uint8_t pad = 0xFF;
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) pad &= ~0x10;
-        if (sc == 81) pad &= ~0x20;
-        if (sc == 80) pad &= ~0x40;
-        if (sc == 79) pad &= ~0x80;
-        if (sc == 29) pad &= ~0x01;
-        if (sc == 27) pad &= ~0x02;
-        if (sc == 22) pad &= ~0x04;
-        if (sc == 40) pad &= ~0x08;
-    }
-    return pad;
-}
-
-// 8. UART
+// 7. UART
 #define uart0 ((void*)1)
 static inline int uart_is_readable(void*) { return uart_rx_ready(); }
 static inline int uart_getc(void*) { return uart_getc(); }

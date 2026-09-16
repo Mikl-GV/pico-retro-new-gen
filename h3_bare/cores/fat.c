@@ -360,14 +360,24 @@ int fat_init(void) {
 // forward declaration (определена ниже)
 static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen);
 
-// 8.3 имя из строки (верхний регистр, без расширения если папка)
+// 8.3 имя из строки (верхний регистр, без расширения если папка).
+// Если имя длиннее 6 символов (и не умещается в 8), добавляем суффикс
+// "~N" (FAT-стиль), чтобы избежать коллизий 8.3-имён для разных папок.
 static void make_short_name(const char* name, uint8_t* out83) {
     for (int i = 0; i < 11; i++) out83[i] = ' ';
     int n = 0;
-    for (int i = 0; name[i] && n < 8; i++) {
+    int total = 0;
+    while (name[total]) total++;
+    int keep = (total > 8) ? 6 : total;
+    for (int i = 0; name[i] && n < keep; i++) {
         char c = name[i];
         if (c >= 'a' && c <= 'z') c -= 32;
         out83[n++] = (uint8_t)c;
+    }
+    if (total > 8) {
+        // "~1".."~9": 6 символов + "~N" = 8
+        out83[6] = '~';
+        out83[7] = '1';
     }
     // расширение не заполняем — это папка
 }
@@ -604,8 +614,11 @@ int fat_delete_file(const char* dir, const char* name) {
                     }
                     n[pi] = 0;
                     if (name_eq(n, name)) {
-                        // помечаем удалённой
+                        // помечаем удалённой саму запись и все LFN-фрагменты
+                        // перед ней (attr == 0x0F), идущие в том же секторе
                         g_sector[i] = 0xE5;
+                        for (int lfn = i - 32; lfn >= 0 && g_sector[lfn + 11] == 0x0F; lfn -= 32)
+                            g_sector[lfn] = 0xE5;
                         if (sd_write_sector(base + s, g_sector) < 0) return -1;
                         target_first = le16(g_sector + i + 26) | (le16(g_sector + i + 20) << 16);
                         found = 1;

@@ -234,9 +234,6 @@ static int pofo_ru_mode = 0;   /* 0=ASCII, 1=CP866 Cyrillic */
 static int pend_br_row = -1, pend_br_col = -1, pend_br_shift = 0;
 
 static uint32_t pofo_boot_guard = 0;
-static uint8_t pofo_kbd_cand = 0xFF, pofo_kbd_stable = 0xFF;
-static uint8_t pofo_kbd_cnt = 0;
-static uint8_t pofo_kbd_prev_cols[8] = { 0 };
 
 /* Defined later (built-in apps); declared here for VK routing. */
 static int pofo_apps_active = 0;
@@ -424,7 +421,6 @@ static void pofo_run_pin(void)
 /* ------------------------------------------------------------------ */
 #define APPS_MAX 5
 static int pofo_apps_sel = 0;
-static int pofo_apps_wait_release = 0;
 
 enum {
     APP_CALC = 0,
@@ -444,25 +440,6 @@ static const char *const pofo_app_names[APPS_MAX] = {
 
 /* which app is currently shown (APP_CALC..APP_DIARY) or -1 for the hub */
 
-/* generic debounced pad edges shared by the apps */
-/* joypad_buttons(): 0 = pressed. now=1 means "pressed". */
-static int pofo_app_edge(uint8_t pad, uint8_t bit, uint32_t *stable, uint32_t *cnt)
-{
-    enum { DB = 3 };
-    uint8_t now = (pad & bit) ? 0 : 1;
-    if (now == *stable) {
-        if (*cnt < DB) (*cnt)++;
-    } else {
-        *stable = now;
-        *cnt = 0;
-    }
-    if (*cnt == DB && now) {   /* stable pressed -> one edge */
-        *cnt = DB + 1;
-        return 1;
-    }
-    return 0;
-}
-
 /* VRAM text helpers (defined later near the renderer); forward decls so the
  * built-in app screens can use them. */
 static void pofo_put_text(int row, int col, const char *s);
@@ -478,7 +455,7 @@ static void pofo_apps_draw_menu(void)
                  pofo_app_names[i]);
         pofo_put_text(1 + i, 0, buf);
     }
-    pofo_put_text(7, 0, "UP/DN SEL  A=OPEN  B=EXIT");
+    pofo_put_text(7, 0, "ARROWS/ENTER OPEN   ESC=EXIT");
 }
 
 /* redraw whichever app is currently shown */
@@ -505,7 +482,6 @@ static void pofo_run_apps(void)
     pofo_app_current = -1;
     pofo_apps_sel = 0;
     vk_visible = 0;              /* entering from the VK must not keep it open */
-    pofo_apps_wait_release = 2;  /* wait a few frames for buttons to settle */
     pofo_apps_draw_menu();
 }
 
@@ -610,31 +586,13 @@ static void pofo_app_calc_draw_keys(void)
                 pofo_calc_draw_cell(r, c, 0);
         calc_prev_r = calc_kb_r; calc_prev_c = calc_kb_c;
         pofo_calc_draw_cell(calc_kb_r, calc_kb_c, 1);
-        display_text_center_nobg("ARROWS A=CALC B=C ST=EXIT", 233, 1, RGB565(31, 63, 31));
+        display_text_center_nobg("KEYS=INPUT  C=CLEAR  ESC=EXIT", 233, 1, RGB565(31, 63, 31));
     }
     if (calc_prev_r != calc_kb_r || calc_prev_c != calc_kb_c) {
         pofo_calc_draw_cell(calc_prev_r, calc_prev_c, 0);
         pofo_calc_draw_cell(calc_kb_r, calc_kb_c, 1);
         calc_prev_r = calc_kb_r; calc_prev_c = calc_kb_c;
     }
-}
-
-static void pofo_app_calc_handle(uint8_t pad)
-{
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_l=0, ct_l=0, st_r=0, ct_r=0;
-    static uint32_t st_a=0, ct_a=0, st_b=0, ct_b=0, st_t=0, ct_t=0;
-    uint8_t edge = 0;
-    static uint8_t calc_prev = 0;
-    edge = (~pad) & ~calc_prev;
-    calc_prev = ~pad;
-
-    if (edge & 0x10) { calc_kb_r = (calc_kb_r + 3) % CALC_ROWS; calc_prev_r = -2; }
-    if (edge & 0x20) { calc_kb_r = (calc_kb_r + 1) % CALC_ROWS; calc_prev_r = -2; }
-    if (edge & 0x40) { calc_kb_c = (calc_kb_c + 3) % CALC_COLS; calc_prev_r = -2; }
-    if (edge & 0x80) { calc_kb_c = (calc_kb_c + 1) % CALC_COLS; calc_prev_r = -2; }
-    if (edge & 0x01) pofo_app_calc_keypress(calc_keys[calc_kb_r][calc_kb_c]);
-    if (edge & 0x02) { pofo_calc_acc=0; pofo_calc_cur=0; pofo_calc_op=0; pofo_calc_opset=0; pofo_calc_error=0; }
-    if (edge & 0x08) { pofo_app_current = -1; vk_visible = 0; pofo_apps_draw_menu(); }
 }
 
 /* Typed input for VK */
@@ -706,7 +664,6 @@ static int pofo_edit_col = 0;
 
 static void pofo_app_edit_draw(void)
 {
-    char buf[40];
     pofo_clear_text();
     pofo_put_text(0, 0, "TEXT EDITOR");
     for (int i = 0; i < 6; i++) {
@@ -720,7 +677,7 @@ static void pofo_app_edit_draw(void)
     memset(bline, ' ', 39);
     bline[0] = '>'; bline[2 + pofo_edit_col] = '_'; bline[39] = 0;
     pofo_put_text(1 + pofo_edit_row, 0, bline);
-    pofo_put_text(7, 0, "A=TYPE  B=BS  SEL=NL  START=EXIT");
+    pofo_put_text(7, 0, "TYPE TEXT  ENT=NEW LN  BS=DEL  ESC=EXIT");
 }
 
 /* type one character into the editor (from UART or VK) */
@@ -734,20 +691,6 @@ static void pofo_edit_type(int c)
     if (c >= 0x20 && c < 0x7f && pofo_edit_col < 37) {
         pofo_edit_lines[pofo_edit_row][pofo_edit_col++] = (char)c;
     }
-}
-
-static void pofo_app_edit_handle(uint8_t pad)
-{
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_l=0, ct_l=0, st_r=0, ct_r=0;
-    static uint32_t st_a=0, ct_a=0, st_b=0, ct_b=0, st_s=0, ct_s=0, st_t=0, ct_t=0;
-    if (pofo_app_edge(pad, 0x10, &st_u, &ct_u)) pofo_edit_row = (pofo_edit_row + 7) % 6;
-    if (pofo_app_edge(pad, 0x20, &st_d, &ct_d)) pofo_edit_row = (pofo_edit_row + 1) % 6;
-    if (pofo_app_edge(pad, 0x40, &st_l, &ct_l)) { if (pofo_edit_col > 0) pofo_edit_col--; }
-    if (pofo_app_edge(pad, 0x80, &st_r, &ct_r)) { if (pofo_edit_col < 37) pofo_edit_col++; }
-    if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) pofo_edit_type('\b');
-    if (pofo_app_edge(pad, 0x04, &st_s, &ct_s)) pofo_edit_type('\r');
-    if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) { pofo_app_current = -1; pofo_apps_draw_menu(); }
-    /* A opens nothing here; typing comes from UART/VK via pofo_edit_type */
 }
 
 /* ---- Spreadsheet: 8x8 grid of integers (simple + - * / cell edits).    */
@@ -773,21 +716,7 @@ static void pofo_app_sheet_draw(void)
         }
         pofo_put_text(2 + r, 0, buf);
     }
-    pofo_put_text(7, 0, "ARROWS MOVE  A=+10  B=-10  START=EXIT");
-}
-
-static void pofo_app_sheet_handle(uint8_t pad)
-{
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_l=0, ct_l=0, st_r=0, ct_r=0;
-    static uint32_t st_a=0, ct_a=0, st_b=0, ct_b=0, st_s=0, ct_s=0, st_t=0, ct_t=0;
-    if (pofo_app_edge(pad, 0x10, &st_u, &ct_u)) pofo_sheet_r = (pofo_sheet_r + 4) % 5;
-    if (pofo_app_edge(pad, 0x20, &st_d, &ct_d)) pofo_sheet_r = (pofo_sheet_r + 1) % 5;
-    if (pofo_app_edge(pad, 0x40, &st_l, &ct_l)) pofo_sheet_c = (pofo_sheet_c + 7) % 8;
-    if (pofo_app_edge(pad, 0x80, &st_r, &ct_r)) pofo_sheet_c = (pofo_sheet_c + 1) % 8;
-    if (pofo_app_edge(pad, 0x01, &st_a, &ct_a)) pofo_sheet_cells[pofo_sheet_r][pofo_sheet_c] += 10;
-    if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) pofo_sheet_cells[pofo_sheet_r][pofo_sheet_c] -= 10;
-    if (pofo_app_edge(pad, 0x04, &st_s, &ct_s)) pofo_sheet_cells[pofo_sheet_r][pofo_sheet_c] = 0;
-    if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) { pofo_app_current = -1; pofo_apps_draw_menu(); }
+    pofo_put_text(7, 0, "VALUES SHOWN  ESC=EXIT");
 }
 
 /* ---- Address Book: up to 8 contacts, name + phone. A=add/edit,       */
@@ -795,34 +724,8 @@ static void pofo_app_sheet_handle(uint8_t pad)
 static int pofo_contacts_count = 0;
 static int pofo_contacts_sel = 0;
 static int pofo_contacts_edit_phone = 0;   /* 1 = editing phone, 0 = name */
-
-static void pofo_app_contacts_draw(void)
-{
-    char buf[40];
-    pofo_clear_text();
-    pofo_put_text(0, 0, "ADDRESS BOOK");
-    for (int i = 0; i < 6; i++) {
-        if (i < pofo_contacts_count) {
-            snprintf(buf, sizeof(buf), "%c %s %s", (i == pofo_contacts_sel) ? '>' : ' ',
-                     pofo_contacts_name[i], pofo_contacts_phone[i]);
-            pofo_put_text(1 + i, 0, buf);
-        } else if (i == pofo_contacts_sel) {
-            pofo_put_text(1 + i, 0, "> (empty)");
-        }
-    }
-    pofo_put_text(7, 0, "A=ADD  B=DEL  ARROWS  START=EXIT");
-}
-
-static void pofo_contacts_edit_draw(void)
-{
-    pofo_clear_text();
-    pofo_put_text(1, 0, pofo_contacts_edit_phone ? "PHONE:" : "NAME:");
-    pofo_put_text(2, 0, pofo_contacts_edit_phone ? pofo_contacts_phone[pofo_contacts_sel]
-                                                 : pofo_contacts_name[pofo_contacts_sel]);
-    pofo_put_text(7, 0, "TYPE  A=NEXT  B=BS  SEL=SAVE");
-}
-
 static int pofo_contacts_editing = 0;
+
 static void pofo_contacts_edit_type(int c)
 {
     int idx = pofo_contacts_sel;
@@ -840,38 +743,21 @@ static void pofo_contacts_edit_type(int c)
     }
 }
 
-static void pofo_app_contacts_handle(uint8_t pad)
+static void pofo_app_contacts_draw(void)
 {
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_a=0, ct_a=0, st_b=0, ct_b=0, st_s=0, ct_s=0, st_t=0, ct_t=0;
-    if (pofo_contacts_editing) {
-        if (pofo_app_edge(pad, 0x01, &st_a, &ct_a)) {
-            pofo_contacts_edit_phone = !pofo_contacts_edit_phone;
-            if (!pofo_contacts_edit_phone) pofo_contacts_editing = 0;
-        }
-        if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) pofo_contacts_edit_type('\b');
-        if (pofo_app_edge(pad, 0x04, &st_s, &ct_s)) { pofo_contacts_editing = 0; }
-        if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) { pofo_contacts_editing = 0; }
-        return;
-    }
-    if (pofo_app_edge(pad, 0x10, &st_u, &ct_u)) pofo_contacts_sel = (pofo_contacts_sel + 5) % 6;
-    if (pofo_app_edge(pad, 0x20, &st_d, &ct_d)) pofo_contacts_sel = (pofo_contacts_sel + 1) % 6;
-    if (pofo_app_edge(pad, 0x01, &st_a, &ct_a)) {
-        if (pofo_contacts_sel >= pofo_contacts_count) {
-            pofo_contacts_count = pofo_contacts_sel + 1;
-        }
-        pofo_contacts_edit_phone = 0;
-        pofo_contacts_editing = 1;
-    }
-    if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) {
-        if (pofo_contacts_sel < pofo_contacts_count) {
-            for (int i = pofo_contacts_sel; i < pofo_contacts_count - 1; i++) {
-                strcpy(pofo_contacts_name[i], pofo_contacts_name[i + 1]);
-                strcpy(pofo_contacts_phone[i], pofo_contacts_phone[i + 1]);
-            }
-            pofo_contacts_count--;
+    char buf[40];
+    pofo_clear_text();
+    pofo_put_text(0, 0, "ADDRESS BOOK");
+    for (int i = 0; i < 6; i++) {
+        if (i < pofo_contacts_count) {
+            snprintf(buf, sizeof(buf), "%c %s %s", (i == pofo_contacts_sel) ? '>' : ' ',
+                     pofo_contacts_name[i], pofo_contacts_phone[i]);
+            pofo_put_text(1 + i, 0, buf);
+        } else if (i == pofo_contacts_sel) {
+            pofo_put_text(1 + i, 0, "> (empty)");
         }
     }
-    if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) { pofo_app_current = -1; pofo_apps_draw_menu(); }
+    pofo_put_text(7, 0, "CONTACTS  ESC=EXIT");
 }
 
 /* ---- Diary: 8 slots with short text; arrows scroll, A=edit, B=clear. */
@@ -888,67 +774,10 @@ static void pofo_app_diary_draw(void)
                  i + 1, pofo_diary_entries[i]);
         pofo_put_text(1 + i, 0, buf);
     }
-    pofo_put_text(7, 0, "A=EDIT  B=CLEAR  ARROWS  START=EXIT");
-}
-
-static void pofo_app_diary_handle(uint8_t pad)
-{
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_a=0, ct_a=0, st_b=0, ct_b=0, st_s=0, ct_s=0, st_t=0, ct_t=0;
-    if (pofo_diary_editing) {
-        if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) {
-            int l = (int)strlen(pofo_diary_entries[pofo_diary_sel]);
-            if (l > 0) pofo_diary_entries[pofo_diary_sel][l - 1] = 0;
-        }
-        if (pofo_app_edge(pad, 0x04, &st_s, &ct_s)) pofo_diary_editing = 0;
-        if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) pofo_diary_editing = 0;
-        return;
-    }
-    if (pofo_app_edge(pad, 0x10, &st_u, &ct_u)) pofo_diary_sel = (pofo_diary_sel + 5) % 6;
-    if (pofo_app_edge(pad, 0x20, &st_d, &ct_d)) pofo_diary_sel = (pofo_diary_sel + 1) % 6;
-    if (pofo_app_edge(pad, 0x01, &st_a, &ct_a)) pofo_diary_editing = 1;
-    if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) pofo_diary_entries[pofo_diary_sel][0] = 0;
-    if (pofo_app_edge(pad, 0x08, &st_t, &ct_t)) { pofo_app_current = -1; pofo_apps_draw_menu(); }
+    pofo_put_text(7, 0, "DIARY  ESC=EXIT");
 }
 
 /* ---- dispatch joystick input to the hub or the current app ---- */
-static void pofo_apps_handle(uint8_t pad)
-{
-    static uint32_t st_u=0, ct_u=0, st_d=0, ct_d=0, st_a=0, ct_a=0, st_b=0, ct_b=0;
-    static uint32_t st_s=0, ct_s=0, st_t=0, ct_t=0;
-
-    if (pofo_app_current < 0) {
-        /* hub menu */
-/* Wait a few frames with all buttons released after entering APPS,
-          * so the button that confirmed the command (A via VK) does not
-          * immediately open the first app or exit. */
-        if (pofo_apps_wait_release) {
-            if (pad == 0xFF) pofo_apps_wait_release--;
-            else pofo_apps_wait_release = 2;
-            return;
-        }
-        if (pofo_app_edge(pad, 0x10, &st_u, &ct_u)) pofo_apps_sel = (pofo_apps_sel + APPS_MAX - 1) % APPS_MAX;
-        if (pofo_app_edge(pad, 0x20, &st_d, &ct_d)) pofo_apps_sel = (pofo_apps_sel + 1) % APPS_MAX;
-        if (pofo_app_edge(pad, 0x01, &st_a, &ct_a) || pofo_app_edge(pad, 0x08, &st_t, &ct_t)) {
-            pofo_app_current = pofo_apps_sel;
-            vk_visible = 0; vk_dirty = 1;
-            if (pofo_apps_sel == APP_CALC) calc_prev_r = -1;
-        }
-        if (pofo_app_edge(pad, 0x02, &st_b, &ct_b)) {
-            pofo_apps_active = 0;
-            display_fill(LCD_OFF_RGB);
-            key_make(2, 6); exec86(4000); key_break(2, 6);  /* Enter → fresh DOS prompt */
-        }
-        return;
-    }
-    switch (pofo_app_current) {
-    case APP_CALC:     pofo_app_calc_handle(pad);     vk_visible = 0; break;
-    case APP_EDIT:     pofo_app_edit_handle(pad);     break;
-    case APP_SHEET:    pofo_app_sheet_handle(pad);    break;
-    case APP_CONTACTS: pofo_app_contacts_handle(pad); break;
-    case APP_DIARY:    pofo_app_diary_handle(pad);    break;
-    }
-}
-
 /* UART char routed to the focused app's text field */
 static void pofo_app_uart_char(int c)
 {
@@ -976,37 +805,6 @@ static void pofo_app_uart_char(int c)
     }
 }
 
-/* one animation step for the PIN screen */
-static void pofo_pin_draw(void)
-{
-    int f = pofo_pin_frame++;
-    char line[40];
-
-    pofo_clear_text();
-
-    /* header */
-    pofo_put_text(0, 0, "P-CRACK v1.0");
-    pofo_put_text(1, 0, ">TEST.0.0`");
-    pofo_put_text(2, 0, ">ENTRY CODE: ");
-
-    /* cycling 4-digit code: deterministic pseudo-random from frame counter */
-    unsigned code = (unsigned)f * 2654435761u;
-    snprintf(line, sizeof(line), "  %04lu", (unsigned long)(code % 10000));
-    pofo_put_text(2, 13, line);
-
-    pofo_put_text(3, 0, "WATING...");
-
-    /* "progress" bar drawn with block chars */
-    int prog = (f / 8) % 32;
-    pofo_put_text(4, 0, ">");
-    for (int i = 0; i < 32; i++)
-        line[i] = (i < prog) ? '#' : ' ';
-    line[32] = 0;
-    pofo_put_text(4, 2, line);
-
-    pofo_put_text(5, 0, "PRESS ENTER");
-}
-
 /* Track the typed command (from UART or VK) to catch the built-in
  * commands "PIN" / "APPS" / "HELP" + Enter. */
 static char pofo_cmd[16];
@@ -1015,25 +813,6 @@ static int pofo_cmd_len = 0;
 /* Built-in HELP screen: shows the DIP DOS commands plus the extra
  * built-in commands (APPS / PIN). ENTER exits back to DOS. */
 static int pofo_help_active = 0;
-
-static void pofo_help_draw(void)
-{
-    static const char *const lines[] = {
-        "DIP DOS COMMANDS",
-        "DIR DEL REN COPY TYPE",
-        "CD MD RD PATH VER VOL",
-        "FORMAT FDISK LABEL CHKDSK",
-        "CLS DATE TIME PROMPT SET",
-        "ECHO IF FOR GOTO SHIFT PAUSE",
-        "REM BREAK EXIT RUN HELP",
-        "- built-in -",
-        "APPS  PIN",
-        "ENTER=EXIT",
-    };
-    pofo_clear_text();
-    for (int i = 0; i < 10; i++)
-        pofo_put_text(i, 0, lines[i]);
-}
 
 /* return 1 if the current line matched a built-in command and it was
  * consumed (the DOS prompt must not receive the Enter). */
@@ -1075,7 +854,10 @@ static void pofo_char_input(int c)
     if (pofo_apps_active && pofo_app_current < 0) {
         if (c == 0x0B) pofo_apps_sel = (pofo_apps_sel + APPS_MAX - 1) % APPS_MAX;
         else if (c == 0x0C) pofo_apps_sel = (pofo_apps_sel + 1) % APPS_MAX;
-        else if (c == '\r' || c == '\n') pofo_app_current = pofo_apps_sel;
+        else if (c == '\r' || c == '\n') {
+            pofo_app_current = pofo_apps_sel;
+            if (pofo_apps_sel == APP_CALC) calc_prev_r = -1;  /* перерисовать клавиатуру калькулятора */
+        }
         else if (c == 0x7F || c == '\b') { pofo_apps_active = 0; display_fill(LCD_OFF_RGB); key_make(2,6); exec86(4000); key_break(2,6); }
         return;
     }
@@ -1284,10 +1066,19 @@ static void pofo_usbkbd_input(void)
             continue;
         }
 
-        /* Esc (41): VK → закрыть; DOS → удержание ~1 сек для выхода */
+        /* Esc (41): VK → закрыть; APPS → выход из приложения/хаба; DOS → удержание ~1 сек */
         if (sc == 41) {
             if (vk_visible) {
                 vk_visible = 0; vk_dirty = 1; display_fill(LCD_OFF_RGB);
+            } else if (pofo_apps_active) {
+                if (pofo_app_current >= 0) {
+                    pofo_app_current = -1;
+                    pofo_apps_draw_menu();
+                } else {
+                    pofo_apps_active = 0;
+                    display_fill(LCD_OFF_RGB);
+                    key_make(2, 6); exec86(4000); key_break(2, 6);  /* Enter → свежий DOS-промпт */
+                }
             } else {
                 pofo_esc_hold_us = h3_hs_timer_lo_us();   /* начало удержания */
             }
@@ -1314,109 +1105,6 @@ static void pofo_usbkbd_input(void)
     /* Запомнить текущий отчёт для edge-детекта в следующем кадре */
     for (int i = 0; i < n && i < 6; i++) pofo_prev_keys[i] = keys[i];
     pofo_prev_n = (n > 6) ? 6 : n;
-}
-
-/* Shared single-frame edge detector (active-LOW buttons, bitmask) */
-/* Returns bitmask of edges: 0→1 transition on inverted signal = press */
-/* State variables live in run_frame's static locals. */
-static uint8_t edge_detect(uint8_t pad, uint8_t *prev)
-{
-    /* детектор фронта: pad=0 значит «нажато», инвертируем и ищем 0→1 */
-    uint8_t edge = (~pad) & ~(*prev);   /* 0→1 on inverted = press edge */
-    *prev = ~pad;
-    return edge;
-}
-
-/* handle joystick when the VK is open */
-static int vk_handle(uint8_t pad)
-{
-    static uint8_t vk_prev = 0;
-    static int hold_cnt = 0;
-    uint8_t edge = edge_detect(pad, &vk_prev);
-
-    if (edge & 0x10) { vk_cur_r = (vk_cur_r + VK_ROWS - 1) % VK_ROWS; vk_dirty = 1; return 1; }
-    if (edge & 0x20) { vk_cur_r = (vk_cur_r + 1) % VK_ROWS;           vk_dirty = 1; return 1; }
-    if (edge & 0x40) { vk_cur_c = (vk_cur_c + VK_COLS - 1) % VK_COLS; vk_dirty = 1; return 1; }
-    if (edge & 0x80) { vk_cur_c = (vk_cur_c + 1) % VK_COLS;           vk_dirty = 1; return 1; }
-
-    if (edge & 0x01) { /* A = select key */
-        if (vk_cur_r == VK_ROWS - 1) {
-            switch (vk_cur_c) {
-            case 0: /* Enter */
-                if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char('\r');
-                else if (pofo_cmd_check()) {}
-                else vk_key_press_rc(2, 6);
-                break;
-            case 1: /* Backspace */
-                if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char('\b');
-                else { if (pofo_cmd_len > 0) pofo_cmd_len--; vk_key_press_rc(1, 6); }
-                break;
-            case 2: /* Space */
-                if (pofo_apps_active && pofo_app_current >= 0) pofo_app_uart_char(' ');
-                else vk_key_press_rc(6, 2);
-                break;
-            case 3: vk_key_press_rc(7, 7); vk_visible = 0; if (vk_shift) { write86(0x00417, read86(0x00417) & ~0x41); vk_shift = 0; vk_shift_oneshot = 0; } break; /* Esc → close VK */
-            case 5: /* RUS toggle */
-            pofo_ru_mode = !pofo_ru_mode;
-            vk_dirty = 1;
-            break;
-        case 4: /* Shift toggle: цикл 0→1→2→0
-                  * 0 = off, 1 = one-shot (зелёный, после одной буквы сброс),
-                  * 2 = caps (синий, залипание до повторного нажатия).
-                  * One-shot через write86 в BIOS flag — без посылки скан-кода
-                  * Shift, чтобы не засорять INT 09h. */
-        if (vk_shift == 0) {
-            vk_shift = 1; vk_shift_oneshot = 1;
-            write86(0x00417, read86(0x00417) | 0x01);
-        } else if (vk_shift == 1) {
-            vk_shift = 2; vk_shift_oneshot = 0;
-            write86(0x00417, (read86(0x00417) & ~0x01) | 0x40);
-        } else {
-            vk_shift = 0; vk_shift_oneshot = 0;
-            write86(0x00417, read86(0x00417) & ~0x41);
-        }
-        vk_dirty = 1;
-        break;
-            }
-        } else {
-            const struct vk_key_t *k = &vk_keys[vk_cur_r][vk_cur_c];
-            if (pofo_cmd_len < 15 && k->label >= 0x20 && k->label < 0x7f) {
-                char ch = k->label;
-                if (pofo_cmd_len == 0 && ch == ' ') return 1;
-                pofo_cmd[pofo_cmd_len++] = ch;
-            }
-            vk_key_press(k);
-        }
-        return 1;
-    }
-    if (edge & 0x02) { /* B = Backspace */
-        if (pofo_cmd_len > 0) pofo_cmd_len--;
-        vk_key_press_rc(1, 6);
-        return 1;
-    }
-    if (edge & 0x08) { /* Start = Enter */
-        if (pofo_cmd_check()) return 1;
-        vk_key_press_rc(2, 6);
-        return 1;
-    }
-
-    /* Auto-repeat on held directions */
-    {
-        uint8_t held = (~pad) & 0xF0;
-        enum { RD = 30, RR = 8 };
-        if (held) {
-            hold_cnt++;
-            int do_rep = (hold_cnt == RD) || (hold_cnt > RD && ((hold_cnt - RD) % RR) == 0);
-            if (do_rep) {
-                if (held & 0x10) vk_cur_r = (vk_cur_r + VK_ROWS - 1) % VK_ROWS;
-                else if (held & 0x20) vk_cur_r = (vk_cur_r + 1) % VK_ROWS;
-                else if (held & 0x40) vk_cur_c = (vk_cur_c + VK_COLS - 1) % VK_COLS;
-                else if (held & 0x80) vk_cur_c = (vk_cur_c + 1) % VK_COLS;
-                vk_dirty = 1;
-            }
-        } else { hold_cnt = 0; }
-    }
-    return 0;
 }
 
 /* render the virtual keyboard over the lower part of the screen */
@@ -1457,53 +1145,7 @@ static void vk_render(void)
             }
         }
     }
-    display_text_center_nobg("A=KEY  B=BACKSP  START=ENTER  SEL=CLOSE", 233, 1, RGB565(31, 63, 31));
-}
-
-/* ------------------------------------------------------------------ */
-static void kbd_poll(void)
-{
-/* Debounce: только когда сырой GPIO стабилен DEBOUNCE кадров подряд.
- * GPIO-дребезг иначе спамит INT 09h → BIOS бросает инициализацию LCD
- * (наблюдалось на железе). Каждый ряд клавиатуры сравнивается с предыдущим
- * состоянием — генерируются make/break только по изменению. */
-    enum { DEBOUNCE = 2 };
-    uint8_t pad = joypad_buttons();  /* 0 = pressed */
-
-    if (pad == pofo_kbd_cand) {
-        if (pofo_kbd_cnt < DEBOUNCE) pofo_kbd_cnt++;
-        if (pofo_kbd_cnt == DEBOUNCE && pofo_kbd_stable != pad) {
-            pofo_kbd_stable = pad;
-            pofo_kbd_cnt = 0;
-            uint8_t cols[8] = { 0 };
-            if (!(pad & 0x80)) cols[5] |= 0x10;   /* Right */
-            if (!(pad & 0x40)) cols[5] |= 0x08;   /* Left */
-            if (!(pad & 0x10)) cols[3] |= 0x20;   /* Up */
-            if (!(pad & 0x20)) cols[4] |= 0x20;   /* Down */
-            if (!(pad & 0x01)) cols[6] |= 0x10;   /* A = Space (Enter) */
-            if (!(pad & 0x02)) cols[1] |= 0x80;   /* B = Backspace */
-            if (!(pad & 0x08)) cols[6] |= 0x40;   /* Start = Fn */
-            /* Select (0x04) is NOT mapped to a key here: it only toggles the
-             * on-screen keyboard in run_frame, so opening the VK must not
-             * send an Esc (0x3F) that DIP DOS would echo as '\'. */
-
-            for (int row = 0; row < 8; row++) {
-                uint8_t change = pofo_kbd_prev_cols[row] ^ cols[row];
-                if (change) {
-                    for (int col = 0; col < 8; col++) {
-                        if (change & (1 << col)) {
-                            if (cols[row] & (1 << col)) key_make(row, col);
-                            else key_break(row, col);
-                        }
-                    }
-                    pofo_kbd_prev_cols[row] = cols[row];
-                }
-            }
-        }
-    } else {
-        pofo_kbd_cand = pad;
-        pofo_kbd_cnt = 0;
-    }
+    display_text_center_nobg("ARROWS=NAV  ENT=KEY  BS=DEL  INS=CLOSE", 233, 1, RGB565(31, 63, 31));
 }
 
 /* Keyboard row read (port 0x8000 mirrors). Port uses m_kbd_data, but
@@ -1711,9 +1353,12 @@ static void pofo_uart_echo(void)
     pofo_uart_crc = crc;
 
     for (int r = 0; r < rows; r++) {
+        int start = 0;
         int end = cols;
-        while (end > 0 && lcdc.vram[base + r * lcdc.hn + end - 1] < 0x20) end--;
-        for (int c = 0; c < end; c++) {
+        // срезаем ведущие пробелы/служебные (текст набран с позиции курсора)
+        while (start < end && lcdc.vram[base + r * lcdc.hn + start] < 0x21) start++;
+        while (end > start && lcdc.vram[base + r * lcdc.hn + end - 1] < 0x20) end--;
+        for (int c = start; c < end; c++) {
             uint8_t ch = lcdc.vram[base + r * lcdc.hn + c];
             if (ch < 0x20) ch = '.';
             if (ch >= 0x7f) ch = '.';
@@ -1747,7 +1392,6 @@ static void pofo_render_text(void)
     int rows = lcdc.nx / lcdc.vp;
     if (rows <= 0) rows = 8;
     uint16_t rac1 = lcdc.dsa & 0xfff;
-    uint16_t rac2 = rac1 + (rows * lcdc.hn);
 
     for (int y = 0; y < rows; y++) {
         for (int cl = 0; cl < lcdc.vp; cl++) {
@@ -1775,7 +1419,6 @@ extern "C" void pofo_render(void)
          * Распаковывает HD61830 VRAM в пиксельные строки 240px с учётом
          * character pitch (hp) и горизонтального числа символов (hn). */
         uint16_t rac1 = lcdc.dsa;
-        uint16_t rac2 = rac1 + (lcdc.nx * lcdc.hn);
         for (int y = 0; y < lcdc.nx && y < 64; y++) {
             for (int x = 0; x < 240; x++)
                 pofo_line_rgb[x] = LCD_OFF_RGB;
@@ -1852,14 +1495,11 @@ extern "C" int portfolio_init_game(const uint8_t *cart, uint32_t cart_size)
     pofo_apps_active = 0;
     pofo_app_current = -1;
     pofo_apps_sel = 0;
-    pofo_apps_wait_release = 0;
     pofo_help_active = 0;
     pend_br_row = -1; pend_br_col = -1; pend_br_shift = 0;
 
     /* reset all frame-loop state so a second entry starts clean */
     pofo_boot_guard = 0;
-    pofo_kbd_cand = 0xFF; pofo_kbd_stable = 0xFF; pofo_kbd_cnt = 0;
-    memset(pofo_kbd_prev_cols, 0, sizeof(pofo_kbd_prev_cols));
 
     /* clear LCD area */
     display_fill(LCD_OFF_RGB);

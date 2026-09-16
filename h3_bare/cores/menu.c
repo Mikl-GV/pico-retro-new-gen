@@ -350,8 +350,12 @@ void menu_help(void) {
         "EMULATORS: Z=A/X=B S=Sel",
         "Enter=Start  ESC=hold-exit",
         "--- GB/GBC ---",
-        "Z=A  X=B  S=Select",
+        "Z=B  X=A  S=Select",
         "Enter=Start  ESC=exit",
+        "--- LYNX ---",
+        "Arrows = D-Pad",
+        "Z=A  X=B  S=Opt1",
+        "Enter=Opt2  ESC=exit",
         0,
         // страница 1: A2600
         "--- ATARI 2600 ---",
