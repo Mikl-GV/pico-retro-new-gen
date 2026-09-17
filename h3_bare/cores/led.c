@@ -48,13 +48,7 @@ void led_init(void) {
     PL_DAT &= ~(1u << 10);   // погашен (0)
     mb();
 
-    printf("led: PA15 cfg=%u dat=%u | PL10 cfg0=%u cfg1=%u dat=%u gate=%08x\n",
-           (unsigned)((PA_CFG1 >> 28) & 0xF),
-           (unsigned)((PA_DAT >> 15) & 1),
-           (unsigned)((PL_CFG0 >> 8) & 0xF),
-           (unsigned)((PL_CFG1 >> 8) & 0xF),
-           (unsigned)((PL_DAT >> 10) & 1),
-           (unsigned)PRCM_GATE1);
+    printf("led: initialized\n");
 }
 
 // PA15: 1 = горит (HIGH-active)

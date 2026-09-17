@@ -23,4 +23,8 @@ int  fat_mkdir(const char* parent_path, const char* name);
 // Удаление файла: помечает как 0xE5 и освобождает кластеры в FAT
 int  fat_delete_file(const char* dir, const char* name);
 
+// Разделяемый буфер директорий (вместо fat_entry_t dirs[FAT_MAX_ENTRIES] на стеке).
+// Одновременно используется только один контекст (меню/браузер/FAT).
+fat_entry_t* fat_scratch(void);
+
 #endif

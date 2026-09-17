@@ -33,9 +33,4 @@ SECTIONS
     *(.bss); *(COMMON);
     _bend1 = . ;
   }
-  .uncached 0x41000000 : {
-    _bstart2 = . ;
-    *(UNCACHED);
-    _bend2 = . ;
-  }
 }

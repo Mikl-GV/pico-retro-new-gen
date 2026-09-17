@@ -54,3 +54,9 @@ char uart_getc(void) {
 int uart_rx_ready(void) {
     return (uart->LSR & 1) ? 1 : 0;
 }
+
+// Сброс RX FIFO — чтобы случайные символы из терминала
+// не попали в Portfolio при старте
+void uart_rx_flush(void) {
+    while (uart_rx_ready()) uart->O00.RBR;
+}

@@ -28,6 +28,7 @@ extern "C" {
 }
 
 extern "C" int printf(const char* fmt, ...);
+extern "C" void gb_heap_reset(void);
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -134,6 +135,7 @@ static void build_input(void) {
 extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     printf("Snes9x: init size=%u\n", (unsigned)size);
     g_loaded = 0;
+    gb_heap_reset();
 
     // Настройки по умолчанию (как в init_sfc_setting libretro.c)
     memset(&Settings, 0, sizeof(Settings));

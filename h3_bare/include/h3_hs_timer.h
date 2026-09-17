@@ -43,8 +43,6 @@ inline static void h3_hs_timer_delay(uint32_t d) {
 	} while (t1 - H3_HS_TIMER->CURNT_LO < d);
 }
 
-extern void h3_hs_timer_udelay(uint32_t d);
-
 #ifdef __cplusplus
 }
 #endif

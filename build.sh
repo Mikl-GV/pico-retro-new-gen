@@ -136,7 +136,7 @@ for fn in apu soundux spc700; do
 done
 # PPU дублируется между FCEUmm и Snes9x — переименовываем во всех snes_*.o
 for f in "$BUILD"/snes_*.o; do
-    arm-none-eabi-objcopy --redefine-sym PPU=snes_PPU "$f" "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null || true
+    "$OBJCOPY" --redefine-sym PPU=snes_PPU "$f" "$f.tmp" && mv "$f.tmp" "$f"
 done
 
 # --- Sega Mega Drive / SMS (Genesis Plus GX) ---
@@ -232,7 +232,7 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
     -lgcc -lc -lm -lgcc
 
-$OBJCOPY -O binary --remove-section .uncached "$BUILD/h3_bare.elf" "$BIN"
+$OBJCOPY -O binary "$BUILD/h3_bare.elf" "$BIN"
 # Дублируем прошивку в корень проекта — чтобы не искать в build/
 cp -f "$BIN" "$TOP/h3_bare.bin"
 echo "--- h3_bare.bin: $(stat -c%s "$BIN") байт (build/ и корень) ---"

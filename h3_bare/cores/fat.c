@@ -113,6 +113,7 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
         int pos = (seq & 0x0F) - 1;
         if (pos >= 0 && pos < 20) {
             int off = pos * 13;
+            if (off + 13 > FAT_NAME_LEN - 1) return 0;   // имя длиннее нашего буфера — не читаем
             int idx = 0;
             for (int i = 0; i < 10; i += 2) {
                 uint16_t c = e[1 + i] | ((uint16_t)e[2 + i] << 8);
@@ -202,21 +203,23 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
 return count;
 }
 
+static fat_entry_t g_scratch_dir[FAT_MAX_ENTRIES];
+
+fat_entry_t* fat_scratch(void) {
+    return g_scratch_dir;
+}
+
 int fat_init(void) {
-    uint32_t part_lba = 0; // найденный FAT32-раздел
+    uint32_t part_lba = 0;
     int part_idx = -1;
-    int has_roms = 0;
 
     if (sd_read_sector(0, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
 
     // --- Сбор всех FAT32-разделов (MBR + GPT) в список ---
-    // Каждый: lba начала, индекс. Системный раздел (первый, где U-Boot) —
-    // под индекс 0, остальные — ROM-кандидаты.
+    // Каждый: lba начала.
     enum { MAX_PART = 16 };
     uint32_t plt_start[MAX_PART];
-    int plt_idx[MAX_PART];       // MBR-слот или GPT-номер
-    int plt_is_gpt[MAX_PART];
     int part_count = 0;
 
     // MBR-разделы
@@ -227,8 +230,6 @@ int fat_init(void) {
             uint32_t lba = le32(g_sector + off + 8);
             if (lba != 0 && part_count < MAX_PART) {
                 plt_start[part_count] = lba;
-                plt_idx[part_count] = n;
-                plt_is_gpt[part_count] = 0;
                 part_count++;
             }
         }
@@ -271,14 +272,11 @@ int fat_init(void) {
                                  ((uint64_t)en[38] << 48) | ((uint64_t)en[39] << 56);
                 if (first == 0) continue;
                 plt_start[part_count] = (uint32_t)first;
-                plt_idx[part_count] = e;
-                plt_is_gpt[part_count] = 1;
                 part_count++;
             }
             printf("FAT: GPT found, %u entries usable\n", part_count);
         }
     }
-    printf("FAT: found %d FAT partitions, using part %d LBA=%u has_roms=%d\n", part_count, part_idx, part_lba, has_roms);
     if (part_count == 0) return -1;
 
     // --- 1. Ищем раздел с /roms. Системный (первый) в поиске НЕ участвует. ---
@@ -302,7 +300,7 @@ int fat_init(void) {
         g_fat_size = le32(g_sector + 36);
         g_root_cluster = rc; g_data_start = ds;
 
-        fat_entry_t dirs[FAT_MAX_ENTRIES];
+        fat_entry_t* dirs = g_scratch_dir;
         int dn = read_dir(rc, dirs, FAT_MAX_ENTRIES);
         int found = 0;
         for (int d = 0; d < dn; d++)
@@ -313,7 +311,7 @@ int fat_init(void) {
         g_fat_size = old_fs;
 
         if (found) {
-            part_lba = lba; part_idx = pi; has_roms = 1;
+            part_lba = lba; part_idx = pi;
             break;
         }
     }
@@ -321,13 +319,13 @@ int fat_init(void) {
     // --- 2. Если с /roms не нашли — берём первый не-system раздел ---
     if (part_idx < 0 && part_count > 1) {
         part_lba = plt_start[1];
-        part_idx = 1; has_roms = 0;
+        part_idx = 1;
     }
 
     // --- 3. Если нет других разделов — падаем на первый (не создаём /roms) ---
     if (part_idx < 0) {
         part_lba = plt_start[0];
-        part_idx = 0; has_roms = 0;
+        part_idx = 0;
     }
 
     // Инициализируем выбранный раздел
@@ -354,8 +352,6 @@ int fat_init(void) {
 
     return 0;
 }
-
-// ---- вспомогательные для записи ----
 
 // forward declaration (определена ниже)
 static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen);
@@ -605,6 +601,8 @@ int fat_delete_file(const char* dir, const char* name) {
 
     uint32_t cl = d.first_cluster;
     uint32_t target_first = 0;
+    uint32_t entry_sec = 0;
+    int entry_off = 0;
     int found = 0;
 
     while (cl && cl < 0x0FFFFFF8 && !found) {
@@ -676,9 +674,11 @@ int fat_delete_file(const char* dir, const char* name) {
                 }
 
                 if (attr != 0x10 && name_eq(full, name)) {   // файл (не папка)
-                    g_sector[i] = 0xE5;
-                    if (sd_write_sector(base + s, g_sector) < 0) return -1;
+                    // Не пишем 0xE5 сразу — LFN-фрагменты могут быть
+                    // в том же секторе и перезатрём. Откладываем.
                     target_first = le16(g_sector + i + 26) | (le16(g_sector + i + 20) << 16);
+                    entry_sec = base + s;
+                    entry_off = i;
                     found = 1;
                     break;
                 }
@@ -695,6 +695,11 @@ int fat_delete_file(const char* dir, const char* name) {
         g_sector[lfn_off[k]] = 0xE5;
         if (sd_write_sector(lfn_lba[k], g_sector) < 0) return -1;
     }
+
+    // Теперь пометить 0xE5 саму 8.3 запись (уже после LFN, чтобы не перезатереть)
+    if (sd_read_sector(entry_sec, g_sector) < 0) return -1;
+    g_sector[entry_off] = 0xE5;
+    if (sd_write_sector(entry_sec, g_sector) < 0) return -1;
 
     // Освободить кластеры файла в обеих FAT (с защитой от цикла в цепочке)
     uint32_t fc = target_first;
@@ -739,7 +744,7 @@ static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen
         int n = (int)(slash - p);
         if (n == 0 || n >= buflen) return 0;
         memcpy(buf, p, n); buf[n] = 0;
-        fat_entry_t entries[FAT_MAX_ENTRIES];
+        fat_entry_t* entries = g_scratch_dir;
         int cnt = read_dir(cluster, entries, FAT_MAX_ENTRIES);
         int found = 0;
         for (int i = 0; i < cnt; i++) {
@@ -764,10 +769,19 @@ int fat_list(const char* dir, fat_entry_t* out, int max) {
 }
 
 int fat_find(const char* dir, const char* name, fat_entry_t* out) {
-    fat_entry_t list[FAT_MAX_ENTRIES];
+    // Копируем имя ДО fat_list — name может указывать в g_scratch_dir,
+    // который затрётся вызовом fat_list
+    char target[FAT_NAME_LEN];
+    if (!name) return 0;
+    int tlen = strlen(name);
+    if (tlen >= FAT_NAME_LEN) tlen = FAT_NAME_LEN - 1;
+    memcpy(target, name, tlen);
+    target[tlen] = 0;
+
+    fat_entry_t* list = g_scratch_dir;
     int n = fat_list(dir, list, FAT_MAX_ENTRIES);
     for (int i = 0; i < n; i++)
-        if (name_eq(list[i].name, name)) { *out = list[i]; return 1; }
+        if (name_eq(list[i].name, target)) { *out = list[i]; return 1; }
     return 0;
 }
 

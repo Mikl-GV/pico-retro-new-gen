@@ -26,6 +26,7 @@ void main(void) {
     int sd_ok = 0;
 
     uart_init();
+    uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
 
     led_init();
@@ -61,7 +62,7 @@ void main(void) {
     if (sd_ok) {
         uart_puts("SD ready\n");
         uart_puts("ROMs:\n");
-        fat_entry_t dirs[FAT_MAX_ENTRIES];
+        fat_entry_t* dirs = fat_scratch();
         int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
         for (int i = 0; i < n; i++)
             if (dirs[i].size == 0) {

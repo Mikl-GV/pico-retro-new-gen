@@ -16,7 +16,8 @@
 #define FOOTER_Y (PHYS_H - 30)
 #define INDENT   40
 
-#define MAX_MENU_ITEMS 64
+#define MAX_MENU_ITEMS 512
+#define MENU_ARENA_ADDR 0x4F000000
 
 typedef struct {
     const char *id;
@@ -27,8 +28,13 @@ typedef struct {
     int present;  // 1 = real dir found on card
 } menu_item_t;
 
-static menu_item_t g_items[MAX_MENU_ITEMS];
+static menu_item_t* const g_items = (menu_item_t*)MENU_ARENA_ADDR;
 static int g_item_count = 0;
+
+// глобальный буфер для копирования имён папок с SD
+// build_menu() копирует сюда имена, и g_items[].dir указывает сюда
+static char (*g_dir_names)[FAT_NAME_LEN] = (char(*)[FAT_NAME_LEN])(MENU_ARENA_ADDR + sizeof(menu_item_t) * MAX_MENU_ITEMS);
+static int g_dir_name_used = 0;
 
 // регистронезависимое сравнение
 static int namencmp(const char* a, const char* b, int n) {
@@ -44,7 +50,6 @@ static int namencmp(const char* a, const char* b, int n) {
     return 1;
 }
 
-// найти систему в реестре по имени папки (регистронезависимо)
 static int find_system(const char* dir_name) {
     for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
         const char* d = system_rom_dir(i);
@@ -53,11 +58,6 @@ static int find_system(const char* dir_name) {
     }
     return -1;
 }
-
-// глобальный буфер для копирования имён папок с SD
-// build_menu() копирует сюда имена, и g_items[].dir указывает сюда
-static char g_dir_names[MAX_MENU_ITEMS][FAT_NAME_LEN];
-static int g_dir_name_used = 0;
 
 static void build_menu(void) {
     g_item_count = 0;
@@ -75,11 +75,11 @@ static void build_menu(void) {
         g_item_count++;
     }
 
-    fat_entry_t dirs[FAT_MAX_ENTRIES];
+    fat_entry_t* dirs = fat_scratch();
     int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
     if (n <= 0) return;
 
-    for (int i = 0; i < n && i < FAT_MAX_ENTRIES; i++) {
+    for (int i = 0; i < n && g_item_count < MAX_MENU_ITEMS; i++) {
         // Только папки (size == 0)
         if (dirs[i].size != 0) continue;
         // Пропускаем . и ..

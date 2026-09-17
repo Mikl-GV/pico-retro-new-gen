@@ -146,6 +146,15 @@ CCart::CCart(const UBYTE *gamedata, ULONG gamesize)
    // Set the filetypes
 
    CTYPE banktype0,banktype1;
+   (void)banktype0;  // bank0 type tracked via mMaskBank0/mShiftCount0; only bank1 used below
+
+   // Initialise to safe defaults before switch
+   mMaskBank0 = 0;
+   mShiftCount0 = 0;
+   mCountMask0 = 0;
+   mMaskBank1 = 0;
+   mShiftCount1 = 0;
+   mCountMask1 = 0;
 
    switch(header.page_size_bank0) {
       case 0x000:
@@ -178,9 +187,23 @@ CCart::CCart(const UBYTE *gamedata, ULONG gamesize)
          mShiftCount0=11;
          mCountMask0=0x7ff;
          break;
-      default:
-         handy_log(RETRO_LOG_ERROR, "Invalid cart (bank0 size).\n");
+      default: {
+         ULONG pages = header.page_size_bank0;
+         if (pages == 0) pages = 1;
+         ULONG rounded = 1;
+         while (rounded < pages) rounded <<= 1;
+         mMaskBank0 = rounded * 256 - 1;
+         ULONG t = rounded;
+         mShiftCount0 = 0;
+         while (t > 1) { t >>= 1; mShiftCount0++; }
+         mCountMask0 = rounded - 1;
+         if (rounded <= 256) banktype0 = C64K;
+         else if (rounded <= 512) banktype0 = C128K;
+         else if (rounded <= 1024) banktype0 = C256K;
+         else banktype0 = C512K;
+         handy_log(RETRO_LOG_WARN, "Guessed bank0 type from size (pages=%lu rounded=%lu)\n", pages, rounded);
          break;
+      }
    }
 
    switch(header.page_size_bank1) {
@@ -214,9 +237,23 @@ CCart::CCart(const UBYTE *gamedata, ULONG gamesize)
          mShiftCount1=11;
          mCountMask1=0x7ff;
          break;
-      default:
-         handy_log(RETRO_LOG_ERROR, "Invalid cart (bank1 size).\n");
+      default: {
+         ULONG pages = header.page_size_bank1;
+         if (pages == 0) pages = 1;
+         ULONG rounded = 1;
+         while (rounded < pages) rounded <<= 1;
+         mMaskBank1 = rounded * 256 - 1;
+         ULONG t = rounded;
+         mShiftCount1 = 0;
+         while (t > 1) { t >>= 1; mShiftCount1++; }
+         mCountMask1 = rounded - 1;
+         if (rounded <= 256) banktype1 = C64K;
+         else if (rounded <= 512) banktype1 = C128K;
+         else if (rounded <= 1024) banktype1 = C256K;
+         else banktype1 = C512K;
+         handy_log(RETRO_LOG_WARN, "Guessed bank1 type from size (pages=%lu rounded=%lu)\n", pages, rounded);
          break;
+      }
    }
 
    // Make some space for the new carts

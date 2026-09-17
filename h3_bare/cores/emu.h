@@ -1,5 +1,5 @@
-#ifndef EMU_H
-#define EMU_H
+#ifndef EMU_H3_H
+#define EMU_H3_H
 
 #include <stdint.h>
 

@@ -60,7 +60,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     for (const char* s = rom_dir; *s && pl < (int)sizeof(path) - 1; s++) path[pl++] = *s;
     path[pl] = 0;
 
-    fat_entry_t list[FAT_MAX_ENTRIES];
+    fat_entry_t* list = fat_scratch();
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
     sort_entries(list, n);
     printf("rom_browser: %s n=%d\n", path, n);
@@ -111,30 +111,37 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
         } else if (k == 40 || k == '\n' || k == '\r') {
 if (n > 0) {
+                // Копируем имя ДО load_rom — fat_find внутри перезатрёт g_scratch_dir
+                char sel_name[FAT_NAME_LEN];
+                int sl = strlen(list[cursor].name);
+                if (sl >= FAT_NAME_LEN) sl = FAT_NAME_LEN - 1;
+                memcpy(sel_name, list[cursor].name, sl);
+                sel_name[sl] = 0;
+
                 uint8_t* rom = 0;
                 uint32_t size = 0;
-                if (load_rom(path, list[cursor].name, &rom, &size) == 0) {
+                if (load_rom(path, sel_name, &rom, &size) == 0) {
                     emu_clear_fb();
                     if (strcmp(sys_id, "a2600") == 0)
-                        emu_run_a2600_mcume(rom, size, list[cursor].name);
+                        emu_run_a2600_mcume(rom, size, sel_name);
                     else if (strcmp(sys_id, "a7800") == 0)
-                        emu_run_a7800(rom, size, list[cursor].name);
+                        emu_run_a7800(rom, size, sel_name);
                     else if (strcmp(sys_id, "a5200") == 0)
-                        emu_run_a5200(rom, size, list[cursor].name);
+                        emu_run_a5200(rom, size, sel_name);
                     else if (strcmp(sys_id, "sms") == 0)
-                        emu_run_sms(rom, size, list[cursor].name);
+                        emu_run_sms(rom, size, sel_name);
                     else if (strcmp(sys_id, "nes") == 0)
-                        emu_run_nes(rom, size, list[cursor].name);
+                        emu_run_nes(rom, size, sel_name);
                     else if (strcmp(sys_id, "snes") == 0)
-                        emu_run_snes(rom, size, list[cursor].name);
+                        emu_run_snes(rom, size, sel_name);
                     else if (strcmp(sys_id, "portfolio") == 0)
-                        emu_run_portfolio(rom, size, list[cursor].name);
+                        emu_run_portfolio(rom, size, sel_name);
                     else if (strcmp(sys_id, "gameboy") == 0)
-                        emu_run_gameboy(rom, size, list[cursor].name);
+                        emu_run_gameboy(rom, size, sel_name);
                     else if (strcmp(sys_id, "lynx") == 0)
-                        emu_run_lynx(rom, size, list[cursor].name);
+                        emu_run_lynx(rom, size, sel_name);
                     else if (strcmp(sys_id, "megadrive") == 0)
-                        emu_run_megadrive(rom, size, list[cursor].name);
+                        emu_run_megadrive(rom, size, sel_name);
                     else {
                         fb_clear();
                         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -155,10 +162,17 @@ if (n > 0) {
         } else if (k == 42 || k == 76 || k == 49) {
             // Backspace / Delete / или "D" — удалить ROM (двойное подтверждение)
             if (n > 0) {
+                // Копируем имя ДО удаления — fat_delete_file затрёт g_scratch_dir
+                char del_name[FAT_NAME_LEN];
+                int dl = strlen(list[cursor].name);
+                if (dl >= FAT_NAME_LEN) dl = FAT_NAME_LEN - 1;
+                memcpy(del_name, list[cursor].name, dl);
+                del_name[dl] = 0;
+
                 // Подтверждение 1: намерение
                 fb_clear();
                 fb_puts_s(60, 100, "Delete this ROM?", 2, 0x00FFAA00);
-                fb_puts_s(60, 140, list[cursor].name, 1, 0x00FFFFFF);
+                fb_puts_s(60, 140, del_name, 1, 0x00FFFFFF);
                 fb_puts_s(60, 180, "", 1, 0x00FFFFFF);
                 fb_puts_s(80, 220, "  Enter: continue    ESC: cancel", 1, 0x00888888);
                 fb_flush();
@@ -170,7 +184,7 @@ if (n > 0) {
                 // Подтверждение 2: финальное
                 fb_clear();
                 fb_puts_s(60, 100, "Are you SURE?", 2, 0x00FF4444);
-                fb_puts_s(60, 140, list[cursor].name, 1, 0x00FFFFFF);
+                fb_puts_s(60, 140, del_name, 1, 0x00FFFFFF);
                 fb_puts_s(60, 180, "This will delete the file from SD", 1, 0x00FFFFFF);
                 fb_puts_s(60, 200, "and is not reversible.", 1, 0x00FFFFFF);
                 fb_puts_s(80, 240, "  Enter: DELETE    ESC: cancel", 1, 0x00888888);
@@ -180,7 +194,7 @@ if (n > 0) {
                 if (confirm == 41) continue;   // ESC
                 if (confirm != 40 && confirm != '\n' && confirm != '\r') continue;
 
-                int r = fat_delete_file(path, list[cursor].name);
+                int r = fat_delete_file(path, del_name);
                 if (r == 0) {
                     // перечитываем список
                     n = fat_list(path, list, FAT_MAX_ENTRIES);
@@ -188,10 +202,8 @@ if (n > 0) {
                     if (cursor >= n) cursor = n - 1;
                     if (cursor < 0) cursor = 0;
                 } else {
-                    fb_clear();
-                    fb_text_center("Delete failed!", 200, 2, 0x00FF4444);
-                    fb_flush();
-                    input_wait();
+                    // Буфер g_scratch_dir испорчен — выходим в меню
+                    return;
                 }
             }
         }

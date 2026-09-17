@@ -71,7 +71,7 @@ extern "C" void emu_printf(const char* text) { printf("%s", text); }
 extern "C" void emu_printi(int val) { printf("%d", val); }
 
 static uint16_t atari_rgb565_lut[256];
-extern "C" int tv_draw_count = 0;
+int tv_draw_count = 0;
 
 extern "C" void emu_SetPaletteEntry(unsigned char r, unsigned char g, unsigned char b, int index) {
     atari_rgb565_lut[index] = ((((r) >> 3) & 0x1F) << 11) | ((((g) >> 2) & 0x3F) << 5) | ((((b) >> 3) & 0x1F) << 0);

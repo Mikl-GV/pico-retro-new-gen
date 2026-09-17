@@ -183,8 +183,8 @@ static int enum_port(uint32_t base, usb_dev_t* dev) {
     if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return 0; }
     uint16_t vid = (uint16_t)(buf[8] | (buf[9] << 8));
     uint16_t pid = (uint16_t)(buf[10] | (buf[11] << 8));
-    printf("usb: port=0x%X VID=%04X PID=%04X class=%02X mps=%d\n",
-           (unsigned)base, vid, pid, (unsigned)buf[5], mps);
+    printf("usb: port=0x%X class=%02X mps=%d\n",
+           (unsigned)base, (unsigned)buf[5], mps);
 
     // 4. конфигурация
     r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
@@ -454,7 +454,6 @@ int usb_input_poll(void) {
     // Экран 1024x600; матрица GT911 0..4095 — нормируем
     int sx = (x * 1024) / 4096;
     int sy = (y * 600)  / 4096;
-    printf("touch: %d,%d (raw %d,%d)\n", sx, sy, x, y);
 
     if (sy < 200) return 82;                       // верх — Up
     if (sy > 400) return 81;                       // низ — Down

@@ -98,10 +98,9 @@ extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
     return 1;
 }
 
-extern "C" int a7800_run_frame(void) {
+extern "C" void a7800_run_frame(void) {
     static byte input[17];
     byte pad = pad_from_kbd();
     a7_build_input(input, pad);
     prosystem_ExecuteFrame(input);
-    return 0;
 }

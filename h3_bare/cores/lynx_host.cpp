@@ -65,7 +65,7 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     extern void gb_heap_reset(void);
     gb_heap_reset();
 
-    g_lynx = new CSystem(NULL, rom, size, NULL, true, NULL);
+    g_lynx = new CSystem(NULL, rom, size, NULL, false, NULL);
     if (!g_lynx) { printf("[lynx] new CSystem failed\n"); return 0; }
 
     if (!g_lynx->mMikie) {
@@ -103,17 +103,9 @@ extern "C" void lynx_run_frame(void) {
     static uint32_t led_fc = 0;
     if ((++led_fc & 0xFFFF) == 0) led_set((led_fc >> 16) & 1);
 
-    // Диагностика: раз в 120 кадров печатаем счётчик и сколько пикселей
-    // в буфере ненулевые (0 = Handy ничего не рисует).
+    // Диагностика: проверяем, рисует ли что-то Handy
     static uint32_t frame_cnt = 0;
     frame_cnt++;
-    if ((frame_cnt % 120) == 0) {
-        uint32_t nonzero = 0;
-        for (int i = 0; i < LYNX_W * LYNX_H; i++)
-            if (lynx_fb[i] != 0) nonzero++;
-        printf("lynx: f=%u ready=%d nonzero=%u\n", (unsigned)frame_cnt,
-               (int)lynx_frame_ready, (unsigned)nonzero);
-    }
 
     // Страховка от "чёрного экрана": если игра не выставила DISPCTL.DMAEnable
     // (Mikie::DisplayRenderLine при этом сразу выходит, буфер пуст) —

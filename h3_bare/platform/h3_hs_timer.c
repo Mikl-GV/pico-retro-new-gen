@@ -48,8 +48,4 @@ void __attribute__((cold)) h3_hs_timer_init(void) {
 	H3_HS_TIMER->CTRL |= CTRL_START;
 }
 
-void h3_hs_timer_udelay(uint32_t d) {
-	h3_hs_timer_delay(100 * d);
-}
-
 

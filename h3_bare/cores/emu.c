@@ -93,7 +93,6 @@ extern int a5200_init_game(const uint8_t* rom, uint32_t size);
 extern void a5200_run_frame(void);
 extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
-extern void sms_render_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
 extern int portfolio_exit_requested(void);
@@ -104,6 +103,8 @@ extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
 extern void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_clear_fb(); fb_clear(); fb_flush();

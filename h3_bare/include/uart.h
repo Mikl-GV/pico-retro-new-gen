@@ -6,5 +6,6 @@ void uart_putc(char c);
 void uart_puts(const char* s);
 char uart_getc(void);
 int  uart_rx_ready(void);
+void uart_rx_flush(void);
 
 #endif

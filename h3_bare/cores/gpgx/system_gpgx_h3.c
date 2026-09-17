@@ -25,6 +25,7 @@
 #include "emu.h"
 
 extern int printf(const char* fmt, ...);
+extern void gb_heap_reset(void);
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -115,6 +116,10 @@ static void gpgx_render_emu(int max_w, int max_h) {
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     printf("GPGX: init size=%u\n", (unsigned)size);
     g_loaded = 0;
+    gb_heap_reset();
+
+    int force_sms = g_force_sms;
+    g_force_sms = 0;
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
         printf("GPGX: bad rom\n");
@@ -124,14 +129,14 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     // сброс глобального состояния ядра
     memset(&cart, 0, sizeof(cart));
 
-    // копируем ROM в буфер картриджа
-    memcpy(cart.rom, rom, size);
+    // ROM не копируем — указываем прямо на ROM_BUF (0x50000000)
+    cart.rom = (uint8*)rom;
     cart.romsize = size;
 
     // определяем тип системы: SMS/GG по сигнатуре "TMR SEGA", иначе MD
     system_hw = SYSTEM_MD;
     g_is_md = 1;
-    if (g_force_sms) {
+    if (force_sms) {
         system_hw = SYSTEM_SMS;
         g_is_md = 0;
     } else if (size >= 0x4000 && !memcmp(rom + 0x1ff0, "TMR SEGA", 8)) {
@@ -151,9 +156,7 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     romtype = system_hw;   // критично для input_init (выбор типа геймпада)
 
     // byte-swap ROM под 16-битный доступ (LSB_FIRST) — только для MD.
-    // Host НЕ вызывает load_rom() из loadrom.c (там swap идёт под #ifdef LSB_FIRST),
-    // поэтому swap здесь обязателен. getrominfo/get_region читают header ДО swap,
-    // как и в оригинальном load_rom().
+    // Выполняется прямо в ROM_BUF.
     if (system_hw == SYSTEM_MD || (system_hw & SYSTEM_PBC) == SYSTEM_MD) {
         for (uint32_t i = 0; i + 1 < cart.romsize; i += 2) {
             uint8_t t = cart.rom[i];
@@ -267,18 +270,12 @@ exit:
 // ---- интерфейс для emu.c: SMS через GPGX (замена smsplus) ----
 int sms_init_game(const uint8_t* rom, uint32_t size) {
     g_force_sms = 1;
-    int r = gpgx_init_game(rom, size);
-    g_force_sms = 0;
-    return r;
+    return gpgx_init_game(rom, size);
 }
 
 void sms_run_frame(void) {
     if (!g_loaded) return;
     gpgx_poll_input();
     system_frame_sms(0);
-    gpgx_render_emu(256, 192);
-}
-
-void sms_render_frame(void) {
     gpgx_render_emu(256, 192);
 }
