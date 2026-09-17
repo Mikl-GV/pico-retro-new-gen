@@ -93,6 +93,8 @@ extern int a5200_init_game(const uint8_t* rom, uint32_t size);
 extern void a5200_run_frame(void);
 extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
+extern int gg_init_game(const uint8_t* rom, uint32_t size);
+extern void gg_run_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
 extern int portfolio_exit_requested(void);
@@ -102,6 +104,8 @@ extern void gb_render_frame(void);
 extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
+extern int ngp_init_game(const uint8_t* rom, uint32_t size);
+extern void ngp_run_frame(void);
 extern void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
@@ -156,10 +160,29 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_ts0 = 0;
     for (;;) {
         sms_run_frame();
-        // sms_run_frame() внутри system_gpgx_h3.c уже вызывает
-        // gpgx_render_emu(256,192) — повторный sms_render_frame() не нужен
         emu_throttle();
         emu_scale(256, 192);
+        fb_flush();
+        fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+    }
+exit: fb_clear(); fb_flush();
+}
+
+void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (gg_init_game(rom, size) != 1) {
+        printf("GG: init failed\n"); return;
+    }
+    printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emu_set_border_color(0x00082030);   // тёмно-синий (GG)
+    uint8_t raw_keys[6]; uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        gg_run_frame();
+        emu_throttle();
+        emu_scale(160, 144);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
@@ -242,6 +265,27 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         lynx_render_frame();
         emu_throttle();
         emu_scale(160, 102);
+        fb_flush();
+        fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+    }
+exit: fb_clear(); fb_flush();
+}
+
+void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (ngp_init_game(rom, size) != 1) {
+        printf("NGP: init failed\n"); return;
+    }
+    printf("NGP: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emu_set_border_color(0x000E1A2B);   // тёмно-синий (NGP)
+    uint8_t raw_keys[6]; uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        ngp_run_frame();
+        emu_throttle();
+        emu_scale(160, 152);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);

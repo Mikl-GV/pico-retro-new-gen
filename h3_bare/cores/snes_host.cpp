@@ -23,6 +23,7 @@ extern "C" {
 #include "srtc.h"
 #include "usb_kbd.h"
 #include "emu.h"
+#include "cheatdb.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 }
@@ -192,6 +193,28 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     // Не вызываем S9xSetPlaybackRate — аудио отключено (Settings.Mute=true)
+
+    // Применяем отмеченные читы (SNES Game Genie / Pro Action Replay).
+    // S9xAddCheat + Settings.ApplyCheats=true → ядро само патчит память каждый кадр.
+    S9xDeleteCheats();
+    {
+        int ccnt = cheats_count();
+        for (int i = 0; i < ccnt; i++) {
+            if (!cheats_enabled(i)) continue;
+            const char* code = cheats_code(i);
+            if (!code || !code[0]) continue;
+            uint32_t a; uint8_t v;
+            if (S9xGameGenieToRaw(code, &a, &v)) {
+                S9xAddCheat(true, false, a, v);
+            } else if (S9xProActionReplayToRaw(code, &a, &v)) {
+                S9xAddCheat(true, false, a, v);
+            } else {
+                printf("SNEScheat: bad code '%s'\n", code);
+            }
+        }
+        if (ccnt) { S9xApplyCheats(); printf("SNEScheat: applied %d\n", ccnt); }
+    }
+
     g_loaded = 1;
     printf("Snes9x: ROM loaded, LoROM=%d HiROM=%d\n",
            (int)Memory.LoROM, (int)Memory.HiROM);
@@ -245,6 +268,7 @@ extern "C" void snes_run_frame(void) {
 // ---- стоп ----
 extern "C" void snes_stop(void) {
     if (!g_loaded) return;
+    S9xDeleteCheats();
     Del7110Gfx();
     S9xDeinitGFX();
     S9xDeinitDisplay();

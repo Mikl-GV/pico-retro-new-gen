@@ -34,7 +34,7 @@ OBJCOPY="${PREFIX}objcopy"
 
 CFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm"
 CFLAGS="$CFLAGS -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG"
-INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/gpgx/core -I$TOP/h3_bare/cores/gpgx/libretro_inc -I$TOP/h3_bare/cores/gpgx/core/z80 -I$TOP/h3_bare/cores/gpgx/core/m68k -I$TOP/h3_bare/cores/gpgx/core/ntsc -I$TOP/h3_bare/cores/gpgx/core/sound -I$TOP/h3_bare/cores/gpgx/core/input_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw/svp -I$TOP/h3_bare/cores/gpgx/core/cd_hw -I$TOP/h3_bare/cores/fceumm -I$TOP/h3_bare/cores/fceumm/inc -I$TOP/h3_bare/cores/fceumm/input -I$TOP/h3_bare/cores/fceumm/boards -I$TOP/h3_bare/cores/fceumm/palettes -I$TOP/h3_bare/cores/fceumm/fir -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
+INCLUDES="-I$TOP/h3_bare/include -I$TOP/h3_bare/cores -I$TOP/h3_bare/cores/gpgx/core -I$TOP/h3_bare/cores/gpgx/libretro_inc -I$TOP/h3_bare/cores/gpgx/core/z80 -I$TOP/h3_bare/cores/gpgx/core/m68k -I$TOP/h3_bare/cores/gpgx/core/ntsc -I$TOP/h3_bare/cores/gpgx/core/sound -I$TOP/h3_bare/cores/gpgx/core/input_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw -I$TOP/h3_bare/cores/gpgx/core/cart_hw/svp -I$TOP/h3_bare/cores/gpgx/core/cd_hw -I$TOP/h3_bare/cores/fceumm -I$TOP/h3_bare/cores/fceumm/inc -I$TOP/h3_bare/cores/fceumm/input -I$TOP/h3_bare/cores/fceumm/boards -I$TOP/h3_bare/cores/fceumm/palettes -I$TOP/h3_bare/cores/fceumm/fir -I$TOP/h3_bare/cores/mcume -I$TOP/h3_bare/cores/a7800 -I$TOP/h3_bare/cores/a5200 -I$TOP/h3_bare/cores/gameboy -I$TOP/h3_bare/cores/portfolio -I$TOP/h3_bare/cores/lynx -I$TOP/h3_bare/cores/ngp -I$TOP/h3_bare/src -I$TOP/h3_bare/platform/fb"
 SNES_INCLUDES="-I$TOP/h3_bare/cores/snes -I$TOP/h3_bare/cores/snes/libretro-common/include $INCLUDES"
 CXXFLAGS="$CFLAGS -fno-exceptions -fno-rtti -fno-threadsafe-statics"
 
@@ -44,6 +44,7 @@ $AS $CFLAGS -x assembler-with-cpp -c -o "$BUILD/startup.o" "$TOP/h3_bare/platfor
 # --- Ядро каркаса ---
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/menu.o" "$TOP/h3_bare/cores/menu.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/rom_browser.o" "$TOP/h3_bare/cores/rom_browser.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/cheats.o" "$TOP/h3_bare/cores/cheats.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/settings.o" "$TOP/h3_bare/cores/settings.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/sd.o" "$TOP/h3_bare/cores/sd.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fat.o" "$TOP/h3_bare/cores/fat.c"
@@ -103,6 +104,20 @@ done
 $CXX $CXXFLAGS $INCLUDES -fhosted -c -o "$BUILD/lynx_blip_buffer.o" "$LYNX/blip/Blip_Buffer.cpp"
 $CXX $CXXFLAGS $INCLUDES -fhosted -c -o "$BUILD/lynx_blip_stereo.o" "$LYNX/blip/Stereo_Buffer.cpp"
 
+# --- Neo Geo Pocket / Pocket Color (RACE core) ---
+NGP="$TOP/h3_bare/cores/ngp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_host.o" "$NGP/ngp_host.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_main.o" "$NGP/main.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_memory.o" "$NGP/memory.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_graphics.o" "$NGP/graphics.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_tlcs900h.o" "$NGP/tlcs900h.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_z80.o" "$NGP/z80.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_flash.o" "$NGP/flash.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_neopopsound.o" "$NGP/neopopsound.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_sound.o" "$NGP/sound.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_ngpBios.o" "$NGP/ngpBios.cpp"
+$CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_input.o" "$NGP/input.cpp"
+
 # --- NES (FCEUmm: точный CPU/PPU, 250+ мапперов, SuborKB-клавиатура) ---
 FCEUMM="$TOP/h3_bare/cores/fceumm"
 FCEUMM_CFLAGS="$CFLAGS -DFRONTEND_SUPPORTS_RGB565 -DFCEU_VERSION_NUMERIC=9900"
@@ -145,6 +160,7 @@ GPGX_CFLAGS="$CFLAGS -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1677721
 $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_host.o" "$GPGX/system_gpgx_h3.c"
 $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_mathx.o" "$GPGX/gpgx_math.c"
 $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_missing.o" "$GPGX/gpgx_missing.c"
+$CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gp_cheats.o" "$TOP/h3_bare/cores/gp_cheats.c"
 for f in "$GPGX"/core/*.c; do
     fn=$(basename "$f" .c)
     $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_core_$fn.o" "$f"
@@ -182,7 +198,7 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_lcd.o" "$TOP/h3_bare/platform/fb/h3_lcd.c
 $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     -o "$BUILD/h3_bare.elf" \
     "$BUILD/startup.o" \
-    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/settings.o" "$BUILD/emu.o" \
+    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/cheats.o" "$BUILD/settings.o" "$BUILD/emu.o" \
     "$BUILD/system_atari_h3.o" "$BUILD/mcume_Vcsemu.o" "$BUILD/mcume_Vmachine.o" \
     "$BUILD/mcume_Raster.o" "$BUILD/mcume_Table.o" "$BUILD/mcume_Display.o" \
     "$BUILD/mcume_Collision.o" "$BUILD/mcume_Tiasound.o" "$BUILD/mcume_Options.o" \
@@ -202,6 +218,10 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/lynx_susie.o" "$BUILD/lynx_cart.o" "$BUILD/lynx_memmap.o" \
     "$BUILD/lynx_eeprom.o" "$BUILD/lynx_rom.o" "$BUILD/lynx_ram.o" \
     "$BUILD/lynx_lynxdec.o" "$BUILD/lynx_blip_buffer.o" "$BUILD/lynx_blip_stereo.o" \
+    "$BUILD/ngp_host.o" "$BUILD/ngp_main.o" "$BUILD/ngp_memory.o" \
+    "$BUILD/ngp_graphics.o" "$BUILD/ngp_tlcs900h.o" "$BUILD/ngp_z80.o" \
+    "$BUILD/ngp_flash.o" "$BUILD/ngp_neopopsound.o" "$BUILD/ngp_sound.o" \
+    "$BUILD/ngp_ngpBios.o" "$BUILD/ngp_input.o" \
     "$BUILD/fceumm_host.o" \
     "$BUILD/fceumm_fceu.o" "$BUILD/fceumm_x6502.o" "$BUILD/fceumm_ppu.o" "$BUILD/fceumm_sound.o" \
     "$BUILD/fceumm_cart.o" "$BUILD/fceumm_ines.o" "$BUILD/fceumm_input.o" "$BUILD/fceumm_fds.o" \
@@ -224,7 +244,7 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/gpgx_core_"*.o "$BUILD/gpgx_z80_"*.o "$BUILD/gpgx_m68k_"*.o "$BUILD/gpgx_ntsc_"*.o \
     "$BUILD/gpgx_sound_"*.o "$BUILD/gpgx_input_hw_"*.o "$BUILD/gpgx_cart_hw_"*.o \
     "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
-    "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" \
+    "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" "$BUILD/gp_cheats.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
     "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \

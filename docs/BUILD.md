@@ -19,16 +19,24 @@ sudo apt install u-boot-tools mtools
 
 ## Сборка бинарника
 
+Быстрая параллельная сборка (использует все ядра):
+
+```bash
+make -j$(nproc)
+```
+
+Результат: `build/h3_bare.bin` + копия `h3_bare.bin` в корень проекта — загрузка через U-Boot или FEL.
+
+Поддерживается и старый скрипт (последовательная сборка, ~5 мин):
+
 ```bash
 ./build.sh
 ```
 
-Результат: `h3_bare.bin` в **корне проекта** (дублируется в `build/`) — загрузка через U-Boot или FEL.
-
 ## Сборка SD-образа
 
 ```bash
-./build.sh sd
+make sd          # или: ./build.sh sd
 ```
 
 Собирает `build/h3_bare.img` (64 МБ) с U-Boot + FAT32 + ROM-папками.

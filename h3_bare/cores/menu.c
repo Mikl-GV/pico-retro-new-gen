@@ -430,10 +430,25 @@ void menu_help(void) {
         "Space = Select  Enter=Start",
         "ESC hold=exit",
         0,
+        // страница 9: NGP
+        "--- NEO GEO POCKET ---",
+        "Arrows = D-Pad",
+        "Z = A  X = B",
+        "S = Select  Enter=Start",
+        "ESC hold=exit",
+        0,
+        // страница 10: Game Gear
+        "--- GAME GEAR ---",
+        "Arrows = D-Pad",
+        "Z = Button1  X = Button2",
+        "S = Pause",
+        "Enter = Start",
+        "ESC hold=exit",
+        0,
     };
 
     int page = 0;
-    int total = 9;
+    int total = 11;
 
     for (;;) {
         fb_clear();
@@ -472,12 +487,13 @@ void menu_about(void) {
         "512 MB, HDMI 1024x600",
         "Bare-metal, no OS",
         "",
-        "10 emulators ready:",
+        "12 emulators ready:",
         "Atari 2600/5200/7800",
         "NES/Famicom (FCEUmm, 432 mappers)",
-        "SMS/GG + Mega Drive (GPGX)",
+        "SMS + Game Gear + MD (GPGX)",
         "Game Boy/GBC, Atari Lynx",
         "SNES / Super Famicom (Snes9x 2005)",
+        "Neo Geo Pocket / Color (RACE)",
         "Atari Portfolio (builtin)",
         "",
         "USB keyboard + UART input",

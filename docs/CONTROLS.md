@@ -24,20 +24,20 @@ USB-клавиатура (Boot HID, Logitech 046D:C52B и аналоги).
 
 ## Эмуляторы (игровой маппинг)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx | Mega Drive | SNES |
-|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|:----------:|:----:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A | **A** | **B** |
-| X | B | — | Pause | B2 (B) | Button 2 | A | B | **B** | **Y** |
-| C | — | — | — | — | — | — | — | **C** | — |
-| A | — | — | — | — | — | — | — | **X** | **A** |
-| S | Select | Select | Start | Select | Pause | Select | Option 1 | **Y** | **X** |
-| D | — | — | — | — | — | — | — | **Z** | — |
-| Q | — | — | — | — | — | — | — | Mode | **L** |
-| W | — | — | — | — | — | — | — | — | **R** |
-| Space | — | — | — | — | — | — | — | — | Select |
-| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Option 2 | Start | Start |
-| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx | NGP | Mega Drive | SNES |
+|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|:---:|:----------:|:----:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A | **A** | **A** | **B** |
+| X | B | — | Pause | B2 (B) | Button 2 | A | B | **B** | **B** | **Y** |
+| C | — | — | — | — | — | — | — | — | **C** | — |
+| A | — | — | — | — | — | — | — | — | **X** | **A** |
+| S | Select | Select | Start | Select | Pause | Select | Option 1 | **Select** | **Y** | **X** |
+| D | — | — | — | — | — | — | — | — | **Z** | — |
+| Q | — | — | — | — | — | — | — | — | Mode | **L** |
+| W | — | — | — | — | — | — | — | — | — | **R** |
+| Space | — | — | — | — | — | — | — | — | — | Select |
+| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Option 2 | **Start** | Start | Start |
+| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
  
 ¹ NES/Dendy: одиночный ESC → клавиша SuborKB (Break в Basic), выход только по удержанию ~1с.
 
@@ -48,6 +48,7 @@ Mega Drive (6-кнопочный геймпад): Z=A, X=B, C=C, A=X, S=Y, D=Z, 
 SMS/GG: Z=Button1, X=Button2, S=Pause (кнопка на корпусе), Enter=Start.  
 A5200: Z=Fire, X=Pause, S=Start.
 Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad.
+NGP (Neo Geo Pocket / Color): Z=A, X=B, S=Select, Enter=Start, стрелки — D-Pad.
 NES/Dendy: одиночный ESC = клавиша SuborKB (Esc/Break), выход в меню — только по удержанию ~1с.
 SNES: Z=B, X=Y, A=A, S=X, Q=L, W=R, Space=Select, Enter=Start.
 

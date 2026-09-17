@@ -9,15 +9,16 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ┌───────────────────────────────────────────────────────────────┐
 │                         main.c                                │
 │          меню → браузер ROM → диспетчер эмуляторов            │
-│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/portfolio/megadrive) │
+│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/ngp/portfolio/md)    │
 ├───────────────────────────────────────────────────────────────┤
-│  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/   │
-│  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)      │
-│  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)         │
+│  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
+│  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
+│  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)      │
+│  ngp/ (RACE — TLCS900H+Z80, NGP/NGPC)                          │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
-│  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp                  │
+│  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp  ngp_host.cpp │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
@@ -43,6 +44,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw |
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
 | Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw |
+| Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 | SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw |
 
@@ -65,7 +67,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - `emu_set_border_color(rgb888)` — цвет полей по бокам (XRGB8888), свой для каждой
   системы: A2600 — тёмно-янтарный, A5200 — синий, A7800 — бордовый, NES — бордовый,
   SMS — синий, MD — тёмно-синий, Game Boy — зелёный, Lynx — фиолетовый, Portfolio — оливковый,
-  SNES — тёмно-синеватый
+  SNES — тёмно-синеватый, NGP — тёмно-синий
 
 ### system_a7800_h3.cpp (A7800, ProSystem)
 
@@ -128,6 +130,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Рендер: Handy рисует в собственный буфер 160×102 через callback → EMU_FB
 - Ввод: USB-клавиатура → кнопки Lynx (Z=A X=B S=Option1 Enter=Option2)
 
+### ngp_host.cpp + ngp/ (Neo Geo Pocket / Pocket Color, RACE)
+
+- Ядро RACE (alekmaul): TLCS-900H (tlcs900h.cpp) + Z80 (z80.cpp), память (memory.cpp),
+  рендер Thor (graphics.cpp), флеш-картриджи (flash.cpp), звук TI SN76496 (neopopsound.cpp)
+- BIOS: koyote.bin (12 КБ) вшит в koyote_bin.h; `loadBIOS()` возвращает 0 — mem_init()
+  строит таблицу векторов/BIOS-вызовов сам (ветка NGPC в memory.cpp)
+- Большие буферы — в BSS: `mainrom[4MB]`, `mainram[224KB]`, `cpurom[256KB]`,
+  `drawBuffer[SIZEX×152]`, `totalpalette[32768]` (~4.7 МБ суммарно)
+- Рендер: `myGraphicsBlitLine()` в `graphicsBlitLine(160×152)` → drawBuffer (pitch SIZEX=320)
+  → `blit_to_fb()` копирует 160×152 в левый верхний угол EMU_FB → emu_scale(160,152)
+- Ввод: USB-клавиатура → ngpInputState (Up=0x01 Down=0x02 Left=0x04 Right=0x08
+  A=0x10 (Z) B=0x20 (X) Select=0x40 (S) Start=0x80 (Enter)); читается в 0x6F82
+- Палитра: totalpalette (RGB565) заполняется palette_init16(0xF800,0x07E0,0x001F) в graphics_init
+
 ### led.c (светодиоды)
 
 - PA15 — «код жив» (мигает в emu_throttle, по таймеру кадров)
@@ -160,19 +176,19 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Полная карта — в `docs/CONTROLS.md`. Кратко:
 
-| Клавиша | NES | A2600 | A5200 | A7800 | SMS/GG | Game Boy | Lynx | Mega Drive | Portfolio |
-|---------|:---:|:-----:|:-----:|:-----:|:------:|:--------:|:----:|:----------:|:---------:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
-| Z | A | Fire | Fire | B1(A) | Button1 | B | A | **A** | буква Z |
-| X | B | — | Pause | B2(B) | Button2 | A | B | **B** | буква X |
-| C | — | — | — | — | — | — | — | **C** | — |
-| A | — | — | — | — | — | — | — | **X** | — |
-| S | Select | Select | Start | Select | **Pause** | Select | Opt1 | **Y** | буква S |
-| D | — | — | — | — | — | — | — | **Z** | — |
-| Q | — | — | — | — | — | — | — | Mode | — |
-| Enter | Start | Reset | Key3 | Start | Start | Start | Opt2 | Start | Enter |
-| Insert | — | — | — | — | — | — | — | — | VK (экранная клава) |
-| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
+| Клавиша | NES | A2600 | A5200 | A7800 | SMS/GG | Game Boy | Lynx | NGP | Mega Drive | Portfolio |
+|---------|:---:|:-----:|:-----:|:-----:|:------:|:--------:|:----:|:---:|:----------:|:---------:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | курсор/VK |
+| Z | A | Fire | Fire | B1(A) | Button1 | B | A | **A** | **A** | буква Z |
+| X | B | — | Pause | B2(B) | Button2 | A | B | **B** | **B** | буква X |
+| C | — | — | — | — | — | — | — | — | **C** | — |
+| A | — | — | — | — | — | — | — | — | **X** | — |
+| S | Select | Select | Start | Select | **Pause** | Select | Opt1 | **Select** | **Y** | буква S |
+| D | — | — | — | — | — | — | — | — | **Z** | — |
+| Q | — | — | — | — | — | — | — | — | Mode | — |
+| Enter | Start | Reset | Key3 | Start | Start | Start | Opt2 | **Start** | Start | Enter |
+| Insert | — | — | — | — | — | — | — | — | — | VK (экранная клава) |
+| ESC | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | удерж. ~1с — выход или EXIT |
 
 ## Настройки (Settings)
 
@@ -208,11 +224,16 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | Адрес | Назначение |
 |-------|------------|
-| 0x40000000 | Код (ELF → startup.S) |
+| 0x40000000 | Образ: .text → .ARM.exidx → .data → .bss (подряд, ALIGN(4)) |
+| 0x425caa00 | `_bend1` / `_hend` — конец BSS = старт свободной памяти |
+| 0x4F000000 | MENU_ARENA — буфер пунктов меню (512 слотов + имена) |
 | 0x50000000 | Буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000 | EMU_FB — общий кадровый буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000 | HDMI framebuffer (1024×600 XRGB8888) |
-| 0x80000000 | Стек (конец DRAM) |
+| 0x60000000 | Стек (конец 512 МБ DRAM, растёт вниз; сверху ничего нет) |
+
+Жёстких адресов между секциями образа нет — `_hend` вычисляется линкером
+сразу после `.bss` (см. `h3_bare/platform/linker.ld`).
 
 ## Загрузка
 

@@ -22,9 +22,8 @@ unsigned long crc32(unsigned long crc, const unsigned char *buf, unsigned int le
     return c ^ 0xFFFFFFFFUL;
 }
 
-// ---- osd/cheats (не используем чит-энджин) ----
+// ---- osd/cheats (реализация — в gp_cheats.c) ----
 void osd_input_update(void) {}
-void ROMCheatUpdate(void) {}
 
 // RFILE-стабы (файлов нет — ROM в памяти)
 RFILE *rfopen(const char *path, const char *mode) { (void)path; (void)mode; return NULL; }

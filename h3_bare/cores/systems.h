@@ -42,8 +42,9 @@ typedef struct {
 static const system_entry_t systems[] = {
     // -- Портативные консоли --
     SYS("gameboy",    "Game Boy / Game Boy Color",   PORTABLE, READY),
-    SYS("gamegear",   "Sega Game Gear",              PORTABLE, PLANNED),
+    SYS("gamegear",   "Sega Game Gear",              PORTABLE, READY),
     SYS("lynx",       "Atari Lynx",                  PORTABLE, READY),
+    SYS("ngp",        "Neo Geo Pocket / Color",      PORTABLE, READY),
 
     // -- Консоли --
     SYS("a2600",      "Atari 2600",                  CONSOLE,  READY),

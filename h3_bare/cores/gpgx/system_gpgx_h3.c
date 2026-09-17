@@ -23,9 +23,16 @@
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "cheatdb.h"
+#include "gp_cheats.h"
+#include "fat.h"
 
 extern int printf(const char* fmt, ...);
 extern void gb_heap_reset(void);
+
+// имя текущего ROM (для загрузки читов)
+static char g_current_rom_name[FAT_NAME_LEN];
+static const char* g_cheat_sys_folder = NULL;
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -133,6 +140,9 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     cart.rom = (uint8*)rom;
     cart.romsize = size;
 
+    // читы патчат этот ROM (MD — прямая запись слов)
+    gp_cheats_set_rom((uint8_t*)rom, size);
+
     // определяем тип системы: SMS/GG по сигнатуре "TMR SEGA", иначе MD
     system_hw = SYSTEM_MD;
     g_is_md = 1;
@@ -210,6 +220,11 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 1;
     printf("GPGX: hw=%02X romsize=%u md=%d\n", (unsigned)system_hw,
            (unsigned)cart.romsize, g_is_md);
+
+    // применение читов, отмеченных в меню (загружены в rom_browser через cheats_load)
+    gp_cheats_compile(g_is_md);
+    gp_cheats_apply();
+
     printf("GPGX: region=%s vdp_pal=%d sram=%d\n",
            rominfo.country, vdp_pal, sram.on);
     printf("GPGX: viewport %dx%d+%d+%d\n",
@@ -222,6 +237,9 @@ void gpgx_run_frame(void) {
     if (!g_loaded) return;
 
     gpgx_poll_input();
+
+    // RAM-читы применяем раз в кадр (игра может перезаписывать память)
+    RAMCheatUpdate();
 
     // генерируем кадр (do_skip=0)
     if (g_is_md)
@@ -237,6 +255,7 @@ void gpgx_run_frame(void) {
 }
 
 void gpgx_stop(void) {
+    gp_cheats_clear();
     g_loaded = 0;
     printf("GPGX: stopped\n");
 }
@@ -278,4 +297,78 @@ void sms_run_frame(void) {
     gpgx_poll_input();
     system_frame_sms(0);
     gpgx_render_emu(256, 192);
+}
+
+// ---- интерфейс для emu.c: Sega Game Gear через GPGX ----
+int gg_init_game(const uint8_t* rom, uint32_t size) {
+    printf("GG: init size=%u\n", (unsigned)size);
+    g_loaded = 0;
+    gb_heap_reset();
+
+    if (!rom || size == 0 || size > MAXROMSIZE) {
+        printf("GG: bad rom\n"); return 0;
+    }
+
+    memset(&cart, 0, sizeof(cart));
+    cart.rom = (uint8*)rom;
+    cart.romsize = size;
+
+    // форсируем System_GG — ядро сделает VDP GG + viewport 160x144 + рамку
+    system_hw = SYSTEM_GG;
+    g_is_md = 0;
+
+    getrominfo((char*)cart.rom);
+    get_region((char*)cart.rom);
+    romtype = SYSTEM_GG;
+
+    config.system = 0;
+    config.region_detect = 0;
+    config.master_clock = 0;
+    config.force_dtack = 0;
+    config.addr_error = 1;
+    config.bios = 0;
+    config.lock_on = 0;
+    config.add_on = 0;
+    // GG: gg_extra=0 (настоящий 160x144) + overscan=0 — тогда viewport.y=-24
+    // и игра ложится ровно в bitmap.data[0..143], рендер (160,144) совпадает
+    config.overscan = 0;
+    config.gg_extra = 0;
+    config.left_border = 0;
+    config.render = 0;
+    config.no_sprite_limit = 0;
+    config.hq_fm = 0;
+    config.hq_psg = 0;
+    config.filter = 1;
+    config.mono = 0;
+
+    input.system[0] = SYSTEM_GAMEPAD;
+    input.system[1] = SYSTEM_GAMEPAD;
+    config.input[0].device = DEVICE_PAD6B;
+    config.input[0].port = 0;
+    config.input[1].device = DEVICE_PAD6B;
+    config.input[1].port = 1;
+
+    bitmap.width  = 720;
+    bitmap.height = 576;
+    bitmap.pitch  = 720 * 2;
+    bitmap.data   = (uint8_t *)bitmap_data_;
+    bitmap.viewport.changed = 11;
+
+    system_init();
+    system_reset();
+
+    g_loaded = 1;
+    printf("GG: hw=%02X size=%u\n", (unsigned)system_hw, (unsigned)cart.romsize);
+    printf("GG: viewport %dx%d+%d+%d\n",
+           bitmap.viewport.w, bitmap.viewport.h,
+           bitmap.viewport.x, bitmap.viewport.y);
+    return 1;
+}
+
+void gg_run_frame(void) {
+    if (!g_loaded) return;
+    gpgx_poll_input();
+    system_frame_sms(0);
+    // настоящий GG: viewport 160x144 в режиме gg_extra=0
+    gpgx_render_emu(160, 144);
 }

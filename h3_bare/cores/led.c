@@ -45,10 +45,17 @@ void led_init(void) {
         PL_CFG1 = (PL_CFG1 & ~(0xFu << 8)) | (0x1u << 8);
         mb();
     }
-    PL_DAT &= ~(1u << 10);   // погашен (0)
+    PL_DAT &= ~(1u << 10);   // PL10 погашен (0)
     mb();
 
-    printf("led: initialized\n");
+    // --- PL5 (S_PL_EINT5): output, опустить в 0 — управление внешним
+    //     питанием (будет геймпад Sega через PCF8574) ---
+    PL_CFG0 = (PL_CFG0 & ~(0xFu << 20)) | (0x1u << 20);   // PL5 = output
+    mb();
+    PL_DAT &= ~(1u << 5);    // PL5 = 0 (внешнее питание выключено)
+    mb();
+
+    printf("led: initialized (PL5=0 ext power off)\n");
 }
 
 // PA15: 1 = горит (HIGH-active)

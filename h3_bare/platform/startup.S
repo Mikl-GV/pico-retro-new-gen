@@ -105,6 +105,31 @@ _start:
     str r2, [r0], #4
     b 1b
 2:
+
+    /* DGN '5': BSS обнулён */
+    mov r0, #'5'
+    bl uart_dbg
+
+    /* C++ static constructors (__init_array) — иначе глобалы вроде
+     *   unsigned char *scanlineY = get_address(0x8009)
+     * остаются NULL, и NGP-рендер пишет в SRAM вместо VRAM.
+     * init_array лежит в .text (не в BSS), поэтому не затрётся.
+     * Формат: массив ARM-функций (4 байта каждая), blx работает из ARM. */
+    ldr r0, =__init_array_start
+    ldr r1, =__init_array_end
+3:  cmp r0, r1
+    beq 4f
+    ldr r3, [r0]
+    add r0, r0, #4
+    push {r0, r1}
+    blx r3
+    pop {r0, r1}
+    b 3b
+4:
+
+    /* DGN '6': конструкторы выполнены */
+    mov r0, #'6'
+    bl uart_dbg
     /* DGN 'A': перед main */
     mov r0, #'A'
     bl uart_dbg

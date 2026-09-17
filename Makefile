@@ -1,0 +1,313 @@
+# Makefile — параллельная сборка мультисистемного эмулятора H3 (замена build.sh).
+# Использование:
+#   make            — собрать build/h3_bare.bin (+ копию в корень h3_bare.bin)
+#   make -j$(nproc) — параллельно, на многоядерной машине ~15 сек
+#   make clean      — удалить build/
+#   make sd         — собрать SD-образ build/h3_bare.img
+#   make fel        — залить через sunxi-fel
+#   make help       — справка
+#
+# Поведение идентично старому build.sh, но объекты считаются один раз:
+# файл перекомпилируется только если изменился исходник/заголовки/флаги.
+
+TOP      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+BUILD    := $(TOP)/build
+BIN      := $(BUILD)/h3_bare.bin
+ELF      := $(BUILD)/h3_bare.elf
+IMG      := $(BUILD)/h3_bare.img
+
+# Дефолтная цель — сборка прошивки (не первый попавшийся каталог)
+.DEFAULT_GOAL := all
+
+# ---- Тулчейн ----
+PREFIX := $(if $(shell command -v arm-none-eabi-gcc 2>/dev/null),arm-none-eabi-,arm-linux-gnueabihf-)
+CC   := $(PREFIX)gcc
+CXX  := $(PREFIX)g++
+AS   := $(PREFIX)gcc
+LD   := $(PREFIX)g++
+OBJCOPY := $(PREFIX)objcopy
+
+# ---- Общие флаги ----
+CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
+CFLAGS += -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG
+INCLUDES := -I$(TOP)h3_bare/include -I$(TOP)h3_bare/cores \
+	-I$(TOP)h3_bare/cores/gpgx/core -I$(TOP)h3_bare/cores/gpgx/libretro_inc \
+	-I$(TOP)h3_bare/cores/gpgx/core/z80 -I$(TOP)h3_bare/cores/gpgx/core/m68k \
+	-I$(TOP)h3_bare/cores/gpgx/core/ntsc -I$(TOP)h3_bare/cores/gpgx/core/sound \
+	-I$(TOP)h3_bare/cores/gpgx/core/input_hw -I$(TOP)h3_bare/cores/gpgx/core/cart_hw \
+	-I$(TOP)h3_bare/cores/gpgx/core/cart_hw/svp -I$(TOP)h3_bare/cores/gpgx/core/cd_hw \
+	-I$(TOP)h3_bare/cores/fceumm -I$(TOP)h3_bare/cores/fceumm/inc \
+	-I$(TOP)h3_bare/cores/fceumm/input -I$(TOP)h3_bare/cores/fceumm/boards \
+	-I$(TOP)h3_bare/cores/fceumm/palettes -I$(TOP)h3_bare/cores/fceumm/fir \
+	-I$(TOP)h3_bare/cores/mcume -I$(TOP)h3_bare/cores/a7800 -I$(TOP)h3_bare/cores/a5200 \
+	-I$(TOP)h3_bare/cores/gameboy -I$(TOP)h3_bare/cores/portfolio -I$(TOP)h3_bare/cores/lynx \
+	-I$(TOP)h3_bare/cores/ngp -I$(TOP)h3_bare/src -I$(TOP)h3_bare/platform/fb
+SNES_INCLUDES := -I$(TOP)h3_bare/cores/snes -I$(TOP)h3_bare/cores/snes/libretro-common/include $(INCLUDES)
+CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics
+
+# Пер-ядровые флаги
+FCEUMM_CFLAGS := $(CFLAGS) -DFRONTEND_SUPPORTS_RGB565 -DFCEU_VERSION_NUMERIC=9900
+GBFLAGS       := $(CFLAGS) -std=gnu99 -DPRIu64=\"llu\" -DPRIx64=\"llx\" -DPRId64=\"lld\"
+SNES_CFLAGS   := $(CFLAGS) -DLOAD_FROM_MEMORY -DHAVE_NO_LANGEXTRA -DLAGFIX -Wno-incompatible-pointer-types
+GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=16777216 -DUSE_16BPP_RENDERING -DFRONTEND_SUPPORTS_RGB565
+
+# ---- Авто-генерация списков объектов ----
+OBJ  := $(BUILD)/startup.o
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheats))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,uart printf libc_min main cxx_runtime udelay h3_hs_timer h3_ccu h3 h3_de2 h3_hdmi dw_hdmi h3_lcd))
+
+# MCUME
+MCUME := $(TOP)h3_bare/cores/mcume
+OBJ  += $(foreach fn,Vcsemu Vmachine Raster Table Display Collision Tiasound Options Keyboard Exmacro,$(BUILD)/mcume_$(fn).o)
+OBJ  += $(foreach fn,Cpu Memory,$(BUILD)/mcume_$(fn).o)
+
+# A7800
+A7800 := $(TOP)h3_bare/cores/a7800
+OBJ  += $(foreach fn,ProSystem Sally Maria Memory Cartridge Pokey Riot Tia Region Bios Palette,$(BUILD)/a7800_$(fn).o)
+
+# A5200
+A5200 := $(TOP)h3_bare/cores/a5200
+OBJ  += $(addprefix $(BUILD)/,a5200_atari5200.o)
+OBJ  += $(foreach fn,antic cpu crc32 gtia pokey pokeysnd,$(BUILD)/a5200_$(fn).o)
+
+# Game Boy
+GB := $(TOP)h3_bare/cores/gameboy
+OBJ  += $(foreach fn,emulator memory joypad,$(BUILD)/gb_$(fn).o)
+
+# Lynx
+LYNX := $(TOP)h3_bare/cores/lynx
+OBJ  += $(foreach fn,system mikie susie cart memmap eeprom rom ram lynxdec,$(BUILD)/lynx_$(fn).o)
+OBJ  += $(addprefix $(BUILD)/,lynx_blip_buffer.o lynx_blip_stereo.o)
+
+# NGP
+NGP := $(TOP)h3_bare/cores/ngp
+OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o)
+
+# FCEUmm
+FCEUMM := $(TOP)h3_bare/cores/fceumm
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,fceumm_host fceumm_fceu fceumm_x6502 fceumm_ppu fceumm_sound fceumm_cart fceumm_ines fceumm_input fceumm_fds fceumm_fds_apu fceumm_palette fceumm_video fceumm_file fceumm_general fceumm_state fceumm_crc32 fceumm_md5 fceumm_fceu-endian fceumm_fceu-memory fceumm_cheat fceumm_filter fceumm_libretro_compat fceumm_vsuni fceumm_unif))
+OBJ  += $(patsubst $(FCEUMM)/input/%.c,$(BUILD)/fceumm_in_%.o,$(wildcard $(FCEUMM)/input/*.c))
+OBJ  += $(patsubst $(FCEUMM)/boards/%.c,$(BUILD)/fceumm_b_%.o,$(wildcard $(FCEUMM)/boards/*.c))
+
+# SNES (Snes9x 2005)
+SNES := $(TOP)h3_bare/cores/snes
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,snes_c4 snes_c4emu snes_cheats2 snes_cheats snes_clip snes_cpu snes_cpuexec snes_cpuops snes_data snes_dma snes_dsp1 snes_fxemu snes_fxinst snes_gfx snes_getset snes_globals snes_memmap snes_obc1 snes_ppu snes_sa1 snes_sa1cpu snes_sdd1 snes_sdd1emu snes_seta010 snes_seta011 snes_seta018 snes_seta snes_spc7110 snes_spc7110dec snes_srtc snes_tile snes_apu snes_soundux snes_spc700))
+
+# GPGX (Mega Drive / SMS)
+GPGX := $(TOP)h3_bare/cores/gpgx
+OBJ  += $(foreach f,$(wildcard $(GPGX)/core/*.c),$(BUILD)/gpgx_core_$(notdir $(f:.c=.o)))
+OBJ  += $(foreach d,z80 m68k ntsc sound input_hw cart_hw cd_hw,$(foreach f,$(wildcard $(GPGX)/core/$(d)/*.c),$(BUILD)/gpgx_$(d)_$(notdir $(f:.c=.o))))
+OBJ  += $(foreach f,$(wildcard $(GPGX)/core/cart_hw/svp/*.c),$(BUILD)/gpgx_svp_$(notdir $(f:.c=.o)))
+
+# ---- Правила компиляции ----
+$(BUILD):
+	mkdir -p $(BUILD)
+
+$(BUILD)/startup.o: $(TOP)h3_bare/platform/startup.S | $(BUILD)
+	$(AS) $(CFLAGS) -x assembler-with-cpp -c -o $@ $<
+
+$(BUILD)/%.o: $(TOP)h3_bare/src/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/%.o: $(TOP)h3_bare/src/%.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/%.o: $(TOP)h3_bare/platform/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/%.o: $(TOP)h3_bare/platform/fb/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+# ---- cores/*.c, cores/*.cpp (общие правила по каталогам) ----
+$(BUILD)/menu.o: $(TOP)h3_bare/cores/menu.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/rom_browser.o: $(TOP)h3_bare/cores/rom_browser.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/cheats.o: $(TOP)h3_bare/cores/cheats.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/settings.o: $(TOP)h3_bare/cores/settings.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/sd.o: $(TOP)h3_bare/cores/sd.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fat.o: $(TOP)h3_bare/cores/fat.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/usb_ohci.o: $(TOP)h3_bare/cores/usb_ohci.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/usb_kbd.o: $(TOP)h3_bare/cores/usb_kbd.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fb_text.o: $(TOP)h3_bare/cores/fb_text.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/led.o: $(TOP)h3_bare/cores/led.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/emu.o: $(TOP)h3_bare/cores/emu.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/system_atari_h3.o: $(TOP)h3_bare/cores/system_atari_h3.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/system_a7800_h3.o: $(TOP)h3_bare/cores/system_a7800_h3.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/system_a5200_h3.o: $(TOP)h3_bare/cores/system_a5200_h3.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gameboy_host.o: $(TOP)h3_bare/cores/gameboy_host.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gameboy_stubs.o: $(TOP)h3_bare/cores/gameboy_stubs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/lynx_host.o: $(TOP)h3_bare/cores/lynx_host.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/snes_host.o: $(TOP)h3_bare/cores/snes_host.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(SNES_CFLAGS) $(SNES_INCLUDES) -c -o $@ $<
+$(BUILD)/snes_compat.o: $(TOP)h3_bare/cores/snes_compat.c | $(BUILD)
+	$(CC) $(CFLAGS) $(SNES_INCLUDES) -c -o $@ $<
+$(BUILD)/fceumm_host.o: $(TOP)h3_bare/cores/fceumm/nes_host_fceumm.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_host.o: $(TOP)h3_bare/cores/gpgx/system_gpgx_h3.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_mathx.o: $(TOP)h3_bare/cores/gpgx/gpgx_math.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_missing.o: $(TOP)h3_bare/cores/gpgx/gpgx_missing.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gp_cheats.o: $(TOP)h3_bare/cores/gp_cheats.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/mcume_%.o: $(TOP)h3_bare/cores/mcume/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu89 -O0 -c -o $@ $<
+$(BUILD)/mcume_Cpu.o: $(TOP)h3_bare/cores/mcume/Cpu.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu89 -O2 -c -o $@ $<
+$(BUILD)/mcume_Memory.o: $(TOP)h3_bare/cores/mcume/Memory.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu89 -O2 -c -o $@ $<
+
+$(BUILD)/a7800_%.o: $(TOP)h3_bare/cores/a7800/%.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/a5200_atari5200.o: $(TOP)h3_bare/cores/a5200/atari5200.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu11 -c -o $@ $<
+$(BUILD)/a5200_%.o: $(TOP)h3_bare/cores/a5200/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu89 -c -o $@ $<
+
+$(BUILD)/portfolio_system.o: $(TOP)h3_bare/cores/portfolio/system_portfolio.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/portfolio_%.o: $(TOP)h3_bare/cores/portfolio/%.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/gb_%.o: $(TOP)h3_bare/cores/gameboy/%.c | $(BUILD)
+	$(CC) $(GBFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/lynx_%.o: $(TOP)h3_bare/cores/lynx/%.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/lynx_blip_buffer.o: $(TOP)h3_bare/cores/lynx/blip/Blip_Buffer.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -fhosted -c -o $@ $<
+$(BUILD)/lynx_blip_stereo.o: $(TOP)h3_bare/cores/lynx/blip/Stereo_Buffer.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -fhosted -c -o $@ $<
+
+$(BUILD)/ngp_host.o: $(TOP)h3_bare/cores/ngp/ngp_host.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_main.o: $(TOP)h3_bare/cores/ngp/main.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_memory.o: $(TOP)h3_bare/cores/ngp/memory.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_graphics.o: $(TOP)h3_bare/cores/ngp/graphics.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_tlcs900h.o: $(TOP)h3_bare/cores/ngp/tlcs900h.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_z80.o: $(TOP)h3_bare/cores/ngp/z80.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_flash.o: $(TOP)h3_bare/cores/ngp/flash.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_neopopsound.o: $(TOP)h3_bare/cores/ngp/neopopsound.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_sound.o: $(TOP)h3_bare/cores/ngp/sound.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_ngpBios.o: $(TOP)h3_bare/cores/ngp/ngpBios.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_input.o: $(TOP)h3_bare/cores/ngp/input.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILD)/fceumm_%.o: $(TOP)h3_bare/cores/fceumm/%.c | $(BUILD)
+	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fceumm_in_%.o: $(TOP)h3_bare/cores/fceumm/input/%.c | $(BUILD)
+	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fceumm_b_%.o: $(TOP)h3_bare/cores/fceumm/boards/%.c | $(BUILD)
+	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fceumm_libretro_compat.o: $(TOP)h3_bare/cores/fceumm/libretro_compat.c | $(BUILD)
+	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<
+
+# SNES: PPU дублируется между FCEUmm и Snes9x — переименовываем во ВСЕХ snes_*.o
+# (build.sh применял objcopy --redefine-sym PPU=snes_PPU ко всем объектам SNES),
+# иначе другие файлы ядра остаются со ссылками на общий PPU.
+$(BUILD)/snes_%.o: $(TOP)h3_bare/cores/snes/%.c | $(BUILD)
+	$(CC) $(SNES_CFLAGS) $(SNES_INCLUDES) -c -o $@.tmp $<
+	$(OBJCOPY) --redefine-sym PPU=snes_PPU $@.tmp $@
+	rm -f $@.tmp
+
+# ---- GPGX (Mega Drive / SMS) — паттерн-правила по подкаталогам ----
+$(BUILD)/gpgx_core_%.o: $(TOP)h3_bare/cores/gpgx/core/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_z80_%.o: $(TOP)h3_bare/cores/gpgx/core/z80/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_m68k_%.o: $(TOP)h3_bare/cores/gpgx/core/m68k/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_ntsc_%.o: $(TOP)h3_bare/cores/gpgx/core/ntsc/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_sound_%.o: $(TOP)h3_bare/cores/gpgx/core/sound/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_input_hw_%.o: $(TOP)h3_bare/cores/gpgx/core/input_hw/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_cart_hw_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_cd_hw_%.o: $(TOP)h3_bare/cores/gpgx/core/cd_hw/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
+	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
+
+# ---- Линковка ----
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
+	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
+	    -o $@ $(OBJ) -lgcc -lc -lm -lgcc
+
+$(BIN): $(ELF)
+	$(OBJCOPY) -O binary $(ELF) $@
+	cp -f $@ $(TOP)h3_bare.bin
+	@echo "--- h3_bare.bin: $$(stat -c%s $@) байт (build/ и корень) ---"
+
+.PHONY: all clean sd fel help
+all: $(BIN)
+
+clean:
+	rm -rf $(BUILD) $(TOP)h3_bare.bin
+
+# ---- SD-образ (опционально) ----
+sd: $(BIN)
+	@mkdir -p $(BUILD)/u-boot
+	@if [ ! -f $(BUILD)/u-boot/u-boot-sunxi-with-spl.bin ]; then \
+	    echo "Файл build/u-boot/u-boot-sunxi-with-spl.bin не найден."; \
+	    echo "Соберите U-Boot вручную (см. docs/BUILD.md)."; \
+	    exit 1; \
+	fi
+	@printf 'fatload mmc 0 0x40000000 h3_bare.bin\ngo 0x40000000\n' > $(BUILD)/boot.cmd
+	@mkimage -A arm -T script -C none -n "pico-retro" -d $(BUILD)/boot.cmd $(BUILD)/boot.scr
+	@dd if=/dev/zero bs=1M count=64 of=$(IMG) 2>/dev/null
+	@dd if=$(BUILD)/u-boot/u-boot-sunxi-with-spl.bin of=$(IMG) bs=1k seek=8 conv=notrunc 2>/dev/null
+	@dd if=/dev/zero bs=1M count=48 of=$(BUILD)/fatpart.bin 2>/dev/null
+	@mkfs.vfat -F 32 -n H3_RETRO $(BUILD)/fatpart.bin >/dev/null 2>&1
+	@export MTOOLS_SKIP_CHECK=1; \
+	    mcopy -i $(BUILD)/fatpart.bin $(BUILD)/boot.scr ::boot.scr; \
+	    mcopy -i $(BUILD)/fatpart.bin $(BIN) ::h3_bare.bin; \
+	    mmd -i $(BUILD)/fatpart.bin ::roms; \
+	    for d in $(TOP)roms/*/; do mmd -i $(BUILD)/fatpart.bin "::roms/$$(basename $$d)"; done; \
+	    for f in $(TOP)roms/*/*; do [ -f "$$f" ] && mcopy -i $(BUILD)/fatpart.bin "$$f" "::roms/$$(basename $$(dirname $$f))/$$(basename $$f)"; done
+	@dd if=$(BUILD)/fatpart.bin of=$(IMG) bs=1M seek=16 conv=notrunc 2>/dev/null
+	@python3 -c 'import struct,sys; img=open(sys.argv[1],"r+b"); img.seek(446); img.write(b"\x00"*64); img.seek(446); img.write(b"\x80\x01\x01\x00\x0c\xfe\xff\xff"+struct.pack("<II",32768,98304)); img.seek(510); img.write(b"\x55\xaa"); img.close()' $(IMG)
+	@rm -f $(BUILD)/fatpart.bin
+	@echo "--- h3_bare.img: $$(stat -c%s $(IMG)) байт ---"
+
+fel: $(BIN)
+	sudo sunxi-fel write 0x40000000 $(BIN) execute 0x40000000
+
+help:
+	@echo "make            — собрать build/h3_bare.bin (+ копия в корень)"
+	@echo "make -j\$$(nproc) — параллельная сборка (все ядра)"
+	@echo "make clean      — удалить build/"
+	@echo "make sd         — SD-образ (нужен U-Boot SPL)"
+	@echo "make fel        — заливка через sunxi-fel"

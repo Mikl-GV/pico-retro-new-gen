@@ -16,16 +16,17 @@
 | 8 | Game Gear | Z80 | ✅ работает | Genesis Plus GX |
 | 9 | Sega Mega Drive / Genesis | 68000 | ✅ работает | Genesis Plus GX |
 | 10 | Atari Lynx | 6502 | ✅ работает | Handy |
-| 11 | ColecoVision | Z80 | 🔲 план | — |
-| 12 | ZX Spectrum | Z80 | 🔲 план | — |
-| 13 | MSX / MSX2 | Z80 | 🔲 план | — |
-| 14 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
-| 15 | PC Engine | HuC6280 | 🔲 план | — |
-| 16 | Аркады | 68000/Z80 | 🔲 план | — |
-| 17 | GCE Vectrex | 6809 | 🔲 план | — |
-| 18 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
-| 19 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
-| 20 | Game Boy Advance | ARM7TDMI | 🔲 план | gpSP (ядро в h3_bare/cores/gba_sp/, порт не доделан) |
+| 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
+| 12 | ColecoVision | Z80 | 🔲 план | — |
+| 13 | ZX Spectrum | Z80 | 🔲 план | — |
+| 14 | MSX / MSX2 | Z80 | 🔲 план | — |
+| 15 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
+| 16 | PC Engine | HuC6280 | 🔲 план | — |
+| 17 | Аркады | 68000/Z80 | 🔲 план | — |
+| 18 | GCE Vectrex | 6809 | 🔲 план | — |
+| 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
+| 20 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
+| 21 | Game Boy Advance | ARM7TDMI | 🔲 план | gpSP (ядро в h3_bare/cores/gba_sp/, порт не доделан) |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
 
@@ -55,5 +56,5 @@
 - USB-клавиатура (boot protocol), автоповтор, HID-раскладки
 - HDMI 1024×600 @ 60 Гц
 - UART-отладка 115200 8N1
-- 11 эмуляторов в одном бинаре (~3.4 МБ)
+- 12 эмуляторов в одном бинаре (~3.4 МБ)
 - GPT/поддержка нескольких FAT-разделов, авто-поиск /roms

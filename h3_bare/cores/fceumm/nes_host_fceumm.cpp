@@ -26,6 +26,8 @@ extern "C" {
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "cheatdb.h"
+#include "cheat.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -175,6 +177,25 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     // Звук не нужен (нет DAC-вывода) — отключаем, чтобы не аллоцировать буферы
     FCEUI_Sound(0);
 
+    // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run
+    // через cheats_load: NES-коды — 6/8-символьный Game Genie + PAR)
+    FCEU_ResetCheats();
+    int ccnt = cheats_count();
+    for (int i = 0; i < ccnt; i++) {
+        if (!cheats_enabled(i)) continue;
+        const char* code = cheats_code(i);
+        if (!code || !code[0]) continue;
+        uint16_t a; uint8_t v; int c; int t;
+        if (FCEUI_DecodeGG(code, &a, &v, &c)) {
+            FCEUI_AddCheat(cheats_desc(i) ? cheats_desc(i) : "cheat", a, v, c, 1);
+        } else if (FCEUI_DecodePAR(code, &a, &v, &c, &t)) {
+            FCEUI_AddCheat(cheats_desc(i) ? cheats_desc(i) : "cheat", a, v, c, t);
+        } else {
+            printf("NEScheat: bad code '%s'\n", code);
+        }
+    }
+    if (ccnt) printf("NEScheat: applied %d\n", ccnt);
+
     g_loaded = 1;
     printf("FCEUmm: type=%d inputfc=%d\n", gi->type, gi->inputfc);
     return 1;
@@ -207,6 +228,7 @@ extern "C" void fceumm_run_frame(void) {
 // ---- пауза/стоп (освобождение) ----
 extern "C" void fceumm_stop(void) {
     if (!g_loaded) return;
+    FCEU_ResetCheats();
     FCEUI_CloseGame();
     FCEUI_Kill();
     g_loaded = 0;
