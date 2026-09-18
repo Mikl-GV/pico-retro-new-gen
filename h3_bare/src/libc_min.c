@@ -156,13 +156,32 @@ void exit(int code) {
 int abs(int x) { return x < 0 ? -x : x; }
 
 // newlib-заглушки (некоторые модули тянут _sbrk / _gettimeofday)
+// Простой bump-аллокатор от _hend (конец образа) вверх. Без free —
+// для эмуляторов это нормально: память освобождается при перезапуске
+// эмулятора (ядро инициализируется заново, куча растёт только вверх).
+extern char _hend[];
+
+static char* g_brk = 0;
+
 void* _sbrk(int incr) {
-    (void)incr;
-    return (void*)-1; // не поддерживаем
+    if (!g_brk) g_brk = _hend;
+    char* cur = g_brk;
+    if (incr > 0) {
+        uintptr_t a = ((uintptr_t)cur + 7u) & ~(uintptr_t)7u;
+        g_brk = (char*)(a + (uintptr_t)incr);
+        return (void*)a;
+    }
+    g_brk = cur + incr;
+    return cur;
 }
 
 int _gettimeofday(void* tv, void* tz) {
     (void)tv; (void)tz;
+    return -1;
+}
+
+int _unlink(const char* path) {
+    (void)path;
     return -1;
 }
 

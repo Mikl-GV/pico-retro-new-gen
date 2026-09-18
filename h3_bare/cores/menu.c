@@ -79,6 +79,7 @@ static void build_menu(void) {
     int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
     if (n <= 0) return;
 
+    // Ищем dir-системы (папки на SD)
     for (int i = 0; i < n && g_item_count < MAX_MENU_ITEMS; i++) {
         // Только папки (size == 0)
         if (dirs[i].size != 0) continue;
@@ -130,6 +131,26 @@ static void build_menu(void) {
             g_items[g_item_count].status = STATUS_PLANNED;
             g_items[g_item_count].present = 1;
         }
+        g_item_count++;
+    }
+
+    // Все остальные системы из systems.h — показываем всегда (даже без
+    // папки на SD), чтобы roadmap был виден. С папкой — обычный пункт;
+    // без папки — серый, Enter показывает заглушку «Нет папки / планируется».
+    for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
+        if (systems[i].builtin) continue;
+        int dup = 0;
+        for (int k = 0; k < g_item_count; k++) {
+            if (strcmp(g_items[k].id, systems[i].id) == 0) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (g_item_count >= MAX_MENU_ITEMS) break;
+        g_items[g_item_count].id = systems[i].id;
+        g_items[g_item_count].name = systems[i].name;
+        g_items[g_item_count].dir = NULL;
+        g_items[g_item_count].group = systems[i].group;
+        g_items[g_item_count].status = systems[i].status;
+        g_items[g_item_count].present = 0;   // папки на SD нет
         g_item_count++;
     }
 }
@@ -319,6 +340,15 @@ int menu_run(void) {
             }
         } else if (k == 40 || k == '\n' || k == '\r') {
             int item = rows[sel_row].item;
+            if (item >= 0) {
+                // Система без папки на SD (пункт из системной таблицы, present=0) —
+                // не открываем браузер (dir=NULL → Data Abort), показываем заглушку.
+                if (!g_items[item].present && !g_items[item].dir) {
+                    extern void menu_planned_message(void);
+                    menu_planned_message();
+                    continue;
+                }
+            }
             if (item == -2 || item == -3 || item == -4 || item >= 0) {
                 // вход в подменю (Settings/Help/About/браузер ROM):
                 // ждём отпускания Enter и геймпада, чтобы зажатая кнопка
@@ -522,4 +552,18 @@ void menu_about(void) {
         int k = input_wait();
         if (k == 41 || k == 27) return;
     }
+}
+
+// ---- Заглушка для системы без папки на SD (PLANNED/WIP) ----
+void menu_planned_message(void) {
+    fb_clear();
+    fb_draw_stars();
+    fb_puts_s(60, 120, "System is planned / no ROM folder on SD", 2, 0x00FFAA00);
+    fb_puts_s(60, 180, "Create folder /roms/<id>/ and put ROM files", 1, 0x00FFFFFF);
+    fb_puts_s(60, 210, "to enable this system", 1, 0x00AAAAAA);
+    fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
+    fb_flush();
+
+    int k = input_wait();
+    while (k != 41 && k != 27) k = input_wait();
 }

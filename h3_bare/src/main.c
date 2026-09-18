@@ -12,6 +12,7 @@
 #include "rom_browser.h"
 #include "settings.h"
 #include "emu.h"
+#include "h3_hs_timer.h"
 #include "led.h"
 #include "sega_pad.h"
 
@@ -22,6 +23,48 @@ void h3_hs_timer_init(void);
 void udelay(uint32_t d);
 
 #define FB_ADDR 0x5F900000
+
+// ---- MSX: экран выбора «BASIC / Load cartridge» ----
+// Возвращает 0 = ESC/назад, 1 = Start BASIC, 2 = Load cartridge.
+static int msx_launch_dialog(int has_dir) {
+    int sel = 0;   // 0 = BASIC, 1 = Load cartridge
+    fb_draw_stars();
+    for (;;) {
+        fb_clear();
+        fb_draw_stars();
+        fb_puts_s(60, 80, "MSX / Yamaha YIS-503II", 2, 0x00FFAA00);
+        fb_fill_rect(60, 120, 300, 2, 0x00FFFFFF);
+
+        const char* opts[2];
+        opts[0] = "1. Start BASIC";
+        opts[1] = has_dir ? "2. Load cartridge from SD" : "2. (no /roms/msx folder)";
+        int nopts = has_dir ? 2 : 1;
+
+        int y = 180;
+        for (int i = 0; i < nopts; i++) {
+            uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+            if (i == sel) fb_fill_rect(50, y - 4, 450, 26, 0x00222222);
+            fb_puts_s(70, y, opts[i], 1, clr);
+            y += 36;
+        }
+
+        fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+        fb_flush();
+
+        int k = usb_input_poll();
+        if (!k) { h3_hs_timer_delay(16000); continue; }
+        if (k == 82) { if (nopts > 1) sel = 0; }        // Up → BASIC
+        else if (k == 81) { if (nopts > 1) sel = 1; }   // Down → cartridge
+        else if (k == 40 || k == '\n' || k == '\r') {
+            if (sel == 0) return 1;
+            if (has_dir) return 2;
+            return 1;   // если папки нет — Enter = BASIC
+        }
+        else if (k == 41 || k == 27) return 0;
+        // задержка ~100 мс, чтобы не листать на авторепите клавиатуры/геймпада
+        h3_hs_timer_delay(100000);
+    }
+}
 
 void main(void) {
     int sd_ok = 0;
@@ -103,6 +146,31 @@ void main(void) {
         // запускаются напрямую из меню, минуя браузер ROM.
         if (strcmp(id, "portfolio") == 0) {
             emu_run_portfolio(NULL, 0, name);
+            continue;
+        }
+
+        // MSX: BIOS и BASIC вшиты. Показываем экран выбора:
+        //   1. Start BASIC
+        //   2. Load cartridge from SD (если /roms/msx есть)
+        if (strcmp(id, "msx") == 0) {
+            extern void emu_run_msx(const uint8_t*, uint32_t, const char*);
+            // проверяем наличие папки /roms/msx
+            int has_dir = 0;
+            fat_entry_t* list = fat_scratch();
+            int n = fat_list("/roms", list, FAT_MAX_ENTRIES);
+            for (int i = 0; i < n; i++) {
+                if (list[i].size != 0) continue;
+                const char* dn = list[i].name;
+                if ((dn[0] == 'm' || dn[0] == 'M') &&
+                    (dn[1] == 's' || dn[1] == 'S') &&
+                    (dn[2] == 'x' || dn[2] == 'X')) { has_dir = 1; break; }
+            }
+
+            int choice = msx_launch_dialog(has_dir);
+            if (choice == 1)
+                emu_run_msx(NULL, 0, name);    // BASIC
+            else if (choice == 2)
+                rom_browser_run("msx", name, "msx");
             continue;
         }
 

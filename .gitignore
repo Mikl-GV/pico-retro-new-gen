@@ -10,4 +10,4 @@ build/
 Thumbs.db
 roms/
 emulator-refs/
-host/
+/host/

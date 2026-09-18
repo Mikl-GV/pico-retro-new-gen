@@ -195,13 +195,13 @@ void gp_cheats_compile(int is_md) {
 // ---- применение ROM-патча (банкованного) ----
 // Вызывается при загрузке и при каждой смене банка (ROMCheatUpdate)
 static void apply_rom_cheat(gp_patch_t* p) {
-    uint8_t *ptr;
-
     if (g_is_md) {
-        // MD: ROM в gp_rom, прямая 16-bit запись
+        // MD: ROM в gp_rom, побайтовая 16-bit запись (без unaligned STRH).
         if (p->addr < gp_rom_size) {
-            p->old = *(uint16_t *)(gp_rom + (p->addr & ~1));
-            *(uint16_t *)(gp_rom + (p->addr & ~1)) = p->data;
+            uint32_t a = p->addr & ~1u;
+            p->old = (uint16_t)((gp_rom[a] << 8) | gp_rom[a + 1]);
+            gp_rom[a]     = (uint8_t)(p->data >> 8);
+            gp_rom[a + 1] = (uint8_t)p->data;
         }
         return;
     }
@@ -209,7 +209,7 @@ static void apply_rom_cheat(gp_patch_t* p) {
     // SMS/GG: банкованный z80_readmap, адрес в пространстве Z80 (0x0000-0x7FFF)
     // GG-код даёт адрес как есть; если он >= 0x8000 — не ROM-область Z80
     if (p->addr < 0x8000) {
-        ptr = &z80_readmap[p->addr >> 10][p->addr & 0x3FF];
+        uint8_t* ptr = &z80_readmap[p->addr >> 10][p->addr & 0x3FF];
         // проверяем compare (old) против текущего содержимого банка
         if (p->old == *ptr || !p->old) {
             *ptr = (uint8_t)p->data;
@@ -222,7 +222,9 @@ static void apply_rom_cheat(gp_patch_t* p) {
 static void unapply_rom_cheat(gp_patch_t* p) {
     if (g_is_md) {
         if (p->addr < gp_rom_size) {
-            *(uint16_t *)(gp_rom + (p->addr & ~1)) = p->old;
+            uint32_t a = p->addr & ~1u;
+            gp_rom[a]     = (uint8_t)(p->old >> 8);
+            gp_rom[a + 1] = (uint8_t)p->old;
         }
         return;
     }
@@ -232,19 +234,40 @@ static void unapply_rom_cheat(gp_patch_t* p) {
     }
 }
 
+// ---- clean D-cache для запатченных ROM-областей ----
+// После записи патчей в DRAM (ROM_BUF) dirty-линии write-back D-cache
+// могут не дойти до DRAM, и 68k/VDP DMA прочитают старые данные. Для MD
+// чистим по адресу патча; для SMS/GG — по указателю p->prev (текущий банк).
+static void cheats_cache_clean(void) {
+    for (int i = 0; i < g_patch_count; i++) {
+        gp_patch_t* p = &g_patches[i];
+        if (!p->enabled || !p->is_rom) continue;
+        uint32_t a;
+        if (g_is_md) {
+            a = p->addr & ~0x1Fu;
+        } else {
+            if (!p->prev) continue;
+            a = (uint32_t)p->prev & ~0x1Fu;
+        }
+        uint32_t e = a + 64;
+        for (; a < e; a += 32)
+            __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
+    }
+    __asm volatile("dsb" ::: "memory");
+}
+
 // ---- применение RAM-патчей (раз в кадр) ----
 static void apply_ram_cheats(void) {
     for (int i = 0; i < g_patch_count; i++) {
         gp_patch_t* p = &g_patches[i];
         if (!p->enabled || p->is_rom) continue;
         // AR 8-bit (SMS/GG): адрес в Work RAM 0xC000-0xFFFF -> 0xFF0000|(a&0x1FFF)
-        // AR 16-bit (MD): адрес 24-бит, work_ram 0xFF0000?
+        // AR 16-bit (MD): адрес 24-бит, work_ram 0xFF0000 (64KB).
+        // ВНИМАНИЕ: адреса MD < 0xFF0000 — это ROM/векторы, в RAM их писать нельзя.
         if (g_is_md) {
-            if (p->addr >= 0xFF0000) {
+            if (p->addr >= 0xFF0000 && p->addr < 0xFF0000 + 0x10000) {
                 uint32_t a = p->addr & 0xFFFF;
-                if (a < 0x10000) work_ram[a] = (uint8_t)p->data;
-            } else if (p->addr < 0x2000) {
-                work_ram[p->addr] = (uint8_t)p->data;
+                work_ram[a] = (uint8_t)p->data;
             }
         } else {
             if (p->addr >= 0xC000) {
@@ -263,6 +286,11 @@ void gp_cheats_apply(void) {
         if (!p->enabled) continue;
         if (p->is_rom) apply_rom_cheat(p);
     }
+    // ROM-патчи пишут в DRAM (cart.rom / ROM_BUF), а D-cache write-back
+    // может не сбросить изменения → 68k DMA читает старые данные → игра
+    // зависает. Принудительный clean D-cache для запятнанных адресов.
+    cheats_cache_clean();
+
     apply_ram_cheats();
 }
 
@@ -287,6 +315,9 @@ void ROMCheatUpdate(void) {
                 apply_rom_cheat(p);
             }
         }
+        // после смены банка страницы переставлены: clean D-cache по новым
+        // адресам p->prev, иначе Z80/68k читают старые (кэшированные) данные
+        cheats_cache_clean();
     }
 }
 

@@ -56,6 +56,20 @@ static void ggenie_write_byte(unsigned int address, unsigned int data);
 static void ggenie_write_word(unsigned int address, unsigned int data);
 static void ggenie_write_regs(unsigned int offset, unsigned int data);
 
+/* Побайтовая 16-bit запись/чтение: GG-адреса бывают нечётными, прямой
+ * uint16* доступ дал бы unaligned STRH (Data Abort в device-регионах /
+ * медленный split access на Cortex-A7). */
+static void ggenie_poke16(uint8_t* base, uint32_t addr, uint16_t val)
+{
+  base[addr]     = (uint8_t)(val >> 8);   /* big-endian: старший байт по адресу */
+  base[addr + 1] = (uint8_t)val;
+}
+
+static uint16_t ggenie_peek16(const uint8_t* base, uint32_t addr)
+{
+  return (uint16_t)((base[addr] << 8) | base[addr + 1]);
+}
+
 void ggenie_init(void)
 {
   ggenie.enabled = 0;
@@ -131,10 +145,23 @@ void ggenie_switch(int enable)
       if (ggenie.regs[0] & (1 << i))
       {
         /* save old value and patch ROM if enabled */
-        ggenie.old[i] = *(uint16 *)(cart.rom + ggenie.addr[i]);
-        *(uint16 *)(cart.rom + ggenie.addr[i]) = ggenie.data[i];
+        ggenie.old[i] = ggenie_peek16(cart.rom, ggenie.addr[i]);
+        ggenie_poke16(cart.rom, ggenie.addr[i], ggenie.data[i]);
       }
     }
+    /* clean D-cache for patched addresses — VDP DMA reads ROM via DRAM,
+     * dirty write-back lines would return old data */
+    for (i=0; i<6; i++)
+    {
+      if (ggenie.regs[0] & (1 << i))
+      {
+        uint32_t a = (uint32_t)(cart.rom + ggenie.addr[i]) & ~0x1Fu;
+        uint32_t e = a + 64;
+        for (; a < e; a += 32)
+          __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
+      }
+    }
+    __asm volatile("dsb" ::: "memory");
   }
   else
   {
@@ -145,7 +172,7 @@ void ggenie_switch(int enable)
       if (ggenie.regs[0] & (1 << i))
       {
         /* restore original ROM value */
-        *(uint16 *)(cart.rom + ggenie.addr[i]) = ggenie.old[i];
+        ggenie_poke16(cart.rom, ggenie.addr[i], ggenie.old[i]);
       }
     }
   }

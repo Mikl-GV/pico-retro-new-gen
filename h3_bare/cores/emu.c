@@ -186,6 +186,7 @@ extern void ngp_run_frame(void);
 extern void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_clear_fb(); fb_clear(); fb_flush();

@@ -1,4 +1,4 @@
-// сеga_pad.c — Sega Mega Drive 6-button геймпад через PCF8574@0x20 (I2C).
+// sega_pad.c — Sega Mega Drive 6-button геймпад через PCF8574@0x20 (I2C).
 //
 // Разводка (TWI0, bit-bang): PA11=SCL, PA12=SDA.
 // PCF8574 (адрес 0x20), раскладка СЕГА (все линии данных — активный низ):
@@ -21,6 +21,12 @@
 // Маска пада (как GPGX input.pad):
 //   UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08 A=0x10 B=0x20 C=0x40
 //   START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
+//
+// ВАЖНО: PCF8574 обновляет выходные защёлки ТОЛЬКО на условии STOP. Repeated
+// START не триггерит обновление — поэтому каждая фаза SELECT завершается
+// отдельным STOP. Холостые циклы (2 и 3) не читают данные — только пишут
+// SELECT со STOP (тик счётчика чипа). После записи SELECT — пауза 15 мкс
+// (установление фронта TH через DE-9). Весь скан ~300 мкс << 1.5 мс лимита.
 
 #include <stdint.h>
 #include <string.h>
@@ -39,81 +45,85 @@ extern int printf(const char* fmt, ...);
 #define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
 #define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
 
-// Настроить пин PA11/PA12 как выход (1) или вход-высокий импеданс (0)
-static inline void pa_set_dir(int pin, int output) {
-    int shift = (pin % 8) * 4;
-    if (output) PA_CFG1 = (PA_CFG1 & ~(0xFu << shift)) | (0x1u << shift);
-    else        PA_CFG1 = (PA_CFG1 & ~(0xFu << shift));          // input
-    __asm volatile("dsb sy" ::: "memory");
+static inline void pa_scl_out(int v) {
+    uint32_t cfg = PA_CFG1;
+    int shift = (SCL_PIN % 8) * 4;
+    if (v) { PA_DAT |=  (1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    else   { PA_DAT &= ~(1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    PA_CFG1 = cfg;
 }
 
-static inline void scl_hi(void) { pa_set_dir(SCL_PIN, 0); }       // high-Z, подтяжка вверх
-static inline void scl_lo(void) { PA_DAT &= ~(1u << SCL_PIN); pa_set_dir(SCL_PIN, 1); }
-static inline void sda_hi(void) { pa_set_dir(SDA_PIN, 0); }
-static inline void sda_lo(void) { PA_DAT &= ~(1u << SDA_PIN); pa_set_dir(SDA_PIN, 1); }
-static inline int  sda_read(void) { return (PA_DAT & (1u << SDA_PIN)) ? 1 : 0; }
-
-static void i2c_delay(void) { udelay(1); }   // ~400 кГц (PCF8574 тянет)
-
-static void i2c_start(void) {
-    sda_hi(); scl_hi(); i2c_delay();
-    sda_lo(); i2c_delay();
-    scl_lo(); i2c_delay();
+static inline void pa_sda_out(int v) {
+    uint32_t cfg = PA_CFG1;
+    int shift = (SDA_PIN % 8) * 4;
+    if (v) { PA_DAT |=  (1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    else   { PA_DAT &= ~(1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    PA_CFG1 = cfg;
 }
 
-static void i2c_stop(void) {
-    sda_lo(); i2c_delay();
-    scl_hi(); i2c_delay();
-    sda_hi(); i2c_delay();
+static inline void pa_sda_in(void) {
+    uint32_t cfg = PA_CFG1;
+    cfg &= ~(0xFu << ((SDA_PIN % 8) * 4));
+    PA_CFG1 = cfg;
 }
+
+static inline int pa_sda_read(void) { return (PA_DAT & (1u << SDA_PIN)) ? 1 : 0; }
+
+// Полупериод SCL. 130 тиков HS-таймера (100 МГц) = 1.3 мкс → SCL ~384 кГц.
+static inline void t_half(void) {
+    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < 130) {
+        __asm__ volatile("nop");
+    }
+}
+
+static void i2c_start(void) { pa_sda_out(1); pa_scl_out(1); t_half();
+                              pa_sda_out(0); t_half(); pa_scl_out(0); t_half(); }
+
+static void i2c_stop(void)  { pa_sda_out(0); pa_scl_out(1); t_half();
+                              pa_sda_out(1); t_half(); }
 
 // Возвращает 0 = ACK, 1 = NACK
 static int i2c_write_byte(uint8_t b) {
     for (int i = 7; i >= 0; i--) {
-        if (b & (1u << i)) sda_hi(); else sda_lo();
-        i2c_delay();
-        scl_hi(); i2c_delay();
-        scl_lo(); i2c_delay();
+        pa_sda_out((b >> i) & 1); t_half();
+        pa_scl_out(1); t_half(); pa_scl_out(0); t_half();
     }
-    // ACK bit
-    sda_hi(); i2c_delay();
-    scl_hi(); i2c_delay();
-    int ack = sda_read();
-    scl_lo(); i2c_delay();
+    pa_sda_in(); t_half();
+    pa_scl_out(1); t_half();
+    int ack = pa_sda_read();
+    pa_scl_out(0); t_half();
     return ack;
 }
 
 // last=1 — NACK после последнего байта чтения
 static uint8_t i2c_read_byte(int last) {
     uint8_t b = 0;
-    sda_hi();
+    pa_sda_in();
     for (int i = 7; i >= 0; i--) {
-        scl_hi(); i2c_delay();
-        if (sda_read()) b |= (1u << i);
-        scl_lo(); i2c_delay();
+        pa_scl_out(1); t_half();
+        if (pa_sda_read()) b |= (1u << i);
+        pa_scl_out(0); t_half();
     }
-    // ACK/NACK
-    if (last) sda_hi(); else sda_lo();
-    i2c_delay();
-    scl_hi(); i2c_delay();
-    scl_lo(); i2c_delay();
-    sda_hi();
+    pa_sda_out(last ? 1 : 0); t_half();
+    pa_scl_out(1); t_half(); pa_scl_out(0); t_half();
+    pa_sda_in();
     return b;
 }
 
-#define PCF8574_W  0x40   // 0x20 << 1 (write)
-#define PCF8574_R  0x41   // 0x20 << 1 | 1 (read)
+#define PCF8574_W  0x40
+#define PCF8574_R  0x41
 
-// Записать байт в PCF8574. Возвращает 1 при успехе.
-static int pcf_write(uint8_t val) {
+// Записать SELECT (TH=1/0) в PCF8574 со STOP — обновление выходов.
+static int pcf_select(uint8_t sel) {
     i2c_start();
     if (i2c_write_byte(PCF8574_W)) { i2c_stop(); return 0; }
-    if (i2c_write_byte(val))       { i2c_stop(); return 0; }
+    if (i2c_write_byte(sel))       { i2c_stop(); return 0; }
     i2c_stop();
     return 1;
 }
 
-// Прочитать байт из PCF8574. Возвращает 0 при ошибке (выходной param).
+// Прочитать PCF8574.
 static int pcf_read(uint8_t* out) {
     i2c_start();
     if (i2c_write_byte(PCF8574_R)) { i2c_stop(); return 0; }
@@ -122,107 +132,88 @@ static int pcf_read(uint8_t* out) {
     return 1;
 }
 
-// Сырые чтения PCF8574 за скан: raw[0]=TH1(D-Pad+B+C), raw[1]=TH0(A+Start), raw[2]=ЦИКЛ4 TH1(Z+Y+X+Mode+B+C)
+// Пауза установления после записи SELECT: фронт TH проходит через DE-9
+// (1-2 м провод), мультиплексор чипа Sega переключается за ~2 мкс, но
+// по разным источникам — до 10-15 мкс. Даём 15 мкс для надёжности.
+static inline void th_settle(void) {
+    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < 1500) {}  // 15 мкс
+}
+
 static uint8_t g_raw[3] = {0xFF, 0xFF, 0xFF};
-
-// Время последнего скана в микросекундах (замеряет sega_pad_scan)
 static uint32_t g_scan_us = 0;
-
-// Статус последнего скана (битовые флаги)
 static uint32_t g_status = 0;
 
-// Доступ к сырым чтениям (для UART-диагностики)
 void sega_pad_get_raw(uint8_t out[3]) {
     out[0] = g_raw[0]; out[1] = g_raw[1]; out[2] = g_raw[2];
 }
 
-uint32_t sega_pad_get_scan_us(void) {
-    return g_scan_us;
-}
-
-uint32_t sega_pad_get_status(void) {
-    return g_status;
-}
+uint32_t sega_pad_get_scan_us(void) { return g_scan_us; }
+uint32_t sega_pad_get_status(void)  { return g_status; }
 
 int sega_pad_init(void) {
-    // PA11/PA12 → входы (высокий импеданс, линии подтянуты) + стартовая запись
-    pa_set_dir(SCL_PIN, 0);
-    pa_set_dir(SDA_PIN, 0);
-    udelay(1000);   // дать линиям установиться (pull-up)
-    // PCF8574: P0..P6 = 1 (вход), P7 = 1 (TH=1, старт)
-    int ok = pcf_write(0xFF);
-    printf("sega_pad: init %s (PA11=SCL PA12=SDA)\n", ok ? "OK" : "FAIL");
+    pa_scl_out(1);
+    pa_sda_in();
+    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < 100000) {}
+
+    // PCF8574: P0..P6 = 1 (вход), P7 = 1 (TH=1, idle)
+    int ok = pcf_select(0xFF);
+    printf("sega_pad: init %s\n", ok ? "OK" : "FAIL");
     return ok;
 }
 
-// Полный скан 6-кнопочного геймпада Sega Mega Drive — классический протокол
-// (прямые линии геймпада через PCF8574, как в рабочем Arduino-адаптере):
-//
-//   P0 = D0 (Up / Z)      P1 = D1 (Down / Y)
-//   P2 = D2 (Left / X)    P3 = D3 (Right / Mode)
-//   P4 = D4 (TL = B / A)  P5 = D5 (TR = C / Start)
-//   P7 = TH (SELECT, выход)
-//
-// Алгоритм (фазы SELECT): T_US ~150 мкс после переключения до чтения,
-// весь цикл сброса — LOW потом HIGH (как в скетче):
-//
-//   ЦИКЛ 1  TH=1: Up Down Left Right  B(TL)  C(TR)
-//   ЦИКЛ 1  TH=0: A(TL)  Start(TR)
-//   ЦИКЛ 2  TH=1, TH=0          (холостые прокрутки счётчика)
-//   ЦИКЛ 3  TH=1, TH=0          (холостые прокрутки счётчика)
-//   ЦИКЛ 4  TH=1: Z(P0) Y(P1) X(P2) Mode(P3)  + B(TL) C(TR)
-//   СБРОС   TH=0, затем TH=1 (idle)
-//
-// Маска (как GPGX): UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08
-//   A=0x10 B=0x20 C=0x40 START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
+// Полный скан 6-кнопочного геймпада. Каждая фаза: запись SELECT → STOP
+// (обновление TH на PCF8574) → пауза → чтение/следующая запись.
+// Холостые циклы 2-3: только запись SELECT (тик счётчика), без чтения.
 uint16_t sega_pad_scan(void) {
     uint8_t r;
     uint16_t pad = 0;
     uint32_t t0 = h3_hs_timer_lo_us();
 
-    #define TH1() do { if (!pcf_write(0xFF)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
-    #define TH0() do { if (!pcf_write(0x7F)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
-
     g_status = 0;
 
     // --- ЦИКЛ 1, TH=1: крестовина (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[0] = r;
-    if (!(r & 0x01)) pad |= 0x01;  // Up    (P0)
-    if (!(r & 0x02)) pad |= 0x02;  // Down  (P1)
-    if (!(r & 0x04)) pad |= 0x04;  // Left  (P2)
-    if (!(r & 0x08)) pad |= 0x08;  // Right (P3)
-    if (!(r & 0x10)) pad |= 0x20;  // B     (P4/TL)
-    if (!(r & 0x20)) pad |= 0x40;  // C     (P5/TR)
+    if (!pcf_select(0xFF)) return 0;    // TH=1
+    th_settle();
+    if (!pcf_read(&r)) return 0;        g_raw[0] = r;
+    if (!(r & 0x01)) pad |= 0x01;  // Up
+    if (!(r & 0x02)) pad |= 0x02;  // Down
+    if (!(r & 0x04)) pad |= 0x04;  // Left
+    if (!(r & 0x08)) pad |= 0x08;  // Right
+    if (!(r & 0x10)) pad |= 0x20;  // B
+    if (!(r & 0x20)) pad |= 0x40;  // C
 
-    // --- ЦИКЛ 1, TH=0: A/Start (TL/TR) + маркер D2/D3=0 (геймпад подключён) ---
-    TH0();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[1] = r;
-    if (!(r & 0x10)) pad |= 0x10;  // A     (P4/TL)
-    if (!(r & 0x20)) pad |= 0x80;  // Start (P5/TR)
-    if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;  // маркер геймпада
+    // --- ЦИКЛ 1, TH=0: A/Start (TL/TR) + маркер геймпада ---
+    if (!pcf_select(0x7F)) return 0;    // TH=0
+    th_settle();
+    if (!pcf_read(&r)) return 0;        g_raw[1] = r;
+    if (!(r & 0x10)) pad |= 0x10;  // A
+    if (!(r & 0x20)) pad |= 0x80;  // Start
+    if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;
 
-    // --- ЦИКЛ 2 и 3: холостые прокрутки счётчика чипа ---
-    TH1(); TH0();   // цикл 2
-    TH1(); TH0();   // цикл 3
+    // --- ЦИКЛ 2: холостая прокрутка (TH=1, TH=0) — только SELECT, без чтения ---
+    if (!pcf_select(0xFF)) return 0;    // TH=1
+    if (!pcf_select(0x7F)) return 0;    // TH=0
+
+    // --- ЦИКЛ 3: холостая прокрутка (TH=1, TH=0) — только SELECT ---
+    if (!pcf_select(0xFF)) return 0;    // TH=1
+    if (!pcf_select(0x7F)) return 0;    // TH=0
 
     // --- ЦИКЛ 4, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[2] = r;
-    if (!(r & 0x01)) pad |= 0x400;  // Z    (P0)
-    if (!(r & 0x02)) pad |= 0x200;  // Y    (P1)
-    if (!(r & 0x04)) pad |= 0x100;  // X    (P2)
-    if (!(r & 0x08)) pad |= 0x800;  // Mode (P3)
-    if (!(r & 0x10)) pad |= 0x20;   // B    (P4/TL)
-    if (!(r & 0x20)) pad |= 0x40;   // C    (P5/TR)
+    if (!pcf_select(0xFF)) return 0;    // TH=1
+    th_settle();
+    if (!pcf_read(&r)) return 0;        g_raw[2] = r;
+    if (!(r & 0x01)) pad |= 0x400;  // Z
+    if (!(r & 0x02)) pad |= 0x200;  // Y
+    if (!(r & 0x04)) pad |= 0x100;  // X
+    if (!(r & 0x08)) pad |= 0x800;  // Mode
+    if (!(r & 0x10)) pad |= 0x20;   // B
+    if (!(r & 0x20)) pad |= 0x40;   // C
 
-    // --- Сброс: TH=0, затем idle TH=1 (как в скетче: LOW->HIGH + пауза) ---
-    TH0();
-    TH1();
-    udelay(100);
-
-    #undef TH1
-    #undef TH0
+    // --- Сброс: TH=0, затем idle TH=1 ---
+    if (!pcf_select(0x7F)) return 0;
+    if (!pcf_select(0xFF)) return 0;
 
     g_status |= SEGA_STATUS_ACK;
     g_scan_us = h3_hs_timer_lo_us() - t0;

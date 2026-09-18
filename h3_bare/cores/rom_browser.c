@@ -76,6 +76,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_ngp(rom, size, sel_name);
     else if (strcmp(sys_id, "megadrive") == 0)
         emu_run_megadrive(rom, size, sel_name);
+    else if (strcmp(sys_id, "msx") == 0)
+        emu_run_msx(rom, size, sel_name);
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -118,7 +120,9 @@ static const char* cheat_folder_for_id(const char* sys_id) {
     if (strcmp(sys_id, "sms") == 0)     return "Sega - Master System - Mark III";
     if (strcmp(sys_id, "megadrive") == 0) return "Sega - Mega Drive - Genesis";
     if (strcmp(sys_id, "ngp") == 0)     return "SNK - Neo Geo Pocket";
-    return NULL;
+    if (strcmp(sys_id, "msx") == 0)     return "Microsoft - MSX (fMSX)";
+    if (strcmp(sys_id, "ms1504") == 0)  return "Microsoft - MSX (fMSX)";
+    return 0;
 }
 
 // ---- Экранный ввод кода чита (как на картридже Game Genie) ----
@@ -385,7 +389,16 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     // usb_input_clear() здесь НЕ вызываем: при зажатой кнопке он обнуляет
     // g_pad_prev и превращает удержание в «фантомный фронт» — первый пункт
     // списка активировался бы сам.
-    // rom_dir — имя папки с SD (FAT_NAME_LEN до 127 символов)
+    // rom_dir — имя папки с SD (FAT_NAME_LEN до 127 символов).
+    // Может быть NULL — система из таблицы без папки на SD (пункт меню
+    // с present=0). Тогда показываем заглушку и выходим (не крашимся).
+    if (!rom_dir) {
+        fb_clear();
+        fb_puts_s(60, 120, "No ROM folder on SD for this system", 2, 0x00FFAA00);
+        fb_puts_s(60, 160, "Folder /roms/<id>/ not present", 1, 0x00FFFFFF);
+        fb_flush();
+        return;
+    }
     char path[FAT_NAME_LEN + 16];
     int pl = 0;
     const char* pfx = "/roms/";

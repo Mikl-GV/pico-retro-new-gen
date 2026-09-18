@@ -49,8 +49,10 @@ static int g_force_sms = 0;
 static int g_vp_w = 320;   // последний viewport width
 static int g_vp_h = 224;   // последний viewport height
 
-// Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576])
-static uint16_t bitmap_data_[720 * 576];
+// Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576]).
+// 64-байтное выравнивание: построчный копипаст viewport в gpgx_render_emu
+// идёт без двойных cache-line (псевдонимов) на Cortex-A7.
+static uint16_t bitmap_data_[720 * 576] __attribute__((aligned(64)));
 
 // ---- ввод: USB-клавиатура -> геймпад GPGX ----
 // Маппинг 6-кнопочного геймпада Mega Drive:

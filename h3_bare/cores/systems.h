@@ -70,7 +70,7 @@ static const system_entry_t systems[] = {
 
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, PLANNED),
-    SYS("msx",        "MSX / MSX2",                  COMPUTER, PLANNED),
+    SYS_BUILTIN("msx",  "MSX / Yamaha YIS-503II",  COMPUTER, READY),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
     SYS("bk0010",     "BK-0010/0011M",               COMPUTER, PLANNED),
     SYS_BUILTIN("portfolio", "Atari Portfolio",     COMPUTER, READY),

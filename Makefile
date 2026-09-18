@@ -103,6 +103,101 @@ OBJ  += $(foreach f,$(wildcard $(GPGX)/core/*.c),$(BUILD)/gpgx_core_$(notdir $(f
 OBJ  += $(foreach d,z80 m68k ntsc sound input_hw cart_hw cd_hw,$(foreach f,$(wildcard $(GPGX)/core/$(d)/*.c),$(BUILD)/gpgx_$(d)_$(notdir $(f:.c=.o))))
 OBJ  += $(foreach f,$(wildcard $(GPGX)/core/cart_hw/svp/*.c),$(BUILD)/gpgx_svp_$(notdir $(f:.c=.o)))
 
+# MSX (fMSX)
+MSX := $(TOP)h3_bare/cores/msx
+MSX_INC := -I$(MSX) -I$(MSX)/host -I$(MSX)/host/include -I$(MSX)/fMSX -I$(MSX)/Z80 -I$(MSX)/EMULib -I$(MSX)/NukeYKT
+# fMSX: C-only, использует свой sscanf/strcasestr в msx_compat
+MSX_CFLAGS := $(CFLAGS) -DLSB_FIRST -D__C99__ -DINLINE=inline $(MSX_INC)
+# objcopy-переименование конфликтующих символов MSX (как GBA_RENAME/PPU для SNES),
+# чтобы не сталкиваться с CPU/RAM (Snes9x), LoadROM (Snes9x), rf* (GPGX),
+# sscanf/time/localtime/strlcpy/fill_pathname_join (FCEUmm/GBA compat).
+MSX_RENAME := $(OBJCOPY) \
+	--redefine-sym CPU=msx_CPU \
+	--redefine-sym RAM=msx_RAM \
+	--redefine-sym LoadROM=msx_LoadROM \
+	--redefine-sym rfopen=msx_rfopen \
+	--redefine-sym rfclose=msx_rfclose \
+	--redefine-sym rfread=msx_rfread \
+	--redefine-sym rfwrite=msx_rfwrite \
+	--redefine-sym rfseek=msx_rfseek \
+	--redefine-sym rftell=msx_rftell \
+	--redefine-sym rfgets=msx_rfgets \
+	--redefine-sym rfeof=msx_rfeof \
+	--redefine-sym rfgetc=msx_rfgetc \
+	--redefine-sym rfputc=msx_rfputc \
+	--redefine-sym filestream_rewind=msx_filestream_rewind \
+	--redefine-sym sscanf=msx_sscanf \
+	--redefine-sym time=msx_time \
+	--redefine-sym localtime=msx_localtime \
+	--redefine-sym strlcpy=msx_strlcpy \
+	--redefine-sym fill_pathname_join=msx_fill_pathname_join \
+	--redefine-sym strcasestr=msx_strcasestr \
+	--redefine-sym chdir=msx_chdir \
+	--redefine-sym getcwd=msx_getcwd
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_MSX msx_V9938 msx_Sound msx_SHA1 msx_Floppy msx_FDIDisk msx_MCF msx_Z80 msx_I8255 msx_YM2413 msx_AY8910 msx_SCC msx_WD1793 msx_opll msx_WrapNukeYKT))
+
+$(BUILD)/msx_host.o: $(MSX)/host/msx_host.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_compat.o: $(MSX)/host/msx_compat.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_log.o: $(MSX)/host/msx_log.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx2_rom_data.o: $(MSX)/host/msx2_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx2ext_rom_data.o: $(MSX)/host/msx2ext_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_MSX.o: $(MSX)/fMSX/MSX.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_V9938.o: $(MSX)/fMSX/V9938.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_Sound.o: $(MSX)/EMULib/Sound.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_SHA1.o: $(MSX)/EMULib/SHA1.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_Floppy.o: $(MSX)/EMULib/Floppy.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_FDIDisk.o: $(MSX)/EMULib/FDIDisk.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_MCF.o: $(MSX)/EMULib/MCF.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_Z80.o: $(MSX)/Z80/Z80.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_I8255.o: $(MSX)/EMULib/I8255.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_YM2413.o: $(MSX)/EMULib/YM2413.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_AY8910.o: $(MSX)/EMULib/AY8910.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_SCC.o: $(MSX)/EMULib/SCC.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_WD1793.o: $(MSX)/EMULib/WD1793.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_opll.o: $(MSX)/NukeYKT/opll.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_WrapNukeYKT.o: $(MSX)/NukeYKT/WrapNukeYKT.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+
 # ---- Правила компиляции ----
 $(BUILD):
 	mkdir -p $(BUILD)
