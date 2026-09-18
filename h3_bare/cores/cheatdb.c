@@ -44,21 +44,41 @@ void cheats_set_enabled(int idx, int on) {
         g_cheats[idx].enabled = on ? 1 : 0;
 }
 
-// регистронезависимое сравнение имени рома с именем .cht файла (без расширения)
+// Нормализация имени: нижний регистр, вырезаем ВСЁ содержимое круглых и
+// квадратных скобок (регион, версия, хэши — "спецсимволы"), расширение
+// (после последней точки) отбрасываем, пробелы схлопываем.
+// "Sonic the Hedgehog 2 (UE) (M4) [!].gen" -> "sonic the hedgehog 2"
+static void norm_base(const char* s, char* out, int cap) {
+    int dot = -1, i;
+    for (i = 0; s[i]; i++) if (s[i] == '.') dot = i;
+    int end = (dot >= 0) ? dot : i;
+    int o = 0, depth = 0;
+    for (int k = 0; k < end && o < cap - 1; k++) {
+        char c = s[k];
+        if (c == '(' || c == '[') { depth++; continue; }
+        if (c == ')' || c == ']') { if (depth > 0) depth--; continue; }
+        if (depth > 0) continue;               // внутри скобок — пропускаем
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == ' ') {
+            if (o > 0 && out[o-1] != ' ') out[o++] = c;   // схлопывание пробелов
+        } else {
+            out[o++] = c;
+        }
+    }
+    while (o > 0 && out[o-1] == ' ') o--;      // хвостовой пробел
+    out[o] = 0;
+}
+
+// Совпадение по основному имени (без скобок/расширения/регистра):
+// rom_name и cht_name нормализуются одинаково и сравниваются целиком.
 static int name_match(const char* rom_name, const char* cht_name) {
-    while (*rom_name && *cht_name) {
-        char a = *rom_name, b = *cht_name;
-        if (a >= 'A' && a <= 'Z') a += 32;
-        if (b >= 'A' && b <= 'Z') b += 32;
-        if (a != b) return 0;
-        rom_name++; cht_name++;
-    }
-    // rom_name кончился — cht_name может кончиться или за ним идёт
-    // '.' (расширение) или '(' (суффикс региона)
-    if (!*rom_name) {
-        return (!*cht_name || *cht_name == '.' || *cht_name == '(');
-    }
-    return 0;
+    if (!rom_name || !cht_name) return 0;
+    char r[FAT_NAME_LEN];
+    char c[FAT_NAME_LEN];
+    norm_base(rom_name, r, sizeof(r));
+    norm_base(cht_name, c, sizeof(c));
+    if (r[0] == 0 || c[0] == 0) return 0;
+    return strcmp(r, c) == 0;
 }
 
 // Значение в строке "key = "value"" — снимаем кавычки и обрезаем
@@ -73,8 +93,10 @@ static void extract_value(const char* eq, char* out, int maxlen) {
 }
 
 // true если строка начинается с "cheat<N>_<field>"
+// (но НЕ "cheats", "cheat" и т.п.).
 static int cheat_field(const char* line, int* num, const char** field) {
     if (strncmp(line, "cheat", 5) != 0) return 0;
+    if (line[5] == 's') return 0;             // "cheats = ..." — заголовок
     const char* p = line + 5;
     int n = 0;
     while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
@@ -134,15 +156,23 @@ int cheats_load(const char* system_folder, const char* rom_name) {
 
     if (!found) { printf("cheats: no cht for %s in %s\n", rom_name, dir); return 0; }
 
-    // Читаем
-    uint8_t buf[8192];
+    // Читаем .cht целиком (до 32 КБ — базы содержат десятки читов);
+    // прежние 8 КБ обрезали хвост, и часть кодов не отображалась.
+    uint8_t buf[32768];
     int r = fat_read_file(&found_entry, 0, buf, sizeof(buf) - 1);
     if (r <= 0) { printf("cheats: read fail %s\n", found_path); return 0; }
     buf[r] = 0;
     printf("cheats: loaded %s (%d bytes)\n", found_path, r);
 
-    // Парсим: до "cheats = N" пропускаем, дальше деск/код
+    // Скипаем UTF-8 BOM (EF BB BF), если есть
     char* data = (char*)buf;
+    if (r >= 3 && (uint8_t)data[0] == 0xEF && (uint8_t)data[1] == 0xBB && (uint8_t)data[2] == 0xBF)
+        data += 3;
+
+    // Парсим поля "cheat<N>_desc/code" по всему файлу. Заголовочная строка
+    // "cheats = N" и комментарии не являются полями и пропускаются сами —
+    // жёсткого входа в блок НЕТ, иначе .cht без такого заголовка (некоторые
+    // ручные/самодельные базы) не отдал бы ни одного кода.
     int in_block = 0;
     char line[256];
 
@@ -151,13 +181,11 @@ int cheats_load(const char* system_folder, const char* rom_name) {
         while (*data && *data != '\n' && li < 255) line[li++] = *data++;
         if (*data == '\n') data++;
         line[li] = 0;
+        // обрезаем \r (CRLF-файлы из Windows)
+        while (li > 0 && (line[li-1] == '\r' || line[li-1] == ' ' || line[li-1] == '\t'))
+            line[--li] = 0;
 
-        if (!in_block) {
-            // ищем строку "cheats = N" (конец шапки)
-            if (strncmp(line, "cheats", 6) == 0) in_block = 1;
-            continue;
-        }
-
+        (void)in_block;
         int num;
         const char* field;
         if (!cheat_field(line, &num, &field)) continue;
@@ -209,6 +237,88 @@ int cheats_manual_add(const char* code, const char* desc) {
     g_cheats[g_count].enabled = 1;
     g_count++;
     return 1;
+}
+
+// ---- RAW-читы (addr:value[:cmp]) ----
+// Парсим "AAAA:VV" или "AAAA:VV:CC" (hex). Пробелы/дефисы игнорируем.
+// AAAA — адрес (до 6 hex-цифр, 24 бита), VV — значение (до 2), CC — байт сравнения.
+static int hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+int cheats_parse_raw(const char* code, uint32_t* addr, uint8_t* value, uint8_t* cmp, int* has_cmp) {
+    if (!code || !addr || !value || !cmp || !has_cmp) return 0;
+    const char* p = code;
+    while (*p == ' ' || *p == '\t') p++;
+
+    // --- addr ---
+    uint32_t a = 0;
+    int digits = 0;
+    while (hexval(*p) >= 0 && digits < 8) {
+        a = (a << 4) | (uint32_t)hexval(*p);
+        p++; digits++;
+    }
+    if (digits == 0) return 0;
+    if (*p != ':') return 0;
+    p++;
+
+    // --- value ---
+    uint32_t v = 0;
+    digits = 0;
+    while (hexval(*p) >= 0 && digits < 4) {
+        v = (v << 4) | (uint32_t)hexval(*p);
+        p++; digits++;
+    }
+    if (digits == 0) return 0;
+
+    // --- optional :cmp ---
+    int hc = 0;
+    uint32_t c = 0;
+    if (*p == ':') {
+        p++;
+        digits = 0;
+        while (hexval(*p) >= 0 && digits < 4) {
+            c = (c << 4) | (uint32_t)hexval(*p);
+            p++; digits++;
+        }
+        if (digits > 0) hc = 1;
+    }
+    // Хвост — только пробелы
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != 0) return 0;
+
+    *addr = a;
+    *value = (uint8_t)(v & 0xFF);
+    *cmp   = (uint8_t)(c & 0xFF);
+    *has_cmp = hc;
+    return 1;
+}
+
+// Число активных RAW-читов
+int cheats_raw_count(void) {
+    int n = 0;
+    for (int i = 0; i < g_count; i++) {
+        if (!g_cheats[i].enabled) continue;
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_parse_raw(g_cheats[i].code, &a, &v, &c, &hc)) n++;
+    }
+    return n;
+}
+
+// i-й активный RAW-чит
+int cheats_raw_get(int i, uint32_t* addr, uint8_t* value, uint8_t* cmp, int* has_cmp) {
+    int n = 0;
+    for (int k = 0; k < g_count; k++) {
+        if (!g_cheats[k].enabled) continue;
+        if (cheats_parse_raw(g_cheats[k].code, addr, value, cmp, has_cmp)) {
+            if (n == i) return 1;
+            n++;
+        }
+    }
+    return 0;
 }
 
 int cheats_dir_exists(const char* system_folder) {

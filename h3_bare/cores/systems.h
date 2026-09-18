@@ -43,6 +43,7 @@ static const system_entry_t systems[] = {
     // -- Портативные консоли --
     SYS("gameboy",    "Game Boy / Game Boy Color",   PORTABLE, READY),
     SYS("gamegear",   "Sega Game Gear",              PORTABLE, READY),
+    SYS("gba",        "Game Boy Advance",            PORTABLE, READY),
     SYS("lynx",       "Atari Lynx",                  PORTABLE, READY),
     SYS("ngp",        "Neo Geo Pocket / Color",      PORTABLE, READY),
 

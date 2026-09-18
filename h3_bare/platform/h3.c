@@ -60,14 +60,19 @@ uint32_t h3_get_dram_size(void) {
 }
 
 // https://github.com/linux-sunxi/sunxi-tools/blob/master/uart0-helloworld-sdboot.c#L458
+// Доступ к абсолютным адресам SRAM (SPL header). GCC считает их «массивом
+// нулевой длины» и выдаёт -Warray-bounds — подавляем для этой функции.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
 h3_boot_device_t h3_get_boot_device(void) {
-	uint32_t *spl_signature = (void *) 0x4;
-
-	/* Check the eGON.BT0 magic in the SPL header */
-	if (spl_signature[0] != 0x4E4F4765 || spl_signature[1] != 0x3054422E)
+	/* eGON.BT0 magic в SPL header (SRAM 0x0) */
+	const uint32_t spl_magic0 = *(volatile uint32_t *)0x4;
+	const uint32_t spl_magic1 = *(volatile uint32_t *)0x8;
+	if (spl_magic0 != 0x4E4F4765 || spl_magic1 != 0x3054422E)
 		return H3_BOOT_DEVICE_FEL;
 
-	const uint32_t boot_dev = spl_signature[9] & 0xFF; /* offset into SPL = 0x28 */
+	/* offset устройства загрузки в SPL = 0x28 */
+	const uint32_t boot_dev = *(volatile uint32_t *)0x28 & 0xFF;
 
 	if (boot_dev == 0) {
 		return H3_BOOT_DEVICE_MMC0;
@@ -79,3 +84,4 @@ h3_boot_device_t h3_get_boot_device(void) {
 
 	return H3_BOOT_DEVICE_UNK;
 }
+#pragma GCC diagnostic pop

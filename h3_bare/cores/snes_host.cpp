@@ -23,6 +23,7 @@ extern "C" {
 #include "srtc.h"
 #include "usb_kbd.h"
 #include "emu.h"
+#include "sega_pad.h"
 #include "cheatdb.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
@@ -111,6 +112,23 @@ extern "C" void JustifierButtons(uint32_t* j) {
 // ---- ввод: USB-клавиатура → SNES геймпад ----
 static void build_input(void) {
     g_joydata = 0;
+
+    // Sega-геймпад (PCF8574): крестовина + A/B/C/X/Y/Z/Start/Mode
+    // Таблица: A->A B->B C->L X->Y Y->X Z->R Start Mode->Select
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) g_joydata |= SNES_UP_MASK;
+    if (sp & 0x0002) g_joydata |= SNES_DOWN_MASK;
+    if (sp & 0x0004) g_joydata |= SNES_LEFT_MASK;
+    if (sp & 0x0008) g_joydata |= SNES_RIGHT_MASK;
+    if (sp & 0x0010) g_joydata |= SNES_A_MASK;        // Sega A -> SNES A
+    if (sp & 0x0020) g_joydata |= SNES_B_MASK;        // Sega B -> SNES B
+    if (sp & 0x0040) g_joydata |= SNES_TL_MASK;       // Sega C -> L
+    if (sp & 0x0080) g_joydata |= SNES_START_MASK;    // Start
+    if (sp & 0x0100) g_joydata |= SNES_Y_MASK;        // Sega X -> Y
+    if (sp & 0x0200) g_joydata |= SNES_X_MASK;        // Sega Y -> X
+    if (sp & 0x0400) g_joydata |= SNES_TR_MASK;       // Sega Z -> R
+    if (sp & 0x0800) g_joydata |= SNES_SELECT_MASK;   // Mode -> Select
+
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     for (int i = 0; i < n; i++) {
@@ -212,7 +230,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
                 printf("SNEScheat: bad code '%s'\n", code);
             }
         }
-        if (ccnt) { S9xApplyCheats(); printf("SNEScheat: applied %d\n", ccnt); }
+        if (ccnt) S9xApplyCheats();
     }
 
     g_loaded = 1;

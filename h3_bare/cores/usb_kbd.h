@@ -16,4 +16,18 @@ int  usb_input_poll(void);
 // Тач как джойстик для эмулятора
 void usb_touch_joy(uint8_t* dir, uint8_t* fire);
 
+// ---- Sega-геймпад: помощь для подменю ----
+// Фронт нажатия (биты, нажатые только что), без автоповтора
+uint16_t usb_pad_just_pressed(void);
+// Сбросить состояние геймпада/тача (при входе в новое меню)
+void usb_input_clear(void);
+// Ждать полного отпускания геймпада (чтобы зажатая кнопка не «доехала» в подменю)
+void usb_pad_wait_release(void);
+// Ждать отпускания клавиатуры (чтобы зажатый Enter не «доехал» в подменю)
+void usb_kbd_wait_release(void);
+
+// ---- Sega-геймпад: константы автоповтора ----
+#define PAD_REPEAT_DELAY_US 400000   // 0,4 с до первого повтора
+#define PAD_REPEAT_RATE_US  200000   // 5 шагов/с при удержании
+
 #endif

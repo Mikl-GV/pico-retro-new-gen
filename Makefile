@@ -41,7 +41,8 @@ INCLUDES := -I$(TOP)h3_bare/include -I$(TOP)h3_bare/cores \
 	-I$(TOP)h3_bare/cores/fceumm/palettes -I$(TOP)h3_bare/cores/fceumm/fir \
 	-I$(TOP)h3_bare/cores/mcume -I$(TOP)h3_bare/cores/a7800 -I$(TOP)h3_bare/cores/a5200 \
 	-I$(TOP)h3_bare/cores/gameboy -I$(TOP)h3_bare/cores/portfolio -I$(TOP)h3_bare/cores/lynx \
-	-I$(TOP)h3_bare/cores/ngp -I$(TOP)h3_bare/src -I$(TOP)h3_bare/platform/fb
+	-I$(TOP)h3_bare/cores/ngp -I$(TOP)h3_bare/cores/gba_sp \
+	-I$(TOP)h3_bare/src -I$(TOP)h3_bare/platform/fb
 SNES_INCLUDES := -I$(TOP)h3_bare/cores/snes -I$(TOP)h3_bare/cores/snes/libretro-common/include $(INCLUDES)
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics
 
@@ -53,8 +54,9 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheats))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,uart printf libc_min main cxx_runtime udelay h3_hs_timer h3_ccu h3 h3_de2 h3_hdmi dw_hdmi h3_lcd))
 
@@ -125,7 +127,9 @@ $(BUILD)/menu.o: $(TOP)h3_bare/cores/menu.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/rom_browser.o: $(TOP)h3_bare/cores/rom_browser.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
-$(BUILD)/cheats.o: $(TOP)h3_bare/cores/cheats.c | $(BUILD)
+$(BUILD)/cheatdb.o: $(TOP)h3_bare/cores/cheatdb.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/sega_pad.o: $(TOP)h3_bare/cores/sega_pad.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/settings.o: $(TOP)h3_bare/cores/settings.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
@@ -223,6 +227,63 @@ $(BUILD)/ngp_ngpBios.o: $(TOP)h3_bare/cores/ngp/ngpBios.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ngp_input.o: $(TOP)h3_bare/cores/ngp/input.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+# ---- GBA (gpSP) ----
+GBA_CFLAGS := $(CFLAGS) -DINLINE=inline
+GBA_INC    := $(INCLUDES)
+# Имена, конфликтующие с другими ядрами (fceumm/gpgx), переименовываем
+# ОДИНАКОВО во всех gpsp-объектах (и определения, и ссылки).
+GBA_RENAME := --redefine-sym vram=gpsp_vram \
+              --redefine-sym reg=gpsp_reg \
+              --redefine-sym cheats=gpsp_cheats \
+              --redefine-sym init_memory=gpsp_init_memory \
+              --redefine-sym init_cpu=gpsp_init_cpu \
+              --redefine-sym load_bios=gpsp_load_bios
+
+$(BUILD)/gba_host.o: $(TOP)h3_bare/cores/gba_host.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@ $<
+$(BUILD)/gba_compat.o: $(TOP)h3_bare/cores/gba_sp/gba_compat.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@ $<
+$(BUILD)/gba_bios_data.o: $(TOP)h3_bare/cores/gba_sp/bios_data.S | $(BUILD)
+	$(AS) $(GBA_CFLAGS) -I$(TOP)h3_bare/cores/gba_sp -x assembler-with-cpp -c -o $@ $<
+
+# --- ядро gpsp: компилим, затем применяем GBA_RENAME ко всем .o ---
+$(BUILD)/gba_main.o: $(TOP)h3_bare/cores/gba_sp/main.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_gba_memory.o: $(TOP)h3_bare/cores/gba_sp/gba_memory.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_sound.o: $(TOP)h3_bare/cores/gba_sp/sound.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_gba_cc_lut.o: $(TOP)h3_bare/cores/gba_sp/gba_cc_lut.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_gbp.o: $(TOP)h3_bare/cores/gba_sp/gbp.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_cheats.o: $(TOP)h3_bare/cores/gba_sp/cheats.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_savestate.o: $(TOP)h3_bare/cores/gba_sp/savestate.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_serial.o: $(TOP)h3_bare/cores/gba_sp/serial.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_serial_proto.o: $(TOP)h3_bare/cores/gba_sp/serial_proto.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_rfu.o: $(TOP)h3_bare/cores/gba_sp/rfu.c | $(BUILD)
+	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_cpu.o: $(TOP)h3_bare/cores/gba_sp/cpu.cc | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(GBA_CFLAGS) $(GBA_INC) -fno-exceptions -fno-rtti -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/gba_video.o: $(TOP)h3_bare/cores/gba_sp/video.cc | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(GBA_CFLAGS) $(GBA_INC) -fno-exceptions -fno-rtti -c -o $@.tmp $<
+	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
 
 $(BUILD)/fceumm_%.o: $(TOP)h3_bare/cores/fceumm/%.c | $(BUILD)
 	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<

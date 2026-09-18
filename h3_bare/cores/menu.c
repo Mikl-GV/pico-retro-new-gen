@@ -318,15 +318,16 @@ int menu_run(void) {
                     scroll_top = sel_row - max_visible + 1;
             }
         } else if (k == 40 || k == '\n' || k == '\r') {
-            if (rows[sel_row].item == -2)
-                return -2;    // Settings
-            if (rows[sel_row].item == -3)
-                return -3;    // Help
-            if (rows[sel_row].item == -4)
-                return -4;    // About
-            if (rows[sel_row].item >= 0) {
-                int idx = rows[sel_row].item;
-                return idx;
+            int item = rows[sel_row].item;
+            if (item == -2 || item == -3 || item == -4 || item >= 0) {
+                // вход в подменю (Settings/Help/About/браузер ROM):
+                // ждём отпускания Enter и геймпада, чтобы зажатая кнопка
+                // не «доехала» и не сработала первым действием внутри.
+                extern void usb_kbd_wait_release(void);
+                extern void usb_pad_wait_release(void);
+                usb_kbd_wait_release();
+                usb_pad_wait_release();
+                return item;
             }
         } else if (k == 41 || k == 27 || k == 'q') {
             return -1;

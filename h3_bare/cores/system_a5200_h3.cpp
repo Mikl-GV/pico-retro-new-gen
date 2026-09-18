@@ -7,6 +7,8 @@
 extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 #define EMU_FB   ((uint16_t*)0x5F800000)
@@ -27,10 +29,15 @@ extern "C" {
 static uint8_t a5_memory_pool[65536 + 4096];
 static int a5_pool_used = 0;
 
-extern "C" unsigned char *memory = 0;
-extern "C" const unsigned char *at5_rom = 0;
-extern "C" int at5_rom_size = 0;
-extern "C" int ik = 0;
+// C-глобалов ядра (объявлены extern в atari5200.h и др.). Определения без
+// ключевого слова extern внутри extern "C" — иначе warning "initialized
+// and declared extern" и двойная линковка.
+extern "C" {
+unsigned char *memory = 0;
+const unsigned char *at5_rom = 0;
+int at5_rom_size = 0;
+int ik = 0;
+}
 
 extern "C" void *a5_Malloc(int size) {
     void *p = a5_memory_pool + a5_pool_used;
@@ -81,6 +88,18 @@ extern "C" int a5_GetPad(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
+
+    // Sega-геймпад: крестовина, A=Fire, B=Pause, Start=Start, Mode=Start
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) k |= 0x0004;   // Up
+    if (sp & 0x0002) k |= 0x0008;   // Down
+    if (sp & 0x0004) k |= 0x0002;   // Left
+    if (sp & 0x0008) k |= 0x0001;   // Right
+    if (sp & 0x0010) k |= 0x0010;   // A -> Fire
+    if (sp & 0x0020) k |= 0x0020;   // B -> Pause
+    if (sp & 0x0080) k |= 0x0040;   // Start
+    if (sp & 0x0800) k |= 0x0040;   // Mode -> Start
+
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) k |= 0x0004;
@@ -115,5 +134,16 @@ extern "C" int a5200_init_game(const uint8_t *rom, uint32_t size) {
 
 extern "C" void a5200_run_frame(void) {
     at5_Input(0);
+    // RAW-читы: пишем байт каждый кадр в RAM 64K
+    int rc = cheats_raw_count();
+    for (int i = 0; i < rc; i++) {
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_raw_get(i, &a, &v, &c, &hc)) {
+            a &= 0xFFFF;
+            if (a < 65536) {
+                if (!hc || memory[a] == c) memory[a] = v;
+            }
+        }
+    }
     at5_Step();
 }

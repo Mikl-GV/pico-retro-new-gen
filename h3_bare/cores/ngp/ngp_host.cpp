@@ -8,6 +8,8 @@
 
 extern "C" {
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 // Graphics buffer
@@ -64,6 +66,18 @@ static int ngp_input_state(void) {
     uint8_t raw[6];
     int n = usb_kbd_get_raw(raw, 6);
     unsigned char state = 0;
+
+    // Sega-геймпад: крестовина + A/B/Start/Mode->Select
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) state |= 0x01;   // Up
+    if (sp & 0x0002) state |= 0x02;   // Down
+    if (sp & 0x0004) state |= 0x04;   // Left
+    if (sp & 0x0008) state |= 0x08;   // Right
+    if (sp & 0x0010) state |= 0x10;   // Sega A -> A
+    if (sp & 0x0020) state |= 0x20;   // Sega B -> B
+    if (sp & 0x0080) state |= 0x80;   // Start
+    if (sp & 0x0800) state |= 0x40;   // Mode -> Select
+
     for (int i = 0; i < n; i++) {
         switch (raw[i]) {
             case 82: state |= 0x01; break; // Up
@@ -161,6 +175,15 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
 
 extern "C" void ngp_run_frame(void) {
     if (!m_bIsActive) return;
+    // RAW-читы: пишем байт каждый кадр через tlcsMemWriteB (разруливает
+    // карту памяти: cpuram/mainram/flash). Резерв — tlcsMemReadB для cmp.
+    int rc = cheats_raw_count();
+    for (int i = 0; i < rc; i++) {
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_raw_get(i, &a, &v, &c, &hc)) {
+            if (!hc || tlcsMemReadB(a) == c) tlcsMemWriteB(a, v);
+        }
+    }
     // Полный кадр NGPC = 198 сканлайнов x 515 тактов = 101970.
     // Важно: ровно один кадр, БЕЗ запаса — иначе дрейф ~50 линий/с
     // и чёрная полоса ползёт снизу вверх. Фаза стабильна (ngOverflow).

@@ -15,6 +15,11 @@ void emu_throttle_reset(void);
 // на всю высоту экрана (600), ширина пропорционально, по бокам чёрные поля
 void emu_scale(int src_w, int src_h);
 
+// Целочисленный scale (integer scale) для портативных: каждый пиксель
+// исходника = N×N на экране, поля по периметру. Максимальный целый множитель,
+// влезающий в 1024×600. Чёткая картинка без мыла.
+void emu_scale_int(int src_w, int src_h);
+
 // Цвет полей по бокам (XRGB8888). Вызывается перед циклом кадров системы,
 // чтобы поля были своего цвета; 0 = чёрный (по умолчанию).
 void emu_set_border_color(uint32_t rgb888);
@@ -27,6 +32,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name);
 

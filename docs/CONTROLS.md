@@ -1,56 +1,67 @@
 # Управление (Controls)
 
-Единый маппинг клавиатуры для всех эмуляторов.  
-USB-клавиатура (Boot HID, Logitech 046D:C52B и аналоги).
+USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PCF8574@0x20 (TWI0: PA11=SCL, PA12=SDA).
 
 ## Меню (глобальное)
 
-| Действие | Клавиша |
-|----------|---------|
-| Вверх / Вниз | ↑ / ↓ (удержание = автоповтор) |
-| Открыть систему / запустить ROM | Enter |
-| Назад / выйти из эмулятора | ESC |
-| Settings | активировать из меню → Enter |
+| Действие | Клавиатура | Sega-геймпад |
+|----------|------------|--------------|
+| Вверх / Вниз | ↑ / ↓ | D-Pad |
+| Влево / Вправо | ← / → | D-Pad |
+| Открыть систему / запустить ROM | Enter | A / Start |
+| Назад / выйти из эмулятора | ESC | B / Mode |
+| Меню читов для ROM (в списке ROM) | **S** | — |
+| Settings | Enter на пункте | — |
 
-## Settings
+## Настройки (Settings)
 
-| Кнопка | Действие |
-|--------|----------|
+| Клавиша | Действие |
+|---------|----------|
 | 1 | Создать папки ROM на SD |
 | 2 | Input Test (тест кнопок) |
 | 3 | Video Mode / Throttle: 60, 50, 45, 40, 35, 30 Hz (←/→ или Enter — циклически) |
 | 4 | Atari 2600 Difficulty: Novice / Expert |
-| 5 | ROM partition info (справка по разметке SD) |
+| 5 | **Sega 6-button gamepad** — тест скана геймпада (сырые чтения + биты, в UART при смене) |
+| 6 | ROM partition info (справка по разметке SD) |
 
-## Эмуляторы (игровой маппинг)
+## Эмуляторы (игровой маппинг — клавиатура)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS | Game Boy | Lynx | NGP | Mega Drive | SNES |
-|---------|:---:|:-------------:|:-----:|:-----:|:---:|:--------:|:----:|:---:|:----------:|:----:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| Z | A (огонь) | Fire | Fire | B1 (A) | Button 1 | B | A | **A** | **A** | **B** |
-| X | B | — | Pause | B2 (B) | Button 2 | A | B | **B** | **B** | **Y** |
-| C | — | — | — | — | — | — | — | — | **C** | — |
-| A | — | — | — | — | — | — | — | — | **X** | **A** |
-| S | Select | Select | Start | Select | Pause | Select | Option 1 | **Select** | **Y** | **X** |
-| D | — | — | — | — | — | — | — | — | **Z** | — |
-| Q | — | — | — | — | — | — | — | — | Mode | **L** |
-| W | — | — | — | — | — | — | — | — | — | **R** |
-| Space | — | — | — | — | — | — | — | — | — | Select |
-| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Option 2 | **Start** | Start | Start |
-| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
- 
-¹ NES/Dendy: одиночный ESC → клавиша SuborKB (Break в Basic), выход только по удержанию ~1с.
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Game Boy | GBA | Lynx | NGP | Mega Drive | SNES |
+|---------|:---:|:-------------:|:-----:|:-----:|:------:|:--------:|:---:|:----:|:---:|:----------:|:----:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | **A** | A | **A** | **A** | **B** |
+| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | **B** | B | **B** | **B** | **Y** |
+| **C** | — | — | — | — | — | — | — | — | — | **C** | **L** |
+| **A** | — | — | — | — | — | — | — | — | — | **X** | **A** |
+| **S** | Select | Select | Start | Select | Pause | Select | Select | Option 1 | **Select** | **Y** | **X** |
+| **D** | — | — | — | — | — | — | — | — | — | **Z** | — |
+| **Q** | — | — | — | — | — | — | **L** | — | — | Mode | — |
+| **W** | — | — | — | — | — | — | **R** | — | — | — | **R** |
+| Space | — | — | — | — | — | — | — | — | — | — | Select |
+| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Start | Option 2 | **Start** | Start | Start |
+| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
-Удерживание ESC ~1 сек — выход в меню.  
-В A2600 также работает сложность (Settings → 4).  
-A2600: Z=Fire, S=Select, Enter=Game Reset (запуск игры заново).  
-Mega Drive (6-кнопочный геймпад): Z=A, X=B, C=C, A=X, S=Y, D=Z, Q=Mode, Enter=Start.  
-SMS/GG: Z=Button1, X=Button2, S=Pause (кнопка на корпусе), Enter=Start.  
-A5200: Z=Fire, X=Pause, S=Start.
-Lynx: Z=A, X=B, S=Option 1, Enter=Option 2, стрелки — D-Pad.
-NGP (Neo Geo Pocket / Color): Z=A, X=B, S=Select, Enter=Start, стрелки — D-Pad.
-NES/Dendy: одиночный ESC = клавиша SuborKB (Esc/Break), выход в меню — только по удержанию ~1с.
-SNES: Z=B, X=Y, A=A, S=X, Q=L, W=R, Space=Select, Enter=Start.
+¹ NES/Dendy: одиночный ESC → клавиша SuborKB (Break в Basic), выход — только по удержанию ~1с.
+
+## Sega-геймпад 6-button (игровой маппинг)
+
+Геймпад Sega — единый источник ввода (ведущий), клавиатура работает параллельно. Маппинг от «сеговского эталона», у систем мапятся только существующие кнопки:
+
+| Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 |
+|------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|
+| ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
+| **A** | A | Button 2 | A | A (огонь) | A | A | A | A | Fire | Fire | A |
+| **B** | B | Button 1 | B | B | B | B | B | B | — | Pause | B |
+| **C** | C | — | L | — | — | **L** | — | — | — | — | — |
+| **X** | X | — | Y | — | — | **R** | Option 1 | — | — | — | — |
+| **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — |
+| **Z** | Z | — | R | — | — | — | — | — | — | — | — |
+| **Start** | Start | Start | Start | Start | Start | Start | — | Start | Game Reset | Start | Start |
+| **Mode/Select** | Mode | Pause | Select | Select | Select | Select | — | Select | Select | Start | Select |
+
+- В меню геймпад работает как клавиатура: D-Pad = навигация, **A/Start = Enter**, **B/Mode = ESC**.
+- Atari Portfolio — клавиатурный компьютер, геймпад **не подключён**.
+- В чит-меню (список ROM): **Mode** открывает читы, **A/Mode** — отметить/снять, **Start** — запустить с читами.
 
 ## Atari Portfolio (полная клавиатура)
 
@@ -78,10 +89,3 @@ Portfolio — полноценный компьютер DIP DOS, **игрово�
 
 Insert → открыть VK. Стрелки + Enter → выбор символа.  
 Esc → закрыть VK. Shift/Caps → переключение регистра.
-
-## Подсказка на экране (Portfolio)
-
-Внизу экрана всегда отображается:
-```
-PIN APPS HELP EXIT  INS:VK  ESC(hold):menu
-```

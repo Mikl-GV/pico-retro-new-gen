@@ -24,6 +24,9 @@ void emu_set_border_color(uint32_t rgb888) {
 }
 
 // ---- единый nearest-neighbour скейлер ----
+// Оптимизация: без делений в пиксельном цикле. Таблица sx[] (индекс исходной
+// колонки для каждой целевой) считается один раз — на Cortex-A7 деление ~12-20
+// тактов, а при 500К+ пикселей это съедало 5-10 мс/кадр.
 void emu_scale(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;
     int dst_w = (src_w * FB_H) / src_h;
@@ -31,15 +34,26 @@ void emu_scale(int src_w, int src_h) {
     if (dst_w <= 0) return;
     int dst_h = FB_H;
     int dst_x = (FB_W - dst_w) / 2;
-    volatile uint32_t* dst = (volatile uint32_t*)FB_ADDR;
+    uint32_t* dst = (uint32_t*)FB_ADDR;
 
-    // левое поле
+    // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
+    // аккумулятор 16.16 — каждая итерация добавляет src_w/dst_w, обёртка
+    // по dst_w (амплитуда = dst_w, шаг = src_w, sx = acc/dst_w).
+    static int sx_tab[FB_W];
+    uint32_t step_x = ((uint32_t)src_w << 16) / (uint32_t)dst_w;
+    uint32_t acc_x = step_x >> 1;   // округление к ближайшему
+    for (int dx = 0; dx < dst_w; dx++) {
+        sx_tab[dx] = (int)(acc_x >> 16);
+        acc_x += step_x;
+        if (acc_x >= ((uint32_t)dst_w << 16)) acc_x -= (uint32_t)dst_w << 16;
+    }
+
+    // левое/правое поле
     if (g_border_color && dst_x > 0) {
         for (int dy = 0; dy < dst_h; dy++)
             for (int dx = 0; dx < dst_x; dx++)
                 dst[dy * FB_W + dx] = g_border_color;
     }
-    // правое поле
     if (g_border_color) {
         int right = dst_x + dst_w;
         for (int dy = 0; dy < dst_h; dy++)
@@ -47,15 +61,75 @@ void emu_scale(int src_w, int src_h) {
                 dst[dy * FB_W + dx] = g_border_color;
     }
 
+    // Построковый проход: исходная строка = аккумулятор 16.16 => без `/`
+    uint32_t step_y = ((uint32_t)src_h << 16) / (uint32_t)dst_h;
+    uint32_t y_acc = step_y >> 1;              // округление к ближайшей строке
+    int sy = 0;
     for (int dy = 0; dy < dst_h; dy++) {
-        int sy = (dy * src_h) / dst_h;
+        const uint16_t* src = EMU_FB + sy * EMU_W;
+        uint32_t* d = dst + (uint32_t)dy * FB_W + (uint32_t)dst_x;
         for (int dx = 0; dx < dst_w; dx++) {
-            int sx = (dx * src_w) / dst_w;
-            uint16_t p = EMU_FB[sy * EMU_W + sx];
+            uint16_t p = src[sx_tab[dx]];
             uint32_t r = ((p >> 11) & 0x1F) << 3;
             uint32_t g = ((p >> 5) & 0x3F) << 2;
             uint32_t b = (p & 0x1F) << 3;
-            dst[dy * FB_W + dst_x + dx] = (r << 16) | (g << 8) | b;
+            d[dx] = (r << 16) | (g << 8) | b;
+        }
+        y_acc += step_y;
+        int nsy = (int)(y_acc >> 16);
+        if (nsy > sy) { if (nsy >= src_h) nsy = src_h - 1; sy = nsy; }
+    }
+}
+
+// ---- integer scale (целочисленный множитель) для портативных систем ----
+// Картинка чёткая: один пиксель исходника = N×N пикселей экрана, поля по
+// бокам (снизу/сверху). Множитель — максимальный, влезающий в 1024×600.
+// Формат на выходе — RGB565 → XRGB8888 в FB_ADDR (как emu_scale).
+void emu_scale_int(int src_w, int src_h) {
+    // Выбираем множитель: min(FB_W/src_w, FB_H/src_h), целый
+    int mul = FB_W / src_w;
+    int mh  = FB_H / src_h;
+    if (mh < mul) mul = mh;
+    if (mul < 1) { emu_scale(src_w, src_h); return; }  // падаем на stretch
+
+    int dst_w = src_w * mul;
+    int dst_h = src_h * mul;
+    int dst_x = (FB_W - dst_w) / 2;
+    int dst_y = (FB_H - dst_h) / 2;
+    uint32_t* dst = (uint32_t*)FB_ADDR;
+
+    // Поля (сверху/снизу/слева/справа)
+    if (g_border_color) {
+        // верх
+        for (int y = 0; y < dst_y; y++)
+            for (int x = 0; x < FB_W; x++)
+                dst[y * FB_W + x] = g_border_color;
+        // низ
+        for (int y = dst_y + dst_h; y < FB_H; y++)
+            for (int x = 0; x < FB_W; x++)
+                dst[y * FB_W + x] = g_border_color;
+        // левая/правая полоса (в зоне картинки)
+        for (int y = dst_y; y < dst_y + dst_h; y++) {
+            for (int x = 0; x < dst_x; x++)
+                dst[y * FB_W + x] = g_border_color;
+            for (int x = dst_x + dst_w; x < FB_W; x++)
+                dst[y * FB_W + x] = g_border_color;
+        }
+    }
+
+    // Масштабирование: каждый исходный пиксель — блок mul×mul
+    for (int sy = 0; sy < src_h; sy++) {
+        const uint16_t* src = EMU_FB + sy * EMU_W;
+        int dy0 = dst_y + sy * mul;
+        for (int sx = 0; sx < src_w; sx++) {
+            uint16_t p = src[sx];
+            uint32_t c = (((p >> 11) & 0x1F) << 3) << 16
+                       | (((p >> 5) & 0x3F) << 2) << 8
+                       | ((p & 0x1F) << 3);
+            int dx0 = dst_x + sx * mul;
+            for (int dy = 0; dy < mul; dy++)
+                for (int dx = 0; dx < mul; dx++)
+                    dst[(dy0 + dy) * FB_W + dx0 + dx] = c;
         }
     }
 }
@@ -101,6 +175,9 @@ extern int portfolio_exit_requested(void);
 extern int gb_init_game(const uint8_t* rom, uint32_t size);
 extern void gb_run_frame(void);
 extern void gb_render_frame(void);
+extern int gba_init_game(const uint8_t* rom, uint32_t size);
+extern void gba_run_frame(void);
+extern void gba_render_frame(void);
 extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
@@ -182,7 +259,7 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     for (;;) {
         gg_run_frame();
         emu_throttle();
-        emu_scale(160, 144);
+        emu_scale_int(160, 144);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
@@ -242,7 +319,30 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         gb_run_frame();
         gb_render_frame();
         emu_throttle();
-        emu_scale(160, 144);
+        emu_scale_int(160, 144);
+        fb_flush();
+        fc++;
+        int nk = usb_kbd_get_raw(raw_keys, 6);
+        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+    }
+exit: fb_clear(); fb_flush();
+}
+
+void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    emu_clear_fb(); fb_clear(); fb_flush();
+    if (gba_init_game(rom, size) != 1) {
+        printf("GBA: init failed\n"); return;
+    }
+    printf("GBA: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emu_set_border_color(0x000E1A2E);   // тёмно-синий (GBA)
+    uint8_t raw_keys[6];
+    uint32_t fc = 0;
+    emu_ts0 = 0;
+    for (;;) {
+        gba_run_frame();
+        gba_render_frame();
+        emu_throttle();
+        emu_scale_int(240, 160);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
@@ -264,7 +364,7 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         lynx_run_frame();
         lynx_render_frame();
         emu_throttle();
-        emu_scale(160, 102);
+        emu_scale_int(160, 102);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);
@@ -285,7 +385,7 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     for (;;) {
         ngp_run_frame();
         emu_throttle();
-        emu_scale(160, 152);
+        emu_scale_int(160, 152);
         fb_flush();
         fc++;
         int nk = usb_kbd_get_raw(raw_keys, 6);

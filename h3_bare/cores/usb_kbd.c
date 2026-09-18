@@ -9,6 +9,7 @@
 #include "h3_hs_timer.h"
 #include "uart.h"
 #include "usb_ohci.h"
+#include "sega_pad.h"
 
 #define OHCI1_BASE  0x01C1B400
 #define OHCI2_BASE  0x01C1C400
@@ -107,6 +108,16 @@ static int g_was_repeat = 0;
 #define KBD_REPEAT_DELAY_US 200000
 #define KBD_REPEAT_RATE_US  50000
 
+// Автоповтор Sega-геймпада — ЗАМЕДЛЕННЫЙ (в меню D-Pad не должен летать)
+#define PAD_REPEAT_DELAY_US 400000   // ~0,4 с до первого повтора
+#define PAD_REPEAT_RATE_US  200000   // ~5 шагов/с при удержании
+
+// ---- состояние геймпада (вынесено из usb_input_poll, чтобы можно было сбросить) ----
+static uint16_t g_pad_prev = 0;
+static uint32_t g_pad_repeat_start = 0;
+static int      g_pad_was_repeat = 0;
+static int      g_t_prev_pressed = 0;
+
 // forward
 static void dump_hid_report_desc(usb_dev_t* d);
 static int usb_touch_poll(int* x, int* y, int* pressed);
@@ -183,8 +194,8 @@ static int enum_port(uint32_t base, usb_dev_t* dev) {
     if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return 0; }
     uint16_t vid = (uint16_t)(buf[8] | (buf[9] << 8));
     uint16_t pid = (uint16_t)(buf[10] | (buf[11] << 8));
-    printf("usb: port=0x%X class=%02X mps=%d\n",
-           (unsigned)base, (unsigned)buf[5], mps);
+    printf("usb: port=0x%X vid=%04X pid=%04X class=%02X mps=%d\n",
+           (unsigned)base, (unsigned)vid, (unsigned)pid, (unsigned)buf[5], mps);
 
     // 4. конфигурация
     r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
@@ -436,20 +447,110 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
     return 1;
 }
 
-// ---- Объединённый ввод для меню: клавиатура, при отсутствии — тач ----
+// Фронт нажатия Sega-геймпада: возвращает биты, нажатые ТОЛЬКО что (0→1).
+// Отдельная от usb_input_poll функция — для меню читов и тестов геймпада.
+uint16_t usb_pad_just_pressed(void) {
+    uint16_t now = sega_pad_scan();
+    uint16_t pressed = now & ~g_pad_prev;
+    if (now) g_pad_prev = now;   // обновляем только если читается (иначе потеряем фронт)
+    else g_pad_prev = 0;
+    return pressed;
+}
+
+// Сбросить состояние геймпада/тача (вызывается при входе в меню/подменю).
+void usb_input_clear(void) {
+    g_pad_prev = 0;
+    g_pad_repeat_start = 0;
+    g_pad_was_repeat = 0;
+    g_t_prev_pressed = 0;
+}
+
+// Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
+// нажатия), чтобы зажатая кнопка не «доехала» в новое подменю.
+void usb_pad_wait_release(void) {
+    uint32_t guard = 0;
+    while (sega_pad_scan() != 0 && ++guard < 1000000) udelay(1000);
+    g_pad_prev = 0;
+    g_pad_repeat_start = 0;
+    g_pad_was_repeat = 0;
+}
+
+// Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
+// чтобы зажатый Enter не «доехал» в новое подменю и не активировал первый пункт.
+void usb_kbd_wait_release(void) {
+    // Ждём, пока в отчёте не останется ни одной зажатой клавиши
+    for (uint32_t guard = 0; guard < 1000000; guard++) {
+        if (kbd_read_report() < 0) break;
+        int any = 0;
+        for (int i = 2; i < 8; i++)
+            if (g_kbd.report[i]) { any = 1; break; }
+        if (!any) break;
+        udelay(5000);
+    }
+    g_repeat_sc = 0;
+    g_was_repeat = 0;
+}
+
+// ---- Объединённый ввод для меню: клавиатура, при отсутствии — Sega-геймпад, тач ----
 // Возвращает HID-сканкод (82=Up, 81=Down, 79=Right, 80=Left, 40=Enter, 41=ESC)
 // либо 0, если ничего не нажато. Тач переводится в «клавиши» по зонам экрана.
+// Sega-геймпад (PCF8574): 1 нажатие = 1 шаг, удержание = автоповтор (как клавиатура)
 int usb_input_poll(void) {
     int k = usb_kbd_poll();
     if (k) return k;
 
+    uint16_t pad = sega_pad_scan();
+    if (pad != g_pad_prev) {
+        // фронт/спад: обновляем g_pad_prev ДО обработки, иначе при return
+        // g_pad_prev остаётся старым и зажатая кнопка даёт «фронт» каждый
+        // вызов — меню/браузер летят без остановки.
+        // pressed = новые нажатые биты: те, что есть сейчас и не было раньше.
+        uint16_t pressed = pad & ~g_pad_prev;
+        g_pad_prev = pad;
+        if (pad) {
+            g_pad_was_repeat = 0;
+            g_pad_repeat_start = h3_hs_timer_lo_us();
+            if (pressed & 0x0001) return 82;   // Up → Up
+            if (pressed & 0x0002) return 81;   // Down → Down
+            if (pressed & 0x0004) return 80;   // Left → Left
+            if (pressed & 0x0008) return 79;   // Right → Right
+            if (pressed & 0x0010) return 40;   // A → Enter
+            if (pressed & 0x0080) return 40;   // Start → Enter
+            if (pressed & 0x0020) return 41;   // B → ESC
+            if (pressed & 0x0800) return 22;   // Mode → S (открыть читы в браузере)
+        }
+    } else if (pad) {
+        // удержание СТРЕЛКИ — автоповтор (как клавиатура); кнопки не повторяются
+        uint32_t now = h3_hs_timer_lo_us();
+        uint32_t elapsed = now - g_pad_repeat_start;
+        uint16_t held = pad & g_pad_prev & 0x000F;   // только D-Pad
+        if (!held) return 0;
+        if (g_pad_was_repeat) {
+            if (elapsed >= PAD_REPEAT_RATE_US) {
+                g_pad_repeat_start = now;
+                if (held & 0x0001) return 82;
+                if (held & 0x0002) return 81;
+                if (held & 0x0004) return 80;
+                if (held & 0x0008) return 79;
+            }
+        } else {
+            if (elapsed >= PAD_REPEAT_DELAY_US) {
+                g_pad_repeat_start = now;
+                g_pad_was_repeat = 1;
+                if (held & 0x0001) return 82;
+                if (held & 0x0002) return 81;
+                if (held & 0x0004) return 80;
+                if (held & 0x0008) return 79;
+            }
+        }
+    }
+
     // Тач: только фронт нажатия (0→1), чтобы палец не «повторял» клавишу
-    static int t_prev_pressed = 0;
     int x = 0, y = 0, p = 0;
-    if (!usb_touch_poll(&x, &y, &p)) { t_prev_pressed = 0; return 0; }
-    if (!p) { t_prev_pressed = 0; return 0; }
-    if (t_prev_pressed) return 0;   // уже обработали это касание
-    t_prev_pressed = 1;
+    if (!usb_touch_poll(&x, &y, &p)) { g_t_prev_pressed = 0; return 0; }
+    if (!p) { g_t_prev_pressed = 0; return 0; }
+    if (g_t_prev_pressed) return 0;   // уже обработали это касание
+    g_t_prev_pressed = 1;
 
     // Экран 1024x600; матрица GT911 0..4095 — нормируем
     int sx = (x * 1024) / 4096;

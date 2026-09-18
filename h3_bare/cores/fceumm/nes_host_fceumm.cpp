@@ -28,6 +28,7 @@ extern "C" {
 #include "emu.h"
 #include "cheatdb.h"
 #include "cheat.h"
+#include "sega_pad.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -98,11 +99,21 @@ static const uint8_t hid_to_subor[128] = {
 };
 
 static void build_input(void) {
-    // геймпад — заглушка (нажатия с USB-клавы пока не мапятся на геймпад
-    // при активном SuborKB; при подключении железного джойстика — маппить сюда)
     // Up=0x10 Down=0x20 Left=0x40 Right=0x80 A=0x01 B=0x02 Sel=0x04 Start=0x08
     g_joydata = 0;
     memset(g_suborkb, 0, sizeof(g_suborkb));
+
+    // Sega-геймпад (PCF8574) -> геймпад NES ВСЕГДА (и при SuborKB:
+    // клавиатура уходит в SuborKB, джойстик остаётся геймпадом — разделение ввода)
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) g_joydata |= 0x10;
+    if (sp & 0x0002) g_joydata |= 0x20;
+    if (sp & 0x0004) g_joydata |= 0x40;
+    if (sp & 0x0008) g_joydata |= 0x80;
+    if (sp & 0x0010) g_joydata |= 0x01;   // Sega A -> NES A
+    if (sp & 0x0020) g_joydata |= 0x02;   // Sega B -> NES B
+    if (sp & 0x0080) g_joydata |= 0x08;   // Start
+    if (sp & 0x0800) g_joydata |= 0x04;   // Mode -> Select
 
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
@@ -194,7 +205,6 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
             printf("NEScheat: bad code '%s'\n", code);
         }
     }
-    if (ccnt) printf("NEScheat: applied %d\n", ccnt);
 
     g_loaded = 1;
     printf("FCEUmm: type=%d inputfc=%d\n", gi->type, gi->inputfc);

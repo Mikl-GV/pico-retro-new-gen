@@ -21,6 +21,7 @@
 #include "input_hw/input.h"
 
 #include "usb_kbd.h"
+#include "sega_pad.h"
 #include "fb_text.h"
 #include "emu.h"
 #include "cheatdb.h"
@@ -55,10 +56,30 @@ static uint16_t bitmap_data_[720 * 576];
 // Маппинг 6-кнопочного геймпада Mega Drive:
 //   Z=A  X=B  C=C  A=X  S=Y  D=Z  Q=Mode  Enter=Start, стрелки=D-Pad
 // Для SMS/GG: S=Pause (Pause на корпусе), Enter=Start
+// Sega-геймпад (PCF8574): маска Sega -> GPGX (биты разные, ремап).
 static void gpgx_poll_input(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     uint16_t pad = 0;
+
+    // Sega-геймпад: крестовина/A/B/C/Start/Mode + X/Y/Z
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) pad |= INPUT_UP;
+    if (sp & 0x0002) pad |= INPUT_DOWN;
+    if (sp & 0x0004) pad |= INPUT_LEFT;
+    if (sp & 0x0008) pad |= INPUT_RIGHT;
+    if (sp & 0x0010) pad |= INPUT_A;        // Sega A -> MD A
+    if (sp & 0x0020) pad |= INPUT_B;        // Sega B -> MD B
+    if (sp & 0x0040) pad |= INPUT_C;        // Sega C -> MD C
+    if (sp & 0x0080) pad |= INPUT_START;    // Start
+    if (sp & 0x0100) pad |= INPUT_Y;        // Sega X -> GPGX Y
+    if (sp & 0x0200) pad |= INPUT_X;        // Sega Y -> GPGX X
+    if (sp & 0x0400) pad |= INPUT_Z;        // Sega Z -> GPGX Z
+    if (sp & 0x0800) {
+        if (g_is_md) pad |= INPUT_MODE;     // Mode (MD)
+        else         pad |= INPUT_START;    // Pause (SMS/GG)
+    }
+
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) pad |= INPUT_UP;
@@ -295,6 +316,7 @@ int sms_init_game(const uint8_t* rom, uint32_t size) {
 void sms_run_frame(void) {
     if (!g_loaded) return;
     gpgx_poll_input();
+    RAMCheatUpdate();
     system_frame_sms(0);
     gpgx_render_emu(256, 192);
 }
@@ -312,6 +334,9 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     memset(&cart, 0, sizeof(cart));
     cart.rom = (uint8*)rom;
     cart.romsize = size;
+
+    // читы патчат этот ROM
+    gp_cheats_set_rom((uint8_t*)rom, size);
 
     // форсируем System_GG — ядро сделает VDP GG + viewport 160x144 + рамку
     system_hw = SYSTEM_GG;
@@ -362,12 +387,18 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     printf("GG: viewport %dx%d+%d+%d\n",
            bitmap.viewport.w, bitmap.viewport.h,
            bitmap.viewport.x, bitmap.viewport.y);
+
+    // применение читов, отмеченных в меню (как в gpgx_init_game)
+    gp_cheats_compile(g_is_md);
+    gp_cheats_apply();
+
     return 1;
 }
 
 void gg_run_frame(void) {
     if (!g_loaded) return;
     gpgx_poll_input();
+    RAMCheatUpdate();
     system_frame_sms(0);
     // настоящий GG: viewport 160x144 в режиме gg_extra=0
     gpgx_render_emu(160, 144);

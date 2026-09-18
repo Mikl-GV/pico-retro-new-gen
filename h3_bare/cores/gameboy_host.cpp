@@ -5,6 +5,8 @@
 extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -23,6 +25,66 @@ int printf(const char* fmt, ...);
 
 static Emulator* g_emu = NULL;
 
+// ---- Game Genie (Game Boy) чит-коды ----
+// Формат: "XX-XXX-XXX" или "XX-XXX-XXX-YY" (дефисы необязательны).
+// Алгоритм декодера (проверенный, из Gearboy):
+//   value  = hex(code[0..1])
+//   address= (hex(code[2])<<8 | hex(code[4])<<4 | hex(code[5]) |
+//            (hex(code[6])^0xF)<<12) & 0x7FFF
+//   compare= ((hex(code[8])<<4 | hex(code[10])) ^ 0xFF) (если есть доп. пара)
+//            compare = ((compare>>2 | compare<<6) ^ 0x45) & 0xFF
+// Патчим ROM напрямую (binjgb читает ROM через cart_info->data из ROM_BUF).
+static int gb_hexv(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static void gb_apply_cheats(uint8_t* rom, uint32_t size) {
+    int cnt = cheats_count();
+    for (int i = 0; i < cnt; i++) {
+        if (!cheats_enabled(i)) continue;
+        const char* code = cheats_code(i);
+        if (!code) continue;
+        // убираем дефисы
+        char c[16];
+        int cl = 0;
+        for (const char* p = code; *p && cl < 15; p++)
+            if (*p != '-' && *p != ' ') c[cl++] = *p;
+        c[cl] = 0;
+        if (cl < 7) { printf("[GB] cheat: bad '%s'\n", code); continue; }
+
+        int h0 = gb_hexv(c[0]), h1 = gb_hexv(c[1]);
+        int h2 = gb_hexv(c[2]), h4 = gb_hexv(c[4]), h5 = gb_hexv(c[5]), h6 = gb_hexv(c[6]);
+        if (h0 < 0 || h1 < 0 || h2 < 0 || h4 < 0 || h5 < 0 || h6 < 0) {
+            printf("[GB] cheat: bad '%s'\n", code); continue;
+        }
+        uint8_t value  = (uint8_t)((h0 << 4) | h1);
+        uint32_t addr  = (uint32_t)((h2 << 8) | (h4 << 4) | h5 | ((h6 ^ 0xF) << 12)) & 0x7FFF;
+        int has_compare = 0;
+        uint8_t compare = 0;
+        if (cl >= 9) {
+            int h8 = gb_hexv(c[8]), h10 = gb_hexv(c[10]);
+            if (cl >= 11 && h8 >= 0 && h10 >= 0) {
+                compare = (uint8_t)((h8 << 4) | h10);
+                compare = (uint8_t)((((compare >> 2) | (compare << 6)) ^ 0x45) & 0xFF);
+                compare ^= 0xFF;
+                has_compare = 1;
+            }
+        }
+
+        // применяем ко всем банкам ROM (как Gearboy)
+        int banks = (size + 0x3FFF) / 0x4000;
+        for (int bank = 0; bank < banks; bank++) {
+            uint32_t bank_addr = (uint32_t)bank * 0x4000 + (addr & 0x3FFF);
+            if (bank_addr >= size) break;
+            if (!has_compare || rom[bank_addr] == compare)
+                rom[bank_addr] = value;
+        }
+    }
+}
+
 extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     gb_heap_reset();
 
@@ -39,6 +101,9 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     g_emu = emulator_new(&init);
     if (!g_emu) { printf("[GB] emulator_new failed\n"); return 0; }
 
+    // Применяем отмеченные читы (GB Game Genie) — патчим ROM напрямую
+    gb_apply_cheats((uint8_t*)rom, size);
+
     printf("[GB] init ok, size=%u\n", (unsigned)size);
     return 1;
 }
@@ -46,11 +111,23 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
 extern "C" void gb_run_frame(void) {
     if (!g_emu) return;
 
-    // Ввод: USB-клавиатура -> Game Boy кнопки
+    // Ввод: USB-клавиатура + Sega-геймпад -> Game Boy кнопки
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     JoypadButtons jp;
     memset(&jp, 0, sizeof(jp));
+
+    // Sega-геймпад: A->A B->B Start Mode->Select
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) jp.up = TRUE;
+    if (sp & 0x0002) jp.down = TRUE;
+    if (sp & 0x0004) jp.left = TRUE;
+    if (sp & 0x0008) jp.right = TRUE;
+    if (sp & 0x0010) jp.A = TRUE;        // Sega A -> GB A
+    if (sp & 0x0020) jp.B = TRUE;        // Sega B -> GB B
+    if (sp & 0x0080) jp.start = TRUE;
+    if (sp & 0x0800) jp.select = TRUE;   // Mode -> Select
+
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) jp.up = TRUE;
@@ -83,5 +160,5 @@ extern "C" void gb_render_frame(void) {
             uint16_t g6 = ((rgba >> 8) & 0xFF) >> 2;
             uint16_t b5 = ((rgba >> 16) & 0xFF) >> 3;
             EMU_FB[y * EMU_W + x] = (r5 << 11) | (g6 << 5) | b5;
-        }
+    }
 }

@@ -44,12 +44,13 @@ $AS $CFLAGS -x assembler-with-cpp -c -o "$BUILD/startup.o" "$TOP/h3_bare/platfor
 # --- Ядро каркаса ---
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/menu.o" "$TOP/h3_bare/cores/menu.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/rom_browser.o" "$TOP/h3_bare/cores/rom_browser.c"
-$CC $CFLAGS $INCLUDES -c -o "$BUILD/cheats.o" "$TOP/h3_bare/cores/cheats.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/cheatdb.o" "$TOP/h3_bare/cores/cheatdb.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/settings.o" "$TOP/h3_bare/cores/settings.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/sd.o" "$TOP/h3_bare/cores/sd.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fat.o" "$TOP/h3_bare/cores/fat.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_ohci.o" "$TOP/h3_bare/cores/usb_ohci.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/usb_kbd.o" "$TOP/h3_bare/cores/usb_kbd.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/sega_pad.o" "$TOP/h3_bare/cores/sega_pad.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fb_text.o" "$TOP/h3_bare/cores/fb_text.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/led.o" "$TOP/h3_bare/cores/led.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/emu.o" "$TOP/h3_bare/cores/emu.c"
@@ -198,7 +199,7 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_lcd.o" "$TOP/h3_bare/platform/fb/h3_lcd.c
 $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     -o "$BUILD/h3_bare.elf" \
     "$BUILD/startup.o" \
-    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/cheats.o" "$BUILD/settings.o" "$BUILD/emu.o" \
+    "$BUILD/menu.o" "$BUILD/rom_browser.o" "$BUILD/cheatdb.o" "$BUILD/settings.o" "$BUILD/emu.o" \
     "$BUILD/system_atari_h3.o" "$BUILD/mcume_Vcsemu.o" "$BUILD/mcume_Vmachine.o" \
     "$BUILD/mcume_Raster.o" "$BUILD/mcume_Table.o" "$BUILD/mcume_Display.o" \
     "$BUILD/mcume_Collision.o" "$BUILD/mcume_Tiasound.o" "$BUILD/mcume_Options.o" \
@@ -246,7 +247,7 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
     "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" "$BUILD/gp_cheats.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
-    "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
+    "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/sega_pad.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \

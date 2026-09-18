@@ -164,7 +164,7 @@ void gp_cheats_compile(int is_md) {
         uint16_t data;
         uint8_t cmp;
         int type = gp_cheat_decode(ch->code, &addr, &data, &cmp);
-        if (!type) { printf("cheat: bad code '%s'\n", ch->code); continue; }
+        if (!type) continue;   // не наш формат — не спамим в UART
 
         gp_patch_t* p = &g_patches[g_patch_count];
         memset(p, 0, sizeof(*p));
@@ -190,7 +190,6 @@ void gp_cheats_compile(int is_md) {
         }
         g_patch_count++;
     }
-    printf("cheats: compiled %d patches\n", g_patch_count);
 }
 
 // ---- применение ROM-патча (банкованного) ----

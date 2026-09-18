@@ -1,10 +1,13 @@
 #include <string.h>
+#include <stdio.h>
 #include "fb_text.h"
 #include "fat.h"
 #include "sd.h"
 #include "systems.h"
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "h3_hs_timer.h"
 extern int printf(const char* fmt, ...);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
@@ -14,6 +17,8 @@ uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
 #define PHYS_H 600
 
 #define FOOTER_Y (PHYS_H - 30)
+
+static void sega_pad_test_run(void);   // прототип — определён ниже
 
 static const char* key_name(uint8_t sc) {
     switch (sc) {
@@ -163,6 +168,90 @@ static void input_test_run(void) {
     }
 }
 
+// --- Sega 6-button gamepad test (PCF8574@0x20, TWI0 PA11/PA12) ---
+// Показывает побитный скан по фазам SELECT (классический протокол):
+//   raw[0] = ЦИКЛ1 TH=1: Up/Dn/L/R + B/C (TL/TR)
+//   raw[1] = ЦИКЛ1 TH=0: A/Start (TL/TR)
+//   raw[2] = ЦИКЛ4 TH=1: Z/Y/X/Mode (D0-D3)
+static void sega_pad_test_run(void) {
+    sega_pad_init();
+
+    uint16_t prev = 0xFFFF;
+    uint32_t last_tick = 0;
+    for (;;) {
+        uint16_t pad = sega_pad_scan();
+
+        // Печать только при смене состояния (нажатие/отпускание) — без спама
+        if (pad != prev) {
+            uint8_t raw[3];
+            sega_pad_get_raw(raw);
+            uint32_t st = sega_pad_get_status();
+            char line[160];
+            snprintf(line, sizeof(line),
+                "SEGA: r=%02X/%02X/%02X 0x%04X ack=%d pad=%d t=%uus",
+                raw[0], raw[1], raw[2], pad,
+                !!(st & SEGA_STATUS_ACK), !!(st & SEGA_STATUS_PAD),
+                (unsigned)sega_pad_get_scan_us());
+            uart_puts(line);
+            uart_puts("\n");
+            prev = pad;
+        }
+
+        fb_draw_stars();
+        fb_puts_s(60, 30, "Sega 6-button gamepad", 2, 0x00FFAA00);
+        fb_fill_rect(60, 60, 220, 2, 0x00FFFFFF);
+
+        int y = 90;
+        uint8_t raw[3];
+        sega_pad_get_raw(raw);
+        char buf[96];
+
+        fb_puts_s(80, y, "Raw reads (1=released, 0=pressed):", 1, 0x00FFFF00); y += 24;
+        snprintf(buf, sizeof(buf), "TH1: %02X  Up=%d Dn=%d L=%d R=%d B=%d C=%d",
+            raw[0], !!(raw[0]&0x01), !!(raw[0]&0x02), !!(raw[0]&0x04), !!(raw[0]&0x08),
+            !!(raw[0]&0x10), !!(raw[0]&0x20));
+        fb_puts_s(100, y, buf, 1, 0x00FFFFFF); y += 20;
+        snprintf(buf, sizeof(buf), "TH0: %02X  A=%d St=%d",
+            raw[1], !!(raw[1]&0x10), !!(raw[1]&0x20));
+        fb_puts_s(100, y, buf, 1, 0x00FFFFFF); y += 20;
+        snprintf(buf, sizeof(buf), "C4 : %02X  Z=%d Y=%d X=%d Mode=%d",
+            raw[2], !!(raw[2]&0x01), !!(raw[2]&0x02), !!(raw[2]&0x04), !!(raw[2]&0x08));
+        fb_puts_s(100, y, buf, 1, 0x00FFFFFF); y += 26;
+
+        snprintf(buf, sizeof(buf), "Time: %uus  Raw: %02X/%02X/%02X",
+            (unsigned)sega_pad_get_scan_us(), raw[0], raw[1], raw[2]);
+        fb_puts_s(80, y, buf, 1, 0x00AAAAAA); y += 26;
+
+        // Сводка какие кнопки зажаты
+        static const struct { uint16_t bit; const char* name; } map[] = {
+            { 0x001, "Up" }, { 0x002, "Down" }, { 0x004, "Left" }, { 0x008, "Right" },
+            { 0x010, "A" }, { 0x020, "B" }, { 0x040, "C" }, { 0x080, "Start" },
+            { 0x100, "X" }, { 0x200, "Y" }, { 0x400, "Z" }, { 0x800, "Mode" },
+        };
+        fb_puts_s(80, y, "Pressed:", 1, 0x00FFFF00); y += 24;
+        int any = 0;
+        for (int i = 0; i < 12; i++) {
+            if (pad & map[i].bit) {
+                any = 1; fb_puts_s(100, y, map[i].name, 1, 0x0000FF66); y += 20;
+            }
+        }
+        if (!any) { fb_puts_s(100, y, "(none)", 1, 0x00888888); y += 20; }
+
+        fb_puts(60, FOOTER_Y, "ESC: back", 0x00888888);
+        fb_flush();
+
+        // Ограничение ~60 fps для комфорта
+        uint32_t now = h3_hs_timer_lo_us();
+        if (now - last_tick < 16667) {
+            h3_hs_timer_delay((16667 - (now - last_tick)) * 100);
+        }
+        last_tick = h3_hs_timer_lo_us();
+
+        int k = usb_input_poll();   // неблокирующий — скан крутится постоянно
+        if (k == 41) return;
+    }
+}
+
 // --- Создать одну папку ---
 // Возвращает: 1 = создана, 2 = уже существует, 0 = ошибка
 static int ensure_dir(const char* name) {
@@ -201,6 +290,7 @@ enum {
     SET_INPUT_TEST,
     SET_VIDEO_MODE,
     SET_A2600_DIFF,
+    SET_SEGA_PAD,
     SET_PART_INFO,
     SET_COUNT,
 };
@@ -210,6 +300,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Input Test for NES / A2600",
     "Video Mode / Throttle",
     "Atari 2600 Difficulty",
+    "Sega 6-button gamepad",
     "ROM partition info",
 };
 
@@ -375,16 +466,20 @@ void settings_run(void) {
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
                 break;
+            case SET_SEGA_PAD:
+                sega_pad_test_run();
+                break;
             case SET_PART_INFO:
                 goto partition_info;
             }
         }
-        // клавиши 1..5 тоже работают для быстрого доступа
+        // клавиши 1..6 тоже работают для быстрого доступа
         else if (k == 30) { sel = SET_CREATE_FOLDERS; }
         else if (k == 31) { sel = SET_INPUT_TEST; }
         else if (k == 32) { sel = SET_VIDEO_MODE; }
         else if (k == 33) { sel = SET_A2600_DIFF; }
-        else if (k == 34) { sel = SET_PART_INFO; }
+        else if (k == 34) { sel = SET_SEGA_PAD; }
+        else if (k == 35) { sel = SET_PART_INFO; }
     }
 
 partition_info:

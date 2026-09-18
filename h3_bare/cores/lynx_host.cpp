@@ -5,6 +5,8 @@
 extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -31,13 +33,24 @@ static UBYTE* display_callback(ULONG objref) {
     return (UBYTE*)lynx_fb;
 }
 
-// Ввод: USB-клавиатура -> Lynx кнопки
-// Ввод: USB-клавиатура -> Lynx кнопки (susie.h: BUTTON_UP=0x40,
-// BUTTON_DOWN=0x80, BUTTON_LEFT=0x10, BUTTON_RIGHT=0x20)
+// Ввод: USB-клавиатура + Sega-геймпад -> Lynx кнопки (susie.h:
+// BUTTON_UP=0x40, BUTTON_DOWN=0x80, BUTTON_LEFT=0x10, BUTTON_RIGHT=0x20)
+// Sega-геймпад: A->A B->B X->Option1 Y->Option2, Start/Mode не мапятся (нет)
 static ULONG lynx_buttons_from_kbd(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     ULONG b = 0;
+
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) b |= 0x40;   // Up    = BUTTON_UP
+    if (sp & 0x0002) b |= 0x80;   // Down  = BUTTON_DOWN
+    if (sp & 0x0004) b |= 0x10;   // Left  = BUTTON_LEFT
+    if (sp & 0x0008) b |= 0x20;   // Right = BUTTON_RIGHT
+    if (sp & 0x0010) b |= 0x01;   // Sega A = A
+    if (sp & 0x0020) b |= 0x02;   // Sega B = B
+    if (sp & 0x0100) b |= 0x08;   // Sega X = Option 1
+    if (sp & 0x0200) b |= 0x04;   // Sega Y = Option 2
+
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) b |= 0x40;   // Up    = BUTTON_UP
@@ -97,6 +110,16 @@ extern "C" void lynx_run_frame(void) {
     if (!g_lynx) return;
 
     g_lynx->SetButtonData(lynx_buttons_from_kbd());
+
+    // RAW-читы: пишем байт каждый кадр в RAM Lynx (64K)
+    int rc = cheats_raw_count();
+    for (int i = 0; i < rc; i++) {
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_raw_get(i, &a, &v, &c, &hc)) {
+            a &= 0xFFFF;
+            if (!hc || g_lynx->Peek_RAM(a) == c) g_lynx->Poke_RAM(a, v);
+        }
+    }
 
     // Гоняем Update() пока display_callback не поставит флаг готового кадра.
     // Мигаем PA15 прямо здесь — видно, что функция выполняется.

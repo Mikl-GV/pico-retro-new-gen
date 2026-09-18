@@ -566,7 +566,8 @@ void __attribute__((cold)) dw_hdmi_init(struct dw_hdmi *hdmi) {
 static int hdmi_ddc_wait_i2c_done(struct dw_hdmi *hdmi, int msec) {
 	u32 val;
 	uint32_t start;
-	extern uint32_t h3_hs_timer_lo_us(void);
+	// h3_hs_timer_lo_us — inline static из h3_hs_timer.h (подключён выше);
+	// отдельный extern-прототип не нужен (и даёт -Wstrict-prototypes).
 	start = h3_hs_timer_lo_us();
 	do {
 		val = hdmi_read(hdmi, HDMI_IH_I2CM_STAT0);

@@ -13,6 +13,7 @@
 #include "settings.h"
 #include "emu.h"
 #include "led.h"
+#include "sega_pad.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -73,6 +74,10 @@ void main(void) {
     } else {
         uart_puts("SD not available\n");
     }
+
+    // I2C (TWI0 PA11/PA12) + Sega-геймпад через PCF8574@0x20
+    if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
+    else uart_puts("sega_pad: PCF8574 not found\n");
 
     for (;;) {
         int sel = menu_run();

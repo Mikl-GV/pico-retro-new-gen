@@ -87,8 +87,9 @@ typedef struct __attribute__((aligned(256))) {
 } ohci_hcca_t;
 
 static ohci_hcca_t g_hcca[2];       // по одной на OHCI-порт
-static ohci_ed_t   g_head_ed;   // control head ED (постоянный, skip=1 по умолчанию)
-static ohci_td_t   g_td[8];
+// ED/TD на порт — не общие, чтобы concurrent прерывания не сломали контроль.
+static ohci_ed_t   g_head_ed[2];   // control head ED (skip=1 по умолчанию), своё на порт
+static ohci_td_t   g_td[2][8];     // свой TD-пул на порт
 static uint16_t    g_mps = 8;
 
 // ---- периодический interrupt-IN (для HID-тача), по ED/TD на порт ----
@@ -239,12 +240,12 @@ int usb_ohci_init(uint32_t base) {
 
     int idx = ohci_idx(base);
     memset(&g_hcca[idx], 0, sizeof(g_hcca[0]));
-    memset(&g_head_ed, 0, sizeof(g_head_ed));
-    memset(&g_td, 0, sizeof(g_td));
+    memset(&g_head_ed[idx], 0, sizeof(g_head_ed[0]));
+    memset(&g_td[idx], 0, sizeof(g_td[0]));
 
-    g_head_ed.cfg = ED_SKIP | ((uint32_t)g_mps << 16);
-    g_head_ed.head = 1;
-    g_head_ed.tail = 1;
+    g_head_ed[idx].cfg = ED_SKIP | ((uint32_t)g_mps << 16);
+    g_head_ed[idx].head = 1;
+    g_head_ed[idx].tail = 1;
 
     ohci->hcca = (uint32_t)&g_hcca[idx];
 
@@ -323,22 +324,28 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     ohci_regs_t* ohci = (ohci_regs_t*)base;
     extern int uart0_printf(const char* fmt, ...);
 
-    memset(&g_td, 0, sizeof(g_td));
+    // Используем ED/TD своего порта — у каждого порта свой пул
+    // (иначе прерывания/контроль одного порта ломали бы другой).
+    int pi = ohci_idx(base);
+    ohci_ed_t* ed = &g_head_ed[pi];
+    ohci_td_t* td = &g_td[pi][0];
 
-    ohci_td_t* t_setup = &g_td[0];
-    ohci_td_t* t_data  = &g_td[1];
-    ohci_td_t* t_stat  = &g_td[2];
-    ohci_td_t* t_dummy = &g_td[3];
+    memset(td, 0, sizeof(g_td[0]));
+
+    ohci_td_t* t_setup = &td[0];
+    ohci_td_t* t_data  = &td[1];
+    ohci_td_t* t_stat  = &td[2];
+    ohci_td_t* t_dummy = &td[3];
 
     int low_speed = usb_ohci_port_low_speed(base, 0) ? 1 : 0;
 
     // ED в памяти (head-ED уже висит в control list с init)
-    g_head_ed.cfg = (addr & 0x7F)
+    ed->cfg = (addr & 0x7F)
             | (low_speed ? ED_LOWSPEED : 0)
             | ED_FROM_TD
             | ED_SKIP
             | ((uint32_t)g_mps << 16);
-    g_head_ed.next = 0;
+    ed->next = 0;
 
     // SETUP: DP=00, DATA0
     t_setup->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA0 | TD_DP_SETUP;
@@ -367,26 +374,26 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     }
 
     // ED голову на setup, хвост на dummy
-    g_head_ed.head = (uint32_t)t_setup;
-    g_head_ed.tail = (uint32_t)t_dummy;
+    ed->head = (uint32_t)t_setup;
+    ed->tail = (uint32_t)t_dummy;
 
     // Снять SKIP (HC игнорирует ED со SKIP=1)
-    g_head_ed.cfg &= ~ED_SKIP;
+    ed->cfg &= ~ED_SKIP;
 
     // ---- D-cache maintenance: clean ED, TDs, setup, data. ----
     // ДОЛЖНО быть ПОСЛЕ снятия SKIP (иначе HC видит SKIP=1 в DRAM)
-    cache_clean((uint32_t)&g_head_ed, sizeof(g_head_ed));
-    cache_clean((uint32_t)&g_td, sizeof(g_td));
+    cache_clean((uint32_t)ed, sizeof(*ed));
+    cache_clean((uint32_t)td, sizeof(g_td[0]));
     cache_clean((uint32_t)setup, setup_len);
     if (data_len > 0 && !dir_in) cache_clean((uint32_t)data, data_len);
 
-    // g_head_ed уже висит в control list после init. Но HC закэшировал
+    // ed уже висит в control list после init. Но HC закэшировал
     // его со SKIP=1 при загрузке head→current в init. Простое изменение
     // в памяти + cache_clean не заставляет HC перечитать ED.
     // Перезаписываем head + current при каждой передаче (как в рабочем
     // прототипе) — это гарантирует, что HC увидит новый ED.
-    ohci->ctrlhead = (uint32_t)&g_head_ed;
-    ohci->ctrlcur  = (uint32_t)&g_head_ed;
+    ohci->ctrlhead = (uint32_t)ed;
+    ohci->ctrlcur  = (uint32_t)ed;
     ohci->cmdstatus = (1u << 1);   // CLF
 
     // Ждём, пока HC завершит передачу: проверяем CC последнего TD
@@ -394,7 +401,7 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     ohci_td_t* last = (data_len > 0) ? t_stat : t_data;
     uint32_t elapsed = 0;
     while (1) {
-        cache_invalidate((uint32_t)&g_td, sizeof(g_td));
+        cache_invalidate((uint32_t)td, sizeof(g_td[0]));
         if ((last->cfg >> TD_CC_SHIFT) != TD_CC_NOTACC) break;
         udelay(1000);
         if (++elapsed > timeout_ms) {

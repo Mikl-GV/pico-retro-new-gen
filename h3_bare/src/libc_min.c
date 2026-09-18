@@ -87,11 +87,13 @@ char* strstr(const char* haystack, const char* needle) {
     return 0;
 }
 
-// Атомарные операции (используются spinlock, если понадобятся)
-int __sync_val_compare_and_swap_4(volatile void* ptr, int oldval, int newval) {
+// Атомарные операции (используются spinlock, если понадобятся).
+// Тип возврата должен совпадать с встроенной функцией GCC
+// (unsigned int), иначе -Wbuiltin-declaration-mismatch.
+unsigned int __sync_val_compare_and_swap_4(volatile void* ptr, unsigned int oldval, unsigned int newval) {
     // fallback: без SMP на старте это некритично; заглушка
-    volatile int* p = (volatile int*)ptr;
-    int cur = *p;
+    volatile unsigned int* p = (volatile unsigned int*)ptr;
+    unsigned int cur = *p;
     if (cur == oldval) *p = newval;
     return cur;
 }
@@ -175,6 +177,11 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
     for (; *fmt && left > 1; fmt++) {
         if (*fmt != '%') { *d++ = *fmt; left--; continue; }
         fmt++;
+
+        // Ширина: %Nd, %NX, %04X и т.п. (паддинг — нулями)
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
                     if (!s) s = "(null)";
@@ -183,17 +190,24 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
                     if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
                     while (i && left > 1) { *d++ = tmp[--i]; left--; }
                     break; }
         case 'u': { unsigned v = va_arg(ap, unsigned);
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
                     while (i && left > 1) { *d++ = tmp[--i]; left--; }
                     break; }
         case 'x': case 'X': { unsigned v = va_arg(ap, unsigned);
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
-                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
+                    while (i && left > 1) {
+                        char c = tmp[--i];
+                        if (*fmt == 'X' && c >= 'a' && c <= 'f') c -= 32;
+                        *d++ = c; left--;
+                    }
                     break; }
         case 'l': {
             fmt++;

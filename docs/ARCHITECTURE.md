@@ -24,6 +24,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
 │  usb_kbd.c  usb_ohci.c  sd.c  fat.c  led.c  fb_text.c         │
 │  uart.c  printf.c  libc_min.c  cxx_runtime.cpp                │
+│  cheatdb.c (чит-менеджер, парсер .cht)  gp_cheats.c (GPGX)    │
+│  sega_pad.c (Sega 6-btn геймпад, PCF8574)                      │
 ├───────────────────────────────────────────────────────────────┤
 │  HDMI: h3_de2 + h3_hdmi + dw_hdmi + h3_lcd                    │
 │  (1024×600, DE2 → TCON1 → HDMI PHY)                            │
@@ -37,16 +39,17 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | Система | Ядро | Язык | Рендер | Ввод |
 |---------|------|:----:|--------|------|
-| Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw |
-| Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw |
-| Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw |
-| NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB |
-| SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw |
-| Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw (в host) |
-| Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw |
-| Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw |
+| Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw + sega_pad |
+| NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB + sega_pad |
+| SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Game Boy Advance | **gpSP** (gpsp) | C/C++ | 240×160 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
-| SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw |
+| SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw + sega_pad |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -71,7 +74,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 ### system_a7800_h3.cpp (A7800, ProSystem)
 
-- Пул памяти: статический `a7_rom_data[1MB]` под ROM
+- Пул памяти: статический `a7_rom_data[1MB]` под ROM + `a7_ram[16K]` под writable RAM
+  (`a7800_set_memory()` обязательно вызывается в init — иначе memory_ram=NULL и memory_Reset() пишет по нулю)
 - `maria_LineReady()` — построчный рендер с масштабированием visibleArea → 240 строк
 - Кнопки: pad-маска из usb_kbd, маппинг в 17-байтовый input-массив RIOT
 
@@ -111,6 +115,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
+
+### gba_host.c (Game Boy Advance, gpSP)
+
+- Ядро: `gba_sp/` (gpSP: cpu.cc, video.cc, gba_memory.c, sound.c — интерпретатор, без dynarec)
+- Порт — как FCEUmm/Snes9x: без libretro.c, ядро линкуется напрямую; стабы `gba_compat.c`
+  (time/localtime/netplay/input-savestate), filestream/sscanf — из `fceumm/libretro_compat.c`
+- ROM из памяти: host ставит `g_ram_rom/g_ram_rom_size`, ядро мапит страницы ROM напрямую
+  на ROM_BUF (без копирования и без LRU-аллокаций, которые требуют 32 МБ кучи)
+- BIOS — встроенный open-source 16KB (`bios_data.S` + `bios/open_gba_bios.bin`)
+- Имена, конфликтующие с другими ядрами (fceumm/gpgx), переименованы через `objcopy`
+  (`vram/reg/cheats/init_memory/init_cpu/load_bios` → `gpsp_*`) — см. Makefile `GBA_RENAME`
+- Рендер: `gba_screen_pixels` (240×160 RGB565) → EMU_FB
+- Ввод: USB-клавиатура → кнопки GBA (Z=A X=B S=Select Enter=Start Q=L W=R + Sega-геймпад C=L X=R)
+- Звук: заглушен (нет DAC-вывода)
 
 ### snes_host.cpp (SNES / Super Famicom, Snes9x 2005)
 
@@ -195,20 +213,62 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | # | Функция |
 |---|---------|
 | 1 | Создать папки ROM на SD (основная + alt_dir для NES/SMS) |
-| 2 | Input Test (тест кнопок) |
+| 2 | Input Test (тест кнопок NES/A2600) |
 | 3 | Video Mode / Throttle: 6 частот (60, 50, 45, 40, 35, 30 Hz), ←/→ или Enter — циклически |
 | 4 | Atari 2600 Difficulty: Novice ⇄ Expert |
-| 5 | ROM partition info (справка по разметке SD) |
+| 5 | Sega 6-button gamepad — тест скана геймпада (сырые чтения, биты, время; UART при смене) |
+| 6 | ROM partition info (справка по разметке SD) |
 
 ## Ввод (usb_kbd.c / usb_ohci.c)
 
 - USB-клавиатура (boot protocol), автоповтор; OHCI1/OHCI2 (два порта)
-- `usb_input_poll()` — общий ввод меню: сначала клавиатура, при отсутствии нажатий —
-  тач-экран (если устройство энумерировано), переводится в «клавиши» по зонам:
-  верх = Up, низ = Down, середина слева = ESC, справа = Enter; только фронт касания
+- `usb_input_poll()` — общий ввод меню: сначала клавиатура, затем Sega-геймпад
+  (фронт нажатия: крестовина → стрелки, A/Start → Enter, B/Mode → ESC),
+  затем тач-экран (если устройство энумерировано) по зонам: верх = Up, низ = Down,
+  середина слева = ESC, справа = Enter; только фронт касания
 - Тач (Waveshare GT911, VID 0EEF / PID 0005): парсер HID-пакета — Report ID 0x01,
   Status бит0 = нажатие, X/Y 16-бит Little-Endian, диапазон 0..4095 (матрица GT911);
   `usb_touch_poll()` в usb_kbd.c
+
+## Sega-геймпад 6-button (sega_pad.c)
+
+- `sega_pad_scan()` — классический протокол Sega 6-button через PCF8574@0x20
+  (bit-bang I2C ~400 кГц, TWI0 PA11=SCL/PA12=SDA): 4 цикла SELECT, X/Y/Z/Mode
+  читаются в Цикле 4 после 3 холостых циклов переключения TH. Подробно — в `docs/HARDWARE.md`
+- Маска пада: UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08 A=0x10 B=0x20 C=0x40
+  START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
+- Статус: `sega_pad_get_status()` (SEGA_STATUS_ACK / SEGA_STATUS_PAD), время скана
+  `sega_pad_get_scan_us()`, сырые чтения `sega_pad_get_raw()`
+- Встроен в меню (`usb_input_poll`) и в хосты: GPGX, SNES, NES, GB, Lynx, NGP,
+  A2600, A5200, A7800 (у систем мапятся только существующие кнопки; таблица в `docs/CONTROLS.md`)
+- Atari Portfolio — клавиатурный компьютер, геймпад не подключается
+
+## Читы (cheatdb.c / gp_cheats.c)
+
+- `cheatdb.c/h` — менеджер: парсер `.cht` базы libretro (`/cheats/<система>/<ром>.cht`),
+  регистронезависимый поиск по имени файла, включение/выключение читов, ручной ввод кода
+- Меню читов — в `rom_browser.c`: клавиша **S** или геймпад **Mode** открывают
+  (при входе — ожидание полного отпускания геймпада `usb_pad_wait_release()`);
+  стрелки = выбор, Enter/A/Mode = вкл/выкл, C = все, X = нет, Start/Mode = запуск,
+  ESC/Backspace = назад. Последней строкой — **Manual code entry** (ручной ввод),
+  экран открывается всегда, даже если `.cht` для игры нет
+- Применение по системам:
+  - **GPGX (MD/SMS/GG)** — `gp_cheats.c`: декодеры Game Genie 8/16-бит + Action Replay;
+    ROM-патчи через `z80_readmap` (переживают банкинг, `ROMCheatUpdate` вызывается ядром),
+    RAM-патчи в `work_ram` раз в кадр (`RAMCheatUpdate`)
+  - **NES (FCEUmm)** — `FCEUI_DecodeGG`/`DecodePAR` + `FCEUI_AddCheat`,
+    `FCEU_ApplyPeriodicCheats` каждый кадр в ядре
+  - **SNES (Snes9x)** — `S9xGameGenieToRaw`/`ProActionReplayToRaw` + `S9xAddCheat`,
+    `Settings.ApplyCheats=true`
+  - **Game Boy (binjgb)** — декодер Game Genie GB в `gameboy_host.cpp`
+    (патч всех банков ROM напрямую, с compare-условием)
+  - **RAW-читы `AAAA:VV[:CC]`** — универсальный формат (адрес:значение[:байт-условие])
+    для систем без своего движка. Парсинг — `cheats_parse_raw`, применение каждый кадр:
+    - **A2600 (MCUME)** — `theRam[addr & 0x7F]` (RIOT RAM 128 байт)
+    - **A5200** — `memory[addr & 0xFFFF]` (RAM 64K)
+    - **A7800** — `memory_ram[addr & 0x3FFF]` (RAM 16K)
+    - **Lynx (Handy)** — `Peek_RAM`/`Poke_RAM` (RAM 64K)
+    - **NGP/NGPC (RACE)** — `tlcsMemReadB`/`tlcsMemWriteB` (карта памяти TLCS-900H)
 
 ## HDMI
 

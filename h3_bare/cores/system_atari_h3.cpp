@@ -7,6 +7,8 @@
 extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -53,6 +55,17 @@ extern "C" int emu_GetPad(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
+
+    // Sega-геймпад: крестовина, A=Fire, Start=Reset, Mode=Select
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) k |= 0x0004;   // Up
+    if (sp & 0x0002) k |= 0x0008;   // Down
+    if (sp & 0x0004) k |= 0x0002;   // Left
+    if (sp & 0x0008) k |= 0x0001;   // Right
+    if (sp & 0x0010) k |= 0x0010;   // A -> Fire
+    if (sp & 0x0080) k |= 0x0020;   // Start -> Reset
+    if (sp & 0x0800) k |= 0x0040;   // Mode -> Select
+
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) k |= 0x0004;
@@ -136,6 +149,16 @@ extern "C" void atari2600_run_frame(void) {
     extern void vcs_Input(int key);
     int before = tv_draw_count;
     int guard = 0;
+    // RAW-читы: пишем байт каждый кадр (RIOT RAM 128 байт, адрес &0x7f)
+    extern BYTE theRam[];
+    int rc = cheats_raw_count();
+    for (int i = 0; i < rc; i++) {
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_raw_get(i, &a, &v, &c, &hc)) {
+            a &= 0x7F;
+            if (!hc || theRam[a] == c) theRam[a] = v;
+        }
+    }
     while (tv_draw_count == before && guard < 40) {
         vcs_Input(0);   // обновляет k = emu_GetPad() — иначе кнопки «застывают»
         mainloop();

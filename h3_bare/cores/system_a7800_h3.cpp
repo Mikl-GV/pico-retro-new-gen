@@ -7,6 +7,8 @@
 extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
+#include "cheatdb.h"
 }
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
@@ -23,6 +25,13 @@ extern "C" {
 static uint16_t a7_pal_rgb565[256];
 static uint8_t a7_rom_data[1024 * 1024];
 static uint32_t a7_rom_size = 0;
+
+// Writable RAM 7800 (16K: 0x0000..0x3FFF). В v8 выделялся из общего пула
+// (SCREEN/ChrBuf/RAM/SRAM), но при переходе на FCEUmm те буферы исчезли,
+// а a7800_set_memory() не вызывался — memory_ram оставался NULL, и
+// memory_Reset() писал по нулевому указателю (чёрный экран/краш).
+// Теперь выделяем свой статический буфер.
+static uint8_t a7_ram[0x4000];
 
 extern byte palette_data[768];
 
@@ -67,6 +76,17 @@ static uint8_t pad_from_kbd(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     uint8_t pad = 0xFF;
+
+    // Sega-геймпад: крестовина + A/B + Start + Mode->Select
+    uint16_t sp = sega_pad_scan();
+    if (sp & 0x0001) pad &= ~0x10;   // Up
+    if (sp & 0x0002) pad &= ~0x20;   // Down
+    if (sp & 0x0004) pad &= ~0x40;   // Left
+    if (sp & 0x0008) pad &= ~0x80;   // Right
+    if (sp & 0x0010) pad &= ~0x02;   // A
+    if (sp & 0x0020) pad &= ~0x01;   // B
+    if (sp & 0x0080) pad &= ~0x08;   // Start
+    if (sp & 0x0800) pad &= ~0x04;   // Mode -> Select
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) pad &= ~0x10;
@@ -86,6 +106,10 @@ extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
     memcpy(a7_rom_data, rom, size);
     a7_rom_size = size;
 
+    // Ключевой момент: без a7800_set_memory память ядра NULL → краш.
+    memset(a7_ram, 0, sizeof(a7_ram));
+    a7800_set_memory((byte*)a7_ram);
+
     a7_build_palette();
 
     if (!cartridge_Load(a7_rom_data, size)) {
@@ -102,5 +126,17 @@ extern "C" void a7800_run_frame(void) {
     static byte input[17];
     byte pad = pad_from_kbd();
     a7_build_input(input, pad);
+    // RAW-читы: пишем байт каждый кадр в RAM 7800 (адреса < 0x4000)
+    extern byte *memory_ram;
+    int rc = cheats_raw_count();
+    for (int i = 0; i < rc; i++) {
+        uint32_t a; uint8_t v, c; int hc;
+        if (cheats_raw_get(i, &a, &v, &c, &hc)) {
+            a &= 0x3FFF;
+            if (memory_ram) {
+                if (!hc || memory_ram[a] == c) memory_ram[a] = v;
+            }
+        }
+    }
     prosystem_ExecuteFrame(input);
 }

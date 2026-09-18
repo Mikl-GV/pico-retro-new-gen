@@ -225,6 +225,9 @@ void fb_clear(void) {
 
 // Clean D-cache для фреймбуфера (DE2 читает через DMA, а CPU пишет через
 // write-back cache). Без этого на экране мусор/чёрный экран.
+// MVA-clean по 32-байтным линиям — проверенный рабочий вариант.
+// (Set/Way-clean-all тут не годится: на этом железе чистил не те линии и
+//  картинка рассыпалась.)
 void fb_flush(void) {
     uint32_t addr = FB_ADDR & ~0x1Fu;
     uint32_t end = FB_ADDR + FB_W * FB_H * 4;
