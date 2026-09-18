@@ -112,11 +112,19 @@ static int g_was_repeat = 0;
 #define PAD_REPEAT_DELAY_US 400000   // ~0,4 с до первого повтора
 #define PAD_REPEAT_RATE_US  200000   // ~5 шагов/с при удержании
 
+// Антидребезг геймпада: состояние принимается только после PAD_DEBOUNCE_HITS
+// ОДИНАКОВЫХ сканов подряд. PCF8574 обновляет выходы на STOP корректно, но
+// контакты кнопок (особенно на клонах) дребезжат сами по себе — одиночный
+// «мусорный» кадр не должен порождать ложный фронт в меню.
+#define PAD_DEBOUNCE_HITS 3
+
 // ---- состояние геймпада (вынесено из usb_input_poll, чтобы можно было сбросить) ----
 static uint16_t g_pad_prev = 0;
 static uint32_t g_pad_repeat_start = 0;
 static int      g_pad_was_repeat = 0;
 static int      g_t_prev_pressed = 0;
+static uint16_t g_pad_deb = 0;    // последний стабильный кандидат
+static int      g_pad_deb_cnt = 0; // сколько одинаковых сканов подряд
 
 // forward
 static void dump_hid_report_desc(usb_dev_t* d);
@@ -463,6 +471,8 @@ void usb_input_clear(void) {
     g_pad_repeat_start = 0;
     g_pad_was_repeat = 0;
     g_t_prev_pressed = 0;
+    g_pad_deb = 0;
+    g_pad_deb_cnt = 0;
 }
 
 // Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
@@ -473,6 +483,8 @@ void usb_pad_wait_release(void) {
     g_pad_prev = 0;
     g_pad_repeat_start = 0;
     g_pad_was_repeat = 0;
+    g_pad_deb = 0;
+    g_pad_deb_cnt = 0;
 }
 
 // Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
@@ -494,12 +506,24 @@ void usb_kbd_wait_release(void) {
 // ---- Объединённый ввод для меню: клавиатура, при отсутствии — Sega-геймпад, тач ----
 // Возвращает HID-сканкод (82=Up, 81=Down, 79=Right, 80=Left, 40=Enter, 41=ESC)
 // либо 0, если ничего не нажато. Тач переводится в «клавиши» по зонам экрана.
-// Sega-геймпад (PCF8574): 1 нажатие = 1 шаг, удержание = автоповтор (как клавиатура)
+// Sega-геймпад (PCF8574): 1 нажатие = 1 шаг, удержание = автоповтор (как клавиатура).
+// Антидребезг: состояние принимается только после PAD_DEBOUNCE_HITS одинаковых
+// сканов подряд — одиночный мусорный кадр не даёт ложный фронт.
 int usb_input_poll(void) {
     int k = usb_kbd_poll();
     if (k) return k;
 
     uint16_t pad = sega_pad_scan();
+
+    // --- антидребезг: ждём стабильного состояния ---
+    if (pad != g_pad_deb) {
+        g_pad_deb = pad;
+        g_pad_deb_cnt = 1;
+        return 0;
+    }
+    if (++g_pad_deb_cnt < PAD_DEBOUNCE_HITS) return 0;
+    g_pad_deb_cnt = 0;   // стабильно подтверждено — сбрасываем счётчик подтверждений
+
     if (pad != g_pad_prev) {
         // фронт/спад: обновляем g_pad_prev ДО обработки, иначе при return
         // g_pad_prev остаётся старым и зажатая кнопка даёт «фронт» каждый
