@@ -151,8 +151,16 @@ void usb_pad_update(void) {
     g_pad_cur = pad;
 }
 
-uint16_t usb_pad_get(void)  { return g_pad_cur; }
-uint16_t usb_pad_edge(void) { return g_pad_edge; }
+// Фронт нажатия: биты, появившиеся с прошлого чтения. Edge ПОТРЕБЛЯЕТСЯ
+// (сбрасывается) при вызове — иначе фронт «висит» и повторно срабатывает
+// на каждом usb_input_poll в цикле меню (прыжки курсора через 3-4 строки).
+uint16_t usb_pad_edge(void) {
+    uint16_t e = g_pad_edge;
+    g_pad_edge = 0;
+    return e;
+}
+
+uint16_t usb_pad_get(void) { return g_pad_cur; }
 
 // forward
 static void dump_hid_report_desc(usb_dev_t* d);
