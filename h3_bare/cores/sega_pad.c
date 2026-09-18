@@ -175,19 +175,48 @@ int sega_pad_init(void) {
 //
 // Маска (как GPGX): UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08
 //   A=0x10 B=0x20 C=0x40 START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
+// Полный скан 6-кнопочного геймпада Sega Mega Drive — классический протокол
+// (прямые линии геймпада через PCF8574, как в рабочем Arduino-адаптере):
+//
+//   P0 = D0 (Up / Z)      P1 = D1 (Down / Y)
+//   P2 = D2 (Left / X)    P3 = D3 (Right / Mode)
+//   P4 = D4 (TL = B / A)  P5 = D5 (TR = C / Start)
+//   P7 = TH (SELECT, выход)
+//
+// Алгоритм (фазы SELECT): T_US ~150 мкс после переключения до чтения,
+// весь цикл сброса — LOW потом HIGH (как в скетче):
+//
+//   ЦИКЛ 1  TH=1: Up Down Left Right  B(TL)  C(TR)
+//   ЦИКЛ 1  TH=0: A(TL)  Start(TR)
+//   ЦИКЛ 2  TH=1, TH=0          (холостые прокрутки счётчика)
+//   ЦИКЛ 3  TH=1, TH=0          (холостые прокрутки счётчика)
+//   ЦИКЛ 4  TH=1: Z(P0) Y(P1) X(P2) Mode(P3)  + B(TL) C(TR)
+//   СБРОС   TH=0, затем TH=1 (idle)
+//
+// ВАЖНО: последовательность фаз и «пустые кадры» (холостые прокрутки
+// счётчика чипа) нарушать нельзя — иначе десинхронизация 6-кнопочного
+// режима (X/Y/Z/Mode начинают читаться не в свой цикл). Поэтому при
+// ошибке I2C мы НЕ прерываем протокол: все фазы выполняются всегда,
+// сбойные чтения дают 0xFF (все кнопки отпущены), но SEGA_STATUS_ACK
+// не ставится. Принимающая сторона (usb_input_poll/usb_pad_just_pressed)
+// видит отсутствие ACK и игнорирует скан, не трогая g_pad_prev —
+// ложных срабатываний нет, а фазы чипа остаются синхронными.
+//
+// Маска (как GPGX): UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08
+//   A=0x10 B=0x20 C=0x40 START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
 uint16_t sega_pad_scan(void) {
     uint8_t r;
     uint16_t pad = 0;
     uint32_t t0 = h3_hs_timer_lo_us();
+    int      i2c_ok = 1;   // станет 0 при любой ошибке шины
 
-    #define TH1() do { if (!pcf_write(0xFF)) goto scerr; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
-    #define TH0() do { if (!pcf_write(0x7F)) goto scerr; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
+    // Задержка после смены TH (T_US) — критична для счётчика чипа
+    #define PAD_TUS() udelay(20)
 
     g_status = 0;
 
     // --- ЦИКЛ 1, TH=1: крестовина (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) goto scerr;
+    if (!pcf_write(0xFF)) { i2c_ok = 0; } else { if (!pcf_read(&r)) { i2c_ok = 0; r = 0xFF; } }
     g_raw[0] = r;
     if (!(r & 0x01)) pad |= 0x01;  // Up    (P0)
     if (!(r & 0x02)) pad |= 0x02;  // Down  (P1)
@@ -197,20 +226,26 @@ uint16_t sega_pad_scan(void) {
     if (!(r & 0x20)) pad |= 0x40;  // C     (P5/TR)
 
     // --- ЦИКЛ 1, TH=0: A/Start (TL/TR) + маркер D2/D3=0 (геймпад подключён) ---
-    TH0();
-    if (!pcf_read(&r)) goto scerr;
+    if (!pcf_write(0x7F)) { i2c_ok = 0; } else { if (!pcf_read(&r)) { i2c_ok = 0; r = 0xFF; } }
+    PAD_TUS();
     g_raw[1] = r;
     if (!(r & 0x10)) pad |= 0x10;  // A     (P4/TL)
     if (!(r & 0x20)) pad |= 0x80;  // Start (P5/TR)
     if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;  // маркер геймпада
 
-    // --- ЦИКЛ 2 и 3: холостые прокрутки счётчика чипа ---
-    TH1(); TH0();   // цикл 2
-    TH1(); TH0();   // цикл 3
+    // --- ЦИКЛ 2 и 3: холостые прокрутки счётчика чипа (пустые кадры) ---
+    // Каждая пара TH1/TH0 продвигает внутренний счётчик 6-кнопочного
+    // режима. Пропускать их нельзя — иначе сдвинутся фазы.
+    // ЦИКЛ 2
+    if (!pcf_write(0xFF)) { i2c_ok = 0; } PAD_TUS();
+    if (!pcf_write(0x7F)) { i2c_ok = 0; } PAD_TUS();
+    // ЦИКЛ 3
+    if (!pcf_write(0xFF)) { i2c_ok = 0; } PAD_TUS();
+    if (!pcf_write(0x7F)) { i2c_ok = 0; } PAD_TUS();
 
     // --- ЦИКЛ 4, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) goto scerr;
+    if (!pcf_write(0xFF)) { i2c_ok = 0; } else { if (!pcf_read(&r)) { i2c_ok = 0; r = 0xFF; } }
+    PAD_TUS();
     g_raw[2] = r;
     if (!(r & 0x01)) pad |= 0x400;  // Z    (P0)
     if (!(r & 0x02)) pad |= 0x200;  // Y    (P1)
@@ -220,25 +255,16 @@ uint16_t sega_pad_scan(void) {
     if (!(r & 0x20)) pad |= 0x40;   // C    (P5/TR)
 
     // --- Сброс: TH=0, затем idle TH=1 (как в скетче: LOW->HIGH + пауза) ---
-    TH0();
-    TH1();
+    if (!pcf_write(0x7F)) { i2c_ok = 0; } PAD_TUS();
+    if (!pcf_write(0xFF)) { i2c_ok = 0; } PAD_TUS();
     udelay(100);
 
-    #undef TH1
-    #undef TH0
+    #undef PAD_TUS
 
-    g_status |= SEGA_STATUS_ACK;
+    if (i2c_ok)
+        g_status |= SEGA_STATUS_ACK;   // иначе: сбой — потребитель игнорирует
     g_scan_us = h3_hs_timer_lo_us() - t0;
     return pad;
-
-scerr:
-    // Сбой I2C (NACK/аппаратная ошибка): чип остался в промежуточной фазе
-    // счётчика. Сбрасываем его в idle (TH=1), иначе следующий скан начнёт
-    // с неверной фазы и прочитает мусор (ложные нажатия).
-    pcf_write(0xFF);
-    udelay(100);
-    g_status = 0;   // ACK снят — потребители отличат «нет данных» от «не нажато»
-    return 0;
 }
 
 void sega_pad_dump(uint16_t pad) {
