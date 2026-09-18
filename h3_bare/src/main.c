@@ -15,6 +15,7 @@
 #include "h3_hs_timer.h"
 #include "led.h"
 #include "sega_pad.h"
+#include "remap.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -122,6 +123,9 @@ void main(void) {
     } else {
         uart_puts("SD not available\n");
     }
+
+    // Пользовательский ремап клавиатуры (из /retro.cfg) — после fat_init
+    if (sd_ok) { remap_load(); uart_puts("remap: loaded\n"); }
 
     // I2C (TWI0 PA11/PA12) + Sega-геймпад через PCF8574@0x20
     if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");

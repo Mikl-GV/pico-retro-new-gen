@@ -72,12 +72,14 @@ static void a7_build_input(byte* input, uint8_t pad) {
     input[16] = 0;
 }
 
-static uint8_t pad_from_kbd(void) {
+static uint16_t pad_from_kbd(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
-    uint8_t pad = 0xFF;
+    uint16_t pad = 0xFF;
+    // Бит 0x100 — виртуальная Pause (корпусная кнопка A7800), отдаётся ядру
+    // отдельно через prosystem_Pause() в a7800_run_frame.
 
-    // Sega-геймпад: крестовина + A/B + Start + Mode->Select
+    // Sega-геймпад: крестовина + A/B + Start + Mode->Select/Pause
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) pad &= ~0x10;   // Up
     if (sp & 0x0002) pad &= ~0x20;   // Down
@@ -87,6 +89,7 @@ static uint8_t pad_from_kbd(void) {
     if (sp & 0x0020) pad &= ~0x01;   // B
     if (sp & 0x0080) pad &= ~0x08;   // Start
     if (sp & 0x0800) pad &= ~0x04;   // Mode -> Select
+    if (sp & 0x0400) pad &= ~0x100;  // Z -> Pause (корпусная)
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (sc == 82) pad &= ~0x10;
@@ -124,8 +127,20 @@ extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
 
 extern "C" void a7800_run_frame(void) {
     static byte input[17];
-    byte pad = pad_from_kbd();
-    a7_build_input(input, pad);
+    uint16_t pad = pad_from_kbd();
+
+    // Корпусная Pause (Z на Sega-геймпаде) — фронт: ядро жмёт паузу
+    // один раз (не каждый кадр, иначе она не переключится обратно).
+    static int prev_pause = 0;
+    int pause_now = !(pad & 0x100);
+    if (pause_now && !prev_pause) {
+        extern void prosystem_Pause(bool);
+        extern bool prosystem_paused;
+        prosystem_Pause(!prosystem_paused);
+    }
+    prev_pause = pause_now;
+
+    a7_build_input(input, (uint8_t)pad);
     // RAW-читы: пишем байт каждый кадр в RAM 7800 (адреса < 0x4000)
     extern byte *memory_ram;
     int rc = cheats_raw_count();

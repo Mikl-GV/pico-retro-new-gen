@@ -20,6 +20,11 @@ int  fat_find(const char* dir, const char* name, fat_entry_t* out);
 int  fat_read_file(const fat_entry_t* f, uint32_t offset, uint8_t* buf, uint32_t len);
 int  fat_mkdir(const char* parent_path, const char* name);
 
+// Запись/перезапись файла (dir_path — например "/", name — "retro.cfg").
+// Создаёт новые кластеры по цепочке, пишет LFN+8.3 если нужно.
+// Возвращает кол-во записанных байт, -1 при ошибке.
+int  fat_write_file(const char* dir_path, const char* name, const uint8_t* data, uint32_t len);
+
 // Удаление файла: помечает как 0xE5 и освобождает кластеры в FAT
 int  fat_delete_file(const char* dir, const char* name);
 

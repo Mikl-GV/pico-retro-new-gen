@@ -56,14 +56,14 @@ extern "C" int emu_GetPad(void) {
     int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
 
-    // Sega-геймпад: крестовина, A=Fire, Start=Reset, Mode=Select
+    // Sega-геймпад: крестовина, A=Fire, Mode=Select. Start НЕ мапим —
+    // на A2600 нет паузы, Start как Reset опасен (случайный сброс игры).
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) k |= 0x0004;   // Up
     if (sp & 0x0002) k |= 0x0008;   // Down
     if (sp & 0x0004) k |= 0x0002;   // Left
     if (sp & 0x0008) k |= 0x0001;   // Right
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
-    if (sp & 0x0080) k |= 0x0020;   // Start -> Reset
     if (sp & 0x0800) k |= 0x0040;   // Mode -> Select
 
     for (int i = 0; i < n; i++) {

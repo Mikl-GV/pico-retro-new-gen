@@ -50,6 +50,7 @@ static ULONG lynx_buttons_from_kbd(void) {
     if (sp & 0x0020) b |= 0x02;   // Sega B = B
     if (sp & 0x0100) b |= 0x08;   // Sega X = Option 1
     if (sp & 0x0200) b |= 0x04;   // Sega Y = Option 2
+    if (sp & 0x0800) b |= 0x0100; // Sega Mode = Pause (корпусная кнопка Lynx)
 
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];

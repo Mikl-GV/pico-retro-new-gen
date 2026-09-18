@@ -7,6 +7,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "h3_hs_timer.h"
 extern int printf(const char* fmt, ...);
 
@@ -304,6 +305,7 @@ enum {
     SET_VIDEO_MODE,
     SET_A2600_DIFF,
     SET_SEGA_PAD,
+    SET_KEYBOARD_REMAP,
     SET_PART_INFO,
     SET_COUNT,
 };
@@ -314,6 +316,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Video Mode / Throttle",
     "Atari 2600 Difficulty",
     "Sega 6-button gamepad",
+    "Keyboard remap (per system)",
     "ROM partition info",
 };
 
@@ -482,17 +485,21 @@ void settings_run(void) {
             case SET_SEGA_PAD:
                 sega_pad_test_run();
                 break;
+            case SET_KEYBOARD_REMAP:
+                remap_menu();
+                break;
             case SET_PART_INFO:
                 goto partition_info;
             }
         }
-        // клавиши 1..6 тоже работают для быстрого доступа
+        // клавиши 1..7 тоже работают для быстрого доступа
         else if (k == 30) { sel = SET_CREATE_FOLDERS; }
         else if (k == 31) { sel = SET_INPUT_TEST; }
         else if (k == 32) { sel = SET_VIDEO_MODE; }
         else if (k == 33) { sel = SET_A2600_DIFF; }
         else if (k == 34) { sel = SET_SEGA_PAD; }
-        else if (k == 35) { sel = SET_PART_INFO; }
+        else if (k == 35) { sel = SET_KEYBOARD_REMAP; }
+        else if (k == 36) { sel = SET_PART_INFO; }
     }
 
 partition_info:

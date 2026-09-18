@@ -60,7 +60,7 @@ Write-Host "=== Assembler ==="
 & $CC @CFLAGS "-xassembler-with-cpp" -c -o "$BUILD\startup.o" "$TOP\h3_bare\platform\startup.S"; ok "startup"
 
 Write-Host "=== Core ==="
-foreach ($f in @("menu","rom_browser","cheatdb","settings","sd","fat","usb_ohci","usb_kbd","sega_pad","fb_text","led","emu")) {
+foreach ($f in @("menu","rom_browser","cheatdb","settings","sd","fat","usb_ohci","usb_kbd","sega_pad","remap","fb_text","led","emu")) {
     & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\cores\$f.c"; ok $f
 }
 

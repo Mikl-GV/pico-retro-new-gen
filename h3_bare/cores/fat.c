@@ -758,6 +758,105 @@ static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen
     }
 }
 
+// Записать файл в существующую директорию (dir_path — "/" или "/roms/...", name — имя файла).
+// Если файл с таким именем уже есть — перезаписывает (удаляет старую запись, берёт свежие кластеры).
+// Данные пишутся байтами в цепочку кластеров (размер округляется до кластера, остаток — 0xFF? нет, нулями).
+// Возвращает: len при успехе, -1 при ошибке. Имя должно быть 8.3-совместимым (без пробелов, <=8 символов + опц. расширение <=3).
+int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, uint32_t len) {
+    if (!dir_path || !name || !name[0]) return -1;
+    if (!data && len) return -1;
+    if (len == 0) return 0;   // пустой файл не создаём
+
+    // 1. Найти родительскую директорию
+    char pbuf[FAT_NAME_LEN];
+    fat_entry_t parent;
+    if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
+    if (parent.size != 0) return -1;
+
+    // 2. Если файл уже есть — удалить (освободить старые кластеры и запись)
+    fat_entry_t old;
+    if (fat_find(dir_path, name, &old)) {
+        fat_delete_file(dir_path, name);
+    }
+
+    // 3. Выделить цепочку кластеров
+    uint32_t cl_size = g_sec_per_cluster * 512;
+    uint32_t need_cl = (len + cl_size - 1) / cl_size;
+    if (need_cl == 0) need_cl = 1;
+
+    uint32_t first_cl = 0, prev_cl = 0;
+    for (uint32_t i = 0; i < need_cl; i++) {
+        uint32_t cl = find_free_cluster();
+        if (cl == 0) { if (first_cl) fat_set_cluster(prev_cl, 0x0FFFFFFF); return -1; }
+        if (!first_cl) first_cl = cl;
+        if (i > 0) fat_set_cluster(prev_cl, cl);   // prev -> next
+        prev_cl = cl;
+    }
+    fat_set_cluster(prev_cl, 0x0FFFFFFF);          // конец цепочки
+
+    // 4. Записать данные по кластерам
+    uint32_t pos = 0;
+    uint32_t cl = first_cl;
+    uint8_t buf[512];
+    while (pos < len && cl >= 2 && cl < 0x0FFFFFF8) {
+        uint32_t sec = cluster_to_sector(cl);
+        for (uint32_t s = 0; s < g_sec_per_cluster && pos < len; s++) {
+            uint32_t chunk = len - pos;
+            if (chunk > 512) chunk = 512;
+            if (chunk < 512) {
+                // последний сектор — читаем, правим хвост, пишем (сохранить остаток сектора)
+                if (sd_read_sector(sec + s, buf) < 0) return -1;
+            }
+            memcpy(buf, data + pos, chunk);
+            if (sd_write_sector(sec + s, buf) < 0) return -1;
+            pos += chunk;
+        }
+        cl = fat_next_cluster(cl);
+    }
+
+    // 5. Запись в директорию (спрашиваем свободную запись: 1 = 8.3, без LFN)
+    uint32_t dentry_sec; int dentry_off;
+    if (find_free_entry(parent.first_cluster, &dentry_sec, &dentry_off) < 0) return -1;
+    if (sd_read_sector(dentry_sec, g_sector) < 0) return -1;
+
+    // 8.3 имя: до 8 символов + '.' + до 3 расширение, в верхнем регистре
+    uint8_t short83[11];
+    memset(short83, ' ', 11);
+    const char* dot = 0;
+    for (const char* p = name; *p; p++) if (*p == '.') dot = p;
+    int nlen = dot ? (int)(dot - name) : (int)strlen(name);
+    int xlen = dot ? (int)strlen(dot + 1) : 0;
+    if (nlen > 8) nlen = 8;
+    if (xlen > 3) xlen = 3;
+    for (int i = 0; i < nlen; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') c -= 32;
+        short83[i] = (uint8_t)c;
+    }
+    for (int i = 0; i < xlen; i++) {
+        char c = dot[i + 1];
+        if (c >= 'a' && c <= 'z') c -= 32;
+        short83[8 + i] = (uint8_t)c;
+    }
+    // атрибут: архивный (0x20) — файл
+    g_sector[dentry_off + 11] = 0x20;
+    // кластер
+    g_sector[dentry_off + 20] = (first_cl >> 16) & 0xFF;
+    g_sector[dentry_off + 21] = (first_cl >> 24) & 0xFF;
+    g_sector[dentry_off + 26] = first_cl & 0xFF;
+    g_sector[dentry_off + 27] = (first_cl >> 8) & 0xFF;
+    // размер
+    g_sector[dentry_off + 28] = len & 0xFF;
+    g_sector[dentry_off + 29] = (len >> 8) & 0xFF;
+    g_sector[dentry_off + 30] = (len >> 16) & 0xFF;
+    g_sector[dentry_off + 31] = (len >> 24) & 0xFF;
+    memcpy(g_sector + dentry_off, short83, 11);
+
+    if (sd_write_sector(dentry_sec, g_sector) < 0) return -1;
+
+    return (int)len;
+}
+
 int fat_list(const char* dir, fat_entry_t* out, int max) {
     if (!dir || dir[0] == 0 || strcmp(dir, "/") == 0)
         return read_dir(g_root_cluster, out, max);

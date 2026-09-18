@@ -74,8 +74,8 @@ static void gpgx_poll_input(void) {
     if (sp & 0x0020) pad |= INPUT_B;        // Sega B -> MD B
     if (sp & 0x0040) pad |= INPUT_C;        // Sega C -> MD C
     if (sp & 0x0080) pad |= INPUT_START;    // Start
-    if (sp & 0x0100) pad |= INPUT_Y;        // Sega X -> GPGX Y
-    if (sp & 0x0200) pad |= INPUT_X;        // Sega Y -> GPGX X
+    if (sp & 0x0100) pad |= INPUT_X;        // Sega X -> MD X
+    if (sp & 0x0200) pad |= INPUT_Y;        // Sega Y -> MD Y
     if (sp & 0x0400) pad |= INPUT_Z;        // Sega Z -> GPGX Z
     if (sp & 0x0800) {
         if (g_is_md) pad |= INPUT_MODE;     // Mode (MD)

@@ -97,8 +97,8 @@ extern "C" int a5_GetPad(void) {
     if (sp & 0x0008) k |= 0x0001;   // Right
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
     if (sp & 0x0020) k |= 0x0020;   // B -> Pause
-    if (sp & 0x0080) k |= 0x0040;   // Start
-    if (sp & 0x0800) k |= 0x0040;   // Mode -> Start
+    if (sp & 0x0080) k |= 0x0040;   // Start (игровой)
+    // Mode не мапим: у A5200 нет своего Mode; Start уже на Start-кнопке.
 
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
