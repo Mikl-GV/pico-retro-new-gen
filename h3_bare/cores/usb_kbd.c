@@ -449,11 +449,13 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
 
 // Фронт нажатия Sega-геймпада: возвращает биты, нажатые ТОЛЬКО что (0→1).
 // Отдельная от usb_input_poll функция — для меню читов и тестов геймпада.
+// При сбойном скане (нет ACK) НЕ трогаем состояние — чтобы отладочная
+// остановка/помеха на I2C не дала лавину ложных фронтов.
 uint16_t usb_pad_just_pressed(void) {
     uint16_t now = sega_pad_scan();
+    if (!(sega_pad_get_status() & SEGA_STATUS_ACK)) return 0;  // сбой — игнор
     uint16_t pressed = now & ~g_pad_prev;
-    if (now) g_pad_prev = now;   // обновляем только если читается (иначе потеряем фронт)
-    else g_pad_prev = 0;
+    g_pad_prev = now;
     return pressed;
 }
 
@@ -500,6 +502,9 @@ int usb_input_poll(void) {
     if (k) return k;
 
     uint16_t pad = sega_pad_scan();
+    // При сбойном скане (нет ACK) — игнорируем: не обновляем g_pad_prev,
+    // чтобы отладочная остановка/помеха на I2C не дала ложный фронт.
+    if (!(sega_pad_get_status() & SEGA_STATUS_ACK)) return 0;
     if (pad != g_pad_prev) {
         // фронт/спад: обновляем g_pad_prev ДО обработки, иначе при return
         // g_pad_prev остаётся старым и зажатая кнопка даёт «фронт» каждый

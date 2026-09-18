@@ -180,14 +180,15 @@ uint16_t sega_pad_scan(void) {
     uint16_t pad = 0;
     uint32_t t0 = h3_hs_timer_lo_us();
 
-    #define TH1() do { if (!pcf_write(0xFF)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
-    #define TH0() do { if (!pcf_write(0x7F)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
+    #define TH1() do { if (!pcf_write(0xFF)) goto scerr; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
+    #define TH0() do { if (!pcf_write(0x7F)) goto scerr; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
 
     g_status = 0;
 
     // --- ЦИКЛ 1, TH=1: крестовина (D0-D3) + B/C (TL/TR) ---
     TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[0] = r;
+    if (!pcf_read(&r)) goto scerr;
+    g_raw[0] = r;
     if (!(r & 0x01)) pad |= 0x01;  // Up    (P0)
     if (!(r & 0x02)) pad |= 0x02;  // Down  (P1)
     if (!(r & 0x04)) pad |= 0x04;  // Left  (P2)
@@ -197,7 +198,8 @@ uint16_t sega_pad_scan(void) {
 
     // --- ЦИКЛ 1, TH=0: A/Start (TL/TR) + маркер D2/D3=0 (геймпад подключён) ---
     TH0();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[1] = r;
+    if (!pcf_read(&r)) goto scerr;
+    g_raw[1] = r;
     if (!(r & 0x10)) pad |= 0x10;  // A     (P4/TL)
     if (!(r & 0x20)) pad |= 0x80;  // Start (P5/TR)
     if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;  // маркер геймпада
@@ -208,7 +210,8 @@ uint16_t sega_pad_scan(void) {
 
     // --- ЦИКЛ 4, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
     TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[2] = r;
+    if (!pcf_read(&r)) goto scerr;
+    g_raw[2] = r;
     if (!(r & 0x01)) pad |= 0x400;  // Z    (P0)
     if (!(r & 0x02)) pad |= 0x200;  // Y    (P1)
     if (!(r & 0x04)) pad |= 0x100;  // X    (P2)
@@ -227,6 +230,15 @@ uint16_t sega_pad_scan(void) {
     g_status |= SEGA_STATUS_ACK;
     g_scan_us = h3_hs_timer_lo_us() - t0;
     return pad;
+
+scerr:
+    // Сбой I2C (NACK/аппаратная ошибка): чип остался в промежуточной фазе
+    // счётчика. Сбрасываем его в idle (TH=1), иначе следующий скан начнёт
+    // с неверной фазы и прочитает мусор (ложные нажатия).
+    pcf_write(0xFF);
+    udelay(100);
+    g_status = 0;   // ACK снят — потребители отличат «нет данных» от «не нажато»
+    return 0;
 }
 
 void sega_pad_dump(uint16_t pad) {
