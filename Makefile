@@ -417,10 +417,14 @@ $(BUILD)/gpgx_cd_hw_%.o: $(TOP)h3_bare/cores/gpgx/core/cd_hw/%.c | $(BUILD)
 $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
 
-# ---- Линковка ----
+# ---- Линковка (через response-файл для Windows, где cmdline лимит ~8K) ----
+# Пути в .rsp конвертим в Windows-формат (cygpath -m), иначе нативный
+# arm-none-eabi-ld не видит MSYS-пути вида /e/... .
 $(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
+	@rm -f $(BUILD)/linker.rsp
+	@for o in $(OBJ); do cygpath -m $$o >> $(BUILD)/linker.rsp; done
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
-	    -o $@ $(OBJ) -lgcc -lc -lm -lgcc
+	    -o $@ @$(BUILD)/linker.rsp -lgcc -lc -lm -lgcc
 
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $(ELF) $@

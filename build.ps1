@@ -1,23 +1,57 @@
 # build.ps1 — полная пересборка pico-retro-new-gen (PowerShell, без make)
 # Учитывает все ядра: MCUME, A7800, A5200, Portfolio, GB, Lynx, NGP, GBA,
 # MSX, NES(FCEUmm), SNES(Snes9x), MD/SMS(GPGX), читы, sega_pad.
+#
+# ЗАПУСК:   .\build.ps1          (или двойной клик build_windows.bat)
+# ТРЕБУЕТ:  arm-none-eabi тулчейн. Ищется автоматически:
+#           1) в PATH (command -v / where)
+#           2) в C:\ARM\gcc-arm-none-eabi-*\bin
+#           3) в других типовых местах
+# Если не найден — печатает понятную инструкцию и выходит.
 $TOP = "$PSScriptRoot"
 $BUILD = "$TOP\build"
 $BIN = "$BUILD\h3_bare.bin"
 $ELF = "$BUILD\h3_bare.elf"
 
-$CC0 = "C:\ARM\gcc-arm-none-eabi-15.2.1\bin"
-$CC = "$CC0\arm-none-eabi-gcc.exe"
-$CXX = "$CC0\arm-none-eabi-g++.exe"
-$OBJCOPY = "$CC0\arm-none-eabi-objcopy.exe"
+# ---- Автоопределение тулчейна ----
+$CC0 = $null
+# 1) PATH
+$p = Get-Command arm-none-eabi-gcc -ErrorAction SilentlyContinue
+if ($p) { $CC0 = Split-Path $p.Source }
+# 2) C:\ARM\gcc-arm-none-eabi-*
+if (-not $CC0) {
+    $d = Get-ChildItem "C:\ARM" -Directory -Filter "gcc-arm-none-eabi*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    if ($d) { $CC0 = Join-Path $d.FullName "bin" }
+}
+# 3) другие типовые пути
+if (-not $CC0) {
+    foreach ($cand in @("C:\Program Files (x86)\GNU Arm Embedded Toolchain\*\bin",
+                        "C:\Program Files\GNU Arm Embedded Toolchain\*\bin",
+                        "C:\gcc-arm-none-eabi\bin",
+                        "C:\tools\gcc-arm-none-eabi\bin")) {
+        $m = Get-ChildItem $cand -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($m) { $CC0 = $m.FullName; break }
+    }
+}
+if (-not $CC0 -or -not (Test-Path (Join-Path $CC0 "arm-none-eabi-gcc.exe"))) {
+    Write-Host ""
+    Write-Host "ОШИБКА: ARM-тулчейн не найден." -ForegroundColor Red
+    Write-Host "Скачай и распакуй: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads" -ForegroundColor Yellow
+    Write-Host "пример: gcc-arm-none-eabi-13.3-2024.08 (Windows x86_64)."
+    Write-Host "Затем положи в C:\ARM\ (чтобы был C:\ARM\gcc-arm-none-eabi-...\bin\arm-none-eabi-gcc.exe)"
+    Write-Host "или добавь папку bin в системный PATH."
+    exit 1
+}
+$CC = Join-Path $CC0 "arm-none-eabi-gcc.exe"
+$CXX = Join-Path $CC0 "arm-none-eabi-g++.exe"
+$OBJCOPY = Join-Path $CC0 "arm-none-eabi-objcopy.exe"
+Write-Host "Тулчейн: $CC0" -ForegroundColor Cyan
 
 $CFLAGS = @("-mcpu=cortex-a7","-mfpu=neon","-mfloat-abi=softfp","-marm","-ffreestanding","-Wall","-Wextra","-O2","-DORANGE_PI_ONE","-DALLWINNER_BARE_METAL","-DNDEBUG")
 $CXXFLAGS = $CFLAGS + @("-fno-exceptions","-fno-rtti","-fno-threadsafe-statics")
 $INC = @("-I$TOP\h3_bare\include","-I$TOP\h3_bare\cores","-I$TOP\h3_bare\src","-I$TOP\h3_bare\platform\fb")
 
 function ok { if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: $($args[0])"; exit 1 } else { Write-Host "  $($args[0])" } }
-
-Remove-Item "$BUILD\*.o" -Force -ErrorAction SilentlyContinue
 
 Write-Host "=== Assembler ==="
 & $CC @CFLAGS "-xassembler-with-cpp" -c -o "$BUILD\startup.o" "$TOP\h3_bare\platform\startup.S"; ok "startup"

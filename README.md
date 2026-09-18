@@ -17,6 +17,22 @@ Atari Portfolio (8088, BIOS вшит — без ROM на SD).
 
 ## Сборка и запись
 
+### Windows (проще всего — один файл)
+
+> Нужен только ARM-тулчейн (см. ниже). Всё остальное в Windows уже есть.
+
+1. Скачай ARM-тулчейн для Windows: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+   (файл вида `gcc-arm-none-eabi-*-win32-x86_64.zip`)
+2. Распакуй его в `C:\ARM\` — должно получиться `C:\ARM\gcc-arm-none-eabi-...\bin\arm-none-eabi-gcc.exe`
+3. **Двойной клик** по `build_windows.bat` в корне проекта
+4. Готово: прошивка `h3_bare.bin` появится в корне проекта
+
+Если тулчейн установлен иначе — скрипт найдёт его в PATH или попросит добавить.
+
+Ручной запуск: `powershell -ExecutionPolicy Bypass -File .\build.ps1`
+
+### Linux / macOS
+
 ```bash
 sudo apt install gcc-arm-none-eabi u-boot-tools mtools
 make -j$(nproc)           # параллельная сборка -> h3_bare.bin в корне (и в build/)
