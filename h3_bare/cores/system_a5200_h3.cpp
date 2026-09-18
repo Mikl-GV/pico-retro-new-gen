@@ -8,6 +8,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -100,17 +101,16 @@ extern "C" int a5_GetPad(void) {
     if (sp & 0x0080) k |= 0x0040;   // Start (игровой)
     // Mode не мапим: у A5200 нет своего Mode; Start уже на Start-кнопке.
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) k |= 0x0004;
-        if (sc == 81) k |= 0x0008;
-        if (sc == 80) k |= 0x0002;
-        if (sc == 79) k |= 0x0001;
-        if (sc == 29) k |= 0x0010;
-        if (sc == 27) k |= 0x0020;
-        if (sc == 22) k |= 0x0040;
-        if (sc == 40) k |= 0x0080;
-    }
+    // Клавиатура -> A5200 (ремап через Settings → Keyboard remap)
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_UP, keys, n))    k |= 0x0004;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_DOWN, keys, n))  k |= 0x0008;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_LEFT, keys, n))  k |= 0x0002;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_RIGHT, keys, n)) k |= 0x0001;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_FIRE, keys, n))  k |= 0x0010;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_FIRE2, keys, n)) k |= 0x0020;   // второй огонь
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_PAUSE, keys, n)) k |= 0x0020;   // Pause
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_START, keys, n)) k |= 0x0040;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_KEY3, keys, n))  k |= 0x0080;
     return k;
 }
 

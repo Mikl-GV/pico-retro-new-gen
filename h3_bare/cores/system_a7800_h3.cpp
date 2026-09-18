@@ -8,6 +8,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -90,17 +91,15 @@ static uint16_t pad_from_kbd(void) {
     if (sp & 0x0080) pad &= ~0x08;   // Start
     if (sp & 0x0800) pad &= ~0x04;   // Mode -> Select
     if (sp & 0x0400) pad &= ~0x100;  // Z -> Pause (корпусная)
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) pad &= ~0x10;
-        if (sc == 81) pad &= ~0x20;
-        if (sc == 80) pad &= ~0x40;
-        if (sc == 79) pad &= ~0x80;
-        if (sc == 29) pad &= ~0x01;
-        if (sc == 27) pad &= ~0x02;
-        if (sc == 22) pad &= ~0x04;
-        if (sc == 40) pad &= ~0x08;
-    }
+    // Клавиатура -> A7800 (ремап через Settings → Keyboard remap)
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_UP, keys, n))    pad &= ~0x10;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_DOWN, keys, n))  pad &= ~0x20;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_LEFT, keys, n))  pad &= ~0x40;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_RIGHT, keys, n)) pad &= ~0x80;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_A, keys, n))     pad &= ~0x02;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_B, keys, n))     pad &= ~0x01;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_SELECT, keys, n)) pad &= ~0x04;
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_START, keys, n)) pad &= ~0x08;
     return pad;
 }
 

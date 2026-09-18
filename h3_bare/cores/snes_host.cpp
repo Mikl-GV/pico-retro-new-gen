@@ -22,6 +22,7 @@ extern "C" {
 #include "spc7110.h"
 #include "srtc.h"
 #include "usb_kbd.h"
+#include "remap.h"
 #include "emu.h"
 #include "sega_pad.h"
 #include "cheatdb.h"
@@ -131,23 +132,20 @@ static void build_input(void) {
 
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        // Крестовина
-        if (sc == 82) g_joydata |= SNES_UP_MASK;
-        if (sc == 81) g_joydata |= SNES_DOWN_MASK;
-        if (sc == 80) g_joydata |= SNES_LEFT_MASK;
-        if (sc == 79) g_joydata |= SNES_RIGHT_MASK;
-        // Кнопки
-        if (sc == 29) g_joydata |= SNES_B_MASK;      // Z = B
-        if (sc == 27) g_joydata |= SNES_Y_MASK;      // X = Y
-        if (sc == 4)  g_joydata |= SNES_A_MASK;      // A = A
-        if (sc == 22) g_joydata |= SNES_X_MASK;      // S = X
-        if (sc == 20) g_joydata |= SNES_TL_MASK;     // Q = L
-        if (sc == 26) g_joydata |= SNES_TR_MASK;     // W = R
-        if (sc == 44) g_joydata |= SNES_SELECT_MASK; // Space = Select
-        if (sc == 40) g_joydata |= SNES_START_MASK;  // Enter = Start
-    }
+    // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
+    // Дедолт: стрелки=D-Pad, Z=B X=Y A=A S=X Q=L W=R Space=Select Enter=Start.
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_UP, keys, n))    g_joydata |= SNES_UP_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_DOWN, keys, n))  g_joydata |= SNES_DOWN_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_LEFT, keys, n))  g_joydata |= SNES_LEFT_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_RIGHT, keys, n)) g_joydata |= SNES_RIGHT_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_B, keys, n))     g_joydata |= SNES_B_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_Y, keys, n))     g_joydata |= SNES_Y_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_A, keys, n))     g_joydata |= SNES_A_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_X, keys, n))     g_joydata |= SNES_X_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_L, keys, n))     g_joydata |= SNES_TL_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_R, keys, n))     g_joydata |= SNES_TR_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_SELECT, keys, n)) g_joydata |= SNES_SELECT_MASK;
+    if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_START, keys, n)) g_joydata |= SNES_START_MASK;
 }
 
 // ---- инициализация ----

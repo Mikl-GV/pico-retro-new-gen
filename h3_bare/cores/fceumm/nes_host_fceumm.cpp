@@ -29,6 +29,7 @@ extern "C" {
 #include "cheatdb.h"
 #include "cheat.h"
 #include "sega_pad.h"
+#include "remap.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -120,14 +121,16 @@ static void build_input(void) {
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (!has_suborkb) {
-            if (sc == 82) g_joydata |= 0x10;
-            if (sc == 81) g_joydata |= 0x20;
-            if (sc == 80) g_joydata |= 0x40;
-            if (sc == 79) g_joydata |= 0x80;
-            if (sc == 29) g_joydata |= 0x01;
-            if (sc == 27) g_joydata |= 0x02;
-            if (sc == 22) g_joydata |= 0x04;
-            if (sc == 40) g_joydata |= 0x08;
+            // Клавиатура -> геймпад NES (ремап через Settings → Keyboard remap)
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_UP, keys, n))    g_joydata |= 0x10;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_DOWN, keys, n))  g_joydata |= 0x20;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_LEFT, keys, n))  g_joydata |= 0x40;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_RIGHT, keys, n)) g_joydata |= 0x80;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_A, keys, n))     g_joydata |= 0x01;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_B, keys, n))     g_joydata |= 0x02;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_SELECT, keys, n)) g_joydata |= 0x04;
+            if (remap_kbd_pressed(REMAP_PLAT_NES, BTN_START, keys, n)) g_joydata |= 0x08;
+            break;   // remap уже перебрал все клавиши — хватит одного прохода
         }
         // SuborKB/FKB — маппинг для клавиатурных картриджей (всегда,
         // чтобы Z/X/S/Enter/стрелки работали и в меню Subor-картриджа)

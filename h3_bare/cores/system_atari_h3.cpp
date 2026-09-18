@@ -8,6 +8,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -66,16 +67,14 @@ extern "C" int emu_GetPad(void) {
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
     if (sp & 0x0800) k |= 0x0040;   // Mode -> Select
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) k |= 0x0004;
-        if (sc == 81) k |= 0x0008;
-        if (sc == 80) k |= 0x0002;
-        if (sc == 79) k |= 0x0001;
-        if (sc == 29) k |= 0x0010;
-        if (sc == 22) k |= 0x0040;
-        if (sc == 40) k |= 0x0020;
-    }
+    // Клавиатура -> A2600 (ремап через Settings → Keyboard remap)
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_UP, keys, n))    k |= 0x0004;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_DOWN, keys, n))  k |= 0x0008;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_LEFT, keys, n))  k |= 0x0002;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_RIGHT, keys, n)) k |= 0x0001;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_FIRE, keys, n))  k |= 0x0010;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_SELECT, keys, n)) k |= 0x0040;
+    if (remap_kbd_pressed(REMAP_PLAT_A2600, BTN_RESET, keys, n)) k |= 0x0020;
     return k;
 }
 

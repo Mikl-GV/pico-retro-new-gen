@@ -22,6 +22,7 @@
 
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
 #include "cheatdb.h"
@@ -82,26 +83,26 @@ static void gpgx_poll_input(void) {
         else         pad |= INPUT_START;    // Pause (SMS/GG)
     }
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) pad |= INPUT_UP;
-        if (sc == 81) pad |= INPUT_DOWN;
-        if (sc == 80) pad |= INPUT_LEFT;
-        if (sc == 79) pad |= INPUT_RIGHT;
-        if (sc == 29) pad |= INPUT_A;       // Z = A
-        if (sc == 27) pad |= INPUT_B;       // X = B
-        if (sc == 6)  pad |= INPUT_C;       // C = C
-        if (sc == 4)  pad |= INPUT_X;       // A = X
-        if (sc == 7)  pad |= INPUT_Z;       // D = Z
-        if (sc == 20) pad |= INPUT_MODE;    // Q = Mode
-        if (sc == 40) pad |= INPUT_START;   // Enter = Start
-        if (sc == 22) {
-            if (g_is_md)
-                pad |= INPUT_Y;              // S = Y (MD)
-            else
-                pad |= INPUT_START;          // S = Pause (SMS/GG)
-        }
-    }
+    // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
+    // Дедолт: Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start, стрелки=D-Pad.
+    // Платформа: MD (REMAP_PLAT_MD) или SMS/GG (REMAP_PLAT_SMS / GG).
+    int plat = g_is_md ? REMAP_PLAT_MD : REMAP_PLAT_SMS;
+    if (remap_kbd_pressed(plat, BTN_UP, keys, n))    pad |= INPUT_UP;
+    if (remap_kbd_pressed(plat, BTN_DOWN, keys, n))  pad |= INPUT_DOWN;
+    if (remap_kbd_pressed(plat, BTN_LEFT, keys, n))  pad |= INPUT_LEFT;
+    if (remap_kbd_pressed(plat, BTN_RIGHT, keys, n)) pad |= INPUT_RIGHT;
+    if (remap_kbd_pressed(plat, BTN_A, keys, n))     pad |= INPUT_A;
+    if (remap_kbd_pressed(plat, BTN_B, keys, n))     pad |= INPUT_B;
+    // C/X/Y/Z/Mode — только для MD (для SMS/GG их нет, остаются 0)
+    if (g_is_md && remap_kbd_pressed(plat, BTN_C, keys, n))    pad |= INPUT_C;
+    if (g_is_md && remap_kbd_pressed(plat, BTN_X, keys, n))    pad |= INPUT_X;
+    if (g_is_md && remap_kbd_pressed(plat, BTN_Y, keys, n))    pad |= INPUT_Y;
+    if (g_is_md && remap_kbd_pressed(plat, BTN_Z, keys, n))    pad |= INPUT_Z;
+    if (g_is_md && remap_kbd_pressed(plat, BTN_MODE, keys, n)) pad |= INPUT_MODE;
+    // Start — игровой (MD) / пауза (SMS: NMI) / Start (GG)
+    if (remap_kbd_pressed(plat, BTN_START, keys, n)) pad |= INPUT_START;
+    // Корпусная Pause (SMS) — отдельная кнопка, в ядре тоже INPUT_START (NMI)
+    if (!g_is_md && remap_kbd_pressed(plat, BTN_PAUSE, keys, n)) pad |= INPUT_START;
     input.pad[0] = pad;
     input.pad[1] = 0;
     // ВАЖНО: input.system[] не трогаем — его выставляет input_init (SYSTEM_GAMEPAD)

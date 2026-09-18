@@ -9,6 +9,7 @@
 extern "C" {
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -78,18 +79,15 @@ static int ngp_input_state(void) {
     if (sp & 0x0080) state |= 0x80;   // Start
     if (sp & 0x0800) state |= 0x40;   // Mode -> Select
 
-    for (int i = 0; i < n; i++) {
-        switch (raw[i]) {
-            case 82: state |= 0x01; break; // Up
-            case 81: state |= 0x02; break; // Down
-            case 80: state |= 0x04; break; // Left
-            case 79: state |= 0x08; break; // Right
-            case 29: state |= 0x10; break; // A (Z, HID 0x1D)
-            case 27: state |= 0x20; break; // B (X, HID 0x1B)
-            case 22: state |= 0x40; break; // Select (S, HID 0x16)
-            case 40: state |= 0x80; break; // Start (Enter, HID 0x28)
-        }
-    }
+    // Клавиатура -> NGP (ремап через Settings → Keyboard remap)
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_UP, raw, n))    state |= 0x01;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_DOWN, raw, n))  state |= 0x02;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_LEFT, raw, n))  state |= 0x04;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_RIGHT, raw, n)) state |= 0x08;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_A, raw, n))     state |= 0x10;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_B, raw, n))     state |= 0x20;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_SELECT, raw, n)) state |= 0x40;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_START, raw, n)) state |= 0x80;
     return state;
 }
 

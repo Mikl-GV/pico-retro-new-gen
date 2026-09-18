@@ -6,6 +6,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -52,17 +53,16 @@ static ULONG lynx_buttons_from_kbd(void) {
     if (sp & 0x0200) b |= 0x04;   // Sega Y = Option 2
     if (sp & 0x0800) b |= 0x0100; // Sega Mode = Pause (корпусная кнопка Lynx)
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) b |= 0x40;   // Up    = BUTTON_UP
-        if (sc == 81) b |= 0x80;   // Down  = BUTTON_DOWN
-        if (sc == 80) b |= 0x10;   // Left  = BUTTON_LEFT
-        if (sc == 79) b |= 0x20;   // Right = BUTTON_RIGHT
-        if (sc == 29) b |= 0x01;   // Z = A
-        if (sc == 27) b |= 0x02;   // X = B
-        if (sc == 22) b |= 0x08;   // S = Option 1
-        if (sc == 40) b |= 0x04;   // Enter = Option 2
-    }
+    // Клавиатура -> Lynx (ремап через Settings → Keyboard remap).
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_UP, keys, n))    b |= 0x40;   // BUTTON_UP
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_DOWN, keys, n))  b |= 0x80;   // BUTTON_DOWN
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_LEFT, keys, n))  b |= 0x10;   // BUTTON_LEFT
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_RIGHT, keys, n)) b |= 0x20;   // BUTTON_RIGHT
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_A, keys, n))     b |= 0x01;   // BUTTON_A
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_B, keys, n))     b |= 0x02;   // BUTTON_B
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_OPT1, keys, n))  b |= 0x08;   // BUTTON_OPT1
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_OPT2, keys, n))  b |= 0x04;   // BUTTON_OPT2
+    if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_PAUSE, keys, n)) b |= 0x0100; // BUTTON_PAUSE
     return b;
 }
 

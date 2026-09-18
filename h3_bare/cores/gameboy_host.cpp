@@ -6,6 +6,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 #include "cheatdb.h"
 }
 
@@ -128,17 +129,16 @@ extern "C" void gb_run_frame(void) {
     if (sp & 0x0080) jp.start = TRUE;
     if (sp & 0x0800) jp.select = TRUE;   // Mode -> Select
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        if (sc == 82) jp.up = TRUE;
-        if (sc == 81) jp.down = TRUE;
-        if (sc == 80) jp.left = TRUE;
-        if (sc == 79) jp.right = TRUE;
-        if (sc == 29) jp.B = TRUE;      // Z
-        if (sc == 27) jp.A = TRUE;      // X
-        if (sc == 22) jp.select = TRUE; // S
-        if (sc == 40) jp.start = TRUE;  // Enter
-    }
+    // Клавиатура — через ремап (Settings → Keyboard remap). Дедолт:
+    // стрелки=D-Pad, Z=B X=A S=Select Enter=Start.
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_UP, keys, n))    jp.up = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_DOWN, keys, n))  jp.down = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_LEFT, keys, n))  jp.left = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_RIGHT, keys, n)) jp.right = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_B, keys, n))     jp.B = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_A, keys, n))     jp.A = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_SELECT, keys, n)) jp.select = TRUE;
+    if (remap_kbd_pressed(REMAP_PLAT_GB, BTN_START, keys, n)) jp.start = TRUE;
     emulator_set_joypad_buttons(g_emu, &jp);
 
     EmulatorEvent events;

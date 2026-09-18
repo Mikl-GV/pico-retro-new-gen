@@ -19,6 +19,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "remap.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -72,17 +73,20 @@ static u16 gba_buttons(void) {
 
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
-        if (sc == 82) b |= 0x40;   // Up
-        if (sc == 81) b |= 0x80;   // Down
-        if (sc == 80) b |= 0x20;   // Left
-        if (sc == 79) b |= 0x10;   // Right
-        if (sc == 29) b |= 0x01;   // Z = A
-        if (sc == 27) b |= 0x02;   // X = B
-        if (sc == 22) b |= 0x04;   // S = Select
-        if (sc == 40) b |= 0x08;   // Enter = Start
-        if (sc == 20) b |= 0x100;  // Q = L
-        if (sc == 26) b |= 0x200;  // W = R
+        (void)sc;   // проверка скан-кодов идёт через remap_kbd_pressed (см. ниже)
     }
+    // Клавиатура -> кнопки GBA (ремап через Settings → Keyboard remap).
+    // Залипания нет: remap_kbd_pressed проверяет массив keys целиком.
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_UP, keys, n))    b |= 0x40;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_DOWN, keys, n))  b |= 0x80;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_LEFT, keys, n))  b |= 0x20;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_RIGHT, keys, n)) b |= 0x10;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_A, keys, n))     b |= 0x01;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_B, keys, n))     b |= 0x02;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_L, keys, n))     b |= 0x100;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_R, keys, n))     b |= 0x200;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_SELECT, keys, n)) b |= 0x04;
+    if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_START, keys, n)) b |= 0x08;
     return b;
 }
 
