@@ -28,41 +28,46 @@ void udelay(uint32_t d);
 // Возвращает 0 = ESC/назад, 1 = Start BASIC, 2 = Load cartridge.
 static int msx_launch_dialog(int has_dir) {
     int sel = 0;   // 0 = BASIC, 1 = Load cartridge
-    fb_draw_stars();
+    int dirty = 1;
+    int nopts = has_dir ? 2 : 1;   // вне цикла — используется и в рендере, и в вводе
     for (;;) {
-        fb_clear();
-        fb_draw_stars();
-        fb_puts_s(60, 80, "MSX / Yamaha YIS-503II", 2, 0x00FFAA00);
-        fb_fill_rect(60, 120, 300, 2, 0x00FFFFFF);
+        // Рендер ТОЛЬКО при изменении — иначе экран мерцает (перерисовка
+        // со звёздами затирает/мельтешит подложку).
+        if (dirty) {
+            fb_clear();
+            fb_draw_stars();
+            fb_puts_s(60, 80, "MSX / Yamaha YIS-503II", 2, 0x00FFAA00);
+            fb_fill_rect(60, 120, 300, 2, 0x00FFFFFF);
 
-        const char* opts[2];
-        opts[0] = "1. Start BASIC";
-        opts[1] = has_dir ? "2. Load cartridge from SD" : "2. (no /roms/msx folder)";
-        int nopts = has_dir ? 2 : 1;
+            const char* opts[2];
+            opts[0] = "1. Start BASIC";
+            opts[1] = has_dir ? "2. Load cartridge from SD" : "2. (no /roms/msx folder)";
 
-        int y = 180;
-        for (int i = 0; i < nopts; i++) {
-            uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
-            if (i == sel) fb_fill_rect(50, y - 4, 450, 26, 0x00222222);
-            fb_puts_s(70, y, opts[i], 1, clr);
-            y += 36;
+            int y = 180;
+            for (int i = 0; i < nopts; i++) {
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 4, 450, 26, 0x00222222);
+                fb_puts_s(70, y, opts[i], 1, clr);
+                y += 36;
+            }
+
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush();
+            dirty = 0;
         }
-
-        fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
-        fb_flush();
 
         int k = usb_input_poll();
         if (!k) { h3_hs_timer_delay(16000); continue; }
-        if (k == 82) { if (nopts > 1) sel = 0; }        // Up → BASIC
-        else if (k == 81) { if (nopts > 1) sel = 1; }   // Down → cartridge
+        if (k == 82) { if (nopts > 1 && sel != 0) { sel = 0; dirty = 1; } }        // Up → BASIC
+        else if (k == 81) { if (nopts > 1 && sel != 1) { sel = 1; dirty = 1; } }   // Down → cartridge
         else if (k == 40 || k == '\n' || k == '\r') {
             if (sel == 0) return 1;
             if (has_dir) return 2;
             return 1;   // если папки нет — Enter = BASIC
         }
         else if (k == 41 || k == 27) return 0;
-        // задержка ~100 мс, чтобы не листать на авторепите клавиатуры/геймпада
-        h3_hs_timer_delay(100000);
+        // анти-автоповтор: если курсор не менялся, даём паузу
+        h3_hs_timer_delay(50000);
     }
 }
 

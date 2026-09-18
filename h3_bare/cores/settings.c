@@ -172,14 +172,18 @@ static void input_test_run(void) {
 // Показывает побитный скан по фазам SELECT (классический протокол):
 //   raw[0] = ЦИКЛ1 TH=1: Up/Dn/L/R + B/C (TL/TR)
 //   raw[1] = ЦИКЛ1 TH=0: A/Start (TL/TR)
-//   raw[2] = ЦИКЛ4 TH=1: Z/Y/X/Mode (D0-D3)
+//   raw[2] = ЦИКЛ3 TH=1: Z/Y/X/Mode (D0-D3)
+// Выход: клавиша ESC или УДЕРЖАНИЕ Start ~0.8 с (не B — B это кнопка теста).
 static void sega_pad_test_run(void) {
     sega_pad_init();
 
     uint16_t prev = 0xFFFF;
     uint32_t last_tick = 0;
+    uint32_t start_hold = 0;
     for (;;) {
-        uint16_t pad = sega_pad_scan();
+        // --- СВОЙ слой: один аппаратный скан на кадр, антидребезг внутри ---
+        usb_pad_update();
+        uint16_t pad = usb_pad_get();
 
         // Печать только при смене состояния (нажатие/отпускание) — без спама
         if (pad != prev) {
@@ -214,7 +218,7 @@ static void sega_pad_test_run(void) {
         snprintf(buf, sizeof(buf), "TH0: %02X  A=%d St=%d",
             raw[1], !!(raw[1]&0x10), !!(raw[1]&0x20));
         fb_puts_s(100, y, buf, 1, 0x00FFFFFF); y += 20;
-        snprintf(buf, sizeof(buf), "C4 : %02X  Z=%d Y=%d X=%d Mode=%d",
+        snprintf(buf, sizeof(buf), "C3 : %02X  Z=%d Y=%d X=%d Mode=%d",
             raw[2], !!(raw[2]&0x01), !!(raw[2]&0x02), !!(raw[2]&0x04), !!(raw[2]&0x08));
         fb_puts_s(100, y, buf, 1, 0x00FFFFFF); y += 26;
 
@@ -237,7 +241,7 @@ static void sega_pad_test_run(void) {
         }
         if (!any) { fb_puts_s(100, y, "(none)", 1, 0x00888888); y += 20; }
 
-        fb_puts(60, FOOTER_Y, "ESC: back", 0x00888888);
+        fb_puts(60, FOOTER_Y, "ESC / hold Start: back", 0x00888888);
         fb_flush();
 
         // Ограничение ~60 fps для комфорта
@@ -247,8 +251,17 @@ static void sega_pad_test_run(void) {
         }
         last_tick = h3_hs_timer_lo_us();
 
-        int k = usb_input_poll();   // неблокирующий — скан крутится постоянно
+        // Выход: клавиша ESC (41), или удержание Start ~0.8 с (бит 0x0080).
+        // НЕ через usb_input_poll — он мапит B в ESC; здесь обрабатываем
+        // слой геймпада напрямую (скан уже сделан в начале кадра).
+        int k = usb_kbd_poll();
         if (k == 41) return;
+        if (pad & 0x0080) {
+            if (!start_hold) start_hold = h3_hs_timer_lo_us();
+            else if (h3_hs_timer_lo_us() - start_hold > 800000) return;
+        } else {
+            start_hold = 0;
+        }
     }
 }
 

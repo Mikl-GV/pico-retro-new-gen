@@ -126,6 +126,34 @@ static int      g_t_prev_pressed = 0;
 static uint16_t g_pad_deb = 0;    // последний стабильный кандидат
 static int      g_pad_deb_cnt = 0; // сколько одинаковых сканов подряд
 
+// ---- СВОЙ слой геймпада: кэш скана + фронт ----
+#define PAD_CACHE_US 2000          // 2 мс: повторные вызовы не дёргают чип
+static uint32_t g_pad_cache_t = 0; // время последнего реального скана (мкс)
+static uint16_t g_pad_cur = 0;     // стабильное состояние (антидребезг применён)
+static uint16_t g_pad_edge = 0;    // фронт нажатия (0→1)
+
+// Обновить состояние геймпада (один реальный скан не чаще раза в PAD_CACHE_US).
+// Вызывать один раз за кадр перед usb_pad_get()/usb_pad_edge().
+void usb_pad_update(void) {
+    uint32_t now = h3_hs_timer_lo_us();
+    if (now - g_pad_cache_t < PAD_CACHE_US) return;   // кэш свежий
+    g_pad_cache_t = now;
+
+    uint16_t pad = sega_pad_scan();
+
+    // антидребезг: состояние принимается после PAD_DEBOUNCE_HITS одинаковых сканов
+    if (pad != g_pad_deb) { g_pad_deb = pad; g_pad_deb_cnt = 1; return; }
+    if (++g_pad_deb_cnt < PAD_DEBOUNCE_HITS) return;
+    g_pad_deb_cnt = 0;
+
+    // фронт: биты, появившиеся сейчас и отсутствовавшие в прошлом стабильном состоянии
+    g_pad_edge = pad & ~g_pad_cur;
+    g_pad_cur = pad;
+}
+
+uint16_t usb_pad_get(void)  { return g_pad_cur; }
+uint16_t usb_pad_edge(void) { return g_pad_edge; }
+
 // forward
 static void dump_hid_report_desc(usb_dev_t* d);
 static int usb_touch_poll(int* x, int* y, int* pressed);
@@ -456,13 +484,10 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
 }
 
 // Фронт нажатия Sega-геймпада: возвращает биты, нажатые ТОЛЬКО что (0→1).
-// Отдельная от usb_input_poll функция — для меню читов и тестов геймпада.
+// Через СВОЙ слой (без лишних аппаратных сканов — кэш в usb_pad_update).
 uint16_t usb_pad_just_pressed(void) {
-    uint16_t now = sega_pad_scan();
-    uint16_t pressed = now & ~g_pad_prev;
-    if (now) g_pad_prev = now;   // обновляем только если читается (иначе потеряем фронт)
-    else g_pad_prev = 0;
-    return pressed;
+    usb_pad_update();
+    return usb_pad_edge();
 }
 
 // Сбросить состояние геймпада/тача (вызывается при входе в меню/подменю).
@@ -473,6 +498,9 @@ void usb_input_clear(void) {
     g_t_prev_pressed = 0;
     g_pad_deb = 0;
     g_pad_deb_cnt = 0;
+    g_pad_cache_t = 0;   // принудительно свежий скан на следующем usb_pad_update
+    g_pad_cur = 0;
+    g_pad_edge = 0;
 }
 
 // Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
@@ -485,6 +513,9 @@ void usb_pad_wait_release(void) {
     g_pad_was_repeat = 0;
     g_pad_deb = 0;
     g_pad_deb_cnt = 0;
+    g_pad_cache_t = 0;
+    g_pad_cur = 0;
+    g_pad_edge = 0;
 }
 
 // Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
@@ -506,48 +537,33 @@ void usb_kbd_wait_release(void) {
 // ---- Объединённый ввод для меню: клавиатура, при отсутствии — Sega-геймпад, тач ----
 // Возвращает HID-сканкод (82=Up, 81=Down, 79=Right, 80=Left, 40=Enter, 41=ESC)
 // либо 0, если ничего не нажато. Тач переводится в «клавиши» по зонам экрана.
-// Sega-геймпад (PCF8574): 1 нажатие = 1 шаг, удержание = автоповтор (как клавиатура).
-// Антидребезг: состояние принимается только после PAD_DEBOUNCE_HITS одинаковых
-// сканов подряд — одиночный мусорный кадр не даёт ложный фронт.
+// Sega-геймпад: использует СВОЙ слой (usb_pad_update/get/edge) — один аппаратный
+// скан на кадр, антидребезг 3 скана, удержание D-Pad = автоповтор.
 int usb_input_poll(void) {
     int k = usb_kbd_poll();
     if (k) return k;
 
-    uint16_t pad = sega_pad_scan();
+    usb_pad_update();
+    uint16_t pad = usb_pad_get();
+    uint16_t pressed = usb_pad_edge();
 
-    // --- антидребезг: ждём стабильного состояния ---
-    if (pad != g_pad_deb) {
-        g_pad_deb = pad;
-        g_pad_deb_cnt = 1;
-        return 0;
-    }
-    if (++g_pad_deb_cnt < PAD_DEBOUNCE_HITS) return 0;
-    g_pad_deb_cnt = 0;   // стабильно подтверждено — сбрасываем счётчик подтверждений
-
-    if (pad != g_pad_prev) {
-        // фронт/спад: обновляем g_pad_prev ДО обработки, иначе при return
-        // g_pad_prev остаётся старым и зажатая кнопка даёт «фронт» каждый
-        // вызов — меню/браузер летят без остановки.
-        // pressed = новые нажатые биты: те, что есть сейчас и не было раньше.
-        uint16_t pressed = pad & ~g_pad_prev;
-        g_pad_prev = pad;
-        if (pad) {
-            g_pad_was_repeat = 0;
-            g_pad_repeat_start = h3_hs_timer_lo_us();
-            if (pressed & 0x0001) return 82;   // Up → Up
-            if (pressed & 0x0002) return 81;   // Down → Down
-            if (pressed & 0x0004) return 80;   // Left → Left
-            if (pressed & 0x0008) return 79;   // Right → Right
-            if (pressed & 0x0010) return 40;   // A → Enter
-            if (pressed & 0x0080) return 40;   // Start → Enter
-            if (pressed & 0x0020) return 41;   // B → ESC
-            if (pressed & 0x0800) return 22;   // Mode → S (открыть читы в браузере)
-        }
+    // фронт/спад: обновляем g_pad_prev ДО обработки
+    if (pressed && pad) {
+        g_pad_was_repeat = 0;
+        g_pad_repeat_start = h3_hs_timer_lo_us();
+        if (pressed & 0x0001) return 82;   // Up → Up
+        if (pressed & 0x0002) return 81;   // Down → Down
+        if (pressed & 0x0004) return 80;   // Left → Left
+        if (pressed & 0x0008) return 79;   // Right → Right
+        if (pressed & 0x0010) return 40;   // A → Enter
+        if (pressed & 0x0080) return 40;   // Start → Enter
+        if (pressed & 0x0020) return 41;   // B → ESC
+        if (pressed & 0x0800) return 22;   // Mode → S (открыть читы в браузере)
     } else if (pad) {
         // удержание СТРЕЛКИ — автоповтор (как клавиатура); кнопки не повторяются
         uint32_t now = h3_hs_timer_lo_us();
         uint32_t elapsed = now - g_pad_repeat_start;
-        uint16_t held = pad & g_pad_prev & 0x000F;   // только D-Pad
+        uint16_t held = pad & 0x000F;   // только D-Pad
         if (!held) return 0;
         if (g_pad_was_repeat) {
             if (elapsed >= PAD_REPEAT_RATE_US) {
