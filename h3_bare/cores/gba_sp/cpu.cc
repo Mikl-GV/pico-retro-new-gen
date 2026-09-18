@@ -1409,9 +1409,16 @@ void set_cpu_mode(cpu_mode_type new_mode)
   reg[CPU_MODE] = new_mode;
 }
 
-#define cpu_has_interrupt()                                 \
-  (!(reg[REG_CPSR] & 0x80) && read_ioreg(REG_IME) &&        \
-    (read_ioreg(REG_IE) & read_ioreg(REG_IF)))
+// Будит ли HALT/STOP: на реальном GBA CPU просыпается при любом
+// pending-прерывании (IE & IF != 0), даже если IME=0 (прерывание
+// не будет обработано, но WFI/IntrWait завершается).  Логика же
+// обработки прерываний (переход в IRQ-режим) требует IME=1.
+#define cpu_has_pending_irq() \
+  (read_ioreg(REG_IE) & read_ioreg(REG_IF))
+
+#define cpu_has_interrupt() \
+  (!(reg[REG_CPSR] & 0x80) && read_ioreg(REG_IME) && \
+   cpu_has_pending_irq())
 
 // Returns whether the CPU has a pending interrupt.
 cpu_alert_type check_interrupt() {
@@ -1422,7 +1429,17 @@ cpu_alert_type check_interrupt() {
 // which means that it must be called with a valid CPU state.
 u32 check_and_raise_interrupts()
 {
-  // Check any IRQ flag pending, IME and CPSR-IRQ enabled
+  // Проверка pending-прерывания (IE & IF != 0) — будит HALT
+  // даже если IME=0 (на реальном GBA так).
+  if (cpu_has_pending_irq())
+  {
+    // Wake up CPU if it is stopped/sleeping (от IME не зависит)
+    if (reg[CPU_HALT_STATE] == CPU_STOP ||
+        reg[CPU_HALT_STATE] == CPU_HALT)
+      reg[CPU_HALT_STATE] = CPU_ACTIVE;
+  }
+
+  // Полноценный вход в IRQ — только если IME=1 + CPSR не маскирует
   if (cpu_has_interrupt())
   {
     // Value after the FIQ returns, should be improved
@@ -1435,11 +1452,6 @@ u32 check_and_raise_interrupts()
     reg[REG_PC] = 0x00000018;
 
     set_cpu_mode(MODE_IRQ);
-
-    // Wake up CPU if it is stopped/sleeping.
-    if (reg[CPU_HALT_STATE] == CPU_STOP ||
-        reg[CPU_HALT_STATE] == CPU_HALT)
-      reg[CPU_HALT_STATE] = CPU_ACTIVE;
 
     return 1;
   }
