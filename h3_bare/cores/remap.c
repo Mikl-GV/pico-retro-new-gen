@@ -115,7 +115,7 @@ static const uint16_t def_a2600[BTN_MAX] = {
 static const uint16_t def_a5200[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_FIRE]=KBD_Z, [BTN_FIRE2]=KBD_X,
-    [BTN_START]=KBD_S, [BTN_PAUSE]=KBD_RETURN_SAFE_DUMMY, [BTN_KEY3]=KBD_ENTER,
+    [BTN_START]=KBD_S, [BTN_PAUSE]=KBD_P, [BTN_KEY3]=KBD_ENTER,
 };
 // A7800: Stick + B1/B2 + Start + Select + корпусные Reset/Diff
 static const uint16_t def_a7800[BTN_MAX] = {
@@ -202,29 +202,50 @@ int remap_kbd_pressed(int plat, int btn, const uint8_t* keys, int n) {
 
 // ================= Конфиг /retro.cfg =================
 // Формат: 'платформа.кнопка=сканкод' или '...=SHIFT+сканкод'. Строка на привязку.
-static void remap_parse_line(const char* line) {
-    const char* eq = 0;
-    for (const char* p = line; *p; p++) if (*p == '=') { eq = p; break; }
+// Поддерживаются:
+//   - пустые строки (пропускаются)
+//   - комментарии: '#' до конца строки (можно и на всю строку, и после значения)
+//   - пробелы вокруг '=' и вокруг значения (обрезаются)
+static void remap_parse_line(char* line) {
+    // обрезаем комментарий: '#' до конца строки
+    for (char* p = line; *p; p++) if (*p == '#') { *p = 0; break; }
+
+    // ищем '=' (вне пробелов)
+    char* eq = 0;
+    for (char* p = line; *p; p++) if (*p == '=') { eq = p; break; }
     if (!eq || eq == line) return;
 
-    // значение: опционально "SHIFT+" затем число
+    // правый конец ключа: убрать пробелы перед '='
+    char* key_end = eq;
+    while (key_end > line && (key_end[-1] == ' ' || key_end[-1] == '\t')) key_end--;
+    *key_end = 0;
+
+    // значение: пропустить пробелы после '='
+    char* val = eq + 1;
+    while (*val == ' ' || *val == '\t') val++;
+    if (!*val) return;
+
+    // опционально "SHIFT+"
     int mod = 0;
-    const char* val = eq + 1;
     if (!memcmp(val, "SHIFT+", 6)) { mod |= REMAP_MOD_SHIFT; val += 6; }
+    while (*val == ' ' || *val == '\t') val++;
+
+    // число
     int sc = 0;
     for (const char* p = val; *p && *p >= '0' && *p <= '9'; p++)
         sc = sc * 10 + (*p - '0');
     if (sc <= 0 || sc > 255) return;
 
-    // ключ: платформа.кнопка
+    // ключ: платформа.кнопка (уже без хвостовых пробелов, key_end=0-terminated)
+    const char* key = line;
     const char* dot = 0;
-    for (const char* p = line; p < eq; p++) if (*p == '.') { dot = p; break; }
+    for (const char* p = key; *p; p++) if (*p == '.') { dot = p; break; }
     if (!dot) return;
-    int plen = (int)(dot - line);
-    int blen = (int)(eq - dot - 1);
+    int plen = (int)(dot - key);
+    int blen = (int)((key_end - dot) - 1);
     int plat = -1, btn = -1;
     for (int i = 0; i < REMAP_PLAT_COUNT; i++)
-        if ((int)strlen(plat_specs[i].key) == plen && !memcmp(line, plat_specs[i].key, plen)) { plat = i; break; }
+        if ((int)strlen(plat_specs[i].key) == plen && !memcmp(key, plat_specs[i].key, plen)) { plat = i; break; }
     for (int i = 0; i < BTN_MAX; i++)
         if ((int)strlen(btn_keys[i]) == blen && !memcmp(dot + 1, btn_keys[i], blen)) { btn = i; break; }
     if (plat >= 0 && btn >= 0) g_map[plat][btn] = (uint16_t)((mod << 8) | sc);

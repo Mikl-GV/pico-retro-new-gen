@@ -75,15 +75,17 @@ typedef struct {
 } remap_plat_t;
 
 // ---- API ----
-// Текущий скан-код кнопки платформы (после ремапа)
-uint8_t remap_get(int plat, int btn);
+// Текущее значение привязки кнопки платформы: (модификаторы<<8)|сканкод.
+// 0 = не назначено. Сканкод — HID-код клавиши.
+uint16_t remap_get(int plat, int btn);
 
 // Нажата ли кнопка платформы на текущем состоянии клавиатуры
-// (keys — массив скан-кодов HID от usb_kbd_get_raw)
+// (keys — массив скан-кодов HID от usb_kbd_get_raw). Учитывает модификатор
+// (например SHIFT+кнопка), если в значении привязки стоит REMAP_MOD_SHIFT.
 int remap_kbd_pressed(int plat, int btn, const uint8_t* keys, int n);
 
-// Назначить кнопке платформы скан-код (0 = снять)
-void remap_set(int plat, int btn, uint8_t sc);
+// Назначить кнопке платформы значение (0 = снять)
+void remap_set(int plat, int btn, uint16_t val);
 
 // Сброс к дедолту
 void remap_defaults(void);
