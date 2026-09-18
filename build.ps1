@@ -53,6 +53,9 @@ $INC = @("-I$TOP\h3_bare\include","-I$TOP\h3_bare\cores","-I$TOP\h3_bare\src","-
 
 function ok { if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: $($args[0])"; exit 1 } else { Write-Host "  $($args[0])" } }
 
+Write-Host "Очистка build/..." -ForegroundColor Yellow
+Remove-Item "$BUILD\*.o" -Force -ErrorAction SilentlyContinue
+
 Write-Host "=== Assembler ==="
 & $CC @CFLAGS "-xassembler-with-cpp" -c -o "$BUILD\startup.o" "$TOP\h3_bare\platform\startup.S"; ok "startup"
 
