@@ -50,6 +50,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 | SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw + sega_pad |
+| MSX / MSX2 (YIS-503II) | **fMSX 6.0** | C | 256×212 → V9938 → EMU_FB | usb_kbd_get_raw + sega_pad |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -111,7 +112,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ### gameboy_host.cpp (Game Boy / GBC, binjgb)
 
 - Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
-- Менеджер памяти — bump-аллокатор `gb_heap` (3 МБ) в gameboy_stubs.c, `gb_heap_reset()`
+- Менеджер памяти — bump-аллокатор `gb_heap` (12 МБ) в gameboy_stubs.c, `gb_heap_reset()`
+  находится в linker.ld (резерв _gb_heap_start/end между BSS и _hend).
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
@@ -129,6 +131,15 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Рендер: `gba_screen_pixels` (240×160 RGB565) → EMU_FB
 - Ввод: USB-клавиатура → кнопки GBA (Z=A X=B S=Select Enter=Start Q=L W=R + Sega-геймпад C=L X=R)
 - Звук: заглушен (нет DAC-вывода)
+
+### msx_host.c (MSX / MSX2, fMSX 6.0)
+
+- Ядро: `msx/` (fMSX 6.0: fMSX/, Z80/, EMULib/, NukeYKT/ — C-код, C99)
+- Host: `msx_host.c` — кадровый цикл RunZ80, рендер V9938 (TEXT80 / SCREEN6-7, PAL 50 Гц) → EMU_FB
+- Ввод: USB-клавиатура + Sega-геймпад → KeyState; запуск «BASIC / Load cartridge» из main.c
+- `msx_compat.c` — стабы rf*/sscanf/time поверх вшитых BIOS и FAT SD; BIOS MSX2.ROM + MSX2EXT.ROM вшиты
+- objcopy-переименование конфликтующих символов (MSX_RENAME) — изоляция от CPU/RAM/rf* других ядер
+- _sbrk — рабочий bump-аллокатор (libc_min.c, от _hend)
 
 ### snes_host.cpp (SNES / Super Famicom, Snes9x 2005)
 
@@ -284,16 +295,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | Адрес | Назначение |
 |-------|------------|
-| 0x40000000 | Образ: .text → .ARM.exidx → .data → .bss (подряд, ALIGN(4)) |
-| 0x425caa00 | `_bend1` / `_hend` — конец BSS = старт свободной памяти |
-| 0x4F000000 | MENU_ARENA — буфер пунктов меню (512 слотов + имена) |
+| 0x40000000 | Образ: .text → .rodata → .ARM.exidx → .data → .bss (подряд, ALIGN(4)) |
+| 0x42804320 | `_bend1` — конец BSS |
+| (BSS+12МБ) | `_gb_heap_start/end` — bump-пул кучи (Snes9x/Handy/binjgb), за BSS |
+| (после кучи) | `_hend` — старт свободной памяти (_sbrk из libc_min.c растёт отсюда) |
+| 0x4F000000 | `_menu_arena` — арена пунктов меню (символ линкера, 512 слотов + имена) |
 | 0x50000000 | Буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000 | EMU_FB — общий кадровый буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000 | HDMI framebuffer (1024×600 XRGB8888) |
 | 0x60000000 | Стек (конец 512 МБ DRAM, растёт вниз; сверху ничего нет) |
 
 Жёстких адресов между секциями образа нет — `_hend` вычисляется линкером
-сразу после `.bss` (см. `h3_bare/platform/linker.ld`).
+сразу после `.bss` (см. `h3_bare/platform/linker.ld`). Секции: .text, .rodata,
+.ARM.exidx, .data, .bss, затем резерв кучи `_gb_heap_start.._gb_heap_end`,
+после него `_hend`. `_menu_arena` и framebuffer'ы — фиксированные адреса вне образа.
 
 ## Загрузка
 

@@ -71,5 +71,3 @@ sudo sunxi-fel write 0x40000000 h3_bare.bin execute 0x40000000
 | ELF (отладка) | `build/h3_bare.elf` |
 | SD-образ | `build/h3_bare.img` |
 | boot-скрипт | `build/boot.scr` |
-
-Сборка CMake (опциональна): `cmake -B build && cmake --build build`

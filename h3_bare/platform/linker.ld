@@ -26,6 +26,11 @@ SECTIONS
   }
 
   . = ALIGN(4);
+  .rodata : {
+    *(.rodata*)
+  }
+
+  . = ALIGN(4);
   .ARM.extab   : { *(.ARM.extab* .gnu.linkonce.armextab.*) }
   PROVIDE_HIDDEN (__exidx_start = .);
   .ARM.exidx   : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) }
@@ -44,6 +49,17 @@ SECTIONS
     _bend1 = . ;
   }
 
-  /* Конец образа = конец BSS. Куча/свободная DRAM начинается отсюда. */
+  /* Куча (bump-пул Snes9x/Handy/binjgb) — резерв ПОСЛЕ BSS.
+   * Размер кучи НЕ влияет на глобалы (.bss). */
+  . = ALIGN(32);
+  _gb_heap_start = . ;
+  . = . + (12 * 1024 * 1024);
+  _gb_heap_end = . ;
+
+  /* Старт свободной памяти: _sbrk() (libc_min.c) растёт отсюда вверх.
+   * Обязан быть ПОСЛЕ _gb_heap_end, иначе _sbrk наедет на пул кучи. */
   _hend = . ;
+
+  /* Арена меню — фиксированный адрес, гарантированно вне BSS/кучи и до ROM_BUF. */
+  _menu_arena = 0x4F000000;
 }

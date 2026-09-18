@@ -34,19 +34,90 @@ _undef:
     bl uart_dbg
 1:  b 1b
 
-/* Обработчик Prefetch Abort: 'P' + hang */
+/* Обработчик Prefetch Abort: 'P:' + IFAR + ':' + IFSR + hang */
 .global _prefetch
 _prefetch:
+    push {r0-r3, lr}
     mov r0, #'P'
     bl uart_dbg
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c6, c0, 2    /* IFAR */
+    bl hex32_uart
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c5, c0, 1    /* IFSR */
+    bl hex8_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    pop {r0-r3, lr}
 1:  b 1b
 
-/* Обработчик Data Abort: 'D' + hang */
+/* Обработчик Data Abort: 'D:' + DFAR + ':' + DFSR + ' ' + 'I:' + IFAR + '\n' + hang */
 .global _dataabort
 _dataabort:
+    push {r0-r3, lr}
     mov r0, #'D'
     bl uart_dbg
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c6, c0, 0    /* DFAR */
+    bl hex32_uart
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c5, c0, 0    /* DFSR */
+    bl hex8_uart
+    mov r0, #' '
+    bl uart_dbg
+    mov r0, #'I'
+    bl uart_dbg
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c6, c0, 2    /* IFAR */
+    bl hex32_uart
+    mov r0, #':'
+    bl uart_dbg
+    mrc p15, 0, r0, c5, c0, 1    /* IFSR */
+    bl hex8_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    pop {r0-r3, lr}
 1:  b 1b
+
+/* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F) */
+.global hex8_uart
+hex8_uart:
+    push {r1, lr}
+    mov r1, r0
+    lsr r0, r1, #4
+    and r0, r0, #0xF
+    cmp r0, #10
+    addlo r0, r0, #'0'
+    addhs r0, r0, #('A' - 10)
+    bl uart_dbg
+    and r0, r1, #0xF
+    cmp r0, #10
+    addlo r0, r0, #'0'
+    addhs r0, r0, #('A' - 10)
+    bl uart_dbg
+    pop {r1, pc}
+
+/* Вывести число r0 как 8 hex-цифр (32 бита) */
+.global hex32_uart
+hex32_uart:
+    push {r1, r4, lr}
+    mov r4, r0
+    mov r1, #8
+1:  mov r0, r4, lsr #28
+    and r0, r0, #0xF
+    cmp r0, #10
+    addlo r0, r0, #'0'
+    addhs r0, r0, #('A' - 10)
+    bl uart_dbg
+    lsl r4, r4, #4
+    subs r1, r1, #1
+    bne 1b
+    pop {r1, r4, pc}
 
 .section .text
 .global _start

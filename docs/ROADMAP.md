@@ -18,7 +18,7 @@
 | 10 | Atari Lynx | 6502 | ✅ работает | Handy |
 | 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
 | 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
-| 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | 🚧 со звуком/дисками | fMSX 6.0 |
+| 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты) | fMSX 6.0 |
 | 14 | ColecoVision | Z80 | 🔲 план | — |
 | 15 | ZX Spectrum | Z80 | 🔲 план | — |
 | 16 | PC Engine | HuC6280 | 🔲 план | — |
@@ -26,7 +26,7 @@
 | 18 | GCE Vectrex | 6809 | 🔲 план | — |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
 | 20 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
-| 21 | Game Boy Advance | ARM7TDMI | 🔲 план | gpSP (ядро в h3_bare/cores/gba_sp/, порт не доделан) |
+| 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
 
@@ -76,5 +76,5 @@
 - Sega-геймпад 6-button через PCF8574@0x20 (меню + игры)
 - HDMI 1024×600 @ 60 Гц
 - UART-отладка 115200 8N1
-- 12 эмуляторов в одном бинаре (~3.5 МБ)
+- 15 эмуляторов в одном бинаре (~4.2 МБ)
 - GPT/поддержка нескольких FAT-разделов, авто-поиск /roms

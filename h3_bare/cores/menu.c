@@ -17,7 +17,10 @@
 #define INDENT   40
 
 #define MAX_MENU_ITEMS 512
-#define MENU_ARENA_ADDR 0x4F000000
+// Адрес арены задаёт линкер (_menu_arena в linker.ld) — не хардкодим здесь,
+// чтобы при росте BSS не наехать на ROM_BUF.
+extern char _menu_arena[];
+#define MENU_ARENA_ADDR ((uintptr_t)_menu_arena)
 
 typedef struct {
     const char *id;

@@ -1,1 +1,0 @@
-Atari2600EmulatorGlobals.h

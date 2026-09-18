@@ -119,6 +119,33 @@ $CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_sound.o" "$NGP/sound.cpp"
 $CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_ngpBios.o" "$NGP/ngpBios.cpp"
 $CXX $CXXFLAGS $INCLUDES -c -o "$BUILD/ngp_input.o" "$NGP/input.cpp"
 
+# --- GBA (gpSP) ---
+GBA_SP="$TOP/h3_bare/cores/gba_sp"
+GBA_CFLAGS="$CFLAGS -DINLINE=inline"
+$CC $GBA_CFLAGS $INCLUDES -c -o "$BUILD/gba_host.o" "$TOP/h3_bare/cores/gba_host.c"
+$CC $GBA_CFLAGS $INCLUDES -c -o "$BUILD/gba_compat.o" "$GBA_SP/gba_compat.c"
+$CC $GBA_CFLAGS -I$GBA_SP -x assembler-with-cpp -c -o "$BUILD/gba_bios_data.o" "$GBA_SP/bios_data.S"
+GBA_RENAME="--redefine-sym vram=gpsp_vram --redefine-sym reg=gpsp_reg --redefine-sym cheats=gpsp_cheats --redefine-sym init_memory=gpsp_init_memory --redefine-sym init_cpu=gpsp_init_cpu --redefine-sym load_bios=gpsp_load_bios"
+for fn in main gba_memory sound gba_cc_lut gbp cheats savestate serial serial_proto rfu; do
+    $CC $GBA_CFLAGS $INCLUDES -c -o "$BUILD/gba_$fn.o.tmp" "$GBA_SP/$fn.c"
+    $OBJCOPY $GBA_RENAME "$BUILD/gba_$fn.o.tmp" "$BUILD/gba_$fn.o"; rm -f "$BUILD/gba_$fn.o.tmp"
+done
+for fn in cpu video; do
+    $CXX $CXXFLAGS $GBA_CFLAGS $INCLUDES -fno-exceptions -fno-rtti -c -o "$BUILD/gba_$fn.o.tmp" "$GBA_SP/$fn.cc"
+    $OBJCOPY $GBA_RENAME "$BUILD/gba_$fn.o.tmp" "$BUILD/gba_$fn.o"; rm -f "$BUILD/gba_$fn.o.tmp"
+done
+
+# --- MSX/MSX2 (fMSX 6.0) ---
+MSX="$TOP/h3_bare/cores/msx"
+MSX_INC="-I$MSX -I$MSX/host -I$MSX/host/include -I$MSX/fMSX -I$MSX/Z80 -I$MSX/EMULib -I$MSX/NukeYKT"
+MSX_CFLAGS="$CFLAGS -DLSB_FIRST -D__C99__ -DINLINE=inline $MSX_INC"
+MSX_RENAME="--redefine-sym CPU=msx_CPU --redefine-sym RAM=msx_RAM --redefine-sym LoadROM=msx_LoadROM --redefine-sym rfopen=msx_rfopen --redefine-sym rfclose=msx_rfclose --redefine-sym rfread=msx_rfread --redefine-sym rfwrite=msx_rfwrite --redefine-sym rfseek=msx_rfseek --redefine-sym rftell=msx_rftell --redefine-sym rfgets=msx_rfgets --redefine-sym rfeof=msx_rfeof --redefine-sym rfgetc=msx_rfgetc --redefine-sym rfputc=msx_rfputc --redefine-sym filestream_rewind=msx_filestream_rewind --redefine-sym sscanf=msx_sscanf --redefine-sym time=msx_time --redefine-sym localtime=msx_localtime --redefine-sym strlcpy=msx_strlcpy --redefine-sym fill_pathname_join=msx_fill_pathname_join --redefine-sym strcasestr=msx_strcasestr --redefine-sym chdir=msx_chdir --redefine-sym getcwd=msx_getcwd"
+for spec in "msx_host|$MSX/host/msx_host.c" "msx_compat|$MSX/host/msx_compat.c" "msx_log|$MSX/host/msx_log.c" "msx2_rom_data|$MSX/host/msx2_rom_data.c" "msx2ext_rom_data|$MSX/host/msx2ext_rom_data.c" "msx_MSX|$MSX/fMSX/MSX.c" "msx_V9938|$MSX/fMSX/V9938.c" "msx_Sound|$MSX/EMULib/Sound.c" "msx_SHA1|$MSX/EMULib/SHA1.c" "msx_Floppy|$MSX/EMULib/Floppy.c" "msx_FDIDisk|$MSX/EMULib/FDIDisk.c" "msx_MCF|$MSX/EMULib/MCF.c" "msx_Z80|$MSX/Z80/Z80.c" "msx_I8255|$MSX/EMULib/I8255.c" "msx_YM2413|$MSX/EMULib/YM2413.c" "msx_AY8910|$MSX/EMULib/AY8910.c" "msx_SCC|$MSX/EMULib/SCC.c" "msx_WD1793|$MSX/EMULib/WD1793.c" "msx_opll|$MSX/NukeYKT/opll.c" "msx_WrapNukeYKT|$MSX/NukeYKT/WrapNukeYKT.c"; do
+    name="${spec%%|*}"; file="${spec##*|}"
+    $CC $MSX_CFLAGS $INCLUDES -c -o "$BUILD/$name.o.tmp" "$file"
+    $OBJCOPY $MSX_RENAME "$BUILD/$name.o.tmp" "$BUILD/$name.o"; rm -f "$BUILD/$name.o.tmp"
+done
+
 # --- NES (FCEUmm: точный CPU/PPU, 250+ мапперов, SuborKB-клавиатура) ---
 FCEUMM="$TOP/h3_bare/cores/fceumm"
 FCEUMM_CFLAGS="$CFLAGS -DFRONTEND_SUPPORTS_RGB565 -DFCEU_VERSION_NUMERIC=9900"
@@ -223,6 +250,17 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/ngp_graphics.o" "$BUILD/ngp_tlcs900h.o" "$BUILD/ngp_z80.o" \
     "$BUILD/ngp_flash.o" "$BUILD/ngp_neopopsound.o" "$BUILD/ngp_sound.o" \
     "$BUILD/ngp_ngpBios.o" "$BUILD/ngp_input.o" \
+    "$BUILD/gba_host.o" "$BUILD/gba_compat.o" "$BUILD/gba_bios_data.o" \
+    "$BUILD/gba_main.o" "$BUILD/gba_gba_memory.o" "$BUILD/gba_sound.o" \
+    "$BUILD/gba_gba_cc_lut.o" "$BUILD/gba_gbp.o" "$BUILD/gba_cheats.o" \
+    "$BUILD/gba_savestate.o" "$BUILD/gba_serial.o" "$BUILD/gba_serial_proto.o" \
+    "$BUILD/gba_rfu.o" "$BUILD/gba_cpu.o" "$BUILD/gba_video.o" \
+    "$BUILD/msx_host.o" "$BUILD/msx_compat.o" "$BUILD/msx_log.o" \
+    "$BUILD/msx2_rom_data.o" "$BUILD/msx2ext_rom_data.o" \
+    "$BUILD/msx_MSX.o" "$BUILD/msx_V9938.o" "$BUILD/msx_Sound.o" "$BUILD/msx_SHA1.o" \
+    "$BUILD/msx_Floppy.o" "$BUILD/msx_FDIDisk.o" "$BUILD/msx_MCF.o" "$BUILD/msx_Z80.o" \
+    "$BUILD/msx_I8255.o" "$BUILD/msx_YM2413.o" "$BUILD/msx_AY8910.o" "$BUILD/msx_SCC.o" \
+    "$BUILD/msx_WD1793.o" "$BUILD/msx_opll.o" "$BUILD/msx_WrapNukeYKT.o" \
     "$BUILD/fceumm_host.o" \
     "$BUILD/fceumm_fceu.o" "$BUILD/fceumm_x6502.o" "$BUILD/fceumm_ppu.o" "$BUILD/fceumm_sound.o" \
     "$BUILD/fceumm_cart.o" "$BUILD/fceumm_ines.o" "$BUILD/fceumm_input.o" "$BUILD/fceumm_fds.o" \

@@ -11,13 +11,17 @@ int fprintf(void*, const char*, ...) { return 0; }
 
 // пул-аллокатор
 // Пул 12 МБ: Snes9x 2005 (~9.7 МБ), Handy (~1.5 МБ), binjgb (~0.5 МБ).
-static uint8_t gb_heap[12 * 1024 * 1024];
+// Начало/конец пула — символы линкера за BSS, чтобы размер кучи НЕ сдвигал
+// остальные глобалы (ext, Memory, m68k...). См. linker.ld: _gb_heap_start/end.
+extern uint8_t _gb_heap_start[];
+extern uint8_t _gb_heap_end[];
+#define GB_HEAP_SIZE ((size_t)(_gb_heap_end - _gb_heap_start))
 static size_t gb_heap_pos = 0;
 
 static void* gb_alloc(size_t sz) {
     sz = (sz + 3) & ~3;
-    if (gb_heap_pos + sz > sizeof(gb_heap)) return 0;
-    void* p = (void*)(gb_heap + gb_heap_pos);
+    if (gb_heap_pos + sz > GB_HEAP_SIZE) return 0;
+    void* p = (void*)(_gb_heap_start + gb_heap_pos);
     gb_heap_pos += sz;
     return p;
 }
