@@ -132,12 +132,33 @@ static int pcf_read(uint8_t* out) {
     return 1;
 }
 
-// Пауза установления после записи SELECT: фронт TH проходит через DE-9
-// (1-2 м провод), мультиплексор чипа Sega переключается за ~2 мкс, но
-// по разным источникам — до 10-15 мкс. Даём 15 мкс для надёжности.
+// Тайминги фазы чтения Sega-геймпада.
+// Китайские клоны (и вообще 6-btn IC) чувствительны к скорости: слишком
+// быстро → чип сбивается и ведёт себя как 3-btn (X/Y/Z не приходят), либо
+// дребезг контактов даёт пропадание кнопки. По опыту (см. SegaController
+// и комментарии к статье Jon Thysell) sweet spot ~500 мкс периода опроса
+// и обязательная пауза между фазами. Увеличиваем против "голых" 15 мкс:
+//   60 мкс — после записи SELECT (установление TH через DE-9/мультиплексор)
+//   40 мкс — после чтения (дать линиям устояться до следующей фазы)
+//   20 мкс — между холостыми фазами прокрутки счётчика
+// Итог: полный скан ~1.2 мс < лимит 1.5 мс.
+#define TH_SETTLE_US 60
+#define TH_HOLD_US   40
+#define TH_IDLE_US   20
+
 static inline void th_settle(void) {
     const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
-    while ((t0 - H3_HS_TIMER->CURNT_LO) < 1500) {}  // 15 мкс
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < (uint32_t)(TH_SETTLE_US * 100)) {}
+}
+
+static inline void th_hold(void) {
+    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < (uint32_t)(TH_HOLD_US * 100)) {}
+}
+
+static inline void th_idle(void) {
+    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
+    while ((t0 - H3_HS_TIMER->CURNT_LO) < (uint32_t)(TH_IDLE_US * 100)) {}
 }
 
 static uint8_t g_raw[3] = {0xFF, 0xFF, 0xFF};
@@ -164,8 +185,11 @@ int sega_pad_init(void) {
 }
 
 // Полный скан 6-кнопочного геймпада. Каждая фаза: запись SELECT → STOP
-// (обновление TH на PCF8574) → пауза → чтение/следующая запись.
+// (обновление TH на PCF8574) → пауза → чтение → hold-пауза.
 // Холостые циклы 2-3: только запись SELECT (тик счётчика), без чтения.
+// ЗАЩЁЛКА на пакет: pad накапливается через |= — если кнопка поймана
+// нажатой хоть в одной фазе/чтении, она не снимается до конца скана.
+// Это отсекает дребезг контакта, где кнопка на микросекунду «пропадает».
 uint16_t sega_pad_scan(void) {
     uint8_t r;
     uint16_t pad = 0;
@@ -177,6 +201,7 @@ uint16_t sega_pad_scan(void) {
     if (!pcf_select(0xFF)) return 0;    // TH=1
     th_settle();
     if (!pcf_read(&r)) return 0;        g_raw[0] = r;
+    th_hold();
     if (!(r & 0x01)) pad |= 0x01;  // Up
     if (!(r & 0x02)) pad |= 0x02;  // Down
     if (!(r & 0x04)) pad |= 0x04;  // Left
@@ -188,31 +213,38 @@ uint16_t sega_pad_scan(void) {
     if (!pcf_select(0x7F)) return 0;    // TH=0
     th_settle();
     if (!pcf_read(&r)) return 0;        g_raw[1] = r;
+    th_hold();
     if (!(r & 0x10)) pad |= 0x10;  // A
     if (!(r & 0x20)) pad |= 0x80;  // Start
     if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;
 
     // --- ЦИКЛ 2: холостая прокрутка (TH=1, TH=0) — только SELECT, без чтения ---
     if (!pcf_select(0xFF)) return 0;    // TH=1
+    th_idle();
     if (!pcf_select(0x7F)) return 0;    // TH=0
+    th_idle();
 
     // --- ЦИКЛ 3: холостая прокрутка (TH=1, TH=0) — только SELECT ---
     if (!pcf_select(0xFF)) return 0;    // TH=1
+    th_idle();
     if (!pcf_select(0x7F)) return 0;    // TH=0
+    th_idle();
 
     // --- ЦИКЛ 4, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
     if (!pcf_select(0xFF)) return 0;    // TH=1
     th_settle();
     if (!pcf_read(&r)) return 0;        g_raw[2] = r;
+    th_hold();
     if (!(r & 0x01)) pad |= 0x400;  // Z
     if (!(r & 0x02)) pad |= 0x200;  // Y
     if (!(r & 0x04)) pad |= 0x100;  // X
     if (!(r & 0x08)) pad |= 0x800;  // Mode
-    if (!(r & 0x10)) pad |= 0x20;   // B
-    if (!(r & 0x20)) pad |= 0x40;   // C
+    if (!(r & 0x10)) pad |= 0x20;   // B (защёлка — уже стоит из ЦИКЛ1)
+    if (!(r & 0x20)) pad |= 0x40;   // C (защёлка)
 
     // --- Сброс: TH=0, затем idle TH=1 ---
     if (!pcf_select(0x7F)) return 0;
+    th_idle();
     if (!pcf_select(0xFF)) return 0;
 
     g_status |= SEGA_STATUS_ACK;
