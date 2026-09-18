@@ -175,55 +175,86 @@ int sega_pad_init(void) {
 //
 // Маска (как GPGX): UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08
 //   A=0x10 B=0x20 C=0x40 START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
+// Полный скан 6-кнопочного геймпада Sega Mega Drive — классический
+// протокол с явными тактами. Каждый write(SEL) ДОЛЖЕН завершаться
+// read() — даже холостые такты (скоростной счётчик чипа не продвигается
+// без чтения). Иначе 6-кнопочный режим рассинхронизируется.
+//
+// Разводка (PCF8574@0x20, активный низ):
+//   P0=Up(D0), P1=Down(D1), P2=Left/B/Z/Mode(D2), P3=Right/C/Y/X(D3)
+//   P4=A(TL, D4), P5=Start(TR, D5), P7=TH(SELECT)
+//
+// Фазы:
+//   Такт1 TH=1: Up/Down/Left/Right + B/C(TL/TR)    -> raw[0]
+//   Такт1 TH=0: A(TL) + Start(TR)                   -> raw[1]
+//   Такт2 TH=1: холостой, не используем
+//   Такт2 TH=0: холостой, не используем
+//   Такт3 TH=1: холостой, не используем
+//   Такт3 TH=0: холостой, не используем
+//   Такт4 TH=1: Z/Y/X/Mode + B/C(TL/TR)            -> raw[2]
+//   Финальный сброс TH=0 (STOP)
 uint16_t sega_pad_scan(void) {
-    uint8_t r;
-    uint16_t pad = 0;
+    uint8_t r[7];   // 3 такта TH=1/HIGH (0,2,6), 3 такта TH=0/LOW (1,3,5), 1 не используется
+    uint8_t trash;
     uint32_t t0 = h3_hs_timer_lo_us();
 
-    #define TH1() do { if (!pcf_write(0xFF)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
-    #define TH0() do { if (!pcf_write(0x7F)) return 0; g_status &= ~SEGA_STATUS_ACK; udelay(20); } while(0)
+    // --- ТАКТ 1 ---
+    if (!pcf_write(0xFF)) { g_status = 0; return 0; }
+    if (!pcf_read(&r[0])) { g_status = 0; return 0; }
+    // TH=1: Up(D0/P0=0x01), Down(0x02), Left(0x04), Right(0x08), B(0x10=TL), C(0x20=TR)
+    if (!pcf_write(0x7F)) { g_status = 0; return 0; }
+    if (!pcf_read(&r[1])) { g_status = 0; return 0; }
+    // TH=0: A(0x10=TL), Start(0x20=TR), маркер геймпада D2/D3=0
 
-    g_status = 0;
+    // Маркер подключения: D2=0 и D3=0 в фазе TH=0
+    uint8_t r1_inv = ~r[1];
+    if (!(r1_inv & (1 << 2)) && !(r1_inv & (1 << 3)))
+        g_status |= SEGA_STATUS_PAD;
 
-    // --- ЦИКЛ 1, TH=1: крестовина (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[0] = r;
-    if (!(r & 0x01)) pad |= 0x01;  // Up    (P0)
-    if (!(r & 0x02)) pad |= 0x02;  // Down  (P1)
-    if (!(r & 0x04)) pad |= 0x04;  // Left  (P2)
-    if (!(r & 0x08)) pad |= 0x08;  // Right (P3)
-    if (!(r & 0x10)) pad |= 0x20;  // B     (P4/TL)
-    if (!(r & 0x20)) pad |= 0x40;  // C     (P5/TR)
+    // --- ТАКТ 2 (холостой — но чтение обязательно) ---
+    if (!pcf_write(0xFF)) { g_status = 0; return 0; }
+    if (!pcf_read(&trash)) { g_status = 0; return 0; }
+    if (!pcf_write(0x7F)) { g_status = 0; return 0; }
+    if (!pcf_read(&trash)) { g_status = 0; return 0; }
 
-    // --- ЦИКЛ 1, TH=0: A/Start (TL/TR) + маркер D2/D3=0 (геймпад подключён) ---
-    TH0();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[1] = r;
-    if (!(r & 0x10)) pad |= 0x10;  // A     (P4/TL)
-    if (!(r & 0x20)) pad |= 0x80;  // Start (P5/TR)
-    if (!(r & 0x04) && !(r & 0x08)) g_status |= SEGA_STATUS_PAD;  // маркер геймпада
+    // --- ТАКТ 3 (холостой — чтение обязательно) ---
+    if (!pcf_write(0xFF)) { g_status = 0; return 0; }
+    if (!pcf_read(&trash)) { g_status = 0; return 0; }
+    if (!pcf_write(0x7F)) { g_status = 0; return 0; }
+    if (!pcf_read(&trash)) { g_status = 0; return 0; }
 
-    // --- ЦИКЛ 2 и 3: холостые прокрутки счётчика чипа ---
-    TH1(); TH0();   // цикл 2
-    TH1(); TH0();   // цикл 3
+    // --- ТАКТ 4 (финальный сбор доп. кнопок) ---
+    if (!pcf_write(0xFF)) { g_status = 0; return 0; }
+    if (!pcf_read(&r[6])) { g_status = 0; return 0; }
+    // TH=1: Z(0x01), Y(0x02), X(0x04), Mode(0x08), B(0x10=TL), C(0x20=TR)
+    // Финальный сброс TH=0 (STOP цикла) — без чтения, переводим счётчик в idle
+    if (!pcf_write(0x7F)) { g_status = 0; return 0; }
+    udelay(50);
 
-    // --- ЦИКЛ 4, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
-    TH1();
-    if (!pcf_read(&r)) { g_status = 0; return 0; }  g_raw[2] = r;
-    if (!(r & 0x01)) pad |= 0x400;  // Z    (P0)
-    if (!(r & 0x02)) pad |= 0x200;  // Y    (P1)
-    if (!(r & 0x04)) pad |= 0x100;  // X    (P2)
-    if (!(r & 0x08)) pad |= 0x800;  // Mode (P3)
-    if (!(r & 0x10)) pad |= 0x20;   // B    (P4/TL)
-    if (!(r & 0x20)) pad |= 0x40;   // C    (P5/TR)
+    // Инвертируем (активный низ -> нажатие=1)
+    uint8_t t1_high = ~r[0];
+    uint8_t t1_low  = ~r[1];
+    uint8_t t4_high = ~r[6];
 
-    // --- Сброс: TH=0, затем idle TH=1 (как в скетче: LOW->HIGH + пауза) ---
-    TH0();
-    TH1();
-    udelay(100);
+    uint16_t pad = 0;
+    if (t1_high & (1 << 0)) pad |= 0x0001;    // Up
+    if (t1_high & (1 << 1)) pad |= 0x0002;    // Down
+    if (t1_high & (1 << 2)) pad |= 0x0004;    // Left
+    if (t1_high & (1 << 3)) pad |= 0x0008;    // Right
+    if (t1_high & (1 << 4)) pad |= 0x0020;    // B
+    if (t1_high & (1 << 5)) pad |= 0x0040;    // C
 
-    #undef TH1
-    #undef TH0
+    if (t1_low  & (1 << 4)) pad |= 0x0010;    // A
+    if (t1_low  & (1 << 5)) pad |= 0x0080;    // Start
 
+    if (t4_high & (1 << 0)) pad |= 0x0400;    // Z
+    if (t4_high & (1 << 1)) pad |= 0x0200;    // Y
+    if (t4_high & (1 << 2)) pad |= 0x0100;    // X
+    if (t4_high & (1 << 3)) pad |= 0x0800;    // Mode
+    if (t4_high & (1 << 4)) pad |= 0x0020;    // B (дубль)
+    if (t4_high & (1 << 5)) pad |= 0x0040;    // C (дубль)
+
+    g_raw[0] = r[0]; g_raw[1] = r[1]; g_raw[2] = r[6];
     g_status |= SEGA_STATUS_ACK;
     g_scan_us = h3_hs_timer_lo_us() - t0;
     return pad;
