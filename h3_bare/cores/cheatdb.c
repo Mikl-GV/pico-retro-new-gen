@@ -69,8 +69,11 @@ static void norm_base(const char* s, char* out, int cap) {
     out[o] = 0;
 }
 
-// Совпадение по основному имени (без скобок/расширения/регистра):
-// rom_name и cht_name нормализуются одинаково и сравниваются целиком.
+// Совпадение по нормализованному имени: сначала полное равенство.
+// Если не сошлось — сравнение по префиксу (первые min_len символов
+// от более короткого имени, но не менее 6 и не менее 40% от длинного),
+// чтобы "Batman Returns (JUE) [!].gg" сматчилось с
+// "Batman Returns (U).cht" (оба → "batman returns").
 static int name_match(const char* rom_name, const char* cht_name) {
     if (!rom_name || !cht_name) return 0;
     char r[FAT_NAME_LEN];
@@ -78,7 +81,24 @@ static int name_match(const char* rom_name, const char* cht_name) {
     norm_base(rom_name, r, sizeof(r));
     norm_base(cht_name, c, sizeof(c));
     if (r[0] == 0 || c[0] == 0) return 0;
-    return strcmp(r, c) == 0;
+
+    // 1) полное совпадение
+    if (strcmp(r, c) == 0) return 1;
+
+    // 2) префикс: разница в суффиксе (например "super mario" vs
+    //    "super mario world") — сравниваем длину более короткого
+    int rl = (int)strlen(r);
+    int cl = (int)strlen(c);
+    int min_len = (rl < cl) ? rl : cl;
+    int max_len = (rl > cl) ? rl : cl;
+    // Требуем минимум 6 символов совпадения и >= 40% от длинного имени
+    if (min_len < 6) return 0;
+    if (min_len < max_len * 40 / 100) return 0;
+
+    // Сравниваем по min_len
+    for (int i = 0; i < min_len; i++)
+        if (r[i] != c[i]) return 0;
+    return 1;
 }
 
 // Значение в строке "key = "value"" — снимаем кавычки и обрезаем
