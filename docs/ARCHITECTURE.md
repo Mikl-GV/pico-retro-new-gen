@@ -14,11 +14,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
 │  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
 │  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)      │
-│  ngp/ (RACE — TLCS900H+Z80, NGP/NGPC)                          │
+│  ngp/ (RACE — TLCS900H+Z80, NGP/NGPC)  vecx/ (Vectrex, 6809)  │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
 │  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp  ngp_host.cpp │
+│  vecx_host.c (Vectrex)  gba_host.c (GBA)  msx_host.c (MSX)    │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
@@ -51,6 +52,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 | SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw + sega_pad |
 | MSX / MSX2 (YIS-503II) | **fMSX 6.0** | C | 256×212 → V9938 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| GCE Vectrex | **libretro-vecx** | C | 330×410 (векторы → растр) → EMU_FB | usb_kbd_get_raw + sega_pad |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация

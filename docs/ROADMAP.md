@@ -23,7 +23,7 @@
 | 15 | ZX Spectrum | Z80 | 🔲 план | — |
 | 16 | PC Engine | HuC6280 | 🔲 план | — |
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |
-| 18 | GCE Vectrex | 6809 | 🔲 план | — |
+| 18 | GCE Vectrex | 6809 | ✅ работает | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
 | 20 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
 | 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |

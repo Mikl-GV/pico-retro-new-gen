@@ -26,38 +26,40 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 
 ## Эмуляторы (игровой маппинг — клавиатура)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Game Boy | GBA | Lynx | NGP | Mega Drive | SNES |
-|---------|:---:|:-------------:|:-----:|:-----:|:------:|:--------:|:---:|:----:|:---:|:----------:|:----:|
-| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | **A** | A | **A** | **A** | **B** |
-| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | **B** | B | **B** | **B** | **Y** |
-| **C** | — | — | — | — | — | — | — | — | — | **C** | **L** |
-| **A** | — | — | — | — | — | — | — | — | — | **X** | **A** |
-| **S** | Select | Select | Start | Select | Pause | Select | Select | Option 1 | **Select** | **Y** | **X** |
-| **D** | — | — | — | — | — | — | — | — | — | **Z** | — |
-| **Q** | — | — | — | — | — | — | **L** | — | — | Mode | — |
-| **W** | — | — | — | — | — | — | **R** | — | — | — | **R** |
-| Space | — | — | — | — | — | — | — | — | — | — | Select |
-| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Start | Option 2 | **Start** | Start | Start |
-| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
+| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | Game Boy | GBA | Lynx | NGP | Mega Drive | SNES | Vectrex |
+|---------|:---:|:-------------:|:-----:|:-----:|:------:|:--------:|:---:|:----:|:---:|:----------:|:----:|:-------:|
+| ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик |
+| **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | **B** | **A** | A | **A** | **A** | **B** | Кноп.1 |
+| **X** | B | — | Pause | B2 (B) | Button 2 | **A** | **B** | B | **B** | **B** | **Y** | Кноп.2 |
+| **C** | — | — | — | — | — | — | — | — | — | **C** | **L** | Кноп.3 |
+| **V** | — | — | — | — | — | — | — | — | — | — | — | Кноп.4 |
+| **A** | — | — | — | — | — | — | — | — | — | **X** | **A** | — |
+| **S** | Select | Select | Start | Select | Pause | Select | Select | Option 1 | **Select** | **Y** | **X** | — |
+| **D** | — | — | — | — | — | — | — | — | — | **Z** | — | — |
+| **Q** | — | — | — | — | — | — | **L** | — | — | Mode | — | — |
+| **W** | — | — | — | — | — | — | **R** | — | — | — | **R** | — |
+| Space | — | — | — | — | — | — | — | — | — | — | Select | — |
+| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Start | Option 2 | **Start** | Start | Start | — |
+| ESC (удерж. ~1с) | Выход¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
 ¹ NES/Dendy: одиночный ESC → клавиша SuborKB (Break в Basic), выход — только по удержанию ~1с.
+Все клавиши (в т.ч. Vectrex: стик/кнопки 1-4) можно перемапить в Settings → Keyboard remap.
 
 ## Sega-геймпад 6-button (игровой маппинг)
 
 Геймпад Sega — единый источник ввода (ведущий), клавиатура работает параллельно. Маппинг от «сеговского эталона», у систем мапятся только существующие кнопки:
 
-| Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 |
-|------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|
-| ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad |
-| **A** | A | Button 2 | A | A (огонь) | A | A | A | A | Fire | Fire | A |
-| **B** | B | Button 1 | B | B | B | B | B | B | — | Pause | B |
-| **C** | C | — | L | — | — | **L** | — | — | — | — | — |
-| **X** | X | — | Y | — | — | **R** | Option 1 | — | — | — | — |
-| **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — |
-| **Z** | Z | — | R | — | — | — | — | — | — | — | — |
-| **Start** | Start | Start | Start | Start | Start | Start | — | Start | Game Reset | Start | Start |
-| **Mode/Select** | Mode | Pause | Select | Select | Select | Select | — | Select | Select | Start | Select |
+| Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 | Vectrex |
+|------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|:-------:|
+| ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик |
+| **A** | A | Button 2 | A | A (огонь) | A | A | A | A | Fire | Fire | A | Кноп.1 |
+| **B** | B | Button 1 | B | B | B | B | B | B | — | Pause | B | Кноп.2 |
+| **C** | C | — | L | — | — | **L** | — | — | — | — | — | — |
+| **X** | X | — | Y | — | — | **R** | Option 1 | — | — | — | — | Кноп.3 |
+| **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — | Кноп.4 |
+| **Z** | Z | — | R | — | — | — | — | — | — | — | Pause | — |
+| **Start** | Start | Start | Start | Start | Start | Start | — | Start | Game Reset | Start | Start | — |
+| **Mode/Select** | Mode | Pause | Select | Select | Select | Select | — | Select | Select | Start | Select | — |
 
 - В меню геймпад работает как клавиатура: D-Pad = навигация, **A/Start = Enter**, **B/Mode = ESC**.
 - Atari Portfolio — клавиатурный компьютер, геймпад **не подключён**.
