@@ -75,17 +75,32 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
 
     if (!rom || size == 0) { printf("Gearcoleco: no ROM\n"); return 0; }
 
-    // Сброс bump-пула (malloc): перед каждым запуском — иначе повторные
-    // init копят FrameBuffer/state и упрутся в пул.
     gb_heap_reset();
 
     g_core = new GearcolecoCore();
     g_core->Init(GC_PIXEL_RGB565);
 
-    // LoadROMFromBuffer без path: не использует zip/miniz,
-    // ROM идёт напрямую из ROM_BUF.
     if (!g_core->LoadROMFromBuffer(rom, (int)size, NULL)) {
-        printf("Gearcoleco: LoadROMFromBuffer failed (bad/corrupt ROM?)\n");
+        printf("Gearcoleco: LoadROMFromBuffer failed\n");
+        delete g_core; g_core = NULL;
+        return 0;
+    }
+
+    // Если ROM не распознан (нет заголовка 0xAA55, CRC не в базе) —
+    // форсируем ColecoVision + NTSC через GetCartridge + ResetROM.
+    // LoadROMFromBuffer с path=NULL игнорирует config, поэтому делаем это
+    // отдельно. Иначе ядро упадёт с Data Abort (невалидный маппер).
+    if (!g_core->IsReady()) {
+        printf("Gearcoleco: not recognized, forcing ColecoVision\n");
+        Cartridge::ForceConfiguration cfg;
+        cfg.type = Cartridge::CartridgeColecoVision;
+        cfg.region = Cartridge::CartridgeNTSC;
+        g_core->GetCartridge()->ForceConfig(cfg);
+        g_core->ResetROM(&cfg);
+    }
+
+    if (!g_core->IsReady()) {
+        printf("Gearcoleco: still not ready\n");
         delete g_core; g_core = NULL;
         return 0;
     }
