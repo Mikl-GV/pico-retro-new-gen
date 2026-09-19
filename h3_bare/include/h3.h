@@ -793,9 +793,6 @@ typedef enum H3_BOOT_DEVICE {
 	H3_BOOT_DEVICE_SPI
 } h3_boot_device_t;
 
-extern uint32_t h3_get_dram_size(void);
-extern h3_boot_device_t h3_get_boot_device(void);
-
 extern void h3_dump_memory_mapping(void);
 
 #ifdef __cplusplus

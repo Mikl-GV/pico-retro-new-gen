@@ -38,14 +38,14 @@ void emu_scale(int src_w, int src_h) {
 
     // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
     // аккумулятор 16.16 — каждая итерация добавляет src_w/dst_w, обёртка
-    // по dst_w (амплитуда = dst_w, шаг = src_w, sx = acc/dst_w).
+    // по src_w (амплитуда = src_w, шаг = src_w/dst_w).
     static int sx_tab[FB_W];
     uint32_t step_x = ((uint32_t)src_w << 16) / (uint32_t)dst_w;
     uint32_t acc_x = step_x >> 1;   // округление к ближайшему
     for (int dx = 0; dx < dst_w; dx++) {
         sx_tab[dx] = (int)(acc_x >> 16);
         acc_x += step_x;
-        if (acc_x >= ((uint32_t)dst_w << 16)) acc_x -= (uint32_t)dst_w << 16;
+        if (acc_x >= ((uint32_t)src_w << 16)) acc_x -= (uint32_t)src_w << 16;
     }
 
     // левое/правое поле

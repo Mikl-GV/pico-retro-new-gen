@@ -156,6 +156,15 @@ foreach ($f in Get-ChildItem "$GPGX\core\*.c") { $fn = [System.IO.Path]::GetFile
 foreach ($sd in @("z80","m68k","ntsc","sound","input_hw","cart_hw","cd_hw")) { foreach ($f in Get-ChildItem "$GPGX\core\$sd\*.c") { $fn = [System.IO.Path]::GetFileNameWithoutExtension($f.Name); & $CC @GPGX_CFLAGS @gpgxInc -c -o "$BUILD\gpgx_${sd}_$fn.o" $f.FullName; ok "gpgx_${sd}_$fn" } }
 foreach ($f in Get-ChildItem "$GPGX\core\cart_hw\svp\*.c") { $fn = [System.IO.Path]::GetFileNameWithoutExtension($f.Name); & $CC @GPGX_CFLAGS @gpgxInc -c -o "$BUILD\gpgx_svp_$fn.o" $f.FullName; ok "gpgx_svp_$fn" }
 
+Write-Host "=== Vectrex ==="
+$VECX = "$TOP\h3_bare\cores\vecx"
+$vecxInc = $INC + @("-I$VECX")
+$VECX_CFLAGS = $CFLAGS + @("-DINLINE=inline")
+& $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_host.o" "$TOP\h3_bare\cores\vecx_host.c"; ok "vecx_host"
+& $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_e6809.o" "$VECX\e6809.c"; ok "vecx_e6809"
+& $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_vecx.o" "$VECX\vecx.c"; ok "vecx_vecx"
+& $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_vecx_psg.o" "$VECX\vecx_psg.c"; ok "vecx_vecx_psg"
+
 Write-Host "=== Platform ==="
 foreach ($f in @("uart","printf","libc_min","main")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\src\$f.c"; ok $f }
 & $CXX @CXXFLAGS @INC -c -o "$BUILD\cxx_runtime.o" "$TOP\h3_bare\src\cxx_runtime.cpp"; ok "cxx_runtime"

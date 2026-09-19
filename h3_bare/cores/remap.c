@@ -509,7 +509,7 @@ void remap_menu(void) {
             draw_btn_list(sel_plat, sel_btn);
             int k = usb_kbd_poll();
             if (!k) { h3_hs_timer_delay(16000); continue; }
-            if (k == KBD_UP) { do { sel_btn--; } while (sel_btn > 0 && !btn_labels[sel_btn]); }
+            if (k == KBD_UP) { do { sel_btn--; } while (sel_btn > 0 && !btn_labels[sel_btn]); if (sel_btn < 0) sel_btn = 0; }
             else if (k == KBD_DOWN) { do { sel_btn++; } while (sel_btn < BTN_MAX - 1 && !btn_labels[sel_btn]); }
             else if (k == KBD_ENTER) {
                 fb_clear();

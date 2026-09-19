@@ -85,8 +85,9 @@ static void gpgx_poll_input(void) {
 
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
     // Дедолт: Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start, стрелки=D-Pad.
-    // Платформа: MD (REMAP_PLAT_MD) или SMS/GG (REMAP_PLAT_SMS / GG).
-    int plat = g_is_md ? REMAP_PLAT_MD : REMAP_PLAT_SMS;
+    // Платформа: MD (REMAP_PLAT_MD) или SMS/GG (REMAP_PLAT_SMS / REMAP_PLAT_GG).
+    int plat = g_is_md ? REMAP_PLAT_MD
+              : (system_hw == SYSTEM_GG ? REMAP_PLAT_GG : REMAP_PLAT_SMS);
     if (remap_kbd_pressed(plat, BTN_UP, keys, n))    pad |= INPUT_UP;
     if (remap_kbd_pressed(plat, BTN_DOWN, keys, n))  pad |= INPUT_DOWN;
     if (remap_kbd_pressed(plat, BTN_LEFT, keys, n))  pad |= INPUT_LEFT;

@@ -24,7 +24,7 @@
 #include "address.h"
 #include "vmachine.h"
 #include "extern.h"
-#include "memory.h"
+#include "Memory.h"
 #include "vcs_display.h"
 #include "resource.h"
 

@@ -21,7 +21,7 @@
 #include "types.h"
 #include "extern.h"
 #include "macro.h"
-#include "memory.h"
+#include "Memory.h"
 #include "exmacro.h"
 
 /* Loads an absolute address uising the quicker load mechanism */

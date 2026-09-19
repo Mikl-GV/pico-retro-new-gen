@@ -24,7 +24,7 @@ extern "C" {
 #include "mcume/collision.h"
 #include "mcume/tiasound.h"
 #include "mcume/resource.h"
-#include "mcume/memory.h"
+#include "mcume/Memory.h"
 }
 
 static uint8_t pool[160 * 192 + 8 + 4096 + 4096 + 1024 + 28 * 8];

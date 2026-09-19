@@ -273,8 +273,13 @@ static void clock_set_pll_video_factors(uint32_t m, uint32_t n) {
 	/* VIDEO rate = 24000000 * n / m */
 	H3_CCU->PLL_VIDEO_CTRL = CCU_PLL_VIDEO_CTRL_EN | CCU_PLL_VIDEO_CTRL_INTEGER_MODE | CCU_PLL_VIDEO_CTRL_N(n) | CCU_PLL_VIDEO_CTRL_M(m);
 
-	while (!(H3_CCU->PLL_VIDEO_CTRL & CCU_PLL_VIDEO_CTRL_LOCK))
-		;
+	uint32_t timeout = 10000000;
+	while (!(H3_CCU->PLL_VIDEO_CTRL & CCU_PLL_VIDEO_CTRL_LOCK)) {
+		if (--timeout == 0) {
+			printf("WARN: PLL_VIDEO not locked\n");
+			break;
+		}
+	}
 }
 
 static uint32_t clock_get_pll_video(void) {

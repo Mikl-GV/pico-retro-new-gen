@@ -155,7 +155,48 @@ _start:
     mov r0, #'3'
     bl uart_dbg
 
-    /* Stack: в конце 512MB DRAM (0x60000000) */
+    /* Стеки исключений: каждый режим имеет СВОЙ банковский SP (r13_<mode>).
+     * Устанавливаем SP в его режиме через CPSR.M; IRQ/FIQ остаются
+     * запрещёнными (биты I/F = 1). Стеки растут вниз:
+     *   SVC: 0x60000000 (основной, верх)
+     *   IRQ: 0x5FF03000
+     *   FIQ: 0x5FF02000
+     *   ABT: 0x5FF01000
+     *   UND: 0x5FF00000
+     * Зона 0x5FF00000..0x5FF04000 свободна (EMU_FB 0x5F800000, FB
+     * 0x5F900000, стек SVC сверху) — SVC-стек при глубоком кадре не
+     * наедет на банки исключений (запас >16 МБ). */
+    /* FIQ (CPSR.M=0x11, I|F=1 -> 0xD1) */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD1
+    msr cpsr, r0
+    ldr sp, =0x5FF02000
+    /* IRQ (0x12 -> 0xD2) */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD2
+    msr cpsr, r0
+    ldr sp, =0x5FF03000
+    /* ABT (0x17 -> 0xD7) */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD7
+    msr cpsr, r0
+    ldr sp, =0x5FF01000
+    /* UND (0x1B -> 0xDB) */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xDB
+    msr cpsr, r0
+    ldr sp, =0x5FF00000
+    /* Возврат в SVC (0x13 -> 0xD3) */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD3
+    msr cpsr, r0
+
+    /* Stack SVC: в конце 512MB DRAM (0x60000000) */
     ldr sp, =0x60000000
 
     /* DGN '4': стек готов */

@@ -31,12 +31,15 @@ void led_init(void) {
     PA_DAT &= ~(1u << 15);   // погашен (0)
     mb();
 
-    // --- PL10: R_PIO. Пытаемся включить такт, снять ресет, настроить output ---
-    PRCM_GATE0 |= 0xFFFFFFFFu;
+    // --- PL10: R_PIO. Включаем такт APB0 + снимаем софт-ресет R_PIO.
+    // По ccu-sun8i-r (H3): APB0_GATE0 (0x28) bit0 = R_PIO,
+    // APB0_RESET (0x38) bit0 = R_PIO. Только бит 0, не всё разом, чтобы
+    // случайно не разбудить/ресетнуть лишние домены (uart/timer/rsb).
+    PRCM_GATE0 |= (1u << 0);
     mb();
-    PRCM_GATE1 |= 0xFFFFFFFFu;
+    PRCM_GATE1 |= (1u << 0);
     mb();
-    PRCM_RST1  = 0xFFFFFFFFu;          // снять софт-ресет всех блоков PRCM
+    PRCM_RST1 |= (1u << 0);          // снять софт-ресет R_PIO
     mb();
 
     // пробуем оба регистра конфигурации (несколько раз, с барьерами)

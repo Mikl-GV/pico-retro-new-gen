@@ -137,12 +137,14 @@ static void vx_render_hdmi(uint32_t border) {
         uint32_t step_x = ((uint32_t)VX_W << 16) / (uint32_t)dst_w;
         uint32_t x_acc = step_x >> 1;
         for (int dx = 0; dx < dst_w; dx++) {
-            uint16_t p = src[x_acc >> 16];
+            uint32_t si = x_acc >> 16;
+            if (si >= VX_W) si = VX_W - 1;   // защита индекса от выхода за vx_fb
+            uint16_t p = src[si];
             // RGB1555: R=бит14-10, G=9-5, B=4-0 (у нас серое c==R==G==B)
             uint32_t g = ((p >> 5) & 0x1F) << 3;
             d[dx] = (g << 16) | (g << 8) | g;
             x_acc += step_x;
-            if (x_acc >= ((uint32_t)dst_w << 16)) x_acc -= (uint32_t)dst_w << 16;
+            if (x_acc >= ((uint32_t)VX_W << 16)) x_acc -= (uint32_t)VX_W << 16;
         }
         y_acc += step_y;
         int nsy = (int)(y_acc >> 16);

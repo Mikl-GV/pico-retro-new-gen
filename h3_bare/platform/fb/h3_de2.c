@@ -85,8 +85,14 @@ static void clock_set_pll_de(const uint32_t clk) {
 
 	H3_CCU->PLL_DE_CTRL = PLL_DE_ENABLE | PLL_DE_MODE_INTEGER | PLL_DE_CTRL_N(clk / (H3_F_24M / m))| PLL_DE_CTRL_M(m);
 
-	while (!(H3_CCU->PLL_DE_CTRL & PLL_DE_LOCK))
-		;
+	uint32_t timeout = 10000000;
+	while (!(H3_CCU->PLL_DE_CTRL & PLL_DE_LOCK)) {
+		if (--timeout == 0) {
+			extern int printf(const char*, ...);
+			printf("WARN: PLL_DE not locked\n");
+			break;
+		}
+	}
 }
 
 void de2_composer_init(void) {

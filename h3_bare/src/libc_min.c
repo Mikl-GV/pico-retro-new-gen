@@ -161,6 +161,11 @@ int abs(int x) { return x < 0 ? -x : x; }
 // эмулятора (ядро инициализируется заново, куча растёт только вверх).
 extern char _hend[];
 
+/* Верхняя граница bump-кучи: _menu_arena (0x4F000000) — за ней ROM_BUF
+ * (0x50000000) и EMU_FB (0x5F800000). Не даём _sbrk наехать на них:
+ * при переполнении возвращаем (void*)-1, как стандартный sbrk. */
+#define SBRK_LIMIT 0x4F000000u
+
 static char* g_brk = 0;
 
 void* _sbrk(int incr) {
@@ -168,7 +173,9 @@ void* _sbrk(int incr) {
     char* cur = g_brk;
     if (incr > 0) {
         uintptr_t a = ((uintptr_t)cur + 7u) & ~(uintptr_t)7u;
-        g_brk = (char*)(a + (uintptr_t)incr);
+        uintptr_t next = a + (uintptr_t)incr;
+        if (next >= SBRK_LIMIT) return (void*)-1;   // переполнение кучи
+        g_brk = (char*)next;
         return (void*)a;
     }
     g_brk = cur + incr;

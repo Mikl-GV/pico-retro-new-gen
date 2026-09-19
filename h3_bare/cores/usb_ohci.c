@@ -137,6 +137,10 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
     for (int i = 0; i < 32; i++) g_hcca[idx].intr[i] = (uint32_t)&g_int_ed[idx];
     cache_clean((uint32_t)&g_hcca[idx], sizeof(g_hcca[0]));
 
+    // DMB перед включением периодического списка: HC должен видеть
+    // готовые ED/TD в DRAM до того, как начнёт обход списка.
+    __asm volatile("dmb" ::: "memory");
+
     // Правильный PLE: OHCI HcControl bit 2 (Periodic List Enable)
     // также надо записать HcPeriodicCurrentED
     ohci->peried = (uint32_t)&g_int_ed[idx];
@@ -386,6 +390,11 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     cache_clean((uint32_t)td, sizeof(g_td[0]));
     cache_clean((uint32_t)setup, setup_len);
     if (data_len > 0 && !dir_in) cache_clean((uint32_t)data, data_len);
+
+    // DMB: гарантирует, что все store в ED/TD (и cache_clean) видны
+    // до того, как HC прочитает управляющие регистры и начнёт DMA.
+    // Без этого на Cortex-A7 возможна гонка (HC читает старый ED в DRAM).
+    __asm volatile("dmb" ::: "memory");
 
     // ed уже висит в control list после init. Но HC закэшировал
     // его со SKIP=1 при загрузке head→current в init. Простое изменение

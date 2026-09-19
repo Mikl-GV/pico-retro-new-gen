@@ -28,7 +28,7 @@
 #include "cpu.h"
 #include "macro.h"
 #include "vmachine.h"
-#include "memory.h"
+#include "Memory.h"
 #include "vcs_display.h"
 #include "exmacro.h"
 #include "exmacro.h"

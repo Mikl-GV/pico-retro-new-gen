@@ -1,5 +1,5 @@
 #include "options.h"
-#include "vcsemu.h"
+#include "Vcsemu.h"
 #include "types.h"
 #include "vmachine.h"
 

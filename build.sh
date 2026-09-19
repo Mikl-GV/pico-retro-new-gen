@@ -205,6 +205,15 @@ for f in "$GPGX"/core/cart_hw/svp/*.c; do
     $CC $GPGX_CFLAGS $INCLUDES -c -o "$BUILD/gpgx_svp_$fn.o" "$f"
 done
 
+# --- Vectrex (vecx) ---
+VECX="$TOP/h3_bare/cores/vecx"
+VECX_INC="-I$VECX"
+VECX_CFLAGS="$CFLAGS -DINLINE=inline"
+$CC $VECX_CFLAGS $VECX_INC $INCLUDES -c -o "$BUILD/vecx_host.o" "$TOP/h3_bare/cores/vecx_host.c"
+$CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_e6809.o" "$VECX/e6809.c"
+$CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_vecx.o" "$VECX/vecx.c"
+$CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_vecx_psg.o" "$VECX/vecx_psg.c"
+
 # --- Служебные ---
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/uart.o" "$TOP/h3_bare/src/uart.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/printf.o" "$TOP/h3_bare/src/printf.c"
@@ -285,8 +294,9 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/gpgx_sound_"*.o "$BUILD/gpgx_input_hw_"*.o "$BUILD/gpgx_cart_hw_"*.o \
     "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
     "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" "$BUILD/gp_cheats.o" \
+    "$BUILD/vecx_host.o" "$BUILD/vecx_e6809.o" "$BUILD/vecx_vecx.o" "$BUILD/vecx_vecx_psg.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
-    "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/sega_pad.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
+    "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/sega_pad.o" "$BUILD/remap.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \

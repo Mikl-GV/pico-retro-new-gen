@@ -257,6 +257,8 @@ $(BUILD)/led.o: $(TOP)h3_bare/cores/led.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/emu.o: $(TOP)h3_bare/cores/emu.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/remap.o: $(TOP)h3_bare/cores/remap.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BUILD)/system_atari_h3.o: $(TOP)h3_bare/cores/system_atari_h3.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
@@ -432,14 +434,12 @@ $(BUILD)/gpgx_cd_hw_%.o: $(TOP)h3_bare/cores/gpgx/core/cd_hw/%.c | $(BUILD)
 $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
 
-# ---- Линковка (через response-файл для Windows, где cmdline лимит ~8K) ----
-# Пути в .rsp конвертим в Windows-формат (cygpath -m), иначе нативный
-# arm-none-eabi-ld не видит MSYS-пути вида /e/... .
+# ---- Линковка ----
+# На Linux объекты передаются напрямую (cmdline лимит не проблема).
+# Под Windows используйте build.ps1 (он сам собирает и линкует через *.o).
 $(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
-	@rm -f $(BUILD)/linker.rsp
-	@for o in $(OBJ); do cygpath -m $$o >> $(BUILD)/linker.rsp; done
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
-	    -o $@ @$(BUILD)/linker.rsp -lgcc -lc -lm -lgcc
+	    -o $@ $(OBJ) -lgcc -lc -lm -lgcc
 
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $(ELF) $@

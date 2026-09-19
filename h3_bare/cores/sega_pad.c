@@ -205,7 +205,8 @@ uint16_t sega_pad_scan(void) {
     // --- ИМПУЛЬС 1, TH=1: крестовина (D0-D3) + B/C (TL/TR) ---
     if (!pcf_select(0xFF)) return 0;    // TH=1
     th_settle();
-    if (!pcf_read(&r)) return 0;        g_raw[0] = r;
+    if (!pcf_read(&r)) return 0;
+    g_raw[0] = r;
     th_hold();
     if (!(r & 0x01)) pad |= 0x01;  // Up
     if (!(r & 0x02)) pad |= 0x02;  // Down
@@ -217,7 +218,8 @@ uint16_t sega_pad_scan(void) {
     // --- ИМПУЛЬС 1, TH=0: A/Start (TL/TR) + маркер геймпада ---
     if (!pcf_select(0x7F)) return 0;    // TH=0
     th_settle();
-    if (!pcf_read(&r)) return 0;        g_raw[1] = r;
+    if (!pcf_read(&r)) return 0;
+    g_raw[1] = r;
     th_hold();
     if (!(r & 0x10)) pad |= 0x10;  // A
     if (!(r & 0x20)) pad |= 0x80;  // Start
@@ -232,7 +234,8 @@ uint16_t sega_pad_scan(void) {
     // --- ИМПУЛЬС 3, TH=1: X/Y/Z/Mode (D0-D3) + B/C (TL/TR) ---
     if (!pcf_select(0xFF)) return 0;    // TH=1
     th_settle();
-    if (!pcf_read(&r)) return 0;        g_raw[2] = r;
+    if (!pcf_read(&r)) return 0;
+    g_raw[2] = r;
     th_hold();
     if (!(r & 0x01)) pad |= 0x400;  // Z
     if (!(r & 0x02)) pad |= 0x200;  // Y

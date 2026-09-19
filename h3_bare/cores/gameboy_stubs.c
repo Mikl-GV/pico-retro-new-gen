@@ -9,24 +9,36 @@ struct _reent _impure_ptr = { 0 };
 // fprintf — заглушка (emulator.c: PRINT_ERROR использует fprintf)
 int fprintf(void*, const char*, ...) { return 0; }
 
-// пул-аллокатор
-// Пул 12 МБ: Snes9x 2005 (~9.7 МБ), Handy (~1.5 МБ), binjgb (~0.5 МБ).
+// ---- пул-аллокатор с LIFO-free ----
+// Пул 24 МБ: Snes9x 2005 (~11.1 МБ), Handy (~1.5 МБ), binjgb (~0.5 МБ).
 // Начало/конец пула — символы линкера за BSS, чтобы размер кучи НЕ сдвигал
 // остальные глобалы (ext, Memory, m68k...). См. linker.ld: _gb_heap_start/end.
+//
+// БАЗОВАЯ СХЕМА — bump (только вверх). free() реально возвращает память
+// ТОЛЬКО если освобождается ПОСЛЕДНИЙ выделенный блок (LIFO):
+//   Snes9x при стопе/рестарте звука вызывает free(malloc(...)) на вершине
+//   пула — буфер переиспользуется, рост пула останавливается.
+//   Это устраняет «утечку» из apu_blargg.c (rb_buffer/landing_buffer
+//   пересоздаются при смене SampleRate) и повторные запуски SNES.
 extern uint8_t _gb_heap_start[];
 extern uint8_t _gb_heap_end[];
 #define GB_HEAP_SIZE ((size_t)(_gb_heap_end - _gb_heap_start))
 static size_t gb_heap_pos = 0;
+// адрес и размер НАИБОЛЕЕ ПОЗДНЕГО блока — для LIFO free/realloc
+static uint8_t* gb_last = 0;
+static size_t   gb_last_size = 0;
 
 static void* gb_alloc(size_t sz) {
     sz = (sz + 3) & ~3;
     if (gb_heap_pos + sz > GB_HEAP_SIZE) return 0;
     void* p = (void*)(_gb_heap_start + gb_heap_pos);
     gb_heap_pos += sz;
+    gb_last = (uint8_t*)p;
+    gb_last_size = sz;
     return p;
 }
 
-void gb_heap_reset(void) { gb_heap_pos = 0; }
+void gb_heap_reset(void) { gb_heap_pos = 0; gb_last = 0; gb_last_size = 0; }
 
 void* malloc(size_t sz) { return gb_alloc(sz); }
 void* calloc(size_t count, size_t sz) {
@@ -39,11 +51,26 @@ void* calloc(size_t count, size_t sz) {
 }
 void* realloc(void* p, size_t sz) {
     if (!p) return gb_alloc(sz);
-    /* bump-аллокатор: копировать неоткуда, но данные лежат в пуле —
-       перераспределение вниз по позиции не требуется для нашего использования */
+    sz = (sz + 3) & ~3;
+    // LIFO: если p — последний блок, откатываем позицию и выделяем заново
+    if (gb_last && (uint8_t*)p == gb_last && gb_heap_pos >= gb_last_size) {
+        gb_heap_pos -= gb_last_size;
+        gb_last = 0;
+        gb_last_size = 0;
+        return gb_alloc(sz);
+    }
+    // Не последний — bump (старый остаётся; для нашего использования это
+    // редкий случай — строка/список, рост некритичен)
     return gb_alloc(sz);
 }
-void free(void*) {}
+void free(void* p) {
+    // LIFO: освобождаем только если p — последний выделенный блок
+    if (p && gb_last && (uint8_t*)p == gb_last) {
+        gb_heap_pos -= gb_last_size;
+        gb_last = 0;
+        gb_last_size = 0;
+    }
+}
 
 void* memchr(const void* s, int c, size_t n) {
     const unsigned char* p = (const unsigned char*)s;
