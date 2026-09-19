@@ -178,6 +178,11 @@ static const uint16_t def_a7800[BTN_MAX] = {
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
 };
+// Vectrex: аналоговый стик (4 напр.) + 4 кнопки (1/2/3/4)
+static const uint16_t def_vectrex[BTN_MAX] = {
+    [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
+    [BTN_A]=KBD_Z, [BTN_B]=KBD_X, [BTN_X]=KBD_C, [BTN_Y]=KBD_V,
+};
 
 // Метки кнопок для меню (показываем только уместные для платформы)
 static const char* btn_labels[BTN_MAX] = {
@@ -207,6 +212,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_A2600] = { "Atari 2600",            "a2600",  def_a2600 },
     [REMAP_PLAT_A5200] = { "Atari 5200",            "a5200",  def_a5200 },
     [REMAP_PLAT_A7800] = { "Atari 7800",            "a7800",  def_a7800 },
+    [REMAP_PLAT_VECTREX] = { "GCE Vectrex",         "vectrex", def_vectrex },
 };
 
 static const char* btn_keys[BTN_MAX] = {

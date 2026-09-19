@@ -78,6 +78,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_megadrive(rom, size, sel_name);
     else if (strcmp(sys_id, "msx") == 0)
         emu_run_msx(rom, size, sel_name);
+    else if (strcmp(sys_id, "vectrex") == 0)
+        emu_run_vectrex(rom, size, sel_name);
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);

@@ -57,7 +57,7 @@ static const system_entry_t systems[] = {
     SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  PLANNED),
     SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),
     SYS("megadrive",  "Sega Mega Drive / Genesis",     CONSOLE,  READY),
-    SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, PLANNED),
+    SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, READY),
     SYS_DIR("jaguar", "Atari Jaguar", "jaguar_roms", CONSOLE, PLANNED),
 
     // -- Аркадные автоматы --

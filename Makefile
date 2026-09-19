@@ -87,6 +87,21 @@ OBJ  += $(addprefix $(BUILD)/,lynx_blip_buffer.o lynx_blip_stereo.o)
 NGP := $(TOP)h3_bare/cores/ngp
 OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o)
 
+# Vectrex (vecx)
+VECX := $(TOP)h3_bare/cores/vecx
+VECX_INC := -I$(VECX)
+# e6809.c/vecx.c ждут INLINE (как в libretro Makefile.common: -DINLINE=inline)
+VECX_CFLAGS := $(CFLAGS) -DINLINE=inline
+OBJ  += $(addprefix $(BUILD)/,vecx_host.o vecx_e6809.o vecx_vecx.o vecx_vecx_psg.o)
+$(BUILD)/vecx_host.o: $(TOP)h3_bare/cores/vecx_host.c | $(BUILD)
+	$(CC) $(VECX_CFLAGS) $(VECX_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/vecx_e6809.o: $(VECX)/e6809.c | $(BUILD)
+	$(CC) $(VECX_CFLAGS) $(VECX_INC) -c -o $@ $<
+$(BUILD)/vecx_vecx.o: $(VECX)/vecx.c | $(BUILD)
+	$(CC) $(VECX_CFLAGS) $(VECX_INC) -c -o $@ $<
+$(BUILD)/vecx_vecx_psg.o: $(VECX)/vecx_psg.c | $(BUILD)
+	$(CC) $(VECX_CFLAGS) $(VECX_INC) -c -o $@ $<
+
 # FCEUmm
 FCEUMM := $(TOP)h3_bare/cores/fceumm
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,fceumm_host fceumm_fceu fceumm_x6502 fceumm_ppu fceumm_sound fceumm_cart fceumm_ines fceumm_input fceumm_fds fceumm_fds_apu fceumm_palette fceumm_video fceumm_file fceumm_general fceumm_state fceumm_crc32 fceumm_md5 fceumm_fceu-endian fceumm_fceu-memory fceumm_cheat fceumm_filter fceumm_libretro_compat fceumm_vsuni fceumm_unif))

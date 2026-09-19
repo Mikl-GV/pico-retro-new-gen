@@ -23,7 +23,8 @@
 #define REMAP_PLAT_A2600  9   // Atari 2600
 #define REMAP_PLAT_A5200  10  // Atari 5200
 #define REMAP_PLAT_A7800  11  // Atari 7800
-#define REMAP_PLAT_COUNT  12
+#define REMAP_PLAT_VECTREX 12  // GCE Vectrex
+#define REMAP_PLAT_COUNT  13
 
 // ---- Индексы кнопок в списке каждой платформы ----
 // (общие для всех, где есть; у платформы может не быть некоторых — смотри remap.c)
