@@ -165,6 +165,48 @@ $VECX_CFLAGS = $CFLAGS + @("-DINLINE=inline")
 & $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_vecx.o" "$VECX\vecx.c"; ok "vecx_vecx"
 & $CC @VECX_CFLAGS @vecxInc -c -o "$BUILD\vecx_vecx_psg.o" "$VECX\vecx_psg.c"; ok "vecx_vecx_psg"
 
+Write-Host "=== Gearcoleco (ColecoVision) ==="
+$COL = "$TOP\h3_bare\cores\gearcoleco"
+$colSrc = "$COL\src"
+$colInc = @("-I$colSrc")
+$COL_CXXFLAGS = @("-mcpu=cortex-a7","-mfpu=neon","-mfloat-abi=softfp","-marm","-Wall","-Wextra","-O2","-fno-exceptions","-fno-rtti","-fno-threadsafe-statics")
+# blargg-символы конфликтуют с Lynx — переименовываем через objcopy (_gc).
+# Функция собирает список _Z-символов из lynx_blip_*.o и применяет redefine.
+function Rename-GcBlargg([string]$obj) {
+    $syms = @()
+    foreach ($L in @("$BUILD\lynx_blip_buffer.o","$BUILD\lynx_blip_stereo.o")) {
+        if (-not (Test-Path $L)) { continue }
+        $lines = & $OBJCOPY "-p" "$L" 2>$null
+        $nm = Get-Command "arm-none-eabi-nm" -ErrorAction SilentlyContinue
+        if (-not $nm) { return }
+        $out = & $nm.Source $L 2>$null | Where-Object { $_ -match '^[0-9a-fA-F]+\s+[TDBW]\s+(_Z\S+)$' }
+        foreach ($m in $out) { if ($m -match '(_Z\S+)$') { $syms += $matches[1] } }
+    }
+    $syms = $syms | Sort-Object -Unique
+    if ($syms.Count -eq 0) { return }
+    # какие из них есть в нашем объекте
+    $objSyms = (& $nm.Source $obj 2>$null) -join "`n"
+    $args = @()
+    foreach ($s in $syms) {
+        if ($objSyms -match [regex]::Escape($s)) { $args += "--redefine-sym=$s" + "_gc" }
+    }
+    if ($args.Count -gt 0) {
+        & $OBJCOPY @args "$obj" "$obj.tmp"
+        if (Test-Path "$obj.tmp") { Move-Item "$obj.tmp" $obj -Force }
+    }
+}
+foreach ($fn in @("GearcolecoCore","Memory","Processor","TMS9918A","Audio","AY8910","Input","ColecoVisionIOPorts","opcodes","opcodes_cb","opcodes_ed","TraceLogger","VgmRecorder","Adam","AdamMedia","AdamNet","F18A","F18A_enhancements","F18AGPU","Cartridge","Mapper")) {
+    & $CXX @COL_CXXFLAGS @colInc -c -o "$BUILD\gc_$fn.o.tmp" "$colSrc\$fn.cpp"; if ($LASTEXITCODE -ne 0) { Write-Host "FAIL gc_$fn"; exit 1 }
+    Rename-GcBlargg "$BUILD\gc_$fn.o.tmp"; Move-Item "$BUILD\gc_$fn.o.tmp" "$BUILD\gc_$fn.o" -Force; ok "gc_$fn"
+}
+foreach ($fn in @("Blip_Buffer","Effects_Buffer","Multi_Buffer","Sms_Apu")) {
+    & $CXX @COL_CXXFLAGS @colInc -c -o "$BUILD\gc_$fn.o.tmp" "$colSrc\audio\$fn.cpp"; if ($LASTEXITCODE -ne 0) { Write-Host "FAIL gc_$fn"; exit 1 }
+    Rename-GcBlargg "$BUILD\gc_$fn.o.tmp"; Move-Item "$BUILD\gc_$fn.o.tmp" "$BUILD\gc_$fn.o" -Force; ok "gc_$fn"
+}
+& $CC @CFLAGS "-DMINIZ_NO_STDIO" "-DMINIZ_NO_TIME" @colInc -c -o "$BUILD\gc_miniz.o" "$colSrc\miniz.c"; ok "gc_miniz"
+& $CXX @COL_CXXFLAGS @colInc @INC -c -o "$BUILD\coleco_host.o" "$TOP\h3_bare\cores\coleco_host.cpp"; ok "coleco_host"
+& $CC @CFLAGS @INC -c -o "$BUILD\coleco_compat.o" "$TOP\h3_bare\cores\coleco_compat.c"; ok "coleco_compat"
+
 Write-Host "=== Platform ==="
 foreach ($f in @("uart","printf","libc_min","main")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\src\$f.c"; ok $f }
 & $CXX @CXXFLAGS @INC -c -o "$BUILD\cxx_runtime.o" "$TOP\h3_bare\src\cxx_runtime.cpp"; ok "cxx_runtime"
@@ -172,7 +214,7 @@ foreach ($f in @("udelay","h3_hs_timer","h3_ccu","h3")) { & $CC @CFLAGS @INC -c 
 foreach ($f in @("h3_de2","h3_hdmi","dw_hdmi","h3_lcd")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\platform\fb\$f.c"; ok $f }
 
 Write-Host "=== Link ==="
-& $CXX "-T$TOP\h3_bare\platform\linker.ld" -nostdlib "-Wl,-gc-sections" -o "$ELF" "$BUILD\*.o" -lgcc -lc -lm -lgcc 2>&1
+& $CXX "-T$TOP\h3_bare\platform\linker.ld" -nostdlib "-Wl,-gc-sections" -o "$ELF" "$BUILD\*.o" -lstdc++ -lgcc -lc -lm -lgcc 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Host "LINK FAILED"; exit 1 }
 Write-Host "LINK OK"
 

@@ -80,6 +80,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_msx(rom, size, sel_name);
     else if (strcmp(sys_id, "vectrex") == 0)
         emu_run_vectrex(rom, size, sel_name);
+    else if (strcmp(sys_id, "coleco") == 0)
+        emu_run_coleco(rom, size, sel_name);
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);

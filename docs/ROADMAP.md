@@ -19,7 +19,7 @@
 | 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
 | 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
 | 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты) | fMSX 6.0 |
-| 14 | ColecoVision | Z80 | 🔲 план | — |
+| 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | 🔲 план | — |
 | 16 | PC Engine | HuC6280 | 🔲 план | — |
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |

@@ -52,7 +52,7 @@ static const system_entry_t systems[] = {
     SYS("a5200",      "Atari 5200",                  CONSOLE,  READY),
     SYS("a7800",      "Atari 7800",                  CONSOLE,  READY),
     SYS_ALT("sms",    "Sega Master System",        NULL, "sms_roms", CONSOLE, READY),
-    SYS("coleco",     "ColecoVision",                CONSOLE,  PLANNED),
+    SYS("coleco",     "ColecoVision",                CONSOLE,  READY),
     SYS_ALT("nes",    "NES / Famicom (Dendy)",     NULL, "nes_roms", CONSOLE, READY),
     SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  PLANNED),
     SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),

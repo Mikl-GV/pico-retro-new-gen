@@ -214,6 +214,26 @@ $CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_e6809.o" "$VECX/e6809.c"
 $CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_vecx.o" "$VECX/vecx.c"
 $CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_vecx_psg.o" "$VECX/vecx_psg.c"
 
+# --- Gearcoleco (ColecoVision) ---
+# C++ ядро без -ffreestanding (std::string/vector для SaveState/путей).
+# blargg-символы конфликтуют с Lynx (у Lynx своя копия) — переименовываем
+# через gc_rename.sh (objcopy --redefine-sym ..._gc).
+COL="$TOP/h3_bare/cores/gearcoleco"
+COL_SRC="$COL/src"
+COL_INC="-I$COL_SRC"
+COL_CXXFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics"
+$CXX $COL_CXXFLAGS $COL_INC $INCLUDES -c -o "$BUILD/coleco_host.o" "$TOP/h3_bare/cores/coleco_host.cpp"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/coleco_compat.o" "$TOP/h3_bare/cores/coleco_compat.c"
+for fn in GearcolecoCore Memory Processor TMS9918A Audio AY8910 Input ColecoVisionIOPorts opcodes opcodes_cb opcodes_ed TraceLogger VgmRecorder Adam AdamMedia AdamNet F18A F18A_enhancements F18AGPU Cartridge Mapper; do
+    $CXX $COL_CXXFLAGS $COL_INC -c -o "$BUILD/gc_$fn.o.tmp" "$COL_SRC/$fn.cpp"
+    "$TOP/h3_bare/cores/gc_rename.sh" "$BUILD/gc_$fn.o.tmp" && mv "$BUILD/gc_$fn.o.tmp" "$BUILD/gc_$fn.o"
+done
+for fn in Blip_Buffer Effects_Buffer Multi_Buffer Sms_Apu; do
+    $CXX $COL_CXXFLAGS $COL_INC -c -o "$BUILD/gc_$fn.o.tmp" "$COL_SRC/audio/$fn.cpp"
+    "$TOP/h3_bare/cores/gc_rename.sh" "$BUILD/gc_$fn.o.tmp" && mv "$BUILD/gc_$fn.o.tmp" "$BUILD/gc_$fn.o"
+done
+$CC $CFLAGS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME $COL_INC -c -o "$BUILD/gc_miniz.o" "$COL_SRC/miniz.c"
+
 # --- Служебные ---
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/uart.o" "$TOP/h3_bare/src/uart.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/printf.o" "$TOP/h3_bare/src/printf.c"
@@ -295,12 +315,21 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/gpgx_cd_hw_"*.o "$BUILD/gpgx_svp_"*.o \
     "$BUILD/gpgx_host.o" "$BUILD/gpgx_mathx.o" "$BUILD/gpgx_missing.o" "$BUILD/gp_cheats.o" \
     "$BUILD/vecx_host.o" "$BUILD/vecx_e6809.o" "$BUILD/vecx_vecx.o" "$BUILD/vecx_vecx_psg.o" \
+    "$BUILD/coleco_host.o" "$BUILD/coleco_compat.o" \
+    "$BUILD/gc_GearcolecoCore.o" "$BUILD/gc_Memory.o" "$BUILD/gc_Processor.o" "$BUILD/gc_TMS9918A.o" \
+    "$BUILD/gc_Audio.o" "$BUILD/gc_AY8910.o" "$BUILD/gc_Input.o" "$BUILD/gc_ColecoVisionIOPorts.o" \
+    "$BUILD/gc_opcodes.o" "$BUILD/gc_opcodes_cb.o" "$BUILD/gc_opcodes_ed.o" \
+    "$BUILD/gc_TraceLogger.o" "$BUILD/gc_VgmRecorder.o" \
+    "$BUILD/gc_Adam.o" "$BUILD/gc_AdamMedia.o" "$BUILD/gc_AdamNet.o" \
+    "$BUILD/gc_F18A.o" "$BUILD/gc_F18A_enhancements.o" "$BUILD/gc_F18AGPU.o" \
+    "$BUILD/gc_Cartridge.o" "$BUILD/gc_Mapper.o" \
+    "$BUILD/gc_Blip_Buffer.o" "$BUILD/gc_Effects_Buffer.o" "$BUILD/gc_Multi_Buffer.o" "$BUILD/gc_Sms_Apu.o" "$BUILD/gc_miniz.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
     "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/sega_pad.o" "$BUILD/remap.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
     "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
-    -lgcc -lc -lm -lgcc
+    -lstdc++ -lgcc -lc -lm -lgcc
 
 $OBJCOPY -O binary "$BUILD/h3_bare.elf" "$BIN"
 # Дублируем прошивку в корень проекта — чтобы не искать в build/

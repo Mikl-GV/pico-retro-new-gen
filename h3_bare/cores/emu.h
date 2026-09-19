@@ -41,5 +41,6 @@ void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 #endif

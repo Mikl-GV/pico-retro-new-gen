@@ -2,10 +2,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// _impure_ptr
-struct _reent { int _errno; };
-struct _reent _impure_ptr = { 0 };
-
 // fprintf — заглушка (emulator.c: PRINT_ERROR использует fprintf)
 int fprintf(void*, const char*, ...) { return 0; }
 

@@ -102,6 +102,35 @@ $(BUILD)/vecx_vecx.o: $(VECX)/vecx.c | $(BUILD)
 $(BUILD)/vecx_vecx_psg.o: $(VECX)/vecx_psg.c | $(BUILD)
 	$(CC) $(VECX_CFLAGS) $(VECX_INC) -c -o $@ $<
 
+# Gearcoleco (ColecoVision)
+# Ядро Gearcoleco — C++ с std::string/vector (только эпизодически: пути/
+# SaveState/breakpoints — не hot-path). Компилируется БЕЗ -ffreestanding,
+# чтобы newlib дал C++ STL. Линкуется через -lstdc++ (см. линковку).
+# miniz тянет fopen/stat — отключаем MINIZ_NO_STDIO (ROM подаём буфером,
+# zip не используем); MINIZ_NO_TIME — убрать utime.
+COL := $(TOP)h3_bare/cores/gearcoleco
+COL_SRC := $(COL)/src
+COL_INC := -I$(COL_SRC)
+COL_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
+COL_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
+# Файлы ядра (все, кроме miniz — он C)
+COL_CORESRC := GearcolecoCore Memory Processor TMS9918A Audio AY8910 Input ColecoVisionIOPorts opcodes opcodes_cb opcodes_ed TraceLogger VgmRecorder Adam AdamMedia AdamNet F18A F18A_enhancements F18AGPU Cartridge Mapper
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,coleco_host coleco_compat))
+OBJ  += $(addprefix $(BUILD)/,$(foreach fn,$(COL_CORESRC),gc_$(fn).o))
+OBJ  += $(addprefix $(BUILD)/,gc_Blip_Buffer.o gc_Effects_Buffer.o gc_Multi_Buffer.o gc_Sms_Apu.o gc_miniz.o)
+$(BUILD)/coleco_host.o: $(TOP)h3_bare/cores/coleco_host.cpp | $(BUILD)
+	$(CXX) $(COL_CXXFLAGS) $(COL_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/coleco_compat.o: $(TOP)h3_bare/cores/coleco_compat.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gc_%.o: $(TOP)h3_bare/cores/gearcoleco/src/%.cpp | $(BUILD)
+	$(CXX) $(COL_CXXFLAGS) $(COL_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/gc_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/gc_%.o: $(TOP)h3_bare/cores/gearcoleco/src/audio/%.cpp | $(BUILD)
+	$(CXX) $(COL_CXXFLAGS) $(COL_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/gc_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/gc_miniz.o: $(TOP)h3_bare/cores/gearcoleco/src/miniz.c | $(BUILD)
+	$(CC) $(CFLAGS) -DMINIZ_NO_STDIO -DMINIZ_NO_TIME $(COL_INC) -c -o $@ $<
+
 # FCEUmm
 FCEUMM := $(TOP)h3_bare/cores/fceumm
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,fceumm_host fceumm_fceu fceumm_x6502 fceumm_ppu fceumm_sound fceumm_cart fceumm_ines fceumm_input fceumm_fds fceumm_fds_apu fceumm_palette fceumm_video fceumm_file fceumm_general fceumm_state fceumm_crc32 fceumm_md5 fceumm_fceu-endian fceumm_fceu-memory fceumm_cheat fceumm_filter fceumm_libretro_compat fceumm_vsuni fceumm_unif))
@@ -439,7 +468,7 @@ $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 # Под Windows используйте build.ps1 (он сам собирает и линкует через *.o).
 $(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
-	    -o $@ $(OBJ) -lgcc -lc -lm -lgcc
+	    -o $@ $(OBJ) -lstdc++ -lgcc -lc -lm -lgcc
 
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $(ELF) $@

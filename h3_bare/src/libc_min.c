@@ -87,6 +87,11 @@ char* strstr(const char* haystack, const char* needle) {
     return 0;
 }
 
+char* strchr(const char* s, int c) {
+    while (*s) { if (*s == (char)c) return (char*)s; s++; }
+    return (c == 0) ? (char*)s : 0;
+}
+
 // Атомарные операции (используются spinlock, если понадобятся).
 // Тип возврата должен совпадать с встроенной функцией GCC
 // (unsigned int), иначе -Wbuiltin-declaration-mismatch.
@@ -276,29 +281,4 @@ int strncasecmp(const char* a, const char* b, size_t n) {
     while (n > 0 && *a && (*a | 0x20) == (*b | 0x20)) { a++; b++; n--; }
     if (n == 0) return 0;
     return (int)((unsigned char)*a | 0x20) - (int)((unsigned char)*b | 0x20);
-}
-
-unsigned long strtoul(const char* s, char** endptr, int base) {
-    const char* p = s;
-    unsigned long v = 0;
-    while (*p == ' ' || *p == '\t') p++;
-    if (base == 0) {
-        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16; p += 2; }
-        else if (p[0] == '0') { base = 8; p++; }
-        else base = 10;
-    } else if (base == 16 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-    }
-    while (*p) {
-        int d;
-        if (*p >= '0' && *p <= '9') d = *p - '0';
-        else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
-        else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
-        else break;
-        if (d >= base) break;
-        v = v * (unsigned long)base + (unsigned long)d;
-        p++;
-    }
-    if (endptr) *endptr = (char*)p;
-    return v;
 }

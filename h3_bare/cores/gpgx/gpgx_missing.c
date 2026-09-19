@@ -46,5 +46,3 @@ int load_archive(char *filename, unsigned char *buffer, int maxsize, char *exten
     if (extension) extension[0] = 0;
     return 0;
 }
-// стаб для ARM EABI (нужен newlib setjmp/longjmp)
-void __aeabi_unwind_cpp_pr0(void) {}

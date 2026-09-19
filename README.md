@@ -89,10 +89,10 @@ Vectrex: стик = 4 направления (аналог), кнопки 1/2/3/
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, Atari Portfolio, **MSX / MSX2 (Ямаха YIS-503II)**, **GCE Vectrex** |
-| 🔲 План | ColecoVision, PC Engine, Jaguar, аркады, ZX Spectrum, Радио-86РК, БК-0010, MS 1504 |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, Atari Portfolio, **MSX / MSX2 (Ямаха YIS-503II)**, **GCE Vectrex**, **ColecoVision** |
+| 🔲 План | PC Engine, Jaguar, аркады, ZX Spectrum, Радио-86РК, БК-0010, MS 1504 |
 
-ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex).
+ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex), `.col`/`.bin` (ColecoVision).
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
 MSX / MSX2 (Ямаха YIS-503II) — **builtin** (BIOS + BASIC вшиты): из меню выбор «Start BASIC» или «Load cartridge from SD» (`/roms/msx/`). MSX-DOS — через `MSXDOS2.ROM` в `/roms/msx/bios/`.
 

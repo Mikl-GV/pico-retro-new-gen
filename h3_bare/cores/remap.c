@@ -183,6 +183,12 @@ static const uint16_t def_vectrex[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X, [BTN_X]=KBD_C, [BTN_Y]=KBD_V,
 };
+// ColecoVision: D-Pad + Fire1/Fire2 + Start(8) + #(Mode)
+static const uint16_t def_coleco[BTN_MAX] = {
+    [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
+    [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
+    [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
+};
 
 // Метки кнопок для меню (показываем только уместные для платформы)
 static const char* btn_labels[BTN_MAX] = {
@@ -213,6 +219,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_A5200] = { "Atari 5200",            "a5200",  def_a5200 },
     [REMAP_PLAT_A7800] = { "Atari 7800",            "a7800",  def_a7800 },
     [REMAP_PLAT_VECTREX] = { "GCE Vectrex",         "vectrex", def_vectrex },
+    [REMAP_PLAT_COLECO]  = { "ColecoVision",         "coleco",  def_coleco },
 };
 
 static const char* btn_keys[BTN_MAX] = {
