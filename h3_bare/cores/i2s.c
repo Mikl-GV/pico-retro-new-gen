@@ -239,8 +239,9 @@ int i2s_init(void) {
 }
 
 // Запись одного стерео-сэмпла (L/R 16-bit signed) в кольцевой буфер.
-// НЕБЛОКИРУЮЩАЯ: если буфер полон — сэмпл отбрасывается (защита от
-// переполнения; реально flush опорожняет его 60 Гц, места хватает).
+// НЕБЛОКИРУЮЩАЯ: если буфер полон — сэмпл отбрасывается.
+// ГРОМКОСТЬ ПРИМЕНЯЕТСЯ ЗДЕСЬ (при записи) — как в рабочей версии.
+// Так эмуляторы (через кольцо) масштабируются так же, как тест-тон.
 void i2s_push_sample(int16_t left, int16_t right) {
     if (!g_i2s_ready) return;
 
@@ -251,15 +252,21 @@ void i2s_push_sample(int16_t left, int16_t right) {
 
     if (ring_count() >= AUDIO_RING_SIZE) return;   // переполнение — пропуск
 
+    int32_t vol = (g_volume_pct * 32) / 100;   // 0..32
+    int32_t l32 = (int32_t)left * vol / 32;
+    int32_t r32 = (int32_t)right * vol / 32;
+    if (l32 > 32767) l32 = 32767; if (l32 < -32768) l32 = -32768;
+    if (r32 > 32767) r32 = 32767; if (r32 < -32768) r32 = -32768;
+
     uint32_t w = g_ring_wr & (AUDIO_RING_SIZE - 1);
-    g_ring_l[w] = left;
-    g_ring_r[w] = right;
+    g_ring_l[w] = (int16_t)l32;
+    g_ring_r[w] = (int16_t)r32;
     g_ring_wr++;
 }
 
 // Вытолкнуть накопленное из кольца в I2S FIFO. НЕБЛОКИРУЮЩАЯ:
-// пишет, пока в аппаратном FIFO есть место (TX_CNT < 60), затем выходит.
-// Вызывать раз в кадр (emu_throttle).
+// сэмплы уже отмасштабированы по громкости (в push_sample) — здесь
+// только переносим int16 в аппаратный FIFO (старшие 16 бит 32-бит слова).
 void i2s_flush(void) {
     if (!g_i2s_ready) return;
 
@@ -269,14 +276,8 @@ void i2s_flush(void) {
             return;   // FIFO занят — продолжим в следующем кадре
 
         uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
-        // Громкость 0..100 → целочисленный множитель (10 бит, без округл. прыжков)
-        int32_t vol = (g_volume_pct * 32) / 100;   // 0..32 (×32 = старое 0..1023/32)
-        int32_t l32 = (int32_t)g_ring_l[r] * vol / 32;
-        int32_t r32 = (int32_t)g_ring_r[r] * vol / 32;
-        if (l32 > 32767) l32 = 32767; if (l32 < -32768) l32 = -32768;
-        if (r32 > 32767) r32 = 32767; if (r32 < -32768) r32 = -32768;
-        uint32_t l = (uint32_t)(uint16_t)l32 << 16;
-        uint32_t rt = (uint32_t)(uint16_t)r32 << 16;
+        uint32_t l = (uint32_t)(uint16_t)g_ring_l[r] << 16;
+        uint32_t rt = (uint32_t)(uint16_t)g_ring_r[r] << 16;
         I2S_FIFO_TX = l;
         I2S_FIFO_TX = rt;
         g_ring_rd++;
