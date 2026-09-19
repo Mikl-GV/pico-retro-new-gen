@@ -55,6 +55,7 @@ unsigned image_buffer_height = HEIGHT;
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -88,8 +89,20 @@ unsigned int Joystick(void) {
 // ---- Mouse — заглушка ----
 unsigned int Mouse(uint8_t N) { (void)N; return 0; }
 
-// ---- PlayAllSound — заглушка (без звука) ----
-void PlayAllSound(int uSec) { (void)uSec; }
+// ---- PlayAllSound — реализация через fMSX RenderAndPlayAudio ----
+// Вызывается ядром на каждом VBlank. Рендерит звук и зовёт WriteAudio().
+void PlayAllSound(int uSec) {
+    (void)uSec;
+    RenderAndPlayAudio((unsigned int)-1);   // все доступные сэмплы
+}
+
+// ---- WriteAudio — вывод звука I2S ----
+// fMSX рендерит стерео int16_t, Length — число сэмплов (не байт!).
+unsigned int WriteAudio(int16_t *Data, unsigned int Length) {
+    for (unsigned int i = 0; i < Length; i++)
+        i2s_push_sample(Data[i * 2], Data[i * 2 + 1]);
+    return Length;   // говорим «всё записано»
+}
 
 // ---- PutImage — перенос image_buffer в EMU_FB (как libretro.c) ----
 // Широкие режимы V9938: SCREEN 6, SCREEN 7, TEXT80 (MAXSCREEN+1) — рендер
@@ -140,12 +153,6 @@ void PutImage(void) {
     frame_number++;
 }
 
-// ---- WriteAudio — заглушка ----
-unsigned int WriteAudio(int16_t *Data, unsigned int Length) {
-    (void)Data;
-    return Length;  // говорим «всё записано»
-}
-
 // ---- DiskPresent/DiskRead/DiskWrite — заглушки (диски не поддерживаются) ----
 uint8_t DiskPresent(uint8_t ID) { (void)ID; return 0; }
 uint8_t DiskRead(uint8_t ID, uint8_t *Buf, int N) { (void)ID; (void)Buf; (void)N; return 0; }
@@ -191,6 +198,11 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     printf("MSX: Mode=%08X RAM=%d VRAM=%d\n", (unsigned)Mode, RAMPages, VRAMPages);
+
+    // Звук: fMSX PSG/AY-3-8910 + YM2413 (NukeYKT) → RenderAndPlayAudio →
+    // WriteAudio → I2S. InitSound обязателен (иначе SndRate=0, тишина).
+    InitSound(SND_RATE);
+
     g_loaded = 1;
     return 1;
 }

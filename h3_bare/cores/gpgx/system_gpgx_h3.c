@@ -28,6 +28,7 @@
 #include "cheatdb.h"
 #include "gp_cheats.h"
 #include "fat.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 extern void gb_heap_reset(void);
@@ -242,6 +243,9 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     system_init();
     system_reset();
 
+    // Звук: PSG+FM синтез ядра + вывод через I2S (MAX98357A)
+    audio_init(44100, 60.0);
+
     g_loaded = 1;
     printf("GPGX: hw=%02X romsize=%u md=%d\n", (unsigned)system_hw,
            (unsigned)cart.romsize, g_is_md);
@@ -258,6 +262,17 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     return 1;
 }
 
+// ---- вывод звука: ядро синтезирует в blip-буферы, audio_update() выдаёт
+// int16_t стерео (блок за кадр ~ 44100/60 = 735 пар). Отправляем в I2S.
+static void gpgx_audio_out(void) {
+    static int16_t abuf[4096];   // вмещает до ~2 кадров @ 44100
+    int n = audio_update(abuf);
+    if (n <= 0) return;
+    if (n > 2048) n = 2048;
+    for (int i = 0; i < n; i++)
+        i2s_push_sample(abuf[i * 2], abuf[i * 2 + 1]);
+}
+
 void gpgx_run_frame(void) {
     if (!g_loaded) return;
 
@@ -271,6 +286,9 @@ void gpgx_run_frame(void) {
         system_frame_gen(0);
     else
         system_frame_sms(0);
+
+    // звук
+    gpgx_audio_out();
 
     // рендер в EMU_FB (max_h=240: PAL Mode 5 == 240 строк)
     if (g_is_md)
@@ -322,6 +340,7 @@ void sms_run_frame(void) {
     gpgx_poll_input();
     RAMCheatUpdate();
     system_frame_sms(0);
+    gpgx_audio_out();
     gpgx_render_emu(256, 192);
 }
 
@@ -404,6 +423,7 @@ void gg_run_frame(void) {
     gpgx_poll_input();
     RAMCheatUpdate();
     system_frame_sms(0);
+    gpgx_audio_out();
     // настоящий GG: viewport 160x144 в режиме gg_extra=0
     gpgx_render_emu(160, 144);
 }

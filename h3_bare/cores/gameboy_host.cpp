@@ -8,6 +8,7 @@ extern "C" {
 #include "sega_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
+#include "i2s.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -145,6 +146,17 @@ extern "C" void gb_run_frame(void) {
     do {
         events = emulator_run_until(g_emu, emulator_get_ticks(g_emu) + PPU_FRAME_TICKS);
     } while (!(events & EMULATOR_EVENT_NEW_FRAME));
+
+    // Звук: binjgb кладёт unsigned 8-bit стерео (L,R,L,R...) в audio_buffer.
+    AudioBuffer* ab = emulator_get_audio_buffer(g_emu);
+    u32 nframes = audio_buffer_get_frames(ab);
+    u8* p = ab->data;
+    for (u32 i = 0; i < nframes; i++) {
+        int16_t l = (int16_t)(((int)p[i * 2] - 128) << 8);
+        int16_t r = (int16_t)(((int)p[i * 2 + 1] - 128) << 8);
+        i2s_push_sample(l, r);
+    }
+    ab->position = ab->data;   // сброс (ядро перезапишет)
 }
 
 extern "C" void gb_render_frame(void) {

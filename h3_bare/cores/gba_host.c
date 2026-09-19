@@ -20,6 +20,7 @@
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "remap.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -132,6 +133,12 @@ void gba_run_frame(void) {
     // (внутри сама вызывает update_gba и завершается по VBlank).
     clear_gamepak_stickybits();
     execute_arm(execute_cycles);
+
+    // Звук: gpSP рендерит стерео int16 в свой буфер — читаем и шлём в I2S.
+    static s16 sndbuf[2048];
+    u32 frames = sound_read_samples(sndbuf, 1024);
+    for (u32 i = 0; i < frames; i++)
+        i2s_push_sample(sndbuf[i * 2], sndbuf[i * 2 + 1]);
 }
 
 void gba_render_frame(void) {

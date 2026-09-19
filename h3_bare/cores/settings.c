@@ -9,6 +9,7 @@
 #include "sega_pad.h"
 #include "remap.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 extern int printf(const char* fmt, ...);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
@@ -306,6 +307,7 @@ enum {
     SET_A2600_DIFF,
     SET_SEGA_PAD,
     SET_KEYBOARD_REMAP,
+    SET_AUDIO_VOLUME,
     SET_PART_INFO,
     SET_COUNT,
 };
@@ -317,6 +319,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Atari 2600 Difficulty",
     "Sega 6-button gamepad",
     "Keyboard remap (per system)",
+    "Audio volume",
     "ROM partition info",
 };
 
@@ -344,6 +347,17 @@ static void settings_draw(int sel) {
             fb_puts_s(440, y + 16, "Enter to change", 1, 0x00666666);
         } else if (i == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
+        } else if (i == SET_AUDIO_VOLUME) {
+            int v = i2s_volume_pct();
+            char bufn[4];
+            int nn = 0;
+            if (v >= 100) bufn[nn++] = '0' + (v / 100) % 10;
+            if (v >= 10)  bufn[nn++] = '0' + (v / 10) % 10;
+            bufn[nn++] = '0' + v % 10;
+            bufn[nn] = 0;
+            fb_puts_s(440, y, bufn, 1, 0x00AAAAAA);
+            fb_puts_s(475, y, "%", 1, 0x00AAAAAA);
+            fb_puts_s(440, y + 16, "<- -> to change", 1, 0x00666666);
         }
         y += 34;
     }
@@ -464,6 +478,14 @@ void settings_run(void) {
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
                 break;
+            case SET_AUDIO_VOLUME: {
+                int v = i2s_volume_pct();
+                v += dir * 5;
+                if (v < 0) v = 0;
+                if (v > 100) v = 100;
+                i2s_volume(v);
+                break;
+            }
             default:
                 break;
             }
@@ -488,6 +510,14 @@ void settings_run(void) {
             case SET_KEYBOARD_REMAP:
                 remap_menu();
                 break;
+            case SET_AUDIO_VOLUME: {
+                int v = i2s_volume_pct();
+                if (v < 95) v = v + 5 - (v % 5);
+                else v = 100;
+                if (v > 100) v = 100;
+                i2s_volume(v);
+                break;
+            }
             case SET_PART_INFO:
                 goto partition_info;
             }
@@ -499,7 +529,8 @@ void settings_run(void) {
         else if (k == 33) { sel = SET_A2600_DIFF; }
         else if (k == 34) { sel = SET_SEGA_PAD; }
         else if (k == 35) { sel = SET_KEYBOARD_REMAP; }
-        else if (k == 36) { sel = SET_PART_INFO; }
+        else if (k == 36) { sel = SET_AUDIO_VOLUME; }
+        else if (k == 37) { sel = SET_PART_INFO; }
     }
 
 partition_info:

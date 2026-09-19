@@ -16,6 +16,7 @@
 #include "led.h"
 #include "sega_pad.h"
 #include "remap.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -130,6 +131,9 @@ void main(void) {
     // I2C (TWI0 PA11/PA12) + Sega-геймпад через PCF8574@0x20
     if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
     else uart_puts("sega_pad: PCF8574 not found\n");
+
+    // Звук: I2S0 → MAX98357A. Громкость старт 20% (настройка в Settings).
+    i2s_init();
 
     for (;;) {
         int sel = menu_run();

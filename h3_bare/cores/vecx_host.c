@@ -26,6 +26,7 @@
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -39,6 +40,12 @@ extern unsigned char cart[65536];
 
 // Буфер кадра RGB1555 (как в libretro.c: BUFSZ = WIDTH*HEIGHT)
 static uint16_t vx_fb[VX_W * VX_H] __attribute__((aligned(4)));
+
+// Буферы звука (для vecx_snd_push): ядро ожидает от vecx_psg_set_buffer
+// и vecx_dac_set_buffer. Размер как в vecx/libretro.c
+#define SIZE_ABUF 2048
+static int16_t vx_psgbuf[SIZE_ABUF];
+static int16_t vx_dacbuf[SIZE_ABUF];
 
 static int g_loaded = 0;
 static int have_bios = 0;   // BIOS скопирован в rom[] один раз
@@ -161,7 +168,17 @@ void osint_render(void) {
 }
 
 void vecx_snd_push(unsigned samps) {
-    (void)samps;   // звук заглушен (нет DAC-вывода)
+    // Звук Vectrex: PSG (SN76489) + DAC смешиваются. Наши буферы
+    // заданы через vecx_psg_set_buffer/vecx_dac_set_buffer (vx_psgbuf/vx_dacbuf).
+    // Ядро заполняет их, здесь конвертируем в моно-стерео и шлём в I2S.
+    if (samps > SIZE_ABUF) samps = SIZE_ABUF;
+    for (unsigned i = 0; i < samps; i++) {
+        int32_t v = (int32_t)vx_psgbuf[i] + (int32_t)vx_dacbuf[i];
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        int16_t s = (int16_t)v;
+        i2s_push_sample(s, s);
+    }
 }
 
 // ---- Ввод ----
@@ -219,6 +236,11 @@ int vecx_init_game(const uint8_t* rom, uint32_t size) {
         set_cart(b, cart[b]);
 
     vecx_psg_init();
+
+    // Буферы звука для PSG + DAC (ядро пишет сэмплы сюда, vecx_snd_push читает)
+    vecx_psg_set_buffer(vx_psgbuf);
+    vecx_dac_set_buffer(vx_dacbuf);
+
     vecx_reset();
 
     g_loaded = 1;

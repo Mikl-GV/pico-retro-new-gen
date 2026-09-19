@@ -220,7 +220,7 @@ static int scroll_top = 0;
 
 static void render_menu(void) {
     fb_draw_stars();
-    fb_puts_s(60, TITLE_Y, "MultiTool Retro", 2, 0x00FF0000);
+    fb_puts_s(60, TITLE_Y, "MultiTool Retro", 2, 0x0000FFFF);
     fb_fill_rect(60, SEP_Y, 200, 2, 0x00FFFFFF);
 
     int max_visible = (FOOTER_Y - LIST_TOP - 40) / ROW_H;
@@ -255,8 +255,8 @@ static void render_menu(void) {
                 // разделитель
                 y += ROW_H / 2;
             } else {
-                fb_puts_s(60, y, group_names[g], 1, 0x00666666);
-                y += ROW_H;
+                fb_puts_s(60, y, group_names[g], 2, 0x0044CCFF);
+                y += SEP_Y / 2;
             }
         } else {
             int i = rows[r].item;

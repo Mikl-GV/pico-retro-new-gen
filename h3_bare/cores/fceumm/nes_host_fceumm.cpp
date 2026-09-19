@@ -30,6 +30,7 @@ extern "C" {
 #include "cheat.h"
 #include "sega_pad.h"
 #include "remap.h"
+#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -188,8 +189,9 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
         printf("FCEUmm: no FC keyboard\n");
     }
 
-    // Звук не нужен (нет DAC-вывода) — отключаем, чтобы не аллоцировать буферы
-    FCEUI_Sound(0);
+    // Звук: включаем NES APU на 44100 Гц (I2S → MAX98357A)
+    FCEUI_Sound(44100);
+    FCEUI_SetSoundVolume(100);
 
     // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run
     // через cheats_load: NES-коды — 6/8-символьный Game Genie + PAR)
@@ -224,6 +226,16 @@ extern "C" void fceumm_run_frame(void) {
     int32_t ssize = 0;
     FCEUI_Emulate(&gfx, &snd, &ssize, 0);
     if (!gfx) return;
+
+    // Звук: WaveFinal — int32_t моно (стандартный APU NES). Конвертируем
+    // в int16_t и разворачиваем L/R одинаково, шлём в I2S (MAX98357A).
+    for (int32_t i = 0; i < ssize; i++) {
+        int32_t v = snd[i];
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        int16_t s = (int16_t)v;
+        i2s_push_sample(s, s);
+    }
 
     // Рендер: gfx = XBuf[256×240] индексов палитры.
     // Деэмфазис строки из XDBuf: база 256 + (deemp&7)<<6, иначе база 0.

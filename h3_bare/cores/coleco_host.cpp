@@ -22,6 +22,7 @@ extern "C" {
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -100,8 +101,15 @@ extern "C" void coleco_run_frame(void) {
     coleco_build_input(g_core);
 
     // Один кадр: ядро рисует в pFrameBuffer (EMU_FB 256x192) и возвращается
-    // после VBlank. pSampleBuffer=NULL — звук не генерируем.
-    g_core->RunToVBlank((u8*)EMU_FB, NULL, NULL);
+    // после VBlank. Если дать pSampleBuffer — Gearcoleco рендерит звук
+    // (Sms_Apu → Stereo_Buffer → int16_t) в этот буфер. Выводим в I2S.
+    static int16_t sndbuf[GC_AUDIO_BUFFER_SIZE];
+    int samples = 0;
+    g_core->RunToVBlank((u8*)EMU_FB, sndbuf, &samples);
+    int n = samples;   // число стерео-сэмплов
+    if (n > 1024) n = 1024;
+    for (int i = 0; i < n; i++)
+        i2s_push_sample(sndbuf[i * 2], sndbuf[i * 2 + 1]);
 }
 
 extern "C" void coleco_stop(void) {
