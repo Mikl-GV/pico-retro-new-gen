@@ -61,15 +61,14 @@ static inline uint16_t vx_rgb1555(int col) {
 }
 
 static void vx_draw_line(long x0, long y0, long x1, long y1, int color) {
-    // Координаты Vectrex: [-33000..33000] по X, [-41000..41000] по Y,
-    // 0 = центр дисплея. Нормализуем ПОЛНЫЙ диапазон на весь растр:
-    //   X = (x/ALG_MAX_X + 1)/2 * VX_W      (-1 -> лево, +1 -> право)
-    //   Y = (1 - y/ALG_MAX_Y)/2 * VX_H       (+1 -> верх Vectrex, -1 -> низ;
-    //                                         растр y растёт вниз, инвертируем)
-    int X0 = (int)((((float)x0 / (float)ALG_MAX_X) + 1.0f) * 0.5f * VX_W);
-    int X1 = (int)((((float)x1 / (float)ALG_MAX_X) + 1.0f) * 0.5f * VX_W);
-    int Y0 = (int)((1.0f - ((float)y0 / (float)ALG_MAX_Y)) * 0.5f * VX_H);
-    int Y1 = (int)((1.0f - ((float)y1 / (float)ALG_MAX_Y)) * 0.5f * VX_H);
+    // Координаты Vectrex: [0..ALG_MAX_X] по X (33000), [0..ALG_MAX_Y] по Y (41000),
+    // старт луча в центре (ALG_MAX_X/2, ALG_MAX_Y/2). 0 = лево/верх растра.
+    // Как в эталоне libretro osint_render: чистая пропорция [0..MAX] -> [0..размер]
+    // без сдвига и без инверсии.
+    int X0 = (int)(((float)x0 / (float)ALG_MAX_X) * VX_W);
+    int X1 = (int)(((float)x1 / (float)ALG_MAX_X) * VX_W);
+    int Y0 = (int)(((float)y0 / (float)ALG_MAX_Y) * VX_H);
+    int Y1 = (int)(((float)y1 / (float)ALG_MAX_Y) * VX_H);
 
     // Брезенхем
     int dx = (X1 > X0) ? (X1 - X0) : (X0 - X1), sx = X0 < X1 ? 1 : -1;
@@ -98,9 +97,9 @@ static void vx_rasterize(void) {
         long x0 = vectors_draw[i].x0, y0 = vectors_draw[i].y0;
         long x1 = vectors_draw[i].x1, y1 = vectors_draw[i].y1;
         if (x0 == x1 && y0 == y1) {
-            // точка — нормализация как у линий (полный диапазон, Y инвертирован)
-            int X = (int)((((float)x0 / (float)ALG_MAX_X) + 1.0f) * 0.5f * VX_W);
-            int Y = (int)((1.0f - ((float)y0 / (float)ALG_MAX_Y)) * 0.5f * VX_H);
+            // точка — пропорция как у линий [0..MAX] -> [0..размер]
+            int X = (int)(((float)x0 / (float)ALG_MAX_X) * VX_W);
+            int Y = (int)(((float)y0 / (float)ALG_MAX_Y) * VX_H);
             if (X >= 0 && X < VX_W && Y >= 0 && Y < VX_H)
                 vx_fb[Y * VX_W + X] = vx_rgb1555(color);
         } else {
