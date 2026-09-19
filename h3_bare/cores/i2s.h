@@ -21,6 +21,10 @@ void i2s_mute(int mute);
 // Запись одного стерео-сэмпла во FIFO I2S (с громкостью).
 void i2s_push_sample(int16_t left, int16_t right);
 
+// Тест звука: синусоида на частоте freq (440/1000/2000 Гц),
+// длительность msec (мс), стерео, с текущей громкостью.
+void i2s_test_tone(int freq, int msec);
+
 #ifdef __cplusplus
 }
 #endif

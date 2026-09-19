@@ -308,6 +308,7 @@ enum {
     SET_SEGA_PAD,
     SET_KEYBOARD_REMAP,
     SET_AUDIO_VOLUME,
+    SET_AUDIO_TEST,
     SET_PART_INFO,
     SET_COUNT,
 };
@@ -320,8 +321,42 @@ static const char* const set_labels[SET_COUNT] = {
     "Sega 6-button gamepad",
     "Keyboard remap (per system)",
     "Audio volume",
+    "Audio test",
     "ROM partition info",
 };
+
+static void audio_test_run(void) {
+    const int freqs[] = {440, 1000, 2000};
+    static const char* const flabel[] = {"440 Hz (A4)", "1 kHz", "2 kHz"};
+    int sel = 0;
+    for (;;) {
+        fb_draw_stars();
+        fb_puts_s(60, 40, "Audio test (tone)", 2, 0x00FFAA00);
+        fb_fill_rect(60, 70, 300, 2, 0x00FFFFFF);
+        fb_puts_s(60, 100, "Select frequency:", 1, 0x00FFFFFF);
+        int y = 130;
+        for (int i = 0; i < 3; i++) {
+            int is_sel = (i == sel);
+            uint32_t clr = is_sel ? 0x00FFFF00 : 0x00FFFFFF;
+            if (is_sel) fb_fill_rect(50, y - 4, PHYS_W - 100, 28, 0x00181818);
+            fb_puts_s(80, y, flabel[i], 1, clr);
+            y += 30;
+        }
+        fb_puts(60, FOOTER_Y, "  ^v: select    Enter: play    ESC: back", 0x00888888);
+        fb_flush();
+
+        int k = input_wait();
+        if (k == 41 || k == 27) return;
+        if (k == 82 && sel > 0) sel--;
+        else if (k == 81 && sel < 2) sel++;
+        else if (k == 40 || k == '\n' || k == '\r') {
+            fb_clear();
+            fb_puts_s(60, 200, "Playing... ESC to stop", 1, 0x00FFFF00);
+            fb_flush();
+            i2s_test_tone(freqs[sel], 2000);   // 2 с
+        }
+    }
+}
 
 // Рисуем меню настроек с курсором
 static void settings_draw(int sel) {
@@ -510,6 +545,9 @@ void settings_run(void) {
             case SET_KEYBOARD_REMAP:
                 remap_menu();
                 break;
+            case SET_AUDIO_TEST:
+                audio_test_run();
+                break;
             case SET_AUDIO_VOLUME: {
                 int v = i2s_volume_pct();
                 if (v < 95) v = v + 5 - (v % 5);
@@ -530,7 +568,8 @@ void settings_run(void) {
         else if (k == 34) { sel = SET_SEGA_PAD; }
         else if (k == 35) { sel = SET_KEYBOARD_REMAP; }
         else if (k == 36) { sel = SET_AUDIO_VOLUME; }
-        else if (k == 37) { sel = SET_PART_INFO; }
+        else if (k == 37) { sel = SET_AUDIO_TEST; }
+        else if (k == 38) { sel = SET_PART_INFO; }
     }
 
 partition_info:
