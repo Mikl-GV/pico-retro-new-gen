@@ -140,6 +140,7 @@ void emu_clear_fb(void) {
 
 // ---- throttle ----
 #include "settings.h"
+#include "i2s.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     // Мигаем светодиодом: видно, что код жив и кадры идут
@@ -148,8 +149,14 @@ void emu_throttle(void) {
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
-    if (elapsed < emu_period_us)
-        h3_hs_timer_delay((emu_period_us - elapsed) * 100);
+    // Остаток кадра: вместо голого delay КРУТИМ i2s_flush() — звук из
+    // кольца выталкивается в I2S FIFO непрерывно в реальном времени.
+    // Иначе FIFO (32 пары) пустеет за ~0.7 мс и молчит 15 мс — хрип/треск.
+    if (elapsed < emu_period_us) {
+        uint32_t target = emu_ts0 + emu_period_us;
+        while ((int32_t)(h3_hs_timer_lo_us() - target) < 0)
+            i2s_flush();
+    }
     emu_ts0 = h3_hs_timer_lo_us();
 }
 

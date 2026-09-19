@@ -166,7 +166,7 @@ static int	sampout2;			/* last out volume */
 #endif  /* VOL_ONLY_SOUND */
 
 static ULONG snd_freq17 = POKEYSND_FREQ_17_EXACT;
-int POKEYSND_playback_freq = 44100;
+int POKEYSND_playback_freq = 48000;
 UBYTE POKEYSND_num_pokeys = 1;
 int POKEYSND_snd_flags = 0;
 static int mz_quality = 0;		/* default quality for mzpokeysnd */

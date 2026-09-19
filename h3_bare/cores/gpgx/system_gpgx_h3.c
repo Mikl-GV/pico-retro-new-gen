@@ -244,7 +244,7 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     system_reset();
 
     // Звук: PSG+FM синтез ядра + вывод через I2S (MAX98357A)
-    audio_init(44100, 60.0);
+    audio_init(48000, 60.0);
 
     g_loaded = 1;
     printf("GPGX: hw=%02X romsize=%u md=%d\n", (unsigned)system_hw,

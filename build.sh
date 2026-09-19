@@ -221,7 +221,7 @@ $CC $VECX_CFLAGS $VECX_INC -c -o "$BUILD/vecx_vecx_psg.o" "$VECX/vecx_psg.c"
 COL="$TOP/h3_bare/cores/gearcoleco"
 COL_SRC="$COL/src"
 COL_INC="-I$COL_SRC"
-COL_CXXFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics"
+COL_CXXFLAGS="-mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics -DGEARCOLECO_DISABLE_DISASSEMBLER"
 $CXX $COL_CXXFLAGS $COL_INC $INCLUDES -c -o "$BUILD/coleco_host.o" "$TOP/h3_bare/cores/coleco_host.cpp"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/coleco_compat.o" "$TOP/h3_bare/cores/coleco_compat.c"
 for fn in GearcolecoCore Memory Processor TMS9918A Audio AY8910 Input ColecoVisionIOPorts opcodes opcodes_cb opcodes_ed TraceLogger VgmRecorder Adam AdamMedia AdamNet F18A F18A_enhancements F18AGPU Cartridge Mapper; do

@@ -42,8 +42,12 @@ extern unsigned char cart[65536];
 static uint16_t vx_fb[VX_W * VX_H] __attribute__((aligned(4)));
 
 // Буферы звука (для vecx_snd_push): ядро ожидает от vecx_psg_set_buffer
-// и vecx_dac_set_buffer. Размер как в vecx/libretro.c
-#define SIZE_ABUF 2048
+// и vecx_dac_set_buffer. Размер как в эталоне libretro.c (SIZE_ABUF=3800):
+// psg вызывает exec каждые 8 циклов — при MPU=1.5M кадр 30000 циклов
+// даёт до 3750 сэмплов. 2048 НЕ хватало → переполнение буферов и мусор
+// в vx_fb (ядра vecx.c пишут dacbuf/psgbuf и он залезал в соседние
+// глобалы, в т.ч. vectors_draw). Увеличиваем до 4096.
+#define SIZE_ABUF 4096
 static int16_t vx_psgbuf[SIZE_ABUF];
 static int16_t vx_dacbuf[SIZE_ABUF];
 
@@ -216,10 +220,10 @@ static uint8_t vx_buttons(void) {
 }
 
 // ---- API (для emu.c) ----
-int vecx_init_game(const uint8_t* rom, uint32_t size) {
+int vecx_init_game(const uint8_t* rom_data, uint32_t size) {
     printf("Vectrex: init size=%u\n", (unsigned)size);
     g_loaded = 0;
-    if (!rom || size == 0) { printf("Vectrex: no rom\n"); return 0; }
+    if (!rom_data || size == 0) { printf("Vectrex: no rom\n"); return 0; }
 
     // BIOS: вшит в ядро (bios_data из system.h) — копируем в rom[8192]
     if (!have_bios) {
@@ -228,10 +232,10 @@ int vecx_init_game(const uint8_t* rom, uint32_t size) {
         have_bios = 1;
     }
 
-    // ROM в cart[65536]
+    // ROM игры в cart[65536]
     memset(cart, 0, sizeof(cart));
     if (size > sizeof(cart)) size = sizeof(cart);
-    memcpy(cart, rom, size);
+    memcpy(cart, rom_data, size);   // rom_data — параметр, не путать с глобалом rom!
     for (int b = 0; b < (int)sizeof(cart); b++)
         set_cart(b, cart[b]);
 

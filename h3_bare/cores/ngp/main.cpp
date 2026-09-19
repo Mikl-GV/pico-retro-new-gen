@@ -52,7 +52,7 @@ void initSysInfo()
 #ifdef NO_SOUND_OUTPUT
 	m_emuInfo.sample_rate = 0;
 #else
-	m_emuInfo.sample_rate = 44100;
+	m_emuInfo.sample_rate = 48000;
 #endif
 	m_emuInfo.stereo = 1;
 

@@ -94,7 +94,7 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     memset(&init, 0, sizeof(init));
     init.rom.data = (uint8_t*)rom;  // ROM напрямую, без копирования
     init.rom.size = size;
-    init.audio_frequency = 44100;
+    init.audio_frequency = 48000;
     init.audio_frames = 1024;
     init.random_seed = 42;
     init.force_dmg = FALSE;

@@ -60,7 +60,7 @@ Write-Host "=== Assembler ==="
 & $CC @CFLAGS "-xassembler-with-cpp" -c -o "$BUILD\startup.o" "$TOP\h3_bare\platform\startup.S"; ok "startup"
 
 Write-Host "=== Core ==="
-foreach ($f in @("menu","rom_browser","cheatdb","settings","sd","fat","usb_ohci","usb_kbd","sega_pad","remap","fb_text","led","emu")) {
+foreach ($f in @("menu","rom_browser","cheatdb","settings","sd","fat","usb_ohci","usb_kbd","sega_pad","remap","fb_text","led","emu","i2s")) {
     & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\cores\$f.c"; ok $f
 }
 
@@ -169,7 +169,7 @@ Write-Host "=== Gearcoleco (ColecoVision) ==="
 $COL = "$TOP\h3_bare\cores\gearcoleco"
 $colSrc = "$COL\src"
 $colInc = @("-I$colSrc")
-$COL_CXXFLAGS = @("-mcpu=cortex-a7","-mfpu=neon","-mfloat-abi=softfp","-marm","-Wall","-Wextra","-O2","-fno-exceptions","-fno-rtti","-fno-threadsafe-statics")
+$COL_CXXFLAGS = @("-mcpu=cortex-a7","-mfpu=neon","-mfloat-abi=softfp","-marm","-Wall","-Wextra","-O2","-fno-exceptions","-fno-rtti","-fno-threadsafe-statics","-DGEARCOLECO_DISABLE_DISASSEMBLER")
 # blargg-символы конфликтуют с Lynx — переименовываем через objcopy (_gc).
 # Функция собирает список _Z-символов из lynx_blip_*.o и применяет redefine.
 function Rename-GcBlargg([string]$obj) {

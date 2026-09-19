@@ -190,7 +190,7 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     // Звук: включаем NES APU на 44100 Гц (I2S → MAX98357A)
-    FCEUI_Sound(44100);
+    FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
 
     // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run

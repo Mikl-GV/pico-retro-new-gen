@@ -474,7 +474,7 @@ void at5_Init(void)
 
 #ifdef HAS_SND
   emu_sndInit();
-  POKEYSND_Init(POKEYSND_FREQ_17_APPROX, 44100, 1, POKEYSND_BIT16);
+  POKEYSND_Init(POKEYSND_FREQ_17_APPROX, 48000, 1, POKEYSND_BIT16);
 #endif
 
   a5_printf("Allocating RAM");

@@ -393,7 +393,7 @@ void sound_init(int SampleRate)
 
 
 #if defined(TARGET_PSP) || defined(TARGET_OD)
-#define NGPC_CHIP_FREQUENCY		44100
+#define NGPC_CHIP_FREQUENCY		48000
 #else
 #define NGPC_CHIP_FREQUENCY		8000
 #endif

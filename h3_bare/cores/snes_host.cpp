@@ -159,7 +159,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     // Настройки по умолчанию (как в init_sfc_setting libretro.c)
     memset(&Settings, 0, sizeof(Settings));
     Settings.JoystickEnabled = false;
-    Settings.SoundPlaybackRate = 44100;
+    Settings.SoundPlaybackRate = 48000;
     Settings.CyclesPercentage = 100;
     Settings.DisableSoundEcho = false;
     Settings.InterpolatedSound = true;
@@ -210,8 +210,8 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
         return 0;
     }
 
-    // Устанавливаем частоту звука (44100, I2S → MAX98357A)
-    S9xSetPlaybackRate(44100);
+    // Устанавливаем частоту звука (48000, I2S → MAX98357A)
+    S9xSetPlaybackRate(48000);
 
     // Применяем отмеченные читы (SNES Game Genie / Pro Action Replay).
     // S9xAddCheat + Settings.ApplyCheats=true → ядро само патчит память каждый кадр.

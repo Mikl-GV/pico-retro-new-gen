@@ -113,6 +113,11 @@ COL_SRC := $(COL)/src
 COL_INC := -I$(COL_SRC)
 COL_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
 COL_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
+# Дизассемблер/трейс-логирование Gearcoleco ОТКЛЮЧЕНО: LogInstructionEvent()
+# вызывается на КАЖДУЮ инструкцию и выделяет record из bump-кучи
+# (GetOrCreateDisassemblerRecord) — пул 24 МБ за секунды исчерпывается и
+# Coleco «зависает»/падает. Для игры трейс не нужен.
+COL_CXXFLAGS += -DGEARCOLECO_DISABLE_DISASSEMBLER
 # Файлы ядра (все, кроме miniz — он C)
 COL_CORESRC := GearcolecoCore Memory Processor TMS9918A Audio AY8910 Input ColecoVisionIOPorts opcodes opcodes_cb opcodes_ed TraceLogger VgmRecorder Adam AdamMedia AdamNet F18A F18A_enhancements F18AGPU Cartridge Mapper
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,coleco_host coleco_compat))
@@ -467,10 +472,14 @@ $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 
 # ---- Линковка ----
 # На Linux объекты передаются напрямую (cmdline лимит не проблема).
-# Под Windows используйте build.ps1 (он сам собирает и линкует через *.o).
+# Под Windows (MSYS2) команда длиннее лимита (~32K): линкуем через
+# response-файл linker.rsp (cygpath -m даёт Windows-пути для линкера).
 $(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
+	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(shell cygpath -m $(o)))) > $(BUILD)/linker.rsp
+	printf -- '-lstdc++ -lgcc -lc -lm -lgcc\n' >> $(BUILD)/linker.rsp
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
-	    -o $@ $(OBJ) -lstdc++ -lgcc -lc -lm -lgcc
+	    -Wl,--allow-multiple-definition \
+	    -o $@ @$(BUILD)/linker.rsp
 
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $(ELF) $@

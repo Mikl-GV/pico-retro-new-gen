@@ -807,9 +807,10 @@ void Processor::OPCode0x75()
 
 void Processor::OPCode0x76()
 {
-    // HALT
+    // HALT — Z80: 4 T-cycles, halt до NMI/INT/Reset
     m_bHalt = true;
     PC.Decrement();
+    m_iTStates = 4;   // Без этого RunFor возвращает 0 → RunToVBlank зацикливается
 }
 
 void Processor::OPCode0x77()
