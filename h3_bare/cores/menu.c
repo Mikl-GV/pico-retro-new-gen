@@ -479,10 +479,28 @@ void menu_help(void) {
         "Enter = Start",
         "ESC hold=exit",
         0,
+        // страница 11: таблица клавиш (для retro.cfg)
+        "--- KEY NAMES (retro.cfg) ---",
+        "Letters: A B C ... Z",
+        "Digits: 0 1 2 ... 9",
+        "ENTER ESC SPACE TAB",
+        "BACKSPACE MINUS EQUALS",
+        "UP DOWN LEFT RIGHT",
+        "F1..F12  CAPSLOCK",
+        "INSERT HOME PAGEUP DELETE",
+        "END PAGEDOWN LSHIFT RSHIFT",
+        "LCTRL RCTRL LALT RALT",
+        "COMMA PERIOD SLASH SEMICOLON",
+        "APOSTROPHE LBRACKET RBRACKET",
+        "BACKSLASH GRAVE NUMPAD0..9",
+        "Write in /retro.cfg on SD:",
+        "  snes.a=A  md.start=ENTER",
+        "  snes.l=SHIFT+Q",
+        0,
     };
 
     int page = 0;
-    int total = 11;
+    int total = 12;
 
     for (;;) {
         fb_clear();

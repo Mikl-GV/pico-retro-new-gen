@@ -50,6 +50,61 @@
 #define KBD_2 31
 #define KBD_3 32
 
+// ================= ИМЕНА КЛАВИШ =================
+// HID-сканкод -> имя для retro.cfg и меню. Имена регистронезависимы.
+typedef struct { uint8_t sc; const char* name; } key_name_t;
+
+static const key_name_t key_names[] = {
+    {4, "A"}, {5, "B"}, {6, "C"}, {7, "D"}, {8, "E"}, {9, "F"}, {10, "G"},
+    {11, "H"}, {12, "I"}, {13, "J"}, {14, "K"}, {15, "L"}, {16, "M"}, {17, "N"},
+    {18, "O"}, {19, "P"}, {20, "Q"}, {21, "R"}, {22, "S"}, {23, "T"}, {24, "U"},
+    {25, "V"}, {26, "W"}, {27, "X"}, {28, "Y"}, {29, "Z"},
+    {30, "1"}, {31, "2"}, {32, "3"}, {33, "4"}, {34, "5"}, {35, "6"},
+    {36, "7"}, {37, "8"}, {38, "9"}, {39, "0"},
+    {40, "ENTER"}, {41, "ESC"}, {42, "BACKSPACE"}, {43, "TAB"}, {44, "SPACE"},
+    {45, "MINUS"}, {46, "EQUALS"}, {47, "LBRACKET"}, {48, "RBRACKET"},
+    {49, "BACKSLASH"}, {51, "SEMICOLON"}, {52, "APOSTROPHE"}, {53, "GRAVE"},
+    {54, "COMMA"}, {55, "PERIOD"}, {56, "SLASH"}, {57, "CAPSLOCK"},
+    {58, "F1"}, {59, "F2"}, {60, "F3"}, {61, "F4"}, {62, "F5"}, {63, "F6"},
+    {64, "F7"}, {65, "F8"}, {66, "F9"}, {67, "F10"}, {68, "F11"}, {69, "F12"},
+    {70, "PRINTSCREEN"}, {71, "SCROLLLOCK"}, {72, "PAUSE"},
+    {73, "INSERT"}, {74, "HOME"}, {75, "PAGEUP"}, {76, "DELETE"},
+    {77, "END"}, {78, "PAGEDOWN"},
+    {79, "RIGHT"}, {80, "LEFT"}, {81, "DOWN"}, {82, "UP"},
+    {83, "NUMLOCK"}, {84, "KP_DIVIDE"}, {85, "KP_MULTIPLY"},
+    {86, "KP_MINUS"}, {87, "KP_PLUS"}, {88, "KP_ENTER"},
+    {89, "KP1"}, {90, "KP2"}, {91, "KP3"}, {92, "KP4"}, {93, "KP5"},
+    {94, "KP6"}, {95, "KP7"}, {96, "KP8"}, {97, "KP9"}, {98, "KP0"},
+    {99, "KP_PERIOD"},
+    {224, "LCTRL"}, {225, "LSHIFT"}, {226, "LALT"}, {227, "LGUI"},
+    {228, "RCTRL"}, {229, "RSHIFT"}, {230, "RALT"}, {231, "RGUI"},
+    {0, NULL}
+};
+
+// скан-код -> имя (NULL если нет имени)
+static const char* key_sc_to_name(uint8_t sc) {
+    for (const key_name_t* k = key_names; k->name; k++)
+        if (k->sc == sc) return k->name;
+    return NULL;
+}
+
+// имя -> скан-код (0 если не нашли). Регистронезависимо.
+static uint8_t key_name_to_sc(const char* name) {
+    if (!name || !*name) return 0;
+    for (const key_name_t* k = key_names; k->name; k++) {
+        const char* a = name;
+        const char* b = k->name;
+        for (; *a && *b; a++, b++) {
+            char ca = *a, cb = *b;
+            if (ca >= 'a' && ca <= 'z') ca -= 32;
+            if (cb >= 'a' && cb <= 'z') cb -= 32;
+            if (ca != cb) break;
+        }
+        if (!*a && !*b) return k->sc;
+    }
+    return 0;
+}
+
 // ================= ДЕФОЛТНЫЕ РАСКЛАДКИ (текущие встроенные) =================
 // MD 6-кнопочный: D-Pad + A B C X Y Z + Start + Mode
 static const uint16_t def_md[BTN_MAX] = {
@@ -230,10 +285,20 @@ static void remap_parse_line(char* line) {
     if (!memcmp(val, "SHIFT+", 6)) { mod |= REMAP_MOD_SHIFT; val += 6; }
     while (*val == ' ' || *val == '\t') val++;
 
-    // число
+    // значение: скан-код числом ИЛИ именем клавиши (A, ENTER, UP, F1...)
     int sc = 0;
-    for (const char* p = val; *p && *p >= '0' && *p <= '9'; p++)
-        sc = sc * 10 + (*p - '0');
+    if (*val >= '0' && *val <= '9') {
+        for (const char* p = val; *p && *p >= '0' && *p <= '9'; p++)
+            sc = sc * 10 + (*p - '0');
+    } else {
+        // имя клавиши до конца строки (или пробела)
+        char tmp[16];
+        int tl = 0;
+        for (const char* p = val; *p && *p != ' ' && *p != '\t' && tl < 15; p++)
+            tmp[tl++] = *p;
+        tmp[tl] = 0;
+        sc = key_name_to_sc(tmp);
+    }
     if (sc <= 0 || sc > 255) return;
 
     // ключ: платформа.кнопка (уже без хвостовых пробелов, key_end=0-terminated)
@@ -297,7 +362,13 @@ void remap_save(void) {
             if (mod & REMAP_MOD_SHIFT) {
                 const char* s = "SHIFT+"; while (*s && pl < 1023) buf[pl++] = *s++;
             }
-            write_uint(buf, &pl, (int)(v & 0xFF));
+            // значение: имя клавиши (A, ENTER, UP...) вместо числа — понятнее
+            const char* nm = key_sc_to_name((uint8_t)(v & 0xFF));
+            if (nm) {
+                const char* s = nm; while (*s && pl < 1023) buf[pl++] = *s++;
+            } else {
+                write_uint(buf, &pl, (int)(v & 0xFF));
+            }
             buf[pl++] = '\n';
         }
     }
@@ -372,9 +443,14 @@ static void draw_btn_list(int plat, int sel) {
         } else line[n++] = ' ';
         if (sc) {
             line[n++] = '(';
-            if (sc >= 100) line[n++] = '0' + sc/100;
-            if (sc >= 10)  line[n++] = '0' + (sc/10)%10;
-            line[n++] = '0' + sc%10;
+            const char* kn = key_sc_to_name(sc);
+            if (kn) {
+                const char* s = kn; while (*s && n < 70) line[n++] = *s++;
+            } else {
+                if (sc >= 100) line[n++] = '0' + sc/100;
+                if (sc >= 10)  line[n++] = '0' + (sc/10)%10;
+                line[n++] = '0' + sc%10;
+            }
             line[n++] = ')';
         } else {
             line[n++] = '-'; line[n++] = '-';
