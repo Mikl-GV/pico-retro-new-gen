@@ -11,6 +11,10 @@ void emu_throttle(void);
 // Сброс фазы throttle (вызывать перед циклом кадров системы)
 void emu_throttle_reset(void);
 
+// Отрисовка OSD (громкость) поверх кадра — вызывать сразу перед fb_flush().
+// Сама решает, активен ли таймер показа (после смены громкости).
+void emu_osd_apply(void);
+
 // Nearest-neighbour scale: src (в левом верхнем углу EMU_FB) растягивается
 // на всю высоту экрана (600), ширина пропорционально, по бокам чёрные поля
 void emu_scale(int src_w, int src_h);

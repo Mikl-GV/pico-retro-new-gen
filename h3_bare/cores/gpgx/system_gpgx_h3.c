@@ -263,12 +263,25 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
 }
 
 // ---- вывод звука: ядро синтезирует в blip-буферы, audio_update() выдаёт
-// int16_t стерео (блок за кадр ~ 44100/60 = 735 пар). Отправляем в I2S.
+// int16_t стерео (блок за кадр ~ 48000/60 = 735 пар). Отправляем в I2S.
 static void gpgx_audio_out(void) {
-    static int16_t abuf[4096];   // вмещает до ~2 кадров @ 44100
+    static int16_t abuf[4096];   // вмещает до ~2 кадров @ 48000
     int n = audio_update(abuf);
     if (n <= 0) return;
     if (n > 2048) n = 2048;
+
+    // ==== ДИАГНОСТИКА ЗВУКА (1 раз/сек) ====
+    {
+        static int diag_cnt = 0;
+        static long diag_sum = 0;
+        diag_cnt++; diag_sum += n;
+        if (diag_cnt >= 60) {
+            printf("GPGX-SND: frames=%d avg_samples=%ld\n",
+                   diag_cnt, diag_sum / diag_cnt);
+            diag_cnt = 0; diag_sum = 0;
+        }
+    }
+
     for (int i = 0; i < n; i++)
         i2s_push_sample(abuf[i * 2], abuf[i * 2 + 1]);
 }

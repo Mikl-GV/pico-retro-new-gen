@@ -269,7 +269,7 @@ void dac_writeL(unsigned char data)
     static int conv=5;
 
 #if defined(TARGET_OD) || defined(TARGET_PSP)
-    //pretend that conv=5.5 (44100/8000) conversion factor
+    //pretend that conv=5.5 (48000/8000) conversion factor
     if(conv==5)
         conv=6;
     else

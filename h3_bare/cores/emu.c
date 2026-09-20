@@ -1,11 +1,13 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "emu.h"
 #include "fb_text.h"
 #include "uart.h"
 #include "usb_kbd.h"
 #include "h3_hs_timer.h"
 #include "led.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -138,28 +140,78 @@ void emu_clear_fb(void) {
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
 }
 
+// ---- OSD громкости ----
+// Показываем уровень после смены громкости (клавиши =/-). Рисуется
+// поверх отмасштабированной картинки, поэтому вызывается ДО fb_flush().
+static uint32_t g_osd_until = 0;   // момент (в мкс HS-таймера), до которого рисовать
+
+void emu_osd_apply(void) {
+    if (!g_osd_until) return;
+    uint32_t now = h3_hs_timer_lo_us();
+    if ((int32_t)(now - g_osd_until) >= 0) { g_osd_until = 0; return; }
+
+    int v = i2s_volume_pct();
+    // Шкала: 10 делений по 10%. Полоска по центру экрана сверху.
+    int seg = v / 10;
+    const int bar_w = 220;               // ширина всей шкалы
+    const int x0 = (1024 - bar_w) / 2;   // центр по X
+    const int y0 = 20;
+    // Тёмная подложка
+    fb_fill_rect(x0 - 8, y0 - 6, bar_w + 16, 24, 0x80000000);
+    // Сегменты шкалы (10 шт, каждый 16px + зазор 4px = 20px шаг, 200px)
+    for (int i = 0; i < 10; i++) {
+        uint32_t c = (i < seg) ? 0x0000FF44 : 0x00444444;
+        fb_fill_rect(x0 + i * 20, y0 + 8, 16, 8, c);
+    }
+    // Число % справа от шкалы
+    char buf[16];
+    int n = snprintf(buf, sizeof(buf), "%d%%", v);
+    fb_puts(x0 + 10 * 20 + 6, y0, buf, 0x00FFFFFF);
+    (void)n;
+}
+
 // ---- throttle ----
 #include "settings.h"
-#include "i2s.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     // Мигаем светодиодом: видно, что код жив и кадры идут
     static uint32_t led_fc = 0;
     if ((++led_fc & 0x1F) == 0) led_set(led_fc & 0x20);
+
+    // Громкость с клавиатуры: =/+ и - (HID 46 =, 45 -, 87 =, 86 -)
+    static int prev_vol_keys = 0;
+    {
+        uint8_t keys[8];
+        int n = usb_kbd_get_raw(keys, 8);
+        int vol_up = 0, vol_dn = 0;
+        for (int i = 0; i < n; i++) {
+            if (keys[i] == 46 || keys[i] == 87) vol_up = 1;   // = / numpad +
+            if (keys[i] == 45 || keys[i] == 86) vol_dn = 1;   // - / numpad -
+        }
+        int now = (vol_up ? 1 : 0) | (vol_dn ? 2 : 0);
+        if (now && now != prev_vol_keys) {
+            int v = i2s_volume_pct();
+            if (vol_up) { v += 5; if (v > 100) v = 100; }
+            if (vol_dn) { v -= 5; if (v < 0) v = 0; }
+            i2s_volume(v);
+            g_osd_until = h3_hs_timer_lo_us() + 1500000;   // показывать 1.5 с
+        }
+        prev_vol_keys = now;
+    }
+
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
-    // Гарантированный выталкивание звука каждый кадр (даже если кадр
-    // длинный, >= emu_period_us) — иначе при тормозах эмуляция кольцо
-    // копится и звук либо задерживается, либо не выводится вовсе.
-    i2s_flush();
-    // Остаток кадра: вместо голого delay КРУТИМ i2s_flush() — звук из
-    // кольца выталкивается в I2S FIFO непрерывно в реальном времени.
-    // Иначе FIFO (32 пары) пустеет за ~0.7 мс и молчит 15 мс — хрип/треск.
+    // Выталкивание звука с лимитом 8 пар за раз — не блокирует эмуляцию.
+    // Каждая итерация ~0.17 мс, а while внизу крутится весь остаток кадра,
+    // успевая опорожнить кольцо с правильным темпом 48 кГц.
+    i2s_flush_max(8);
+    // Остаток кадра: КРУТИМ i2s_flush_max(8) — звук выталкивается в
+    // I2S FIFO непрерывно в реальном времени, эмуляция не виснет.
     if (elapsed < emu_period_us) {
         uint32_t target = emu_ts0 + emu_period_us;
         while ((int32_t)(h3_hs_timer_lo_us() - target) < 0)
-            i2s_flush();
+            i2s_flush_max(8);
     }
     emu_ts0 = h3_hs_timer_lo_us();
 }

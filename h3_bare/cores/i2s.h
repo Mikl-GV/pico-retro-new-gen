@@ -25,6 +25,10 @@ void i2s_push_sample(int16_t left, int16_t right);
 // Вызывать раз в кадр (из emu_throttle или после run_frame).
 void i2s_flush(void);
 
+// Вытолкнуть НЕ БОЛЕЕ max_pairs пар (лимит за один вызов — не блокирует
+// эмуляцию). Используется в emu_throttle для долива звука.
+void i2s_flush_max(int max_pairs);
+
 // Тест звука: синусоида на частоте freq (440/1000/2000 Гц),
 // длительность msec (мс), стерео, с текущей громкостью.
 void i2s_test_tone(int freq, int msec);

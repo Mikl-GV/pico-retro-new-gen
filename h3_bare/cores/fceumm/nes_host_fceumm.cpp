@@ -189,7 +189,7 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
         printf("FCEUmm: no FC keyboard\n");
     }
 
-    // Звук: включаем NES APU на 44100 Гц (I2S → MAX98357A)
+    // Звук: включаем NES APU на 48000 Гц (I2S → MAX98357A)
     FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
 
@@ -226,6 +226,23 @@ extern "C" void fceumm_run_frame(void) {
     int32_t ssize = 0;
     FCEUI_Emulate(&gfx, &snd, &ssize, 0);
     if (!gfx) return;
+
+    // ==== ДИАГНОСТИКА ЗВУКА (1 раз/сек): max|sample| за кадр ====
+    {
+        static int diag_cnt = 0;
+        static long diag_max = 0;
+        int mx = 0;
+        for (int z = 0; z < ssize && z < 400; z++) {
+            int a = snd[z] < 0 ? -snd[z] : snd[z];
+            if (a > mx) mx = a;
+        }
+        if (mx > diag_max) diag_max = mx;
+        if (++diag_cnt >= 60) {
+            printf("FCEUMM-SND: frames=%d ssize=%d max=%ld\n",
+                   diag_cnt, ssize, diag_max);
+            diag_cnt = 0; diag_max = 0;
+        }
+    }
 
     // Звук: WaveFinal — int32_t моно (стандартный APU NES). Конвертируем
     // в int16_t и разворачиваем L/R одинаково, шлём в I2S (MAX98357A).
@@ -269,6 +286,8 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         return;
     }
     emu_set_border_color(0x00140612);   // тёмно-бордовый (Dendy/NES)
+    printf("NES: AUDIO BEEP TEST 1kHz/300ms at start\n");
+    i2s_test_tone(1000, 300);
     uint8_t raw_keys[6];
     uint32_t esc_hold_us = 0;
     emu_throttle_reset();
