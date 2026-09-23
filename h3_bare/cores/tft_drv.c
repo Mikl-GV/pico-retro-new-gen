@@ -298,20 +298,32 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
     }
 }
 
-// ---- TFT core: исполняется на CPU1 (запускается cpu1_entry из startup.S) ----
-// Инициализирует ILI9486, затем непрерывно ждёт флаг «HDMI кадр готов»
-// (ставит fb_flush на core0) и зеркалит главный экран на SPI-дисплей.
-// Основное ядро при этом не нагружается SPI-передачами.
+static void tft_fill_screen(uint16_t color) {
+    tft_render_begin();
+    tft_fill_rect(0, 0, TFT_W, TFT_H, color);
+    tft_flush();
+}
+
+// ---- TFT core: исполняется на CPU1 (startup.S cpu1_entry) ----
+// Самопроверка панели: сплошные заливки + цветовые полосы. К HDMI не
+// привязано — проверяем весь путь: init -> RAMWR -> 595-шина -> панель.
 void tft_core_main(void) {
     if (tft_init() < 0) {
-    // Засыпаем — дисплей не подключён или SPI не отвечает
         for (;;) __asm volatile("wfi");
     }
-    tft_set_dup_mode();
+    tft_set_menu_mode();
     for (;;) {
-        while (!g_tft_frame_ready)
-            __asm volatile("yield");
-        g_tft_frame_ready = 0;
+        printf("TFT-TEST: RED\n");       tft_fill_screen(0xF800); delay_ms(1000);
+        printf("TFT-TEST: GREEN\n");     tft_fill_screen(0x07E0); delay_ms(1000);
+        printf("TFT-TEST: BLUE\n");      tft_fill_screen(0x001F); delay_ms(1000);
+        printf("TFT-TEST: WHITE\n");     tft_fill_screen(0xFFFF); delay_ms(1000);
+        printf("TFT-TEST: BLACK\n");     tft_fill_screen(0x0000); delay_ms(1000);
+        printf("TFT-TEST: BARS\n");
+        tft_render_begin();
+        tft_fill_rect(0,          0, TFT_W / 3, TFT_H, 0xF800);
+        tft_fill_rect(TFT_W / 3,  0, TFT_W / 3, TFT_H, 0x07E0);
+        tft_fill_rect(2 * TFT_W / 3, 0, TFT_W / 3, TFT_H, 0x001F);
         tft_flush();
+        delay_ms(1000);
     }
 }
