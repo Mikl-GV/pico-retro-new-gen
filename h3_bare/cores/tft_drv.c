@@ -55,39 +55,46 @@ static void cs_high(void) { PC_DAT |=  (1u << PIN_CS); }
 static void dc_cmd(void)  { PC_DAT &= ~(1u << PIN_DC); }
 static void dc_data(void) { PC_DAT |=  (1u << PIN_DC); }
 
-static void wait_tx_room(void) {
-    for (uint32_t t = 0; t < 1000000; t++)
-        if (((SPI0_FSR & SPI0_FSR_TF_CNT_MASK) >> 16) < 64u) return;
+// Таймауты ограничены: при отсутствии дисплея/неисправном SPI драйвер
+// не должен висеть (иначе блокирует загрузку).
+static int wait_tx_room(void) {
+    for (uint32_t t = 0; t < 20000; t++)
+        if (((SPI0_FSR & SPI0_FSR_TF_CNT_MASK) >> 16) < 64u) return 1;
+    return 0;
 }
 
-static void wait_done(void) {
-    for (uint32_t t = 0; t < 10000000; t++)
-        if (!(SPI0_TCR & SPI0_TCR_XCH)) return;
+static int wait_done(void) {
+    for (uint32_t t = 0; t < 200000; t++)
+        if (!(SPI0_TCR & SPI0_TCR_XCH)) return 1;
+    return 0;
 }
 
 // Каждый байт — отдельный burst с XCH (как в рабочей инициализации).
 // CS остаётся низким между байтами. Это медленно (~50 мс кадр), но надёжно.
-static void spi0_tx8(uint8_t b) {
-    wait_tx_room();
+// Возвращает 0 = ок, -1 = SPI не отвечает.
+static int spi0_tx8(uint8_t b) {
+    if (!wait_tx_room()) return -1;
     SPI0_TXD8 = b;
     SPI0_MBC = 1;
     SPI0_BCC = 1;
     SPI0_TCR |= SPI0_TCR_XCH;
-    wait_done();
+    return wait_done() ? 0 : -1;
 }
 
-static void xfer_cmd(uint8_t cmd) {
+static int xfer_cmd(uint8_t cmd) {
     cs_low();
     dc_cmd();
-    spi0_tx8(cmd);
+    int r = spi0_tx8(cmd);
     dc_data();
     cs_high();
+    return r;
 }
 
-static void xfer_data(uint8_t d) {
+static int xfer_data(uint8_t d) {
     cs_low();
-    spi0_tx8(d);
+    int r = spi0_tx8(d);
     cs_high();
+    return r;
 }
 
 static void delay_ms(int ms) {
@@ -119,67 +126,75 @@ static void spi0_init(void) {
     udelay(100);
 }
 
-static void ili9486_init(void) {
+static int ili9486_init(void) {
     PA_DAT &= ~(1u << PIN_RST);
     delay_ms(20);
     PA_DAT |= (1u << PIN_RST);
     delay_ms(150);
-    xfer_cmd(CMD_SWRESET);
+    if (xfer_cmd(CMD_SWRESET) < 0) { printf("ILI9486: SPI fail @SWRESET\n"); return -1; }
     delay_ms(150);
     {
     static const uint8_t pg[15] = {0x00,0x07,0x10,0x09,0x17,0x0B,0x41,0x89,
                                    0x43,0x08,0x12,0x08,0x17,0x14,0x0F};
-    xfer_cmd(0xE0);
-    for (int i = 0; i < 15; i++) xfer_data(pg[i]);
+    if (xfer_cmd(0xE0) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
+    for (int i = 0; i < 15; i++) if (xfer_data(pg[i]) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
     }
     {
     static const uint8_t ng[15] = {0x00,0x17,0x1D,0x04,0x0B,0x04,0x47,0x33,
                                    0x44,0x0A,0x0C,0x08,0x12,0x14,0x0F};
-    xfer_cmd(0xE1);
-    for (int i = 0; i < 15; i++) xfer_data(ng[i]);
+    if (xfer_cmd(0xE1) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
+    for (int i = 0; i < 15; i++) if (xfer_data(ng[i]) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
     }
-    xfer_cmd(CMD_COLMOD); xfer_data(0x55);
-    xfer_cmd(CMD_MADCTL); xfer_data(0xC8);
-    xfer_cmd(CMD_INVON);
+    if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0 ||
+        xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xC8) < 0 ||
+        xfer_cmd(CMD_INVON) < 0) { printf("ILI9486: SPI fail @cfg\n"); return -1; }
     delay_ms(10);
-    xfer_cmd(CMD_SLPOUT);
-    delay_ms(120);
-    xfer_cmd(CMD_DISPON);
+    if (xfer_cmd(CMD_SLPOUT) < 0 || xfer_cmd(CMD_DISPON) < 0) {
+        printf("ILI9486: SPI fail @on\n"); return -1;
+    }
     delay_ms(50);
     printf("ILI9486: init done\n");
+    return 0;
 }
 
-static void set_window(void) {
-    xfer_cmd(CMD_CASET);
-    xfer_data(0); xfer_data(0);
-    xfer_data((TFT_W-1)>>8); xfer_data((TFT_W-1)&0xFF);
-    xfer_cmd(CMD_RASET);
-    xfer_data(0); xfer_data(0);
-    xfer_data((TFT_H-1)>>8); xfer_data((TFT_H-1)&0xFF);
+static int set_window(void) {
+    int r = 0;
+    if (xfer_cmd(CMD_CASET) < 0) r = -1;
+    if (xfer_data(0) < 0 || xfer_data(0) < 0 ||
+        xfer_data((TFT_W-1)>>8) < 0 || xfer_data((TFT_W-1)&0xFF) < 0) r = -1;
+    if (xfer_cmd(CMD_RASET) < 0) r = -1;
+    if (xfer_data(0) < 0 || xfer_data(0) < 0 ||
+        xfer_data((TFT_H-1)>>8) < 0 || xfer_data((TFT_H-1)&0xFF) < 0) r = -1;
+    return r;
 }
 
-void tft_init(void) {
+// Возвращает 0 = готово, -1 = дисплей не отвечает (не блокируем загрузку).
+int tft_init(void) {
     spi0_init();
-    ili9486_init();
-    g_tft_ready = 1;
-    printf("TFT DFR0428: ready (480x320, dup HDMI)\n");
+    if (ili9486_init() == 0) {
+        g_tft_ready = 1;
+        printf("TFT DFR0428: ready (480x320, dup HDMI)\n");
+        return 0;
+    }
+    g_tft_ready = 0;
+    return -1;
 }
 
 // Полный кадр — каждый байт отдельным burst (медленно, но надёжно)
 void tft_flush(void) {
     if (!g_tft_ready) return;
-    set_window();
+    if (set_window() < 0) return;
     cs_low();
     dc_cmd();
-    spi0_tx8(CMD_RAMWR);
+    if (spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
     dc_data();
     for (int ty = 0; ty < TFT_H; ty++) {
         if (g_mode) {
             const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
             for (int tx = 0; tx < TFT_W; tx++) {
                 uint16_t p = row[tx];
-                spi0_tx8((uint8_t)(p >> 8));
-                spi0_tx8((uint8_t)(p & 0xFF));
+                if (spi0_tx8((uint8_t)(p >> 8)) < 0) goto abort;
+                if (spi0_tx8((uint8_t)(p & 0xFF)) < 0) goto abort;
             }
         } else {
             const uint32_t* src = (const uint32_t*)0x5F900000;
@@ -189,11 +204,14 @@ void tft_flush(void) {
                 int sx = (tx * 32) / 15;
                 uint32_t c = row[sx];
                 uint16_t p = (uint16_t)(((c>>3)&0x1F)<<11)|(uint16_t)(((c>>10)&0x3F)<<5)|(uint16_t)((c>>19)&0x1F);
-                spi0_tx8((uint8_t)(p >> 8));
-                spi0_tx8((uint8_t)(p & 0xFF));
+                if (spi0_tx8((uint8_t)(p >> 8)) < 0) goto abort;
+                if (spi0_tx8((uint8_t)(p & 0xFF)) < 0) goto abort;
             }
         }
     }
+    cs_high();
+    return;
+abort:
     cs_high();
 }
 

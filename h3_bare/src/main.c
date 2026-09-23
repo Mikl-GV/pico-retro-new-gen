@@ -132,14 +132,9 @@ void main(void) {
     if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
     else uart_puts("sega_pad: PCF8574 not found\n");
 
-    // SPI-дисплей (ILI9486 480x320): тестовая заставка при загрузке
-    tft_init();
-    tft_set_menu_mode();
-    tft_render_begin();
-    tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);   // чёрный фон
-    tft_puts((TFT_W - 4 * 8) / 2, 120, "TEST", 0xFFFF);
-    tft_puts((TFT_W - 12 * 8) / 2, 140, "SPI 480x320", 0x07E0);
-    tft_flush();
+    // SPI-дисплей — НЕ трогаем при загрузке: HDMI основной, работает
+    // независимо. Драйвер (tft_drv.c) скомпилирован, запуск по мере
+    // готовности дисплея (опционально).
 
     for (;;) {
         int sel = menu_run();
