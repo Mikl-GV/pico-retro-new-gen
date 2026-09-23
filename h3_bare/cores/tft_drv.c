@@ -305,30 +305,58 @@ static void tft_fill_screen(uint16_t color) {
     tft_flush();
 }
 
+// Сырой маркер в UART (прямой THR, без функций/строк).
+static inline void u_dbg(char c) {
+    *(volatile uint32_t*)0x01C28000u = (uint32_t)c;
+}
+
+// Прямой тест SPI->панель: маленький прямоугольник 64x20 в левом верхнем
+// углу (CASET/RASET/RAMWR), без буфера и без полного кадра.
+static int tft_patch_test(uint16_t color) {
+    if (xfer_cmd(CMD_CASET) < 0) return -1;
+    if (xfer_data(0) < 0 || xfer_data(0) < 0 ||
+        xfer_data(0) < 0 || xfer_data(63) < 0) return -1;
+    if (xfer_cmd(CMD_RASET) < 0) return -1;
+    if (xfer_data(0) < 0 || xfer_data(0) < 0 ||
+        xfer_data(0) < 0 || xfer_data(19) < 0) return -1;
+    if (xfer_cmd(CMD_RAMWR) < 0) return -1;
+    uint8_t hi = (uint8_t)(color >> 8), lo = (uint8_t)(color & 0xFF);
+    for (int i = 0; i < 64 * 20; i++) {
+        if (xfer_data(hi) < 0 || xfer_data(lo) < 0) return -1;
+    }
+    return 0;
+}
+
 // ---- TFT core: исполняется на CPU1 (startup.S cpu1_entry) ----
-// Самопроверка панели: сплошные заливки + цветовые полосы. К HDMI не
-// привязано — проверяем весь путь: init -> RAMWR -> 595-шина -> панель.
+// Сырые маркеры (E I L P p ...): прямые записи в UART, показывают,
+// где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
-    uart_puts("TFT-CORE: enter\n");
+    u_dbg('E');
     if (tft_init() < 0) {
-        uart_puts("TFT-CORE: no display, idle\n");
+        u_dbg('F');
         for (;;) __asm volatile("wfi");
     }
-    uart_puts("TFT-CORE: init ok\n");
+    u_dbg('I');
     tft_set_menu_mode();
-    uart_puts("TFT-CORE: starting test loop\n");
+    u_dbg('L');
+    u_dbg('P');
+    if (tft_patch_test(0xF800) == 0) u_dbg('p'); else u_dbg('X');
+    u_dbg(' ');
+    delay_ms(2000);
+
     for (;;) {
-        uart_puts("TFT-TEST: RED\n");       tft_fill_screen(0xF800); delay_ms(1000);
-        uart_puts("TFT-TEST: GREEN\n");     tft_fill_screen(0x07E0); delay_ms(1000);
-        uart_puts("TFT-TEST: BLUE\n");      tft_fill_screen(0x001F); delay_ms(1000);
-        uart_puts("TFT-TEST: WHITE\n");     tft_fill_screen(0xFFFF); delay_ms(1000);
-        uart_puts("TFT-TEST: BLACK\n");     tft_fill_screen(0x0000); delay_ms(1000);
-        uart_puts("TFT-TEST: BARS\n");
+        u_dbg('R'); tft_fill_screen(0xF800); u_dbg('r'); delay_ms(1000);
+        u_dbg('G'); tft_fill_screen(0x07E0); u_dbg('g'); delay_ms(1000);
+        u_dbg('B'); tft_fill_screen(0x001F); u_dbg('b'); delay_ms(1000);
+        u_dbg('W'); tft_fill_screen(0xFFFF); u_dbg('w'); delay_ms(1000);
+        u_dbg('K'); tft_fill_screen(0x0000); u_dbg('k'); delay_ms(1000);
+        u_dbg('|');
         tft_render_begin();
         tft_fill_rect(0,          0, TFT_W / 3, TFT_H, 0xF800);
         tft_fill_rect(TFT_W / 3,  0, TFT_W / 3, TFT_H, 0x07E0);
         tft_fill_rect(2 * TFT_W / 3, 0, TFT_W / 3, TFT_H, 0x001F);
         tft_flush();
+        u_dbg('!');
         delay_ms(1000);
     }
 }
