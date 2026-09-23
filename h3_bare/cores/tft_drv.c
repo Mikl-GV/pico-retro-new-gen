@@ -1,0 +1,234 @@
+// tft_drv.c — DFR0428 (ILI9486, 480×320 RGB565) на SPI0 H3 (PC0-PC3).
+#include <stdint.h>
+#include <string.h>
+#include "h3.h"
+#include "h3_ccu.h"
+#include "h3_hs_timer.h"
+#include "tft_drv.h"
+
+extern int printf(const char*, ...);
+extern const uint8_t font8x8[96][8];
+
+#define CMD_SWRESET  0x01
+#define CMD_SLPOUT   0x11
+#define CMD_INVON    0x21
+#define CMD_COLMOD   0x3A
+#define CMD_DISPON   0x29
+#define CMD_CASET    0x2A
+#define CMD_RASET    0x2B
+#define CMD_RAMWR    0x2C
+#define CMD_MADCTL   0x36
+
+#define SPI0_GCR   (*(volatile uint32_t*)0x01C68004u)
+#define SPI0_TCR   (*(volatile uint32_t*)0x01C68008u)
+#define SPI0_FSR   (*(volatile uint32_t*)0x01C6801Cu)
+#define SPI0_CCR   (*(volatile uint32_t*)0x01C68024u)
+#define SPI0_MBC   (*(volatile uint32_t*)0x01C68030u)
+#define SPI0_BCC   (*(volatile uint32_t*)0x01C68038u)
+#define SPI0_TXD8  (*(volatile uint8_t*)0x01C68200u)
+#define SPI0_TCR_XCH (1u << 31)
+#define SPI0_FSR_TF_CNT_MASK (0xFFu << 16)
+
+#define PA_BASE  0x01C20800u
+#define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
+#define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
+#define PC_BASE  0x01C20848u
+#define PC_CFG0  (*(volatile uint32_t*)(PC_BASE + 0x00u))
+#define PC_DAT   (*(volatile uint32_t*)(PC_BASE + 0x10u))
+
+#define PIN_CS  3   // PC3
+#define PIN_DC  7   // PC7
+#define PIN_RST 2   // PA2
+
+#define FB_W  1024
+#define FB_H  600
+#define TFT_W 480
+#define TFT_H 320
+
+#define TFT_MENU_FB 0x5FC00000u
+static uint16_t* tft_fb = (uint16_t*)TFT_MENU_FB;
+static int g_mode = 1;
+static int g_tft_ready = 0;
+
+static void cs_low(void)  { PC_DAT &= ~(1u << PIN_CS); }
+static void cs_high(void) { PC_DAT |=  (1u << PIN_CS); }
+static void dc_cmd(void)  { PC_DAT &= ~(1u << PIN_DC); }
+static void dc_data(void) { PC_DAT |=  (1u << PIN_DC); }
+
+static void wait_tx_room(void) {
+    for (uint32_t t = 0; t < 1000000; t++)
+        if (((SPI0_FSR & SPI0_FSR_TF_CNT_MASK) >> 16) < 64u) return;
+}
+
+static void wait_done(void) {
+    for (uint32_t t = 0; t < 10000000; t++)
+        if (!(SPI0_TCR & SPI0_TCR_XCH)) return;
+}
+
+// Каждый байт — отдельный burst с XCH (как в рабочей инициализации).
+// CS остаётся низким между байтами. Это медленно (~50 мс кадр), но надёжно.
+static void spi0_tx8(uint8_t b) {
+    wait_tx_room();
+    SPI0_TXD8 = b;
+    SPI0_MBC = 1;
+    SPI0_BCC = 1;
+    SPI0_TCR |= SPI0_TCR_XCH;
+    wait_done();
+}
+
+static void xfer_cmd(uint8_t cmd) {
+    cs_low();
+    dc_cmd();
+    spi0_tx8(cmd);
+    dc_data();
+    cs_high();
+}
+
+static void xfer_data(uint8_t d) {
+    cs_low();
+    spi0_tx8(d);
+    cs_high();
+}
+
+static void delay_ms(int ms) {
+    uint32_t start = h3_hs_timer_lo_us();
+    while ((int32_t)(h3_hs_timer_lo_us() - start) < (int32_t)((uint32_t)ms * 1000u)) ;
+}
+
+static void spi0_init(void) {
+    H3_CCU->BUS_CLK_GATING0 |= CCU_BUS_CLK_GATING0_SPI0;
+    H3_CCU->BUS_SOFT_RESET0  |= CCU_BUS_SOFT_RESET0_SPI0;
+    udelay(1000);
+    volatile uint32_t* clk = &H3_CCU->SPI0_CLK;
+    *clk = (1u << 31) | (1u << 24);
+    udelay(1000);
+
+    // PC0=SPI0_MOSI, PC1=SPI0_MISO, PC2=SPI0_CLK (func3), PC3=output(CS), PC7=output(DC)
+    PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
+    PA_CFG1 &= ~(0xFu << 8);
+    PA_CFG1 |= (1u << 8);   // PA10 = output (RESET)
+
+    PC_DAT |= (1u << PIN_CS);
+    PC_DAT &= ~(1u << PIN_DC);
+    PA_DAT |= (1u << PIN_RST);
+
+    SPI0_GCR = (1u << 0) | (1u << 1);
+    udelay(100);
+    SPI0_TCR = 0;
+    SPI0_CCR = (5u << 8);
+    udelay(100);
+}
+
+static void ili9486_init(void) {
+    PA_DAT &= ~(1u << PIN_RST);
+    delay_ms(20);
+    PA_DAT |= (1u << PIN_RST);
+    delay_ms(150);
+    xfer_cmd(CMD_SWRESET);
+    delay_ms(150);
+    {
+    static const uint8_t pg[15] = {0x00,0x07,0x10,0x09,0x17,0x0B,0x41,0x89,
+                                   0x43,0x08,0x12,0x08,0x17,0x14,0x0F};
+    xfer_cmd(0xE0);
+    for (int i = 0; i < 15; i++) xfer_data(pg[i]);
+    }
+    {
+    static const uint8_t ng[15] = {0x00,0x17,0x1D,0x04,0x0B,0x04,0x47,0x33,
+                                   0x44,0x0A,0x0C,0x08,0x12,0x14,0x0F};
+    xfer_cmd(0xE1);
+    for (int i = 0; i < 15; i++) xfer_data(ng[i]);
+    }
+    xfer_cmd(CMD_COLMOD); xfer_data(0x55);
+    xfer_cmd(CMD_MADCTL); xfer_data(0xC8);
+    xfer_cmd(CMD_INVON);
+    delay_ms(10);
+    xfer_cmd(CMD_SLPOUT);
+    delay_ms(120);
+    xfer_cmd(CMD_DISPON);
+    delay_ms(50);
+    printf("ILI9486: init done\n");
+}
+
+static void set_window(void) {
+    xfer_cmd(CMD_CASET);
+    xfer_data(0); xfer_data(0);
+    xfer_data((TFT_W-1)>>8); xfer_data((TFT_W-1)&0xFF);
+    xfer_cmd(CMD_RASET);
+    xfer_data(0); xfer_data(0);
+    xfer_data((TFT_H-1)>>8); xfer_data((TFT_H-1)&0xFF);
+}
+
+void tft_init(void) {
+    spi0_init();
+    ili9486_init();
+    g_tft_ready = 1;
+    printf("TFT DFR0428: ready (480x320, dup HDMI)\n");
+}
+
+// Полный кадр — каждый байт отдельным burst (медленно, но надёжно)
+void tft_flush(void) {
+    if (!g_tft_ready) return;
+    set_window();
+    cs_low();
+    dc_cmd();
+    spi0_tx8(CMD_RAMWR);
+    dc_data();
+    for (int ty = 0; ty < TFT_H; ty++) {
+        if (g_mode) {
+            const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
+            for (int tx = 0; tx < TFT_W; tx++) {
+                uint16_t p = row[tx];
+                spi0_tx8((uint8_t)(p >> 8));
+                spi0_tx8((uint8_t)(p & 0xFF));
+            }
+        } else {
+            const uint32_t* src = (const uint32_t*)0x5F900000;
+            int sy = (ty * 15) / 8;
+            const uint32_t* row = src + (uint32_t)sy * FB_W;
+            for (int tx = 0; tx < TFT_W; tx++) {
+                int sx = (tx * 32) / 15;
+                uint32_t c = row[sx];
+                uint16_t p = (uint16_t)(((c>>3)&0x1F)<<11)|(uint16_t)(((c>>10)&0x3F)<<5)|(uint16_t)((c>>19)&0x1F);
+                spi0_tx8((uint8_t)(p >> 8));
+                spi0_tx8((uint8_t)(p & 0xFF));
+            }
+        }
+    }
+    cs_high();
+}
+
+void tft_tick(void) { tft_flush(); }
+void tft_set_menu_mode(void) { g_mode = 1; }
+void tft_set_dup_mode(void)  { g_mode = 0; }
+
+void tft_render_begin(void) { memset(tft_fb, 0, TFT_W * TFT_H * 2); }
+
+void tft_fill_rect(int x, int y, int w, int h, uint16_t color) {
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= TFT_W || y >= TFT_H) return;
+    if (x + w > TFT_W) w = TFT_W - x;
+    if (y + h > TFT_H) h = TFT_H - y;
+    for (int yy = y; yy < y + h; yy++) {
+        uint16_t* row = tft_fb + (uint32_t)yy * TFT_W;
+        for (int xx = x; xx < x + w; xx++) row[xx] = color;
+    }
+}
+
+void tft_puts(int x, int y, const char* s, uint16_t color) {
+    while (*s) {
+        char ch = *s++;
+        if (ch < 0x20 || ch > 0x7F) { x += 8; continue; }
+        const uint8_t* gl = font8x8[ch - 0x20];
+        for (int row = 0; row < 8; row++) {
+            uint8_t bits = gl[row];
+            if (y + row >= TFT_H) break;
+            uint16_t* line = tft_fb + (uint32_t)(y + row) * TFT_W + x;
+            for (int col = 0; col < 8; col++) {
+                if (x + col >= TFT_W) break;
+                if (bits & (0x80 >> col)) line[col] = color;
+            }
+        }
+        x += 8;
+    }
+}

@@ -11,6 +11,11 @@ void emu_throttle(void);
 // Сброс фазы throttle (вызывать перед циклом кадров системы)
 void emu_throttle_reset(void);
 
+// Единый выход по удержанию ESC (~0.9 с). Вызывать раз в кадр в цикле
+// эмулятора; 1 = пора выходить. emu_esc_hold_reset() — перед входом в цикл.
+void emu_esc_hold_reset(void);
+int  emu_esc_hold(void);
+
 // Отрисовка OSD (громкость) поверх кадра — вызывать сразу перед fb_flush().
 // Сама решает, активен ли таймер показа (после смены громкости).
 void emu_osd_apply(void);

@@ -28,14 +28,9 @@
 #include "cheatdb.h"
 #include "gp_cheats.h"
 #include "fat.h"
-#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 extern void gb_heap_reset(void);
-
-// имя текущего ROM (для загрузки читов)
-static char g_current_rom_name[FAT_NAME_LEN];
-static const char* g_cheat_sys_folder = NULL;
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -262,28 +257,12 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     return 1;
 }
 
-// ---- вывод звука: ядро синтезирует в blip-буферы, audio_update() выдаёт
-// int16_t стерео (блок за кадр ~ 48000/60 = 735 пар). Отправляем в I2S.
+// ---- вывод звука отключён: дрейним blip-буферы ядра, чтобы они
+// не переполнялись при генерации кадра ----
 static void gpgx_audio_out(void) {
-    static int16_t abuf[4096];   // вмещает до ~2 кадров @ 48000
+    static int16_t abuf[4096];
     int n = audio_update(abuf);
-    if (n <= 0) return;
-    if (n > 2048) n = 2048;
-
-    // ==== ДИАГНОСТИКА ЗВУКА (1 раз/сек) ====
-    {
-        static int diag_cnt = 0;
-        static long diag_sum = 0;
-        diag_cnt++; diag_sum += n;
-        if (diag_cnt >= 60) {
-            printf("GPGX-SND: frames=%d avg_samples=%ld\n",
-                   diag_cnt, diag_sum / diag_cnt);
-            diag_cnt = 0; diag_sum = 0;
-        }
-    }
-
-    for (int i = 0; i < n; i++)
-        i2s_push_sample(abuf[i * 2], abuf[i * 2 + 1]);
+    (void)n;
 }
 
 void gpgx_run_frame(void) {
@@ -325,17 +304,15 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
         return;
     }
     emu_set_border_color(0x000B1618);   // темно-синий (Mega Drive)
-    uint8_t raw_keys[6];
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         gpgx_run_frame();
         emu_throttle();
         // размер из viewport ядра: 256/320 (H32/H40) x 192/224/240
         emu_scale(g_vp_w > 0 ? g_vp_w : 320, g_vp_h > 0 ? g_vp_h : 224);
         fb_flush();
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) goto exit;   // ESC — выход
+        if (emu_esc_hold()) goto exit;   // ESC удержание — выход
     }
 exit:
     gpgx_stop();
@@ -417,6 +394,10 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
 
     system_init();
     system_reset();
+
+    // Звук: PSG+FM синтез ядра через I2S (MAX98357A) — без audio_init()
+    // blips[0]==NULL и gg_run_frame падает в blip_end_frame.
+    audio_init(48000, 60.0);
 
     g_loaded = 1;
     printf("GG: hw=%02X size=%u\n", (unsigned)system_hw, (unsigned)cart.romsize);

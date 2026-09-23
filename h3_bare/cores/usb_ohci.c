@@ -86,15 +86,23 @@ typedef struct __attribute__((aligned(256))) {
     uint8_t  reserved[120];
 } ohci_hcca_t;
 
-static ohci_hcca_t g_hcca[2];       // по одной на OHCI-порт
+static ohci_hcca_t g_hcca[2] __attribute__((section(".coherent"), aligned(256)));  // по одной на OHCI-порт
 // ED/TD на порт — не общие, чтобы concurrent прерывания не сломали контроль.
-static ohci_ed_t   g_head_ed[2];   // control head ED (skip=1 по умолчанию), своё на порт
-static ohci_td_t   g_td[2][8];     // свой TD-пул на порт
+static ohci_ed_t   g_head_ed[2] __attribute__((section(".coherent"), aligned(16)));  // control head ED
+static ohci_td_t   g_td[2][8] __attribute__((section(".coherent"), aligned(32)));    // свой TD-пул на порт
 static uint16_t    g_mps = 8;
 
-// ---- периодический interrupt-IN (для HID-тача), по ED/TD на порт ----
-static ohci_ed_t   g_int_ed[2];
-static ohci_td_t   g_int_td[2];
+// ---- периодический interrupt-IN (для HID), по [порт][слот] ----
+// slot 0 = клавиатура, slot 1 = тачпад/мышь (второй интерфейс композита).
+// Оба ED цепляются через NextED: HCCA → ED0 → ED1.
+// PLE и HCCA-таблицу настраивает только slot 0; slot 1 только цепляет ED.
+//
+// ВСЕ эти структуры живут в uncached-области libh3_coherent_region (секция
+// .coherent в linker.ld, 1 МБ), помечены uncached через MMU. Без этого
+// write-back D-cache затирает toggle-биты, которые HC обновляет в DRAM.
+
+static ohci_ed_t   g_int_ed[2][2] __attribute__((section(".coherent"), aligned(16)));
+static ohci_td_t   g_int_td[2][2][2] __attribute__((section(".coherent"), aligned(32)));
 
 static int ohci_idx(uint32_t base) {
     return (base == 0x01C1B400u) ? 0 : 1;
@@ -104,64 +112,92 @@ static int ohci_idx(uint32_t base) {
 static inline void cache_clean(uint32_t addr, uint32_t size);
 static inline void cache_invalidate(uint32_t addr, uint32_t size);
 
-// ---- периодический interrupt-IN (для HID-тача) ----
+// ---- периодический interrupt-IN (для HID) ----
 
 int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
-                           uint8_t* buf, uint16_t len) {
+                           uint8_t* buf, uint16_t len, int slot) {
     int idx = ohci_idx(base);
     ohci_regs_t* ohci = (ohci_regs_t*)base;
-    int low_speed = usb_ohci_port_low_speed(base, 0) ? 1 : 0;
+    int low_speed = usb_ohci_port_low_speed(base, 0);
 
-    memset(&g_int_ed[idx], 0, sizeof(g_int_ed[0]));
-    memset(&g_int_td[idx], 0, sizeof(g_int_td[0]));
+    ohci_ed_t* ed  = &g_int_ed[idx][slot];
+    ohci_td_t* td  = &g_int_td[idx][slot][0];
+    ohci_td_t* dum = &g_int_td[idx][slot][1];
 
-    g_int_ed[idx].cfg = (addr & 0x7f)
-                 | ((uint32_t)(ep & 0x0f) << 7)
-                 | (2u << 11)            // DIR=IN
-                 | (1u << 25)            // toggle carry
-                 | (low_speed ? ED_LOWSPEED : 0)
-                 | ((uint32_t)len << 16);
-    g_int_ed[idx].head = (uint32_t)&g_int_td[idx];
-    g_int_ed[idx].tail = (uint32_t)&g_int_td[idx];
+    memset(ed, 0, sizeof(*ed));
+    memset(&g_int_td[idx][slot], 0, sizeof(g_int_td[idx][slot]));
 
-    g_int_td[idx].cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_T_DATA0 | TD_DP_IN | TD_R;
-    g_int_td[idx].cbp = (uint32_t)buf;
-    g_int_td[idx].be  = (uint32_t)(buf + len - 1);
-    g_int_td[idx].next = (uint32_t)&g_int_td[idx];
+    ed->cfg = (addr & 0x7f)
+             | ((uint32_t)(ep & 0x0f) << 7)
+             | (2u << 11)            // DIR=IN
+             | (0u << 25)            // toggle carry = DATA0
+             | (low_speed ? ED_LOWSPEED : 0)
+             | ((uint32_t)len << 16);
+    ed->head = (uint32_t)td;
+    ed->tail = (uint32_t)dum;
+    ed->next = 0;
 
-    cache_clean((uint32_t)&g_int_ed[idx], sizeof(g_int_ed[0]));
-    cache_clean((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
+    // TD toggle: оба слота одинаково — T=00 (toggle from ED), HC сам ведёт
+    // DATA0/DATA1 через ED toggle carry.
+    td->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
+    td->cbp = (uint32_t)buf;
+    td->be  = (uint32_t)(buf + len - 1);
+    td->next = (uint32_t)dum;
+
+    dum->cfg = (TD_CC_NOTACC << TD_CC_SHIFT);
+    dum->cbp = dum->be = 0;
+    dum->next = (uint32_t)dum;
+
+    cache_clean((uint32_t)ed, sizeof(*ed));
+    cache_clean((uint32_t)&g_int_td[idx][slot], sizeof(g_int_td[idx][slot]));
     cache_clean((uint32_t)buf, len);
 
-    // периодическая таблица HCCA этого порта -> ED
-    for (int i = 0; i < 32; i++) g_hcca[idx].intr[i] = (uint32_t)&g_int_ed[idx];
-    cache_clean((uint32_t)&g_hcca[idx], sizeof(g_hcca[0]));
+    if (slot == 0) {
+        // Первый слот: HCCA-таблица → ED0, цеплялка NextED, PLE
+        g_int_ed[idx][0].next = (uint32_t)&g_int_ed[idx][1];
+        cache_clean((uint32_t)&g_int_ed[idx][0], sizeof(g_int_ed[idx][0]));
 
-    // DMB перед включением периодического списка: HC должен видеть
-    // готовые ED/TD в DRAM до того, как начнёт обход списка.
-    __asm volatile("dmb" ::: "memory");
+        for (int i = 0; i < 32; i++) g_hcca[idx].intr[i] = (uint32_t)&g_int_ed[idx][0];
+        cache_clean((uint32_t)&g_hcca[idx], sizeof(g_hcca[0]));
 
-    // Правильный PLE: OHCI HcControl bit 2 (Periodic List Enable)
-    // также надо записать HcPeriodicCurrentED
-    ohci->peried = (uint32_t)&g_int_ed[idx];
-    ohci->ctrl |= (1u << 2);   // PLE
+        __asm volatile("dmb" ::: "memory");
+        ohci->peried = (uint32_t)&g_int_ed[idx][0];
+        ohci->ctrl |= (1u << 2);   // PLE
+    } else {
+        // Второй слот: цепляется через ED0.NextED (уже настроен в slot=0)
+        __asm volatile("dmb" ::: "memory");
+    }
     return 0;
 }
 
-int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len) {
+int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
     int idx = ohci_idx(base);
+    ohci_td_t* td = &g_int_td[idx][slot][0];
     (void)len;
-    cache_invalidate((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
-    uint32_t cc = g_int_td[idx].cfg >> TD_CC_SHIFT;
-    if (cc != TD_CC_NOERR)
-        return 0;
-    cache_invalidate((uint32_t)buf, 64);
-    // re-arm
-    uint32_t cfg = g_int_td[idx].cfg;
-    cfg = (cfg & ~(0xFu << TD_CC_SHIFT)) | (TD_CC_NOTACC << TD_CC_SHIFT);
-    g_int_td[idx].cfg = cfg;
-    cache_clean((uint32_t)&g_int_td[idx], sizeof(g_int_td[0]));
-    return 1;
+
+    cache_invalidate((uint32_t)td, sizeof(td[0]));
+    uint32_t cc = td->cfg >> TD_CC_SHIFT;
+    int fresh = (cc == TD_CC_NOERR);
+
+    if (fresh)
+        cache_invalidate((uint32_t)buf, 64);
+
+    // re-arm: оба слота одинаково — T=00 (toggle from ED), HC сам ведёт
+    // DATA0/DATA1 через ED toggle carry (как рабочая клавиатура slot 0).
+    uint32_t cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
+    td->cfg = cfg;
+    td->cbp = (uint32_t)buf;
+    td->be  = (uint32_t)(buf + len - 1);
+    td->next = (uint32_t)&g_int_td[idx][slot][1];
+    cache_clean((uint32_t)td, sizeof(td[0]));
+    cache_clean((uint32_t)buf, len);
+
+    // head/tail: возвращаем на активный TD. Не инвалидируем и не читаем ED —
+    // stale-копия кары HC из кэша не должна затираться (она и так у HC в DRAM).
+    g_int_ed[idx][slot].head = (uint32_t)td;
+    g_int_ed[idx][slot].tail = (uint32_t)&g_int_td[idx][slot][1];
+    cache_clean((uint32_t)&g_int_ed[idx][slot], sizeof(g_int_ed[idx][slot]));
+    return fresh ? 1 : 0;
 }
 
 void usb_ohci_set_mps(uint16_t mps) {
@@ -222,6 +258,16 @@ static void usb_port_hw_init(uint32_t ohci_base) {
 int usb_ohci_init(uint32_t base) {
     ohci_regs_t* ohci = (ohci_regs_t*)base;
     extern int uart0_printf(const char* fmt, ...);
+
+    // Пометить когерентную (uncached) область, где лежат ED/TD/HCCA/буферы.
+    // Только один раз на первом порту.
+    {
+        static int mmu_done = 0;
+        if (!mmu_done) {
+            mmu_mark_uncached(H3_MEM_COHERENT_REGION);
+            mmu_done = 1;
+        }
+    }
 
     uart0_printf("usb: base=0x%X rev=0x%X rha=0x%X\n",
                  base, ohci->rev, ohci->rha_des);

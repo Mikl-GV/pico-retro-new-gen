@@ -485,7 +485,7 @@ static uint16_t capture_key(void) {
         int any = 0;
         for (int i = 0; i < n && i < 8; i++) if (keys[i]) { any = 1; break; }
         if (!any) break;
-        h3_hs_timer_delay(5000);
+        udelay(5000);
     }
     for (;;) {
         int k = usb_kbd_poll();
@@ -494,7 +494,7 @@ static uint16_t capture_key(void) {
             if (k == KBD_ESC) return 0;
             return (uint16_t)(((mods & (0x02|0x20)) ? REMAP_MOD_SHIFT : 0) << 8 | k);
         }
-        h3_hs_timer_delay(5000);
+        udelay(5000);
     }
 }
 
@@ -507,7 +507,7 @@ void remap_menu(void) {
         if (!mode) {
             draw_plat_list(sel_plat);
             int k = usb_kbd_poll();
-            if (!k) { h3_hs_timer_delay(16000); continue; }
+            if (!k) { udelay(16000); continue; }
             if (k == KBD_UP && sel_plat > 0) sel_plat--;
             else if (k == KBD_DOWN && sel_plat < REMAP_PLAT_COUNT - 1) sel_plat++;
             else if (k == KBD_ENTER) { mode = 1; sel_btn = 0; }
@@ -515,7 +515,7 @@ void remap_menu(void) {
         } else {
             draw_btn_list(sel_plat, sel_btn);
             int k = usb_kbd_poll();
-            if (!k) { h3_hs_timer_delay(16000); continue; }
+            if (!k) { udelay(16000); continue; }
             if (k == KBD_UP) { do { sel_btn--; } while (sel_btn > 0 && !btn_labels[sel_btn]); if (sel_btn < 0) sel_btn = 0; }
             else if (k == KBD_DOWN) { do { sel_btn++; } while (sel_btn < BTN_MAX - 1 && !btn_labels[sel_btn]); }
             else if (k == KBD_ENTER) {
@@ -534,6 +534,6 @@ void remap_menu(void) {
             }
             else if (k == KBD_ESC) mode = 0;
         }
-        h3_hs_timer_delay(40000);
+        udelay(40000);
     }
 }

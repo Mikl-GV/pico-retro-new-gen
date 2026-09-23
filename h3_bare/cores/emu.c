@@ -7,7 +7,6 @@
 #include "usb_kbd.h"
 #include "h3_hs_timer.h"
 #include "led.h"
-#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -141,33 +140,8 @@ void emu_clear_fb(void) {
 }
 
 // ---- OSD громкости ----
-// Показываем уровень после смены громкости (клавиши =/-). Рисуется
-// поверх отмасштабированной картинки, поэтому вызывается ДО fb_flush().
-static uint32_t g_osd_until = 0;   // момент (в мкс HS-таймера), до которого рисовать
-
+// ---- OSD громкости отключён вместе со звуком (был i2s-зависим) ----
 void emu_osd_apply(void) {
-    if (!g_osd_until) return;
-    uint32_t now = h3_hs_timer_lo_us();
-    if ((int32_t)(now - g_osd_until) >= 0) { g_osd_until = 0; return; }
-
-    int v = i2s_volume_pct();
-    // Шкала: 10 делений по 10%. Полоска по центру экрана сверху.
-    int seg = v / 10;
-    const int bar_w = 220;               // ширина всей шкалы
-    const int x0 = (1024 - bar_w) / 2;   // центр по X
-    const int y0 = 20;
-    // Тёмная подложка
-    fb_fill_rect(x0 - 8, y0 - 6, bar_w + 16, 24, 0x80000000);
-    // Сегменты шкалы (10 шт, каждый 16px + зазор 4px = 20px шаг, 200px)
-    for (int i = 0; i < 10; i++) {
-        uint32_t c = (i < seg) ? 0x0000FF44 : 0x00444444;
-        fb_fill_rect(x0 + i * 20, y0 + 8, 16, 8, c);
-    }
-    // Число % справа от шкалы
-    char buf[16];
-    int n = snprintf(buf, sizeof(buf), "%d%%", v);
-    fb_puts(x0 + 10 * 20 + 6, y0, buf, 0x00FFFFFF);
-    (void)n;
 }
 
 // ---- throttle ----
@@ -178,46 +152,39 @@ void emu_throttle(void) {
     static uint32_t led_fc = 0;
     if ((++led_fc & 0x1F) == 0) led_set(led_fc & 0x20);
 
-    // Громкость с клавиатуры: =/+ и - (HID 46 =, 45 -, 87 =, 86 -)
-    static int prev_vol_keys = 0;
-    {
-        uint8_t keys[8];
-        int n = usb_kbd_get_raw(keys, 8);
-        int vol_up = 0, vol_dn = 0;
-        for (int i = 0; i < n; i++) {
-            if (keys[i] == 46 || keys[i] == 87) vol_up = 1;   // = / numpad +
-            if (keys[i] == 45 || keys[i] == 86) vol_dn = 1;   // - / numpad -
-        }
-        int now = (vol_up ? 1 : 0) | (vol_dn ? 2 : 0);
-        if (now && now != prev_vol_keys) {
-            int v = i2s_volume_pct();
-            if (vol_up) { v += 5; if (v > 100) v = 100; }
-            if (vol_dn) { v -= 5; if (v < 0) v = 0; }
-            i2s_volume(v);
-            g_osd_until = h3_hs_timer_lo_us() + 1500000;   // показывать 1.5 с
-        }
-        prev_vol_keys = now;
-    }
-
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
-    // Выталкивание звука с лимитом 8 пар за раз — не блокирует эмуляцию.
-    // Каждая итерация ~0.17 мс, а while внизу крутится весь остаток кадра,
-    // успевая опорожнить кольцо с правильным темпом 48 кГц.
-    i2s_flush_max(8);
-    // Остаток кадра: КРУТИМ i2s_flush_max(8) — звук выталкивается в
-    // I2S FIFO непрерывно в реальном времени, эмуляция не виснет.
-    if (elapsed < emu_period_us) {
-        uint32_t target = emu_ts0 + emu_period_us;
-        while ((int32_t)(h3_hs_timer_lo_us() - target) < 0)
-            i2s_flush_max(8);
-    }
+    if (elapsed < emu_period_us)
+        udelay(emu_period_us - elapsed);
     emu_ts0 = h3_hs_timer_lo_us();
 }
 
 void emu_throttle_reset(void) {
     emu_ts0 = 0;
+}
+
+// ---- единый выход из эмулятора: удержание ESC ~0.9 с ----
+static uint32_t g_esc_hold_us = 0;
+
+void emu_esc_hold_reset(void) {
+    g_esc_hold_us = 0;
+}
+
+int emu_esc_hold(void) {
+    uint8_t raw_keys[6];
+    int n = usb_kbd_get_raw(raw_keys, 6);
+    int esc = 0;
+    for (int i = 0; i < n; i++)
+        if (raw_keys[i] == 41) { esc = 1; break; }
+    if (esc) {
+        uint32_t now = h3_hs_timer_lo_us();
+        if (!g_esc_hold_us) g_esc_hold_us = now;
+        else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
+    } else {
+        g_esc_hold_us = 0;
+    }
+    return 0;
 }
 
 // ---- эмуляторы ----
@@ -259,13 +226,11 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("A7800: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00281206);   // тёмно-бордовый
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -277,16 +242,14 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("A5200: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00061428);   // тёмно-синий
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         a5200_run_frame();
         emu_throttle();
         emu_scale(320, 240);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -298,16 +261,14 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         sms_run_frame();
         emu_throttle();
         emu_scale(256, 192);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -319,16 +280,14 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00082030);   // тёмно-синий (GG)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         gg_run_frame();
         emu_throttle();
         emu_scale_int(160, 144);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -340,13 +299,11 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
     printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
            a2600_diff_expert ? "Expert" : "Novice");
     emu_set_border_color(0x00201A08);   // тёмно-янтарный (woodgrain A2600)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -378,17 +335,15 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GameBoy: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A0E);   // тёмно-зелёный (DMG)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         gb_run_frame();
         gb_render_frame();
         emu_throttle();
         emu_scale_int(160, 144);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -400,18 +355,15 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GBA: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A2E);   // тёмно-синий (GBA)
-    uint8_t raw_keys[6];
-    uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         gba_run_frame();
         gba_render_frame();
         emu_throttle();
         emu_scale_int(240, 160);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -423,17 +375,15 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("Lynx: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E0D26);   // тёмно-фиолетовый (Lynx)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         lynx_run_frame();
         lynx_render_frame();
         emu_throttle();
         emu_scale_int(160, 102);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }
@@ -445,16 +395,14 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("NGP: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A2B);   // тёмно-синий (NGP)
-    uint8_t raw_keys[6]; uint32_t fc = 0;
     emu_ts0 = 0;
+    emu_esc_hold_reset();
     for (;;) {
         ngp_run_frame();
         emu_throttle();
         emu_scale_int(160, 152);
         fb_flush();
-        fc++;
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++) if (raw_keys[i] == 41) goto exit;
+        if (emu_esc_hold()) goto exit;
     }
 exit: fb_clear(); fb_flush();
 }

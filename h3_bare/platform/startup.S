@@ -1,6 +1,10 @@
 /* startup.S — минимальный entry для Allwinner H3 (Orange Pi Lite).
  * Загрузчик (sunxi-fel или u-boot) прыгает сюда в 0x40000000, ARM state.
- * Делаем: SVC mode, MMU/caches off, стек в конце DRAM, BSS=0, main().
+ * Делаем: SVC mode, стек в конце DRAM, BSS=0, main().
+ * MMU и D-cache остаются как U-Boot (включены). OHCI-структуры (ED/TD/HCCA,
+ * буферы) вынесены в libh3_coherent_region и помечены uncached через MMU
+ * (см. mmu_mark_uncached в usb_ohci.c) — поэтому DMA/HC не конфликтуют
+ * с write-back кэшем, а остальная память работает на полной скорости.
  */
 .syntax unified
 .arch armv7-a
@@ -218,6 +222,18 @@ _start:
     b 1b
 2:
 
+    /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
+     * не покрывает). Идёт ПОСЛЕ кучи, но до main. */
+    ldr r0, =_coherent_start
+    ldr r1, =_coherent_end
+    cmp r0, r1
+    beq 7f
+6:  cmp r0, r1
+    bhs 7f
+    str r2, [r0], #4
+    b 6b
+7:
+
     /* DGN '5': BSS обнулён */
     mov r0, #'5'
     bl uart_dbg
@@ -245,6 +261,7 @@ _start:
     /* DGN 'A': перед main */
     mov r0, #'A'
     bl uart_dbg
+
     bl main
 
 _hang:

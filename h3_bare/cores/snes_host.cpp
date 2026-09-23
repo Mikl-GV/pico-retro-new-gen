@@ -29,7 +29,6 @@ extern "C" {
 #include "cheatdb.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
-#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -174,7 +173,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     Settings.ControllerOption = SNES_JOYPAD;
     Settings.ApplyCheats = true;
     Settings.HBlankStart = (256 * Settings.H_Max) / 341;
-    Settings.Mute = false;    // звук включён (I2S → MAX98357A)
+    Settings.Mute = true;
 
     // Инициализация памяти
     if (!S9xInitMemory()) {
@@ -259,15 +258,12 @@ extern "C" void snes_run_frame(void) {
     // форсируем выход. В норме кадр занимает < 4M инструкций.
     S9xMainLoop();
 
-    // Звук: классический путь (soundux) — S9xMixSamples рендерит по
-    // требованию заданное число стерео-сэмплов. Берём один кадр 60 Гц.
+    // Звук отключён: дрейним сэмплы (S9xMixSamples), вывод не делаем
     {
         static int16_t sndbuf[4096];
         int cnt = (Settings.SoundPlaybackRate * 1000) / 60000;   // ~735
         if (cnt > 2048) cnt = 2048;
         S9xMixSamples(sndbuf, cnt);
-        for (int i = 0; i < cnt; i++)
-            i2s_push_sample(sndbuf[i * 2], sndbuf[i * 2 + 1]);
     }
 
     // Рендер: GFX.Screen → EMU_FB
@@ -318,9 +314,8 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
         return;
     }
     emu_set_border_color(0x000B0C18);   // тёмно-синеватый (SNES)
-    uint8_t raw_keys[6];
-    uint32_t esc_hold_us = 0;
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         snes_run_frame();
         emu_throttle();
@@ -328,16 +323,7 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
                   IPPU.RenderedScreenHeight > 0 ? IPPU.RenderedScreenHeight : 224);
         fb_flush();
         // ESC — удержание ~0.9 с на выход
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        int esc = 0;
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) { esc = 1; break; }
-        if (esc) {
-            if (!esc_hold_us) esc_hold_us = h3_hs_timer_lo_us();
-            else if (h3_hs_timer_lo_us() - esc_hold_us > 900000) goto exit;
-        } else {
-            esc_hold_us = 0;
-        }
+        if (emu_esc_hold()) goto exit;
     }
 exit:
     snes_stop();

@@ -66,9 +66,17 @@ SECTIONS
    * libh3_coherent_region[1MB]). NOLOAD — не занимает место в образе,
    * только резервирует адреса; стартует сразу за кучей (_hend),
    * выровнена по 1 МБ как требует когерентный DMA-буфер.
-   * Символ libh3_coherent_region = начало области (наш extern-символ). */
+   * Символ libh3_coherent_region = начало области (наш extern-символ).
+   * OHCI-структуры (ED/TD/HCCA, буферы) кладём в самое начало области и
+   * помечаем uncached через MMU — см. .coherent секцию и mmu_mark_uncached.
+   * _coherent_start/_coherent_end — для zero-init в startup.S (NOLOAD
+   * секцию BSS-цикл не покрывает). */
   . = ALIGN(0x100000);
   .libh3_coherent (NOLOAD) : {
+    _coherent_start = .;
+    *(.coherent)
+    _coherent_end = .;
+    . = ALIGN(4);
     . = . + (1 * 1024 * 1024);
   }
   libh3_coherent_region = . - (1 * 1024 * 1024);

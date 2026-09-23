@@ -22,7 +22,6 @@ extern "C" {
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
-#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -116,15 +115,8 @@ extern "C" void coleco_run_frame(void) {
     coleco_build_input(g_core);
 
     // Один кадр: ядро рисует в pFrameBuffer (EMU_FB 256x192) и возвращается
-    // после VBlank. Если дать pSampleBuffer — Gearcoleco рендерит звук
-    // (Sms_Apu → Stereo_Buffer → int16_t) в этот буфер. Выводим в I2S.
-    static int16_t sndbuf[GC_AUDIO_BUFFER_SIZE];
-    int samples = 0;
-    g_core->RunToVBlank((u8*)EMU_FB, sndbuf, &samples);
-    int n = samples;   // число стерео-сэмплов
-    if (n > 1024) n = 1024;
-    for (int i = 0; i < n; i++)
-        i2s_push_sample(sndbuf[i * 2], sndbuf[i * 2 + 1]);
+    // после VBlank. Звук отключён: pSampleBuffer=NULL (ядро не рендерит audio)
+    g_core->RunToVBlank((u8*)EMU_FB, NULL, NULL);
 }
 
 extern "C" void coleco_stop(void) {
@@ -142,25 +134,15 @@ extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* ro
         return;
     }
     emu_set_border_color(0x00081814);   // тёмно-оливковый (картридж Coleco)
-    uint8_t raw_keys[6];
-    uint32_t esc_hold_us = 0;
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         coleco_run_frame();
         emu_throttle();
         emu_scale(COL_W, COL_H);
         fb_flush();
         // ESC — удержание ~0.9 с на выход (как NES/SNES)
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        int esc = 0;
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) { esc = 1; break; }
-        if (esc) {
-            if (!esc_hold_us) esc_hold_us = h3_hs_timer_lo_us();
-            else if (h3_hs_timer_lo_us() - esc_hold_us > 900000) goto exit;
-        } else {
-            esc_hold_us = 0;
-        }
+        if (emu_esc_hold()) goto exit;
     }
 exit:
     coleco_stop();

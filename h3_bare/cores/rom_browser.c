@@ -225,9 +225,9 @@ static int cheat_code_input(void) {
 
         // ---- клавиатура ----
         int k = usb_kbd_poll();
-        if (!k) { h3_hs_timer_delay(16000); continue; }
+        if (!k) { udelay(16000); continue; }
         if (k == 41) return 0;                                // ESC — отмена
-        if (k == 40 || k == '\n' || k == '\r') {              // Enter — подтвердить
+        if (k == 40) {              // Enter — подтвердить
             if (bl > 0) {
                 buf[bl] = 0;
                 int ok = cheats_manual_add(buf, "Manual");
@@ -356,15 +356,17 @@ static int cheat_menu_run(const char* sys_id, const char* rom_name) {
         // Клавиатура — ТОЛЬКО usb_kbd_poll (без usb_input_poll, который сам
         // мапит геймпад и конфликтует с pad_just_pressed выше)
         int k = usb_kbd_poll();
-        if (k == 82 || k == 'w') {
-            if (cursor > 0) cursor--;
+        if (k == 82 || k == 26) {   // Up / W — по кольцу
+            if (cnt <= 1) { dirty = 1; }
+            else { cursor = (cursor == 0) ? cnt : cursor - 1; }
             if (cursor < scroll) scroll = cursor;
             dirty = 1;
-        } else if (k == 81 || k == 's') {
-            if (cursor < cnt) cursor++;
+        } else if (k == 81 || k == 22) {   // Down / S — по кольцу
+            if (cnt <= 1) { dirty = 1; }
+            else { cursor = (cursor >= cnt) ? 0 : cursor + 1; }
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
             dirty = 1;
-        } else if (k == 40 || k == '\n' || k == '\r' || k == 44) {
+        } else if (k == 40 || k == 44) {
             // Enter или Space: на читах — вкл/выкл, на строке ввода — ввод кода
             if (cursor < cnt) cheats_toggle(cursor);
             else if (cheat_code_input()) { cnt = cheats_count(); if (cursor > cnt) cursor = cnt; }
@@ -381,7 +383,7 @@ static int cheat_menu_run(const char* sys_id, const char* rom_name) {
             return 0;  // Backspace — тоже назад (не запуск)
         } else {
             // нет нажатия — ждём ~1 кадр, чтобы не мерцало
-            h3_hs_timer_delay(16000);
+            udelay(16000);
         }
     }
 }
@@ -461,18 +463,39 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
         int k = usb_input_poll();   // неблокирующий: клавиатура/геймпад с автоповтором
         if (!k) {
             // нет нажатия — ждём ~1 кадр (16 мс) и НЕ перерисовываем
-            h3_hs_timer_delay(16000);
+            udelay(16000);
             continue;
         }
-        if (k == 82 || k == 'w') {
-            if (cursor > 0) cursor--;
+        if (k == 82 || k == 26) {   // Up / W — по кольцу
+            if (n <= 1) { dirty = 1; }
+            else { cursor = (cursor == 0) ? n - 1 : cursor - 1; }
+            // двусторонний скролл: курсор всегда в видимой области
             if (cursor < scroll) scroll = cursor;
-            dirty = 1;
-        } else if (k == 81 || k == 's') {
-            if (cursor < n - 1) cursor++;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
             dirty = 1;
-} else if (k == 22) {
+        } else if (k == 81) {   // Down — по кольцу (S занят под читы)
+            if (n <= 1) { dirty = 1; }
+            else { cursor = (cursor >= n - 1) ? 0 : cursor + 1; }
+            // двусторонний скролл
+            if (cursor < scroll) scroll = cursor;
+            if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
+            dirty = 1;
+        } else if (k >= 4 && k <= 29) {
+            // Поиск по первой букве (HID-сканкоды A=4..Z=29). Регистронезависимо.
+            char c = (char)('a' + (k - 4));
+            int found = -1;
+            for (int i = 0; i < n; i++) {
+                char ch = list[i].name[0];
+                char l = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+                if (l == c) { found = i; break; }
+            }
+            if (found >= 0) {
+                cursor = found;
+                if (cursor < scroll) scroll = cursor;
+                if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
+            }
+            dirty = 1;
+        } else if (k == 22) {
             // S — меню читов для выбранной игры.
             // Возврат 1 = запустить игру с отмеченными читами
             // (Start/A/Mode/ESC в чит-меню), 0 = назад в список.
@@ -509,8 +532,8 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 if (scroll > cursor) scroll = cursor;
                 dirty = 1;
             }
-        } else if (k == 40 || k == '\n' || k == '\r') {
- if (n > 0) {
+        } else if (k == 40) {
+            if (n > 0) {
                 // Копируем имя ДО load_rom — fat_find внутри перезатрёт g_scratch_dir
                 char sel_name[FAT_NAME_LEN];
                 int sl = strlen(list[cursor].name);
@@ -537,7 +560,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             }
         } else if (k == 41) {
             return;
-        } else if (k == 42 || k == 76 || k == 49) {
+        } else if (k == 42 || k == 76) {
             // Backspace / Delete / или "D" — удалить ROM (двойное подтверждение)
             if (n > 0) {
                 // Копируем имя ДО удаления — fat_delete_file затрёт g_scratch_dir
@@ -557,7 +580,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
 
                 int confirm = input_wait();
                 if (confirm == 41) { dirty = 1; continue; }   // ESC
-                if (confirm != 40 && confirm != '\n' && confirm != '\r') { dirty = 1; continue; }
+                if (confirm != 40) { dirty = 1; continue; }
 
                 // Подтверждение 2: финальное
                 fb_clear();
@@ -570,7 +593,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
 
                 confirm = input_wait();
                 if (confirm == 41) { dirty = 1; continue; }   // ESC
-                if (confirm != 40 && confirm != '\n' && confirm != '\r') { dirty = 1; continue; }
+                if (confirm != 40) { dirty = 1; continue; }
 
                 int r = fat_delete_file(path, del_name);
                 if (r == 0) {

@@ -30,7 +30,6 @@ extern "C" {
 #include "cheat.h"
 #include "sega_pad.h"
 #include "remap.h"
-#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -189,7 +188,7 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
         printf("FCEUmm: no FC keyboard\n");
     }
 
-    // Звук: включаем NES APU на 48000 Гц (I2S → MAX98357A)
+    // Звук: NES APU включён, вывод не делаем
     FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
 
@@ -227,32 +226,8 @@ extern "C" void fceumm_run_frame(void) {
     FCEUI_Emulate(&gfx, &snd, &ssize, 0);
     if (!gfx) return;
 
-    // ==== ДИАГНОСТИКА ЗВУКА (1 раз/сек): max|sample| за кадр ====
-    {
-        static int diag_cnt = 0;
-        static long diag_max = 0;
-        int mx = 0;
-        for (int z = 0; z < ssize && z < 400; z++) {
-            int a = snd[z] < 0 ? -snd[z] : snd[z];
-            if (a > mx) mx = a;
-        }
-        if (mx > diag_max) diag_max = mx;
-        if (++diag_cnt >= 60) {
-            printf("FCEUMM-SND: frames=%d ssize=%d max=%ld\n",
-                   diag_cnt, ssize, diag_max);
-            diag_cnt = 0; diag_max = 0;
-        }
-    }
-
-    // Звук: WaveFinal — int32_t моно (стандартный APU NES). Конвертируем
-    // в int16_t и разворачиваем L/R одинаково, шлём в I2S (MAX98357A).
-    for (int32_t i = 0; i < ssize; i++) {
-        int32_t v = snd[i];
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        int16_t s = (int16_t)v;
-        i2s_push_sample(s, s);
-    }
+    // Звук отключён: WaveFinal не читаем и не выводим
+    (void)snd; (void)ssize;
 
     // Рендер: gfx = XBuf[256×240] индексов палитры.
     // Деэмфазис строки из XDBuf: база 256 + (deemp&7)<<6, иначе база 0.
@@ -286,11 +261,8 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         return;
     }
     emu_set_border_color(0x00140612);   // тёмно-бордовый (Dendy/NES)
-    printf("NES: AUDIO BEEP TEST 1kHz/300ms at start\n");
-    i2s_test_tone(1000, 300);
-    uint8_t raw_keys[6];
-    uint32_t esc_hold_us = 0;
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         fceumm_run_frame();
         emu_throttle();
@@ -299,16 +271,7 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         // ESC: одиночное нажатие НЕ выходит — оно уходит в SuborKB
         // (hid_to_subor[41]=FKB_ESCAPE: Break в Basic и т.п.) или игнорируется.
         // Выход — только по УДЕРЖАНИЮ ~0.9 с (как в Portfolio).
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        int esc = 0;
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) { esc = 1; break; }
-        if (esc) {
-            if (!esc_hold_us) esc_hold_us = h3_hs_timer_lo_us();
-            else if (h3_hs_timer_lo_us() - esc_hold_us > 900000) goto exit;
-        } else {
-            esc_hold_us = 0;
-        }
+        if (emu_esc_hold()) goto exit;
     }
 exit:
     fceumm_stop();

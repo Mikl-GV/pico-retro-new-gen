@@ -26,7 +26,6 @@
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
-#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -172,17 +171,8 @@ void osint_render(void) {
 }
 
 void vecx_snd_push(unsigned samps) {
-    // Звук Vectrex: PSG (SN76489) + DAC смешиваются. Наши буферы
-    // заданы через vecx_psg_set_buffer/vecx_dac_set_buffer (vx_psgbuf/vx_dacbuf).
-    // Ядро заполняет их, здесь конвертируем в моно-стерео и шлём в I2S.
-    if (samps > SIZE_ABUF) samps = SIZE_ABUF;
-    for (unsigned i = 0; i < samps; i++) {
-        int32_t v = (int32_t)vx_psgbuf[i] + (int32_t)vx_dacbuf[i];
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        int16_t s = (int16_t)v;
-        i2s_push_sample(s, s);
-    }
+    // Звук отключён (без I2S): ядро по-прежнему пишет сэмплы в буферы — игнорируем
+    (void)samps;
 }
 
 // ---- Ввод ----
@@ -278,25 +268,15 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     emu_set_border_color(0x00000B14);   // тёмно-синий
     uint32_t border = 0x000B1430;       // XRGB − тёмно-синий для полей Vectrex
-    uint8_t raw_keys[6];
-    uint32_t esc_hold_us = 0;
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         vecx_run_frame();                // osint_render внутри рисует в vx_fb
         emu_throttle();
         vx_render_hdmi(border);          // vx_fb[330×410] → HDMI 1024×600 (портрет)
         fb_flush();
-        // ESC удержание ~0.8с — выход
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        int esc = 0;
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) { esc = 1; break; }
-        if (esc) {
-            if (!esc_hold_us) esc_hold_us = h3_hs_timer_lo_us();
-            else if (h3_hs_timer_lo_us() - esc_hold_us > 800000) goto exit;
-        } else {
-            esc_hold_us = 0;
-        }
+        // ESC удержание ~0.9с — выход
+        if (emu_esc_hold()) goto exit;
     }
 exit:
     g_loaded = 0;

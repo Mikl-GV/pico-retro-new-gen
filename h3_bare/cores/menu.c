@@ -218,9 +218,30 @@ static void build_rows(void) {
 static int sel_row = 0;
 static int scroll_top = 0;
 
+// Подтянуть scroll_top так, чтобы при навигации заголовок группы выбранной
+// строки был виден. Если над sel_row стоит заголовок группы — его и держим
+// на экране (иначе «Portable»/«Consoles» пропадал за верхним краем).
+static void menu_scroll_to(int row_sel, int max_visible) {
+    int hdr = row_sel;
+    if (row_sel > 0 && rows[row_sel - 1].item == -1 &&
+        rows[row_sel - 1].group == rows[row_sel].group)
+        hdr = row_sel - 1;               // показываем заголовок группы
+    if (scroll_top > hdr) scroll_top = hdr;
+    if (row_sel >= scroll_top + max_visible)
+        scroll_top = row_sel - max_visible + 1;
+}
+
+// ---- крестик тачпада: рисуется плавно в input_wait, а не в render_menu.
+// Координаты копятся в фоне; если рисовать только при перерисовке — крестик
+// «выпрыгивает» при F1..F12. Тут объявляем состояние, функция ниже.
+static int  g_cur_drawn = 0;
+static int  g_cur_x = 0, g_cur_y = 0;
+#define PAD_CUR_COL 0x00FFFF00
+#define PAD_CUR_BG  0x00000000
+
 static void render_menu(void) {
     fb_draw_stars();
-    fb_puts_s(60, TITLE_Y, "MultiTool Retro", 2, 0x0000FFFF);
+    fb_puts_s(60, TITLE_Y, "MultiTool Retro", 2, 0x00FF0000);
     fb_fill_rect(60, SEP_Y, 200, 2, 0x00FFFFFF);
 
     int max_visible = (FOOTER_Y - LIST_TOP - 40) / ROW_H;
@@ -283,6 +304,29 @@ static void render_menu(void) {
     }
 
     fb_puts(60, FOOTER_Y, "  ^v : select    Enter : open    ESC : back", 0x00888888);
+
+    fb_flush();
+    // крестик рисуется плавно в input_wait; после полной перерисовки
+    // сбрасываем флаг, чтобы он не стирал «чужую» область
+    g_cur_drawn = 0;
+}
+
+// ---- плавный крестик тачпада: рисуется в input_wait (а не в render_menu),
+// иначе координаты копятся в фоне, а крестик «выпрыгивает» при перерисовке.
+static void pad_cursor_draw(void) {
+    int mx, my;
+    if (!usb_pad_get_pos(&mx, &my)) return;
+    if (g_cur_drawn && mx == g_cur_x && my == g_cur_y) return;   // не двигался
+
+    if (g_cur_drawn) {
+        // стереть старый крестик чёрным
+        fb_fill_rect(g_cur_x - 4, g_cur_y - 4, 9, 9, PAD_CUR_BG);
+        fb_flush();
+    }
+    fb_fill_rect(mx - 4, my, 9, 1, PAD_CUR_COL);
+    fb_fill_rect(mx, my - 4, 1, 9, PAD_CUR_COL);
+    g_cur_drawn = 1;
+    g_cur_x = mx; g_cur_y = my;
     fb_flush();
 }
 
@@ -290,6 +334,10 @@ static int input_wait(void) {
     uint32_t fc = 0;
     for (;;) {
         int k = usb_input_poll();
+        // тачпад: накопление позиции курсора и фронта тапа (interrupt-IN, неблокирующий)
+        usb_pad_poll();
+        // плавно двигаем крестик по мере накопления координат
+        pad_cursor_draw();
         if (k) return k;
         // мигаем LED, пока ждём ввод (видно, что не зависли)
         extern void led_set(int);
@@ -320,28 +368,27 @@ int menu_run(void) {
         int k = input_wait();
         int max_visible = (FOOTER_Y - LIST_TOP - 40) / ROW_H;
 
-        if (k == 82 || k == 'w') {
+        if (k == 82 || k == 26) {   // Up / W — по кольцу
             int r = sel_row;
             do {
-                if (r <= 0) break;
-                r--;
-            } while (r > 0 && rows[r].item == -1);
+                if (r == 0) r = row_count - 1; else r--;
+                if (r == sel_row) break;   // прошли круг
+            } while (rows[r].item == -1);
             if (rows[r].item != -1) {
                 sel_row = r;
-                if (sel_row < scroll_top) scroll_top = sel_row;
+                menu_scroll_to(sel_row, max_visible);
             }
-        } else if (k == 81 || k == 's') {
+        } else if (k == 81) {   // Down — по кольцу (S=22 не маппим: 22 = Mode геймпада)
             int r = sel_row;
             do {
-                if (r >= row_count - 1) break;
-                r++;
-            } while (r < row_count - 1 && rows[r].item == -1);
+                if (r >= row_count - 1) r = 0; else r++;
+                if (r == sel_row) break;   // прошли круг
+            } while (rows[r].item == -1);
             if (rows[r].item != -1) {
                 sel_row = r;
-                if (sel_row >= scroll_top + max_visible)
-                    scroll_top = sel_row - max_visible + 1;
+                menu_scroll_to(sel_row, max_visible);
             }
-        } else if (k == 40 || k == '\n' || k == '\r') {
+        } else if (k == 40) {
             int item = rows[sel_row].item;
             if (item >= 0) {
                 // Система без папки на SD (пункт из системной таблицы, present=0) —
@@ -362,7 +409,7 @@ int menu_run(void) {
                 usb_pad_wait_release();
                 return item;
             }
-        } else if (k == 41 || k == 27 || k == 'q') {
+        } else if (k == 41 || k == 27 || k == 20) {   // ESC / X / Q
             return -1;
         }
     }
@@ -385,11 +432,11 @@ void menu_help(void) {
         "Enter=Start  ESC=hold-exit",
         "--- GB/GBC ---",
         "Z=B  X=A  S=Select",
-        "Enter=Start  ESC=exit",
+        "Enter=Start  ESC=hold",
         "--- LYNX ---",
         "Arrows = D-Pad",
         "Z=A  X=B  S=Opt1",
-        "Enter=Opt2  ESC=exit",
+        "Enter=Opt2  ESC=hold",
         "--- MEGA DRIVE ---",
         "Z=A  X=B  C=C  A=X",
         "S=Y  D=Z  Q=Mode",

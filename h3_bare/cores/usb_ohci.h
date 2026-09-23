@@ -17,9 +17,10 @@ int  usb_ohci_port_reset(uint32_t base, int port);
 int  usb_ohci_port_low_speed(uint32_t base, int port);
 uint32_t usb_ohci_port_status(uint32_t base, int port);
 
-// Периодический interrupt-IN (для HID-тача)
+// Периодический interrupt-IN (для HID). slot 0 = клавиатура, slot 1 = мышь/тачпад.
+// ED цепляются через NextED: HCCA → ED0 → ED1. PLE ставит только slot 0.
 int  usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
-                            uint8_t* buf, uint16_t len);
-int  usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len);
+                            uint8_t* buf, uint16_t len, int slot);
+int  usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot);
 
 #endif

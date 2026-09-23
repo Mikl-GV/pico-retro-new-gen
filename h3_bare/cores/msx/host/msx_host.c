@@ -55,7 +55,6 @@ unsigned image_buffer_height = HEIGHT;
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
-#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -96,12 +95,11 @@ void PlayAllSound(int uSec) {
     RenderAndPlayAudio((unsigned int)-1);   // все доступные сэмплы
 }
 
-// ---- WriteAudio — вывод звука I2S ----
+// ---- WriteAudio — заглушка: звук отключён ----
 // fMSX рендерит стерео int16_t, Length — число сэмплов (не байт!).
 unsigned int WriteAudio(int16_t *Data, unsigned int Length) {
-    for (unsigned int i = 0; i < Length; i++)
-        i2s_push_sample(Data[i * 2], Data[i * 2 + 1]);
-    return Length;   // говорим «всё записано»
+    (void)Data;
+    return Length;   // «всё записано»
 }
 
 // ---- PutImage — перенос image_buffer в EMU_FB (как libretro.c) ----
@@ -318,8 +316,8 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         return;
     }
     emu_set_border_color(0x00000000);
-    uint8_t raw_keys[6];
     emu_throttle_reset();
+    emu_esc_hold_reset();
     for (;;) {
         msx_run_frame();
         emu_throttle();
@@ -329,9 +327,7 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         int vh = (int)image_buffer_height;
         emu_scale(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
         fb_flush();
-        int nk = usb_kbd_get_raw(raw_keys, 6);
-        for (int i = 0; i < nk; i++)
-            if (raw_keys[i] == 41) goto exit;  // ESC — выход
+        if (emu_esc_hold()) goto exit;  // ESC удержание — выход
     }
 exit:
     msx_stop();

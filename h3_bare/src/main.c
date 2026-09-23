@@ -16,7 +16,7 @@
 #include "led.h"
 #include "sega_pad.h"
 #include "remap.h"
-#include "i2s.h"
+#include "tft_drv.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -59,17 +59,17 @@ static int msx_launch_dialog(int has_dir) {
         }
 
         int k = usb_input_poll();
-        if (!k) { h3_hs_timer_delay(16000); continue; }
+        if (!k) { udelay(16000); continue; }
         if (k == 82) { if (nopts > 1 && sel != 0) { sel = 0; dirty = 1; } }        // Up → BASIC
         else if (k == 81) { if (nopts > 1 && sel != 1) { sel = 1; dirty = 1; } }   // Down → cartridge
-        else if (k == 40 || k == '\n' || k == '\r') {
+        else if (k == 40) {
             if (sel == 0) return 1;
             if (has_dir) return 2;
             return 1;   // если папки нет — Enter = BASIC
         }
         else if (k == 41 || k == 27) return 0;
         // анти-автоповтор: если курсор не менялся, даём паузу
-        h3_hs_timer_delay(50000);
+        udelay(50000);
     }
 }
 
@@ -132,8 +132,14 @@ void main(void) {
     if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
     else uart_puts("sega_pad: PCF8574 not found\n");
 
-    // Звук: I2S0 → MAX98357A. Громкость старт 20% (настройка в Settings).
-    i2s_init();
+    // SPI-дисплей (ILI9486 480x320): тестовая заставка при загрузке
+    tft_init();
+    tft_set_menu_mode();
+    tft_render_begin();
+    tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);   // чёрный фон
+    tft_puts((TFT_W - 4 * 8) / 2, 120, "TEST", 0xFFFF);
+    tft_puts((TFT_W - 12 * 8) / 2, 140, "SPI 480x320", 0x07E0);
+    tft_flush();
 
     for (;;) {
         int sel = menu_run();

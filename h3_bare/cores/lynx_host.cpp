@@ -8,7 +8,6 @@ extern "C" {
 #include "sega_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
-#include "i2s.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -162,14 +161,8 @@ extern "C" void lynx_run_frame(void) {
         }
     }
 
-    // Звук Lynx: Handy рендерит int16 моно в gAudioBuffer через blip
-    // (read_samples → blip_sample_t = short, 512 сэмплов на кадр).
-    // Масштабируем под I2S 16-бит: int16 → L/R.
-    extern UBYTE gAudioBuffer[];
+    // Звук отключён: сбрасываем буфер Handy (blip не должен переполняться)
     extern ULONG gAudioBufferPointer;
-    int16_t* ab = (int16_t*)gAudioBuffer;
-    for (ULONG i = 0; i < gAudioBufferPointer; i++)
-        i2s_push_sample(ab[i], ab[i]);
     gAudioBufferPointer = 0;
 }
 

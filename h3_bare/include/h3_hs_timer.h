@@ -33,7 +33,9 @@ extern "C" {
 #endif
 
 inline static uint32_t h3_hs_timer_lo_us() {
-	return ~(H3_HS_TIMER->CURNT_LO / 100);
+	// HSTMR тактируется от OSC24M (24 МГц), а не 100 МГц как в оригинале
+	// lib-h3. Делим на 24 → настоящие микросекунды (1 ед. = 41.67 нс).
+	return ~(H3_HS_TIMER->CURNT_LO / 24);
 }
 
 inline static void h3_hs_timer_delay(uint32_t d) {

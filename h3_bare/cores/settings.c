@@ -9,7 +9,6 @@
 #include "sega_pad.h"
 #include "remap.h"
 #include "h3_hs_timer.h"
-#include "i2s.h"
 extern int printf(const char* fmt, ...);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
@@ -249,7 +248,7 @@ static void sega_pad_test_run(void) {
         // Ограничение ~60 fps для комфорта
         uint32_t now = h3_hs_timer_lo_us();
         if (now - last_tick < 16667) {
-            h3_hs_timer_delay((16667 - (now - last_tick)) * 100);
+            h3_hs_timer_delay((16667 - (now - last_tick)) * 24);
         }
         last_tick = h3_hs_timer_lo_us();
 
@@ -307,8 +306,6 @@ enum {
     SET_A2600_DIFF,
     SET_SEGA_PAD,
     SET_KEYBOARD_REMAP,
-    SET_AUDIO_VOLUME,
-    SET_AUDIO_TEST,
     SET_PART_INFO,
     SET_COUNT,
 };
@@ -320,43 +317,8 @@ static const char* const set_labels[SET_COUNT] = {
     "Atari 2600 Difficulty",
     "Sega 6-button gamepad",
     "Keyboard remap (per system)",
-    "Audio volume",
-    "Audio test",
     "ROM partition info",
 };
-
-static void audio_test_run(void) {
-    const int freqs[] = {440, 1000, 2000};
-    static const char* const flabel[] = {"440 Hz (A4)", "1 kHz", "2 kHz"};
-    int sel = 0;
-    for (;;) {
-        fb_draw_stars();
-        fb_puts_s(60, 40, "Audio test (tone)", 2, 0x00FFAA00);
-        fb_fill_rect(60, 70, 300, 2, 0x00FFFFFF);
-        fb_puts_s(60, 100, "Select frequency:", 1, 0x00FFFFFF);
-        int y = 130;
-        for (int i = 0; i < 3; i++) {
-            int is_sel = (i == sel);
-            uint32_t clr = is_sel ? 0x00FFFF00 : 0x00FFFFFF;
-            if (is_sel) fb_fill_rect(50, y - 4, PHYS_W - 100, 28, 0x00181818);
-            fb_puts_s(80, y, flabel[i], 1, clr);
-            y += 30;
-        }
-        fb_puts(60, FOOTER_Y, "  ^v: select    Enter: play    ESC: back", 0x00888888);
-        fb_flush();
-
-        int k = input_wait();
-        if (k == 41 || k == 27) return;
-        if (k == 82 && sel > 0) sel--;
-        else if (k == 81 && sel < 2) sel++;
-        else if (k == 40 || k == '\n' || k == '\r') {
-            fb_clear();
-            fb_puts_s(60, 200, "Playing... ESC to stop", 1, 0x00FFFF00);
-            fb_flush();
-            i2s_test_tone(freqs[sel], 2000);   // 2 с
-        }
-    }
-}
 
 // Рисуем меню настроек с курсором
 static void settings_draw(int sel) {
@@ -382,17 +344,6 @@ static void settings_draw(int sel) {
             fb_puts_s(440, y + 16, "Enter to change", 1, 0x00666666);
         } else if (i == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
-        } else if (i == SET_AUDIO_VOLUME) {
-            int v = i2s_volume_pct();
-            char bufn[4];
-            int nn = 0;
-            if (v >= 100) bufn[nn++] = '0' + (v / 100) % 10;
-            if (v >= 10)  bufn[nn++] = '0' + (v / 10) % 10;
-            bufn[nn++] = '0' + v % 10;
-            bufn[nn] = 0;
-            fb_puts_s(440, y, bufn, 1, 0x00AAAAAA);
-            fb_puts_s(475, y, "%", 1, 0x00AAAAAA);
-            fb_puts_s(440, y + 16, "<- -> to change", 1, 0x00666666);
         }
         y += 34;
     }
@@ -429,7 +380,7 @@ static void create_folders_flow(void) {
         fb_flush();
         int k = input_wait();
         if (k == 41) return;                    // ESC -> отмена
-        if (k == 40 || k == '\n' || k == '\r') break;  // Enter -> дальше
+        if (k == 40) break;  // Enter -> дальше
     }
 
     // Подтверждение 2: финальное
@@ -442,7 +393,7 @@ static void create_folders_flow(void) {
         fb_flush();
         int k = input_wait();
         if (k == 41) return;                    // ESC -> отмена
-        if (k == 40 || k == '\n' || k == '\r') break;  // Enter -> создаём
+        if (k == 40) break;  // Enter -> создаём
     }
 
     // Создание: для систем с alt_dir создаём ОБЕ папки (dir/alt),
@@ -513,19 +464,11 @@ void settings_run(void) {
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
                 break;
-            case SET_AUDIO_VOLUME: {
-                int v = i2s_volume_pct();
-                v += dir * 5;
-                if (v < 0) v = 0;
-                if (v > 100) v = 100;
-                i2s_volume(v);
-                break;
-            }
             default:
                 break;
             }
         }
-        else if (k == 40 || k == '\n' || k == '\r') {
+        else if (k == 40) {
             switch (sel) {
             case SET_CREATE_FOLDERS:
                 create_folders_flow();
@@ -545,17 +488,6 @@ void settings_run(void) {
             case SET_KEYBOARD_REMAP:
                 remap_menu();
                 break;
-            case SET_AUDIO_TEST:
-                audio_test_run();
-                break;
-            case SET_AUDIO_VOLUME: {
-                int v = i2s_volume_pct();
-                if (v < 95) v = v + 5 - (v % 5);
-                else v = 100;
-                if (v > 100) v = 100;
-                i2s_volume(v);
-                break;
-            }
             case SET_PART_INFO:
                 goto partition_info;
             }
@@ -567,8 +499,6 @@ void settings_run(void) {
         else if (k == 33) { sel = SET_A2600_DIFF; }
         else if (k == 34) { sel = SET_SEGA_PAD; }
         else if (k == 35) { sel = SET_KEYBOARD_REMAP; }
-        else if (k == 36) { sel = SET_AUDIO_VOLUME; }
-        else if (k == 37) { sel = SET_AUDIO_TEST; }
         else if (k == 38) { sel = SET_PART_INFO; }
     }
 

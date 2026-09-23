@@ -1,9 +1,13 @@
-// usb_kbd.c — USB HID клавиатура + тач (GT911) через OHCI (Full/Low-Speed).
-// Два устройства могут сидеть на двух разных портах (OHCI1/OHCI2).
-// Классификация по HID-интерфейсу:
-//   boot keyboard (class=3, subclass=1, protocol=1) -> клавиатура
-//   generic HID  (class=3, subclass=0)               -> тач
-// Энумерация обоих портов последовательно (общие ED/TD, по одному за раз).
+// usb_kbd.c — USB HID ввод через OHCI (Full/Low-Speed).
+// Устройства сидят на двух портах (OHCI1/OHCI2), классификация по интерфейсам:
+//   boot keyboard (3,1,1)                 -> клавиатура (HID-сканкоды)
+//   generic HID    (3,0,x)                -> тач GT911 (Waveshare, 0eef:0005)
+//   boot mouse     (3,1,2)                -> тачпад I8 Pro (0603:0002, intf1)
+// Клавиатура: Full-Speed (Logitech) — GET_REPORT; Low-Speed (I8 Pro) —
+// Interrupt IN (однослотовый, донгл не отвечает на GET_REPORT).
+// Тачпад I8 Pro — Interrupt IN (слот 1, отдельный ED через NextED).
+// Ввод наружу: события сканкодов (usb_kbd_poll), состояние (get_raw),
+// курсор/клик тачпада (usb_pad_*). Эмуляторы читают только get_raw/get_mods.
 #include <string.h>
 #include "h3.h"
 #include "h3_hs_timer.h"
@@ -11,40 +15,9 @@
 #include "usb_ohci.h"
 #include "sega_pad.h"
 
-#define OHCI1_BASE  0x01C1B400
-#define OHCI2_BASE  0x01C1C400
-#define TIMEOUT_MS  5000
 #define TOUCH_BUF   16
 
-// ---- Стандартные дескрипторы USB ----
-typedef struct __attribute__((packed)) {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;    // 1 = device
-    uint16_t bcdUSB;
-    uint8_t  bDeviceClass;
-    uint8_t  bDeviceSubClass;
-    uint8_t  bDeviceProtocol;
-    uint8_t  bMaxPacketSize0;
-    uint16_t idVendor;
-    uint16_t idProduct;
-    uint16_t bcdDevice;
-    uint8_t  iManufacturer;
-    uint8_t  iProduct;
-    uint8_t  iSerialNumber;
-    uint8_t  bNumConfigurations;
-} usb_dev_desc_t;
-
-typedef struct __attribute__((packed)) {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;   // 2 = config
-    uint16_t wTotalLength;
-    uint8_t  bNumInterfaces;
-    uint8_t  bConfigurationValue;
-    uint8_t  iConfiguration;
-    uint8_t  bmAttributes;
-    uint8_t  bMaxPower;
-} usb_cfg_desc_t;
-
+// ---- Стандартные дескрипторы USB (используются в enum_port по raw-байтам) ----
 typedef struct __attribute__((packed)) {
     uint8_t  bLength;
     uint8_t  bDescriptorType;   // 4 = interface
@@ -97,20 +70,33 @@ typedef struct {
     int      type;          // 1=kbd, 2=touch
 } usb_dev_t;
 
-static usb_dev_t g_kbd;
-static usb_dev_t g_touch;
+// HID-устройства: структуры с report-буферами лежат в uncached-области
+// (.coherent) — HC пишет в report[] через DMA, а write-back D-cache иначе
+// давал бы stale-чтения и гонки с toggle. Курсор/кнопки — обычный BSS.
+static usb_dev_t g_kbd   __attribute__((section(".coherent"), aligned(8)));
+static usb_dev_t g_touch __attribute__((section(".coherent"), aligned(8)));
+static usb_dev_t g_pad   __attribute__((section(".coherent"), aligned(8)));   // тачпад/мышь (intf1, boot mouse)
 
-static uint8_t g_touch_report[TOUCH_BUF];
+static uint8_t g_pad_report[8] __attribute__((section(".coherent"), aligned(8)));  // DMA-буфер для interrupt-IN мыши (ep 0x82, maxpkt=8)
+
+// Курсор тачпада (накапливается из dx/dy)
+static int g_pad_x = 512;
+static int g_pad_y = 300;
+
+static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), aligned(8)));
+static int g_repeat_sc = 0;    // последний сканкод
+static int g_was_repeat = 0;   // флаг удержания (сброс в wait_release)
 static uint32_t g_repeat_start = 0;
-static int g_repeat_sc = 0;
-static int g_was_repeat = 0;
-
-#define KBD_REPEAT_DELAY_US 200000
-#define KBD_REPEAT_RATE_US  50000
+static int g_kbd_pending = 0;  // сканкод, прочитанный wait_release и не отданный
 
 // Автоповтор Sega-геймпада — ЗАМЕДЛЕННЫЙ (в меню D-Pad не должен летать)
 #define PAD_REPEAT_DELAY_US 400000   // ~0,4 с до первого повтора
 #define PAD_REPEAT_RATE_US  200000   // ~5 шагов/с при удержании
+
+// Автоповтор клавиатуры (меню/браузер): GET_REPORT отдаёт удержанную
+// клавишу на каждый опрос — без гейта курсор летел бы неконтролируемо.
+#define KBD_REPEAT_DELAY_US 350000
+#define KBD_REPEAT_RATE_US  90000
 
 // Антидребезг геймпада: состояние принимается только после PAD_DEBOUNCE_HITS
 // ОДИНАКОВЫХ сканов подряд. PCF8574 обновляет выходы на STOP корректно, но
@@ -163,8 +149,10 @@ uint16_t usb_pad_edge(void) {
 uint16_t usb_pad_get(void) { return g_pad_cur; }
 
 // forward
-static void dump_hid_report_desc(usb_dev_t* d);
 static int usb_touch_poll(int* x, int* y, int* pressed);
+static int kbd_low_speed;
+static void kbd_intr_start(void);
+static int kbd_read_report(void);
 
 // ---- Control-передача для конкретного устройства ----
 static int ctrl_req_dev(usb_dev_t* d, const usb_setup_t* req, uint8_t* data,
@@ -196,9 +184,13 @@ static void cache_inv(uint32_t addr, uint32_t size) {
 }
 
 // ---- Энумерация одного порта. Возвращает тип: 1=kbd, 2=touch, 0=fail ----
-static int enum_port(uint32_t base, usb_dev_t* dev) {
+// Если в конфиге есть boot-mouse интерфейс (3,1,2) — заполняет mouse_out
+// (тачпад I8 Pro/Novatek: клавиатура + мышь в одном устройстве).
+static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
     uint8_t buf[256];
     int r;
+
+    if (mouse_out) memset(mouse_out, 0, sizeof(*mouse_out));
 
     memset(dev, 0, sizeof(*dev));
     dev->base = base;
@@ -251,7 +243,7 @@ static int enum_port(uint32_t base, usb_dev_t* dev) {
     // 5. парсинг: ищем boot keyboard (3,1,1); иначе generic HID (3,0,x) = тач
     int pos = 0;
     int type = 0;
-    int cur_boot = 0;
+    int in_mouse_intf = 0;   // находимся внутри интерфейса мыши
     dev->in_ep = 0;
     dev->in_maxpkt = 0;
     while (pos < r && pos < 254) {
@@ -259,30 +251,42 @@ static int enum_port(uint32_t base, usb_dev_t* dev) {
         if (len == 0) break;
         if (t == 4) { // interface
             usb_intf_desc_t* intf = (usb_intf_desc_t*)(buf + pos);
+            in_mouse_intf = 0;
             if (intf->bInterfaceClass == 3 && intf->bInterfaceSubClass == 1 &&
                 intf->bInterfaceProtocol == 1) {
-                cur_boot = 1;
                 type = 1;
                 dev->in_ep = 0; dev->in_maxpkt = 0;
+            } else if (intf->bInterfaceClass == 3 && intf->bInterfaceSubClass == 1 &&
+                       intf->bInterfaceProtocol == 2 && mouse_out) {
+                // boot-mouse (тачпад) — второй интерфейс композита
+                mouse_out->base = base;
+                mouse_out->addr = 1;  // тот же адрес (SET_ADDRESS=1)
+                mouse_out->mps0 = dev->mps0;
+                mouse_out->in_ep = 0;
+                mouse_out->in_maxpkt = 0;
+                mouse_out->type = 3;
+                in_mouse_intf = 1;
+                uart_puts("usb:   -> MOUSE (boot mouse)\n");
             } else if (intf->bInterfaceClass == 3 && !type) {
-                cur_boot = 0;
                 type = 2; // generic HID — кандидат в тач
                 dev->in_ep = 0; dev->in_maxpkt = 0;
-            } else {
-                cur_boot = 0;
             }
-        } else if (t == 5 && type) { // endpoint внутри HID-интерфейса
-            usb_ep_desc_t* ep = (usb_ep_desc_t*)(buf + pos);
-            if (ep->bEndpointAddress & 0x80) { // IN
-                if (!dev->in_ep) {
-                    dev->in_ep = ep->bEndpointAddress;
-                    dev->in_maxpkt = ep->wMaxPacketSize;
+        } else if (t == 5) { // endpoint
+            usb_ep_desc_t* ep_desc = (usb_ep_desc_t*)(buf + pos);
+            if (ep_desc->bEndpointAddress & 0x80) { // IN
+                if (type == 1 && !dev->in_ep) {
+                    dev->in_ep = ep_desc->bEndpointAddress;
+                    dev->in_maxpkt = ep_desc->wMaxPacketSize;
+                } else if (in_mouse_intf && mouse_out && !mouse_out->in_ep) {
+                    mouse_out->in_ep = ep_desc->bEndpointAddress;
+                    mouse_out->in_maxpkt = ep_desc->wMaxPacketSize;
+                    if (mouse_out->in_ep)
+                        mouse_out->found = 1;   // тачпад найден
                 }
             }
         }
         pos += len;
     }
-    (void)cur_boot;
 
     if (!dev->in_ep) {
         printf("usb: port=0x%X no HID IN ep, type=%d\n", (unsigned)base, type);
@@ -324,14 +328,15 @@ int usb_kbd_init(void) {
 
     // энумерируем оба порта во временные структуры, потом распределяем по типу
     usb_dev_t d1, d2;
-    memset(&d1, 0, sizeof(d1));
-    memset(&d2, 0, sizeof(d2));
+    usb_dev_t mouse1, mouse2;  // второй интерфейс (тачпад)
+    memset(&d1, 0, sizeof(d1)); memset(&mouse1, 0, sizeof(mouse1));
+    memset(&d2, 0, sizeof(d2)); memset(&mouse2, 0, sizeof(mouse2));
     int t1 = 0, t2 = 0;
     if (usb_ohci_root_port_connected(0x01C1B400, 0)) {
-        t1 = enum_port(0x01C1B400, &d1);
+        t1 = enum_port(0x01C1B400, &d1, &mouse1);
     }
     if (usb_ohci_root_port_connected(0x01C1C400, 0)) {
-        t2 = enum_port(0x01C1C400, &d2);
+        t2 = enum_port(0x01C1C400, &d2, &mouse2);
     }
     // клавиатура (type=1) приоритетна для g_kbd; тач (type=2) — в g_touch
     if (t1 == 1) { memcpy(&g_kbd, &d1, sizeof(g_kbd)); }
@@ -342,14 +347,44 @@ int usb_kbd_init(void) {
         if (!g_touch.found) memcpy(&g_touch, &d2, sizeof(g_touch));
     }
 
+    // Тачпад (мышь) — захват из d1/d2
+    if (mouse1.type == 3) { memcpy(&g_pad, &mouse1, sizeof(g_pad)); }
+    else if (mouse2.type == 3) { memcpy(&g_pad, &mouse2, sizeof(g_pad)); }
+
+    // Тачпад (I8 Pro/Novatek): второй интерфейс boot-mouse (ep 0x82).
+    // Читаем через interrupt-IN слот 1 — тем же рабочим паттерном, что и
+    // клавиатура (Low-Speed донгл не отвечает на GET_REPORT).
+    // Стартуем ДО проверки клавиатуры: навигацию можно вести одним тачпадом.
+    if (g_pad.found && g_pad.in_ep) {
+        // SET_PROTOCOL(boot) на интерфейс мыши (intf 1)
+        usb_ohci_set_mps(g_pad.mps0 ? g_pad.mps0 : 8);
+        usb_setup_t req = {
+            .bmRequestType = 0x21,
+            .bRequest      = HID_SET_PROTOCOL,
+            .wValue        = 0,
+            .wIndex        = 1,   // интерфейс 1 = мышь
+        };
+        ctrl_req_dev(&g_pad, &req, 0, 0, 0, 1000);
+        usb_ohci_intr_in_start(g_pad.base, g_pad.addr,
+                               g_pad.in_ep & 0x7F, g_pad_report, 8, 1);
+        printf("pad: touchpad ep=0x%02X maxpkt=%u -> Interrupt IN (slot 1)\n",
+               g_pad.in_ep, g_pad.in_maxpkt);
+    }
+
     if (!g_kbd.found) {
         uart_puts("usb: no keyboard found\n");
         return -1;
     }
 
-    // Диагностика тача: HID Report Descriptor (только один раз)
-    if (g_touch.found && g_touch.in_ep) {
-        dump_hid_report_desc(&g_touch);
+    // Канал чтения клавиатуры: Low-Speed (mps0<=8, напр. Novatek 0603:0002)
+    // не отвечает на GET_REPORT — читаем через Interrupt IN.
+    // Full-Speed (mps0>8, Logitech) — GET_REPORT (проверенный путь).
+    kbd_low_speed = (g_kbd.mps0 <= 8) ? 1 : 0;
+    if (kbd_low_speed) {
+        printf("kbd: Low-Speed (mps=%u) -> Interrupt IN\n", g_kbd.mps0);
+        kbd_intr_start();
+    } else {
+        printf("kbd: Full-Speed (mps=%u) -> GET_REPORT\n", g_kbd.mps0);
     }
 
     uart_puts("usb: keyboard ready\n");
@@ -357,61 +392,65 @@ int usb_kbd_init(void) {
 }
 
 // ---- Клавиатура ----
+static int kbd_intr_started = 0;
+static int kbd_low_speed = 0;
+
+static void kbd_intr_start(void) {
+    if (kbd_intr_started) return;
+    if (!g_kbd.found || !g_kbd.in_ep) return;
+    usb_ohci_intr_in_start(g_kbd.base, g_kbd.addr,
+                           g_kbd.in_ep & 0x7F, g_kbd.report, 8, 0);
+    kbd_intr_started = 1;
+}
+
 static int kbd_read_report(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return -1;
-    if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
-    cache_inv((uint32_t)g_kbd.report, 8);
-    return 0;
+    if (kbd_low_speed) {
+        return (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) ? 0 : -1;
+    } else {
+        if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
+        cache_inv((uint32_t)g_kbd.report, 8);
+        return 0;
+    }
 }
 
 int usb_kbd_poll(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return 0;
-    uint8_t cur[8];
-    memcpy(cur, g_kbd.report, 8);
-    if (kbd_read_report() < 0) return 0;
 
-    // первая нажатая клавиша (приоритет по порядку в отчёте)
+    if (g_kbd_pending) {
+        int p = g_kbd_pending;
+        g_kbd_pending = 0;
+        return p;
+    }
+
+    int r = kbd_read_report();
+    if (r < 0)
+        return 0;
+
     int sc = 0;
     for (int i = 2; i < 8; i++) {
         if (g_kbd.report[i]) { sc = g_kbd.report[i]; break; }
     }
 
     uint32_t now = h3_hs_timer_lo_us();
-
-    if (!sc) {
-        g_repeat_sc = 0;
-        g_was_repeat = 0;
-        return 0;
-    }
-
-    // была ли эта клавиша в предыдущем отчёте (удержание)?
-    int in_prev = 0;
-    for (int j = 2; j < 8; j++)
-        if (cur[j] == sc) { in_prev = 1; break; }
-
-    if (!in_prev) {
-        // новое нажатие
+    if (sc == 0) { g_repeat_sc = 0; g_was_repeat = 0; return 0; }
+    if (sc != g_repeat_sc) {
         g_repeat_sc = sc;
         g_repeat_start = now;
         g_was_repeat = 0;
         return sc;
     }
-
-    // удержание той же клавиши — автоповтор
-    if (sc == g_repeat_sc) {
-        uint32_t elapsed = now - g_repeat_start;
-        if (g_was_repeat) {
-            if (elapsed >= KBD_REPEAT_RATE_US) {
-                g_repeat_start = now;
-                return sc;
-            }
-        } else {
-            if (elapsed >= KBD_REPEAT_DELAY_US) {
-                g_repeat_start = now;
-                g_was_repeat = 1;
-                return sc;
-            }
+    if (g_was_repeat) {
+        if (now - g_repeat_start >= KBD_REPEAT_RATE_US) {
+            g_repeat_start = now;
+            return sc;
         }
+        return 0;
+    }
+    if (now - g_repeat_start >= KBD_REPEAT_DELAY_US) {
+        g_repeat_start = now;
+        g_was_repeat = 1;
+        return sc;
     }
     return 0;
 }
@@ -432,25 +471,6 @@ int usb_kbd_get_raw(uint8_t* buf, int max_buf) {
 uint8_t usb_kbd_get_mods(void) {
     if (!g_kbd.found) return 0;
     return g_kbd.report[0]; // modifiers: bit0=LCtrl bit1=LShift bit2=LAlt bit3=LGui bit4=RCtrl bit5=RShift
-}
-
-// Чтение HID Report Descriptor (type 0x22) — точный формат отчёта тача
-static void dump_hid_report_desc(usb_dev_t* d) {
-    uint8_t buf[64];
-    memset(buf, 0, sizeof(buf));
-    usb_setup_t req = {
-        .bmRequestType = 0x81,      // host->dev, standard, device
-        .bRequest      = GET_DESCRIPTOR,
-        .wValue        = (0x22 << 8),  // HID report descriptor
-        .wIndex        = 0,
-        .wLength       = 64,
-    };
-    int r = ctrl_req_dev(d, &req, buf, 64, 1, 1000);
-    printf("hid_report_desc r=%d:", r);
-    if (r > 0) {
-        for (int i = 0; i < r; i++) printf(" %02X", buf[i]);
-    }
-    printf("\n");
 }
 
 // ---- Тач (Waveshare GT911, 0eef:0005) через GET_REPORT ----
@@ -498,19 +518,6 @@ uint16_t usb_pad_just_pressed(void) {
     return usb_pad_edge();
 }
 
-// Сбросить состояние геймпада/тача (вызывается при входе в меню/подменю).
-void usb_input_clear(void) {
-    g_pad_prev = 0;
-    g_pad_repeat_start = 0;
-    g_pad_was_repeat = 0;
-    g_t_prev_pressed = 0;
-    g_pad_deb = 0;
-    g_pad_deb_cnt = 0;
-    g_pad_cache_t = 0;   // принудительно свежий скан на следующем usb_pad_update
-    g_pad_cur = 0;
-    g_pad_edge = 0;
-}
-
 // Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
 // нажатия), чтобы зажатая кнопка не «доехала» в новое подменю.
 void usb_pad_wait_release(void) {
@@ -529,14 +536,32 @@ void usb_pad_wait_release(void) {
 // Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
 // чтобы зажатый Enter не «доехал» в новое подменю и не активировал первый пункт.
 void usb_kbd_wait_release(void) {
-    // Ждём, пока в отчёте не останется ни одной зажатой клавиши
-    for (uint32_t guard = 0; guard < 1000000; guard++) {
-        if (kbd_read_report() < 0) break;
-        int any = 0;
-        for (int i = 2; i < 8; i++)
-            if (g_kbd.report[i]) { any = 1; break; }
-        if (!any) break;
-        udelay(5000);
+    // Донгл не шлёт 00 при отжатии — просто замолкает.
+    // 5 мс тишины без нового сканкода = отжатие. Пришёл сканкод — таймер сброс.
+    // Любой сканкод, прочитанный здесь (кроме Enter/ESC), сохраняем в
+    // g_kbd_pending — он не должен теряться для следующего usb_kbd_poll.
+    g_kbd_pending = 0;
+    uint32_t t0 = h3_hs_timer_lo_us();
+    for (;;) {
+        if (kbd_read_report() == 0) {
+            int any = 0;
+            int sc = 0;
+            for (int i = 2; i < 8; i++) {
+                if (g_kbd.report[i]) { sc = g_kbd.report[i]; any = 1; break; }
+            }
+            if (any) {
+                // Другой сканкод (не Enter 28/40 и не ESC 41) — новое нажатие,
+                // сохраняем в pending, чтобы не потерялось при выходе.
+                if (sc != 28 && sc != 40 && sc != 41) {
+                    g_kbd_pending = sc;
+                }
+                t0 = h3_hs_timer_lo_us();   // перезапуск таймера (ещё не отжато)
+            } else {
+                break;                       // явный 00 — отжато сразу
+            }
+        }
+        if (h3_hs_timer_lo_us() - t0 > 5000) break;   // 5 мс тишины = отжато
+        udelay(1000);
     }
     g_repeat_sc = 0;
     g_was_repeat = 0;
@@ -624,4 +649,35 @@ void usb_touch_joy(uint8_t* dir, uint8_t* fire) {
     if (yfrac > 7u) { *dir |= 2; return; }          // down
     if ((uint32_t)x * 10u / 4096u < 5u) *dir |= 4;  // left
     else                               *dir |= 8;  // right
+}
+
+// ---- Тачпад (I8 Pro boot mouse): накопление курсора из dx/dy ----
+// Формат boot-mouse отчёта: byte[0]=кнопки(bit0=ЛКМ), byte[1]=dx, byte[2]=dy
+// (знаковые), byte[3]=wheel. Читается через interrupt-IN слот 1.
+void usb_pad_poll(void) {
+    if (!g_pad.found || !g_pad.in_ep) return;
+
+    // Вычитываем ВСЕ накопленные свежие пакеты (донгл шлёт пустые
+    // keepalive каждые ~10 мс, они перезатирают буфер — пакет движения
+    // иначе теряется).
+    while (usb_ohci_intr_in_poll(g_pad.base, g_pad_report, 8, 1) > 0) {
+        int8_t dx = (int8_t)g_pad_report[1];
+        int8_t dy = (int8_t)g_pad_report[2];
+
+        // Мёртвая зона: микро-движения (джиттер/инерция донгла ±1..3)
+        // не двигают крестик — иначе он "уезжает" сам после езды по тачу.
+        if (dx > 1 || dx < -1) g_pad_x += dx * 4;
+        if (dy > 1 || dy < -1) g_pad_y += dy * 4;
+        if (g_pad_x < 0) g_pad_x = 0;
+        if (g_pad_x > 1023) g_pad_x = 1023;
+        if (g_pad_y < 0) g_pad_y = 0;
+        if (g_pad_y > 599) g_pad_y = 599;
+    }
+}
+
+// Позиция курсора тачпада (0..1023 / 0..599). 0 = тачпада нет.
+int usb_pad_get_pos(int* x, int* y) {
+    if (!g_pad.found) return 0;
+    *x = g_pad_x; *y = g_pad_y;
+    return 1;
 }

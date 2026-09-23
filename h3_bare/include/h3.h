@@ -159,6 +159,8 @@ typedef enum T_H3_IRQn {
 #include <stdint.h>
 #include <stddef.h>
 
+void mmu_mark_uncached(uint32_t addr);   // пометить 1МБ-секцию uncached (для DMA/OHCI)
+
 #ifdef __cplusplus
 # define	__I		volatile		///< defines 'read only' permissions
 #else
