@@ -79,6 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
+    uart_puts("build: TFT self-test on CPU1 (477938e)\n");
 
     led_init();
     led_set(0);
