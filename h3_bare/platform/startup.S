@@ -300,6 +300,18 @@ cpu1_entry:
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    /* VFP/NEON для CPU1: ядро выходит из сброса с CPACR=0 и FPEXC.EN=0.
+     * С -O2 -mfpu=neon tft_core_main начинается с vpush {d8-d9} — без
+     * этого разрешения первая же инструкция даёт UNDEF, а VBAR CPU1 ещё
+     * указывает на SRAM-трамплин (0x00000000) — бесконечный ревход.
+     * Включаем так же, как core0 в _start. */
+    mrc p15, 0, r0, c1, c0, 2
+    orr r0, r0, #(0xF << 20)      /* CP10, CP11 full access */
+    mcr p15, 0, r0, c1, c0, 2
+    isb
+    mov r0, #0x40000000
+    vmsr fpexc, r0                /* FPEXC.EN = 1 */
+    isb
     mov r2, #0x24
     mov r3, #0x0E          /* st=0x0E — «сейчас прыгнем в tft_core_main» */
     str r3, [r2]

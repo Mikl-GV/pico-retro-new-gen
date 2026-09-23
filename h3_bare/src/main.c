@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r5 (d133f69+)\n");
+    uart_puts("build: TFT self-test r27 (mode0-fix)\n");
 
     led_init();
     led_set(0);
@@ -146,14 +146,18 @@ void main(void) {
     // терминал рвёт вывод.
     {
         volatile uint32_t* st  = (volatile uint32_t*)0x24u;
-        volatile uint32_t* p3  = (volatile uint32_t*)0x28u;
-        volatile uint32_t* p21 = (volatile uint32_t*)0x2Cu;
+        volatile uint32_t* tx  = (volatile uint32_t*)0x28u;
+        volatile uint32_t* ty  = (volatile uint32_t*)0x2Cu;
+        volatile uint32_t* pc3 = (volatile uint32_t*)0x30u;
         for (int i = 0; i < 10; i++) {
             udelay(300000);
-            printf("TFT: st=%u pc3=0x%04X pa21=0x%04X\n",
-                   (unsigned)*st, (unsigned)*p3, (unsigned)*p21);
+            printf("TFT: st=%u tX=0x%04X tY=0x%04X pc3=0x%04X\n",
+                   (unsigned)*st, (unsigned)*tx, (unsigned)*ty, (unsigned)*pc3);
         }
     }
+
+    // Тест-режим: core0 в idle, весь SPI-тест панели на CPU1 (без меню).
+    for (;;) udelay(1000000);
 
     for (;;) {
         int sel = menu_run();
