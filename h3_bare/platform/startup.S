@@ -277,9 +277,13 @@ _hang:
 .global cpu1_entry
 cpu1_entry:
     /* «Почта» в SRAM A1: ядро пишет magic первой инструкцией —
-     * core0 ждёт его в h3_secondary_start (SRAM вне кэшей, видно сразу) */
+     * core0 ждёт его в h3_secondary_start (SRAM вне кэшей, видно сразу).
+     * Статус процессора — в 0x24 (1=вошёл). */
     mov r2, #0x20
     ldr r3, =0x13579BDF
+    str r3, [r2]
+    mov r2, #0x24
+    mov r3, #1
     str r3, [r2]
     /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
      * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
@@ -296,11 +300,6 @@ cpu1_entry:
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
-    /* Пауза на стабилизацию ядра перед первыми SPI/MMIO операциями
-     * (~100 мс). В конфигурации без неё CPU1 молчал после 'C'. */
-    ldr r0, =0x600000
-1:  subs r0, r0, #1
-    bne 1b
     bl tft_core_main
 2:  b 2b
 .end

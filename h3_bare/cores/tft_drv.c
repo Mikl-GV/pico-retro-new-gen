@@ -328,18 +328,22 @@ static int tft_patch_test(uint16_t color) {
     return 0;
 }
 
+// Статус CPU1 для core0 (SRAM A1, вне кэшей): 1=вошёл, 2=init ok,
+// 3=тест крутится. core0 печатает из меню раз в ~3 с.
+#define TFT_STAT (*(volatile uint32_t*)0x24u)
+
 // ---- TFT core: исполняется на CPU1 (startup.S cpu1_entry) ----
 // Сырые маркеры (E I L P p ...): прямые записи в UART, показывают,
 // где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
-    /* FIFO-safe маркер (uart_puts не теряет байт) */
-    uart_puts("E\n");
-    u_dbg('I');
+    u_dbg('E');
     if (tft_init() < 0) {
+        TFT_STAT = 9;
         u_dbg('F');
         for (;;) __asm volatile("wfi");
     }
-    u_dbg('J');
+    TFT_STAT = 2;
+    u_dbg('I');
     tft_set_menu_mode();
     u_dbg('L');
     u_dbg('P');
@@ -353,6 +357,7 @@ void tft_core_main(void) {
     delay_ms(2000);
 
     for (;;) {
+        TFT_STAT = 3;
         u_dbg('R'); tft_fill_screen(0xF800); u_dbg('r'); delay_ms(1000);
         u_dbg('G'); tft_fill_screen(0x07E0); u_dbg('g'); delay_ms(1000);
         u_dbg('B'); tft_fill_screen(0x001F); u_dbg('b'); delay_ms(1000);

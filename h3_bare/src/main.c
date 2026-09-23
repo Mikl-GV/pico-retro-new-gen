@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test sram-mail+delay\n");
+    uart_puts("build: TFT self-test dcdf7d1 RXdrain\n");
 
     led_init();
     led_set(0);
@@ -140,6 +140,17 @@ void main(void) {
         uart_puts("smp: CPU1 started (TFT core)\n");
     else
         uart_puts("smp: CPU1 FAILED to start\n");
+
+    // Диагностика: статус CPU1 из SRAM (0x24). 1=вошёл, 2=init ok, 3=тест,
+    // 9=не отвечает. Печатаем несколько раз — видно переходы даже если
+    // терминал рвёт вывод.
+    {
+        volatile uint32_t* st = (volatile uint32_t*)0x24u;
+        for (int i = 0; i < 10; i++) {
+            udelay(300000);
+            printf("TFT: st=%u\n", (unsigned)*st);
+        }
+    }
 
     for (;;) {
         int sel = menu_run();
