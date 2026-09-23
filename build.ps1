@@ -210,7 +210,7 @@ foreach ($fn in @("Blip_Buffer","Effects_Buffer","Multi_Buffer","Sms_Apu")) {
 Write-Host "=== Platform ==="
 foreach ($f in @("uart","printf","libc_min","main")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\src\$f.c"; ok $f }
 & $CXX @CXXFLAGS @INC -c -o "$BUILD\cxx_runtime.o" "$TOP\h3_bare\src\cxx_runtime.cpp"; ok "cxx_runtime"
-foreach ($f in @("udelay","h3_hs_timer","h3_ccu","h3")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\platform\$f.c"; ok $f }
+foreach ($f in @("udelay","h3_hs_timer","h3_ccu","h3","h3_smp")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\platform\$f.c"; ok $f }
 foreach ($f in @("h3_de2","h3_hdmi","dw_hdmi","h3_lcd")) { & $CC @CFLAGS @INC -c -o "$BUILD\$f.o" "$TOP\h3_bare\platform\fb\$f.c"; ok $f }
 
 Write-Host "=== Link ==="

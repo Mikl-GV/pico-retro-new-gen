@@ -31,10 +31,18 @@ void tft_set_dup_mode(void);
 void tft_test_red(void);
 void tft_test_fill(uint16_t color);
 
-// ---- Примитивы для рендера меню в tft_fb (RGB565, шрифт 8x8) ----
+// Примитивы для рендера меню в tft_fb (RGB565, шрифт 8x8) ----
 void tft_render_begin(void);              // очистить буфер, пометить «нужно отправить»
 void tft_fill_rect(int x, int y, int w, int h, uint16_t color);
 void tft_puts(int x, int y, const char* s, uint16_t color);
+
+// ---- TFT core (CPU1) ----
+// Флаг «HDMI кадр готов» — ставится в fb_flush (core0), читается TFT-ядром.
+// Лежит в .coherent (uncached) — виден между ядрами сразу.
+extern volatile uint32_t g_tft_frame_ready;
+// Зацикленный процессор TFT: init дисплея + зеркалирование HDMI-кадра.
+// Запускается на CPU1 через cpu1_entry (startup.S) + h3_cpu_start.
+void tft_core_main(void);
 
 #ifdef __cplusplus
 }

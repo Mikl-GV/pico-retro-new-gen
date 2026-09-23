@@ -241,4 +241,7 @@ void fb_flush(void) {
         __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
     }
     __asm volatile("dsb" ::: "memory");
+    // HDMI-кадр готов к выводу — зеркалим на SPI-дисплей (TFT core, CPU1)
+    extern volatile uint32_t g_tft_frame_ready;
+    g_tft_frame_ready = 1;
 }

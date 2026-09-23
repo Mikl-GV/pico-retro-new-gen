@@ -51,6 +51,10 @@ static uint16_t* tft_fb = (uint16_t*)TFT_MENU_FB;
 static int g_mode = 1;
 static int g_tft_ready = 0;
 
+// Флаг «кадр HDMI готов» для TFT-ядра (CPU1). Лежит в .coherent —
+// секция uncached через MMU, поэтому запись с core0 видна core1 сразу.
+volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
+
 static void cs_low(void)  { PC_DAT &= ~(1u << PIN_CS); }
 static void cs_high(void) { PC_DAT |=  (1u << PIN_CS); }
 static void dc_cmd(void)  { PC_DAT &= ~(1u << PIN_DC); }
@@ -249,5 +253,22 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
             }
         }
         x += 8;
+    }
+}
+
+// ---- TFT core: исполняется на CPU1 (запускается cpu1_entry из startup.S) ----
+// Инициализирует ILI9486, затем непрерывно ждёт флаг «HDMI кадр готов»
+// (ставит fb_flush на core0) и зеркалит главный экран на SPI-дисплей.
+// Основное ядро при этом не нагружается SPI-передачами.
+void tft_core_main(void) {
+    if (tft_init() < 0) {
+        for (;;) __asm volatile("wfi");
+    }
+    tft_set_dup_mode();
+    for (;;) {
+        while (!g_tft_frame_ready)
+            __asm volatile("yield");
+        g_tft_frame_ready = 0;
+        tft_flush();
     }
 }

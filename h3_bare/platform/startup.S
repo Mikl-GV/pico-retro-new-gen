@@ -266,4 +266,21 @@ _start:
 
 _hang:
     b _hang
+
+/* ---- Точка входа CPU1 (TFT core) ----
+ * Запускается h3_cpu_start(1, cpu1_entry):
+ *  1) ядро выходит из сброса с выключенными MMU/кэшами
+ *  2) ставим SVC-mode стек (отдельная область ниже исключений CPU0)
+ *  3) прыгаем в tft_core_main — инициализация ILI9486 + цикл даунскейла
+ */
+.section .text
+.global cpu1_entry
+cpu1_entry:
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
+    msr cpsr, r0
+    ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    bl tft_core_main
+1:  b 1b
 .end
