@@ -49,6 +49,10 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
 // запуск эмулятора по sys_id (общая логика для Enter и меню читов)
 static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
                          const char* sel_name) {
+    // Показать справку на TFT по кнопкам этой системы.
+    extern void tft_help_show(const char* sys_id);
+    tft_help_show(sys_id);
+
     emu_clear_fb();
     if (strcmp(sys_id, "a2600") == 0)
         emu_run_a2600_mcume(rom, size, sel_name);

@@ -24,7 +24,106 @@
 #include "uart.h"
 
 extern int printf(const char*, ...);
-extern const uint8_t font8x8[96][8];
+
+// Локальная копия шрифта 8x8 (ASCII 0x20..0x7F) — не зависим от
+// font8x8 из fb_text.c и его секции/линковки.
+static const uint8_t tft_font[96][8] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+    {0x18,0x18,0x18,0x18,0x00,0x18,0x00,0x00},
+    {0x6C,0x6C,0x00,0x00,0x00,0x00,0x00,0x00},
+    {0x6C,0x6C,0xFE,0x6C,0xFE,0x6C,0x6C,0x00},
+    {0x18,0x3E,0x60,0x3C,0x06,0x7C,0x18,0x00},
+    {0x00,0x66,0xAC,0x18,0x34,0x6A,0x00,0x00},
+    {0x38,0x6C,0x68,0x76,0xDC,0xCE,0x7A,0x00},
+    {0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00},
+    {0x0C,0x18,0x30,0x30,0x30,0x18,0x0C,0x00},
+    {0x30,0x18,0x0C,0x0C,0x0C,0x18,0x30,0x00},
+    {0x18,0x7E,0x3C,0xFF,0x3C,0x7E,0x18,0x00},
+    {0x00,0x18,0x18,0x7E,0x18,0x18,0x00,0x00},
+    {0x00,0x00,0x00,0x00,0x18,0x18,0x30,0x00},
+    {0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00},
+    {0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00},
+    {0x02,0x06,0x0C,0x18,0x30,0x60,0x40,0x00},
+    {0x3C,0x66,0x76,0x7E,0x6E,0x66,0x3C,0x00},
+    {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},
+    {0x3C,0x66,0x06,0x0C,0x30,0x60,0x7E,0x00},
+    {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00},
+    {0x0C,0x1C,0x2C,0x4C,0x7E,0x0C,0x0C,0x00},
+    {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00},
+    {0x3C,0x66,0x60,0x7C,0x66,0x66,0x3C,0x00},
+    {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00},
+    {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00},
+    {0x3C,0x66,0x66,0x3E,0x06,0x66,0x3C,0x00},
+    {0x00,0x18,0x18,0x00,0x18,0x18,0x00,0x00},
+    {0x00,0x00,0x18,0x00,0x18,0x18,0x30,0x00},
+    {0x0C,0x18,0x30,0x60,0x30,0x18,0x0C,0x00},
+    {0x00,0x00,0x7E,0x00,0x7E,0x00,0x00,0x00},
+    {0x30,0x18,0x0C,0x06,0x0C,0x18,0x30,0x00},
+    {0x3C,0x66,0x0C,0x18,0x00,0x18,0x00,0x00},
+    {0x3C,0x42,0x99,0xBD,0xB5,0x99,0x42,0x3C},
+    {0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00},
+    {0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00},
+    {0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00},
+    {0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00},
+    {0x7E,0x60,0x60,0x7C,0x60,0x60,0x7E,0x00},
+    {0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00},
+    {0x3C,0x66,0x60,0x6E,0x66,0x66,0x3C,0x00},
+    {0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x00},
+    {0x7E,0x18,0x18,0x18,0x18,0x18,0x7E,0x00},
+    {0x1E,0x0C,0x0C,0x0C,0x0C,0x6C,0x38,0x00},
+    {0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0x00},
+    {0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00},
+    {0xC6,0xEE,0xFE,0xD6,0xC6,0xC6,0xC6,0x00},
+    {0x66,0x76,0x7E,0x7E,0x6E,0x66,0x66,0x00},
+    {0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00},
+    {0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00},
+    {0x3C,0x66,0x66,0x66,0x66,0x6E,0x3E,0x00},
+    {0x7C,0x66,0x66,0x7C,0x78,0x6C,0x66,0x00},
+    {0x3C,0x66,0x70,0x3C,0x0E,0x66,0x3C,0x00},
+    {0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00},
+    {0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00},
+    {0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00},
+    {0xC6,0xC6,0xC6,0xD6,0x7E,0x6C,0x44,0x00},
+    {0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x00},
+    {0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00},
+    {0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00},
+    {0x3C,0x30,0x30,0x30,0x30,0x30,0x3C,0x00},
+    {0x40,0x60,0x30,0x18,0x0C,0x06,0x02,0x00},
+    {0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0x00},
+    {0x18,0x3C,0x66,0x00,0x00,0x00,0x00,0x00},
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF},
+    {0x18,0x18,0x0C,0x00,0x00,0x00,0x00,0x00},
+    {0x00,0x00,0x3C,0x06,0x3E,0x66,0x3E,0x00},
+    {0x60,0x60,0x7C,0x66,0x66,0x66,0x7C,0x00},
+    {0x00,0x00,0x3C,0x66,0x60,0x66,0x3C,0x00},
+    {0x06,0x06,0x3E,0x66,0x66,0x66,0x3E,0x00},
+    {0x00,0x00,0x3C,0x66,0x7E,0x60,0x3C,0x00},
+    {0x1C,0x30,0x7C,0x30,0x30,0x30,0x30,0x00},
+    {0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x7C},
+    {0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x00},
+    {0x18,0x00,0x38,0x18,0x18,0x18,0x3C,0x00},
+    {0x18,0x00,0x38,0x18,0x18,0x18,0x18,0x70},
+    {0x60,0x60,0x66,0x6C,0x78,0x6C,0x66,0x00},
+    {0x38,0x18,0x18,0x18,0x18,0x18,0x3C,0x00},
+    {0x00,0x00,0xEC,0xFE,0xD6,0xC6,0xC6,0x00},
+    {0x00,0x00,0x7C,0x66,0x66,0x66,0x66,0x00},
+    {0x00,0x00,0x3C,0x66,0x66,0x66,0x3C,0x00},
+    {0x00,0x00,0x7C,0x66,0x66,0x7C,0x60,0x60},
+    {0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x06},
+    {0x00,0x00,0x7C,0x66,0x60,0x60,0x60,0x00},
+    {0x00,0x00,0x3E,0x60,0x3C,0x06,0x7C,0x00},
+    {0x30,0x30,0x7C,0x30,0x30,0x30,0x1C,0x00},
+    {0x00,0x00,0x66,0x66,0x66,0x66,0x3E,0x00},
+    {0x00,0x00,0x66,0x66,0x66,0x3C,0x18,0x00},
+    {0x00,0x00,0xC6,0xC6,0xD6,0x7E,0x6C,0x00},
+    {0x00,0x00,0x66,0x3C,0x18,0x3C,0x66,0x00},
+    {0x00,0x00,0x66,0x66,0x66,0x3E,0x06,0x7C},
+    {0x00,0x00,0x7E,0x0C,0x18,0x30,0x7E,0x00},
+    {0x0E,0x18,0x18,0x70,0x18,0x18,0x0E,0x00},
+    {0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00},
+    {0x70,0x18,0x18,0x0E,0x18,0x18,0x70,0x00},
+    {0x00,0x00,0x62,0x92,0x8C,0x00,0x00,0x00},
+};
 
 #define CMD_SWRESET  0x01
 #define CMD_SLPOUT   0x11
@@ -79,10 +178,21 @@ static uint16_t tft_fb[TFT_H * TFT_W] __attribute__((aligned(16)));
 static int g_mode = 1;      // 1 = вывод tft_fb, 0 = зеркало HDMI (0x5F900000)
 static int g_tft_ready = 0;
 
-// Флаг «HDMI-кадр готов»: core0 (fb_text.c) ставит в 1 после каждого
-// FB-flush; TFT-ядро CPU1 опрашивает его для зеркала. Живёт в .coherent
-// (uncached через MMU) — запись с core0 видна CPU1 сразу, без чистки кэша.
+// Флаг «HDMI-кадр готов»: пока не используется (зеркало отложено).
 volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
+
+// Индекс справки для TFT: 0 = меню, 1..N = страница эмулятора
+// (см. tft_help_list). Пишет core0 (tft_help_show), читает CPU1.
+volatile int32_t g_tft_help_id __attribute__((section(".coherent"), aligned(4)));
+
+// Эпоха справки: растёт при каждом tft_help_show. Нужна, чтобы CPU1
+// перерисовал текущую страницу, даже если id не изменился (меню:
+// F1/F2 меняют значения, а id остаётся 0).
+volatile int32_t g_tft_help_epoch __attribute__((section(".coherent"), aligned(4)));
+
+// Нажатие по иконке на TFT (Settings=-2, About=-4). Пишет CPU1, сбрасывает
+// core0 (menu/input_wait). Живёт в .coherent — виден между ядрами сразу.
+volatile int32_t g_tft_request __attribute__((section(".coherent"), aligned(4)));
 
 static void cs_low(void)  {
     PC_DAT &= ~(1u << PIN_CS);
@@ -237,7 +347,7 @@ static int tft_ili_init(void) {
 
     if (xfer_cmd(0xB0) < 0 || xfer_data(0x00) < 0)            { printf("TFT: SPI fail B0\n"); spi_dump(); return -1; }
     if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0)      { printf("TFT: SPI fail COLMOD\n"); spi_dump(); return -1; }
-    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x20) < 0)      { printf("TFT: SPI fail MADCTL\n"); spi_dump(); return -1; }
+    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xE0) < 0)      { printf("TFT: SPI fail MADCTL\n"); spi_dump(); return -1; }
     if (xfer_cmd(0xC2) < 0 || xfer_data(0x44) < 0)            { printf("TFT: SPI fail C2\n"); spi_dump(); return -1; }
     if (xfer_cmd(0xC5) < 0)                                   { printf("TFT: SPI fail C5\n"); spi_dump(); return -1; }
     for (int z = 0; z < 6; z++)
@@ -260,7 +370,7 @@ static int tft_ili_init(void) {
             if (xfer_data(gn[i]) < 0)          { printf("TFT: SPI fail E2-d[%d]\n", i); spi_dump(); return -1; }
     }
     TFT_STAT = 0x15;
-    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x20) < 0) { printf("TFT: SPI fail MADCTL2\n"); spi_dump(); return -1; }
+    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xE0) < 0) { printf("TFT: SPI fail MADCTL2\n"); spi_dump(); return -1; }
     if (xfer_cmd(CMD_SLPOUT) < 0) { printf("TFT: SPI fail SLPOUT2\n"); spi_dump(); return -1; }
     delay_ms(50);
     if (xfer_cmd(CMD_DISPON) < 0) { printf("TFT: SPI fail DISPON (0x%X TCR=0x%X FSR=0x%X)\n",
@@ -291,9 +401,16 @@ int tft_init(void) {
     return -1;
 }
 
-// Полный кадр — пиксель парой по-байтовых XCH (под одним CS), лэтч по CS↑
-// после NOP. Это проверенный рабочий вариант (r36, 6 МГц); попытка одним
-// 16-битным бурстом (tx16) собла панель — движок шлёт такты иначе.
+void tft_tick(void) { tft_flush(); }
+void tft_set_menu_mode(void) { g_mode = 1; }
+void tft_set_dup_mode(void)  { g_mode = 0; }
+
+void tft_render_begin(void) { memset(tft_fb, 0, TFT_W * TFT_H * 2); }
+
+// Полный кадр — по-байтовый путь, лэтч по CS↑ (рабочий вариант на 8 МГц).
+// Пакет с непрерывным CS (один XCH на кадр) давал серый экран: 74HC4094
+// на этой плате лэтчит только фронтом CS, непрерывный низкий CS ничего
+// не защёлкивает.
 void tft_flush(void) {
     if (!g_tft_ready) return;
     if (set_window() < 0) return;
@@ -302,45 +419,55 @@ void tft_flush(void) {
     if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
     dc_data();
     for (int ty = 0; ty < TFT_H; ty++) {
-        if (g_mode) {
-            const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
-            for (int tx = 0; tx < TFT_W; tx++) {
-                uint16_t p = row[tx];
-                cs_low();
-                if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
-                    spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto abort; }
-                __asm volatile("nop; nop; nop; nop; nop"); /* ~50ns на стабильность шины */
-                cs_high();
-            }
-        } else {
-            /* Зеркало HDMI: даунскейл 1024x600 XRGB8888 -> 480x320 RGB565 */
-            const uint32_t* src = (const uint32_t*)0x5F900000;
-            int sy = (ty * 15) / 8;
-            const uint32_t* row0 = src + (uint32_t)sy * FB_W;
-            for (int tx = 0; tx < TFT_W; tx++) {
-                int sx = (tx * 32) / 15;
-                uint32_t c = row0[sx];
-                uint16_t p = (uint16_t)(((c>>3)&0x1F)<<11) |
-                             (uint16_t)(((c>>10)&0x3F)<<5) |
-                             (uint16_t)((c>>19)&0x1F);
-                cs_low();
-                if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
-                    spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto abort; }
-                __asm volatile("nop; nop; nop; nop; nop");
-                cs_high();
-            }
+        const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
+        for (int tx = 0; tx < TFT_W; tx++) {
+            uint16_t p = row[tx];
+            cs_low();
+            if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
+                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto bye; }
+            __asm volatile("nop; nop; nop; nop; nop"); /* ~50ns на стабильность шины */
+            cs_high();
         }
     }
-    return;
-abort:
+bye:
     ;
 }
 
-void tft_tick(void) { tft_flush(); }
-void tft_set_menu_mode(void) { g_mode = 1; }
-void tft_set_dup_mode(void)  { g_mode = 0; }
+// Частичная отрисовка прямоугольника окна: только CASET/RASET по области,
+// пиксели из tft_fb. Обновление маленького UI-элемента в сотни раз быстрее
+// полного кадра (десяти байт вместо 614400).
+void tft_flush_rect(int x, int y, int w, int h) {
+    if (!g_tft_ready) return;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= TFT_W || y >= TFT_H) return;
+    if (x + w > TFT_W) w = TFT_W - x;
+    if (y + h > TFT_H) h = TFT_H - y;
+    if (w <= 0 || h <= 0) return;
 
-void tft_render_begin(void) { memset(tft_fb, 0, TFT_W * TFT_H * 2); }
+    if (xfer_cmd(CMD_CASET) < 0) return;
+    xfer_data((uint8_t)(x >> 8)); xfer_data((uint8_t)(x & 0xFF));
+    xfer_data((uint8_t)((x + w - 1) >> 8)); xfer_data((uint8_t)((x + w - 1) & 0xFF));
+    if (xfer_cmd(CMD_RASET) < 0) return;
+    xfer_data((uint8_t)(y >> 8)); xfer_data((uint8_t)(y & 0xFF));
+    xfer_data((uint8_t)((y + h - 1) >> 8)); xfer_data((uint8_t)((y + h - 1) & 0xFF));
+
+    cs_low();
+    dc_cmd();
+    if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
+    dc_data();
+    for (int yy = y; yy < y + h; yy++) {
+        const uint16_t* row = tft_fb + (uint32_t)yy * TFT_W + x;
+        for (int xx = 0; xx < w; xx++) {
+            uint16_t p = row[xx];
+            cs_low();
+            if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
+                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); return; }
+            __asm volatile("nop; nop; nop; nop; nop");
+            cs_high();
+        }
+    }
+}
 
 void tft_fill_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0) x = 0;  if (y < 0) y = 0;
@@ -357,7 +484,7 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
     while (*s) {
         char ch = *s++;
         if (ch < 0x20 || ch > 0x7F) { x += 8; continue; }
-        const uint8_t* gl = font8x8[ch - 0x20];
+        const uint8_t* gl = tft_font[ch - 0x20];
         for (int row = 0; row < 8; row++) {
             uint8_t bits = gl[row];
             if (y + row >= TFT_H) break;
@@ -371,19 +498,237 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
     }
 }
 
-static void tft_fill_screen(uint16_t color) {
+// Текст с масштабом 2x (заголовки). Аккуратно: каждый глиф рисуется 16x16.
+static void tft_puts2(int x, int y, const char* s, uint16_t color) {
+    while (*s) {
+        char ch = *s++;
+        if (ch < 0x20 || ch > 0x7F) { x += 16; continue; }
+        const uint8_t* gl = tft_font[ch - 0x20];
+        for (int row = 0; row < 8; row++) {
+            uint8_t bits = gl[row];
+            for (int dy = 0; dy < 2; dy++) {
+                int py = y + row*2 + dy;
+                if (py >= TFT_H) break;
+                uint16_t* line = tft_fb + (uint32_t)py * TFT_W + x;
+                for (int col = 0; col < 8; col++) {
+                    if (x + col*2 + 1 >= TFT_W) break;
+                    if (bits & (0x80 >> col)) {
+                        line[col*2]   = color;
+                        line[col*2+1] = color;
+                    }
+                }
+            }
+        }
+        x += 16;
+    }
+}
+
+// ---- Справка по управлению на TFT ----
+// Таблица: id системы (NULL=меню), заголовок, строки до NULL.
+static const struct {
+    const char* id;
+    const char* title;
+    const char* lines[12];
+} g_help_list[] = {
+{ NULL,
+      "MultiTool Retro",
+      {"Up / Down: navigate","Enter: open system / ROM",
+       "ESC: back",
+       "Settings / About: right columns",
+       "","",
+       NULL}
+    },
+    { "gameboy",
+      "Game Boy / Game Boy Color",
+      {"Z = B    X = A","S = Select    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "gamegear",
+      "Sega Game Gear",
+      {"Z = Button 1    X = Button 2","S = Pause","Enter = Start    ESC hold = exit",NULL}
+    },
+    { "gba",
+      "Game Boy Advance",
+      {"Z = B    X = A","S = Select    Enter = Start","ESC hold = exit","",NULL}
+    },
+    { "lynx",
+      "Atari Lynx",
+      {"Arrows = D-Pad    Z = A","X = B    S = Opt1","Enter = Opt2","ESC hold = exit",NULL}
+    },
+    { "ngp",
+      "Neo Geo Pocket",
+      {"Arrows = D-Pad","Z = A    X = B","S = Select    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "a2600",
+      "Atari 2600",
+      {"Arrows = D-Pad","Z = Fire (button)","S = Select    Enter = Reset","Diff. = Settings 4","ESC hold = exit",NULL}
+    },
+    { "a5200",
+      "Atari 5200",
+      {"Arrows = D-Pad","Z = Fire    X = Pause","S = Start    Enter = Key3","ESC hold = exit",NULL}
+    },
+    { "a7800",
+      "Atari 7800",
+      {"Arrows = D-Pad","Z = B1(A)    X = B2(B)","S = Select    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "sms",
+      "Sega Master System",
+      {"Arrows = D-Pad","Z = Button 1    X = Button 2","S = Pause","Enter = Start    ESC hold = exit",NULL}
+    },
+    { "coleco",
+      "ColecoVision",
+      {"Arrows = D-Pad","Z = Fire 1    X = Fire 2","Enter = Start    ESC hold = exit",NULL}
+    },
+    { "nes",
+      "NES / Famicom (Dendy)",
+      {"Arrows = D-Pad","Z = A    X = B","S = Select    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "snes",
+      "SNES / Super Famicom",
+      {"Arrows = D-Pad","Z = B    X = Y    A = A","S = X    Q = L    W = R","Space = Select    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "megadrive",
+      "Mega Drive / Genesis",
+      {"Arrows = D-Pad","Z = A    X = B    C = C","A = X    S = Y    D = Z","Q = Mode    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "vectrex",
+      "GCE Vectrex",
+      {"Arrows = D-Pad","Z = Button 1    X = Button 2","Enter = Start","ESC hold = exit",NULL}
+    },
+    { "msx",
+      "MSX / Yamaha YIS-503II",
+      {"Full keyboard emulation","(P)ortfolio style","Enter = Start BASIC","ESC hold = exit","",NULL}
+    },
+    { "portfolio",
+      "Atari Portfolio",
+      {"Full keyboard emulation","INS = on-screen kbd","ESC hold = exit to menu","",NULL}
+    },
+};
+#define TFT_HELP_COUNT (sizeof(g_help_list)/sizeof(g_help_list[0]))
+
+// Ставит справку для системы sys_id (NULL = меню). Вызывается с core0.
+void tft_help_show(const char* sys_id) {
+    if (!sys_id) { g_tft_help_id = 0; g_tft_help_epoch++; return; }   // меню
+    int id = 0;
+    for (int i = 1; i < (int)TFT_HELP_COUNT; i++) {
+        if (g_help_list[i].id && strcmp(g_help_list[i].id, sys_id) == 0) { id = i; break; }
+    }
+    g_tft_help_id = id;
+    g_tft_help_epoch++;
+}
+
+// Сборка строки вручную (нет snprintf в bare-metal): число 0..999 + текст.
+static void tft_itoa(char** pp, unsigned v) {
+    char tmp[8];
+    int n = 0;
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n > 0) *(*pp)++ = tmp[--n];
+}
+static void tft_strcat(char** pp, const char* s) {
+    while (*s) *(*pp)++ = *s++;
+}
+
+// Рендер справки по индексу id в tft_fb (выполняется на CPU1).
+// Верстка: слева столбиком подсказки по кнопкам, справа — колонка иконок
+// Settings/About (тап по ним = меню-пункты, код в g_tft_request).
+#define ICON_X  384
+#define ICON_W  (TFT_W - ICON_X - 4)   // ~92px
+#define ICON_H  34
+static void tft_help_render(int id) {
+    if (id < 0 || id >= (int)TFT_HELP_COUNT) id = 0;
+    const char* title = g_help_list[id].title;
+    const char* const* lines = g_help_list[id].lines;
+
     tft_render_begin();
-    tft_fill_rect(0, 0, TFT_W, TFT_H, color);
+    tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);
+
+    // Заголовок — крупный, красный
+    tft_puts2(4, 2, title, 0xF800);
+    tft_fill_rect(0, 22, TFT_W, 2, 0xFFFF);
+
+    // Строки справки — столбиком в левой зоне
+    int y = 20;
+    for (int i = 0; lines[i] && i < 12; i++) {
+        tft_puts(4, y, lines[i], 0xFFFF);
+        y += 14;
+    }
+
+    // Динамические строки F1/F2 (страница меню, id=0): показывают текущие
+    // значения переключателей (см. menu.c: F1/F2 меняют их прямо из меню).
+    if (id == 0) {
+        extern uint8_t  a2600_diff_expert;
+        extern uint16_t emu_period_us;
+        char dynbuf[64];
+        char* p = dynbuf;
+
+        tft_strcat(&p, "F1: A2600 diff: ");
+        tft_strcat(&p, a2600_diff_expert ? "Expert" : "Novice");
+        *p = 0;
+        tft_puts(4, 90, dynbuf, 0xFFFF);
+
+        p = dynbuf;
+        tft_strcat(&p, "F2: 50/60 Hz: ");
+        switch (emu_period_us) {
+            case 16667: tft_strcat(&p, "60"); break;
+            case 20000: tft_strcat(&p, "50"); break;
+            case 22222: tft_strcat(&p, "45"); break;
+            case 25000: tft_strcat(&p, "40"); break;
+            default:    tft_itoa(&p, 30); break;
+        }
+        tft_strcat(&p, " Hz");
+        *p = 0;
+        tft_puts(4, 104, dynbuf, 0xFFFF);
+    }
+
+    // Иконки справа (Settings / About)
+    int sx = ICON_X, sy = 30;
+    tft_fill_rect(sx, sy, ICON_W, ICON_H, 0x0018);
+    tft_fill_rect(sx, sy, ICON_W, 1, 0xFFFF);
+    tft_fill_rect(sx, sy + ICON_H - 1, ICON_W, 1, 0xFFFF);
+    tft_fill_rect(sx, sy, 1, ICON_H, 0xFFFF);
+    tft_fill_rect(sx + ICON_W - 1, sy, 1, ICON_H, 0xFFFF);
+    tft_puts(sx + 6, sy + 13, "Settings", 0xFFFF);
+
+    sy += ICON_H + 10;
+    tft_fill_rect(sx, sy, ICON_W, ICON_H, 0x0018);
+    tft_fill_rect(sx, sy, ICON_W, 1, 0xFFFF);
+    tft_fill_rect(sx, sy + ICON_H - 1, ICON_W, 1, 0xFFFF);
+    tft_fill_rect(sx, sy, 1, ICON_H, 0xFFFF);
+    tft_fill_rect(sx + ICON_W - 1, sy, 1, ICON_H, 0xFFFF);
+    tft_puts(sx + 6, sy + 13, "About", 0xFFFF);
+
+tft_puts(4, TFT_H - 12, "ESC hold = exit emulator", 0x7BEF);
+
+    // Эхо в UART: что рисуем на TFT + сырые значения тача (отладка)
+    printf("TXT: title=\"%s\"\n", title);
+    for (int i = 0; lines[i] && i < 12; i++) printf("TXT: %s\n", lines[i]);
+
     tft_flush();
 }
 
-// ---- CPU1 entry: probes, init, test fills ----
+// ---- Сканирование тача XPT2046 (CPU1) ----
+// Калибровка грубая (waveshare35a-overlay: xmin=200,xmax=3900, swapxy=1).
+// 0 = отпущен, 1 = нажат; координаты 0..TFT_W/H.
+static int tft_touch_scan(int* px, int* py) {
+    uint32_t save = SPI0_CCR;
+    SPI0_CCR = (4u << 8);            // 1,5 МГц — в норме для XPT2046
+    uint16_t rx = tft_touch_probe_cs(1, 0x90);  // X
+    uint16_t ry = tft_touch_probe_cs(1, 0xD0);  // Y
+    SPI0_CCR = save;
+    if (rx < 150 && ry < 150) return 0;
+    int sx = ((int)ry - 200) * TFT_W / 3700;
+    int sy = ((int)rx - 200) * TFT_H / 3700;
+    if (sx < 0) sx = 0; if (sx >= TFT_W) sx = TFT_W - 1;
+    if (sy < 0) sy = 0; if (sy >= TFT_H) sy = TFT_H - 1;
+    *px = sx; *py = sy;
+    return 1;
+}
+
+// ---- CPU1 entry: probes, init, help display + touch ----
 void tft_core_main(void) {
     TFT_STAT = 0x0A;
-    spi0_init();                     /* SPI0 — тактовая из spi0_init */
-
-    // Пробы XPT2046 — ему надо ≤2МГц
-    SPI0_CCR = (5u << 8);            /* 750 кГц — заведомо в норме для тача */
+    spi0_init();
+    SPI0_CCR = (5u << 8);
     TFT_STAT = 0x0B;
     TFT_PROBE  = tft_touch_probe_cs(1, 0x90);
     TFT_STAT = 0x0C;
@@ -391,46 +736,38 @@ void tft_core_main(void) {
     TFT_PROBE3 = tft_touch_probe_cs(0, 0x90);
     TFT_STAT = 0x0D;
 
-    // Замер реальной скорости SPI (uS на байт) — источник тактов заранее не известен.
-    {
-        uint32_t n = 2000, t1 = h3_hs_timer_lo_us();
-        for (uint32_t i = 0; i < n; i++) spi0_tx8(0xAA);
-        uint32_t dt = h3_hs_timer_lo_us() - t1;
-        printf("SPI: %u uS/byte (~%u kHz)\n",
-               (unsigned)(dt / n), (unsigned)(8000u / (dt / n)));
-    }
-    // Панель — скорость выставляет spi0_init внутри tft_init
-
-    if (tft_init() < 0) {
-        TFT_STAT = 9;
-        for (;;) __asm volatile("wfi");
-    }
-
+    if (tft_init() < 0) { TFT_STAT = 9; for (;;) __asm volatile("wfi"); }
     TFT_STAT = 2;
     tft_set_menu_mode();
     SPI0_TCR = 0x0;
+    SPI0_CCR = 0x1005;             // 8 MHz
 
-    // Частота 8 МГц (CCR=0x1005) + усиленный драйвер PC0..PC3
-    SPI0_CCR = 0x1005;
-    tft_fill_screen(0xF800);
-    delay_ms(1500);
+    // Заставка: меню по умолчанию
+    int last = -1;
+    int last_epoch = -1;
+    tft_help_render(0);
+    last = 0;
+    last_epoch = 0;
 
+    int prev_pressed = 0;
     for (;;) {
-        TFT_STAT = 3;
-        uint32_t t0 = h3_hs_timer_lo_us();
-        tft_fill_screen(0xF800);
-        tft_fill_screen(0x07E0);
-        tft_fill_screen(0x001F);
-        uint32_t dt = h3_hs_timer_lo_us() - t0;
-        printf("TFT: 3frames=%u ms\n", (unsigned)(dt / 1000));
-        delay_ms(500);
-        tft_fill_screen(0xFFFF); delay_ms(1000);
-        tft_fill_screen(0x0000); delay_ms(1000);
-        tft_render_begin();
-        tft_fill_rect(0,          0, TFT_W / 3, TFT_H, 0xF800);
-        tft_fill_rect(TFT_W / 3,  0, TFT_W / 3, TFT_H, 0x07E0);
-        tft_fill_rect(2 * TFT_W / 3, 0, TFT_W / 3, TFT_H, 0x001F);
-        tft_flush();
-        delay_ms(1000);
+        // Смена страницы справки по команде core0 (id или эпоха = перерисовать)
+        int cur = g_tft_help_id;
+        int cur_e = g_tft_help_epoch;
+        if (cur != last || cur_e != last_epoch) { last = cur; last_epoch = cur_e; tft_help_render(cur); }
+
+        // Сканирование тача; по фронту нажатия — попадание в иконку -> меню-код
+        int px, py;
+        int pressed = tft_touch_scan(&px, &py);
+        if (pressed && !prev_pressed) {
+            printf("TCH: press px=%d py=%d\n", px, py);  // отладка тача
+            if (px >= ICON_X && px < ICON_X + ICON_W) {
+                if (py >= 30 && py < 30 + ICON_H)       g_tft_request = -2;  // Settings
+                else if (py >= 30 + ICON_H + 10 &&
+                         py < 30 + 2*(ICON_H + 10) - 10) g_tft_request = -4; // About
+            }
+        }
+        prev_pressed = pressed;
+        delay_ms(30);
     }
 }

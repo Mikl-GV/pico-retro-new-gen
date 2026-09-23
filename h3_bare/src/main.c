@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r42 (madctl)\n");
+    uart_puts("build: TFT self-test r43 (final-ccr)\n");
 
     led_init();
     led_set(0);
@@ -141,8 +141,9 @@ void main(void) {
     else
         uart_puts("smp: CPU1 FAILED to start\n");
 
-    // Меню на HDMI — обычная работа core0; TFT-тест живёт на CPU1.
+// Меню на HDMI — обычная работа core0; справка на TFT.
     for (;;) {
+        tft_help_show(NULL);
         int sel = menu_run();
         if (sel == -2) {
             settings_run();
@@ -165,6 +166,7 @@ void main(void) {
         // Самодостаточные системы (BIOS вшит, ROM с SD не нужен) —
         // запускаются напрямую из меню, минуя браузер ROM.
         if (strcmp(id, "portfolio") == 0) {
+            tft_help_show("portfolio");
             emu_run_portfolio(NULL, 0, name);
             continue;
         }
@@ -187,10 +189,13 @@ void main(void) {
             }
 
             int choice = msx_launch_dialog(has_dir);
-            if (choice == 1)
+            if (choice == 1) {
+                tft_help_show("msx");
                 emu_run_msx(NULL, 0, name);    // BASIC
-            else if (choice == 2)
+            } else if (choice == 2) {
+                tft_help_show("msx");
                 rom_browser_run("msx", name, "msx");
+            }
             continue;
         }
 

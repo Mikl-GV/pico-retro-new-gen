@@ -334,9 +334,14 @@ static int input_wait(void) {
     uint32_t fc = 0;
     for (;;) {
         int k = usb_input_poll();
-        // тачпад: накопление позиции курсора и фронта тапа (interrupt-IN, неблокирующий)
+        // Запрос с TFT (Settings / About от тача) — сразу обслужить
+        extern volatile int32_t g_tft_request;
+        if (g_tft_request) {
+            int r = g_tft_request;
+            g_tft_request = 0;
+            return r;
+        }
         usb_pad_poll();
-        // плавно двигаем крестик по мере накопления координат
         pad_cursor_draw();
         if (k) return k;
         // мигаем LED, пока ждём ввод (видно, что не зависли)
@@ -388,6 +393,15 @@ int menu_run(void) {
                 sel_row = r;
                 menu_scroll_to(sel_row, max_visible);
             }
+        } else if (k == 58 || k == 59) {   // F1 / F2 — быстрые переключатели меню
+            // F2: 50/60 Hz (емкость TFT-эхо обновит), F1: A2600 diff.
+            extern uint8_t  a2600_diff_expert;
+            extern uint16_t emu_period_us;
+            extern void tft_help_show(const char* sys_id);
+            if (k == 58) a2600_diff_expert = !a2600_diff_expert;              // Novice/Expert
+            else         emu_period_us = (emu_period_us == 20000) ? 16667 : 20000; // 50/60 Hz
+            tft_help_show(NULL);   // эпоха++ → TFT перерисует меню с новыми значениями
+            continue;
         } else if (k == 40) {
             int item = rows[sel_row].item;
             if (item >= 0) {
@@ -409,6 +423,8 @@ int menu_run(void) {
                 usb_pad_wait_release();
                 return item;
             }
+        } else if (k == -2 || k == -4) {
+            return k;   // тач-иконки (Settings/About) — дубли главного меню
         } else if (k == 41 || k == 27 || k == 20) {   // ESC / X / Q
             return -1;
         }

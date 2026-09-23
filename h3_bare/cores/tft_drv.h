@@ -35,6 +35,16 @@ void tft_test_fill(uint16_t color);
 void tft_render_begin(void);              // очистить буфер, пометить «нужно отправить»
 void tft_fill_rect(int x, int y, int w, int h, uint16_t color);
 void tft_puts(int x, int y, const char* s, uint16_t color);
+void tft_flush_rect(int x, int y, int w, int h);  // отправить только окно (CASET/RASET)
+
+// Показать на TFT справку по кнопкам: sys_id системы (в меню передавать NULL).
+// Пишет один флаг в .coherent; рендер делает TFT-ядро на CPU1.
+void tft_help_show(const char* sys_id);
+
+// МОСТ с TFT (нажатия по иконкам справа, touch XPT2046):
+// CPU1 пишет сюда код пункта меню при тапе, core0 читает в input_wait меню.
+// 0 = нет запроса, -2 = Settings, -4 = About (коды как в menu_run).
+extern volatile int32_t g_tft_request;
 
 // ---- TFT core (CPU1) ----
 // Флаг «HDMI кадр готов» — ставится в fb_flush (core0), читается TFT-ядром.
