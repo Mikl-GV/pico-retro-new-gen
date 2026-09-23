@@ -56,6 +56,7 @@ extern const uint8_t font8x8[96][8];
 #define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
 #define PC_BASE  0x01C20848u
 #define PC_CFG0  (*(volatile uint32_t*)(PC_BASE + 0x00u))
+#define PC_DRV0  (*(volatile uint32_t*)(PC_BASE + 0x14u))
 #define PC_DAT   (*(volatile uint32_t*)(PC_BASE + 0x10u))
 
 #define PIN_CS  3   // PC3 — CS дисплея (CE0)
@@ -75,8 +76,13 @@ extern const uint8_t font8x8[96][8];
 #define TFT_H 320
 
 static uint16_t tft_fb[TFT_H * TFT_W] __attribute__((aligned(16)));
-static int g_mode = 1;
+static int g_mode = 1;      // 1 = вывод tft_fb, 0 = зеркало HDMI (0x5F900000)
 static int g_tft_ready = 0;
+
+// Флаг «HDMI-кадр готов»: core0 (fb_text.c) ставит в 1 после каждого
+// FB-flush; TFT-ядро CPU1 опрашивает его для зеркала. Живёт в .coherent
+// (uncached через MMU) — запись с core0 видна CPU1 сразу, без чистки кэша.
+volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
 
 static void cs_low(void)  {
     PC_DAT &= ~(1u << PIN_CS);
@@ -185,6 +191,9 @@ static void spi0_init(void) {
     udelay(1000);
 
     PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
+    // Максимальная сила драйвера (8 мА) на MOSI/SCLK/CS — быстрое нарастание
+    // фронтов; слабый драйвер по умолчанию режет 8+ МГц на ёмкости шлейфа.
+    PC_DRV0 |= (3u << 0) | (3u << 2) | (3u << 4) | (3u << 6);   /* PC0..PC3 */
     PA_CFG0 &= ~(0xFu << 8);
     PA_CFG0 |= (1u << 8);
     PA_CFG2 &= ~(0xFu << 20);
@@ -200,7 +209,7 @@ static void spi0_init(void) {
     SPI0_TCR = 0;
     SPI0_FCR = (1u << 31) | (1u << 15);
     udelay(100);
-    SPI0_CCR = (5u << 8);
+    SPI0_CCR = 0x1005;  /* CDR2=5 → 8 МГц (96/12) — с усиленным драйвером */
     udelay(100);
 }
 
@@ -209,10 +218,6 @@ static void spi_dump(void) {
            (unsigned)SPI0_GCR, (unsigned)SPI0_TCR, (unsigned)SPI0_FSR,
            (unsigned)SPI0_ISR, (unsigned)SPI0_CCR,
            (unsigned)SPI0_MBC, (unsigned)SPI0_BCC);
-}
-
-static inline void u_dbg(char c) {
-    *(volatile uint32_t*)0x01C28000u = (uint32_t)c;
 }
 
 // Последовательность инициализации ILI9486 — из waveshare35a-overlay.dtb.
@@ -232,7 +237,7 @@ static int tft_ili_init(void) {
 
     if (xfer_cmd(0xB0) < 0 || xfer_data(0x00) < 0)            { printf("TFT: SPI fail B0\n"); spi_dump(); return -1; }
     if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0)      { printf("TFT: SPI fail COLMOD\n"); spi_dump(); return -1; }
-    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x28) < 0)      { printf("TFT: SPI fail MADCTL\n"); spi_dump(); return -1; }
+    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x20) < 0)      { printf("TFT: SPI fail MADCTL\n"); spi_dump(); return -1; }
     if (xfer_cmd(0xC2) < 0 || xfer_data(0x44) < 0)            { printf("TFT: SPI fail C2\n"); spi_dump(); return -1; }
     if (xfer_cmd(0xC5) < 0)                                   { printf("TFT: SPI fail C5\n"); spi_dump(); return -1; }
     for (int z = 0; z < 6; z++)
@@ -244,21 +249,18 @@ static int tft_ili_init(void) {
                                        0x37,0x0A,0x13,0x04,0x11,0x0D,0x00};
         static const uint8_t gn[15] = {0x0F,0x32,0x2E,0x0B,0x0D,0x05,0x47,0x75,
                                        0x37,0x06,0x10,0x03,0x24,0x20,0x00};
-        u_dbg('@');
         if (xfer_cmd(0xE0) < 0)                { printf("TFT: SPI fail E0\n"); spi_dump(); return -1; }
         for (int i = 0; i < 15; i++)
             if (xfer_data(gp[i]) < 0)          { printf("TFT: SPI fail E0-d[%d]\n", i); spi_dump(); return -1; }
-        u_dbg('=');
         if (xfer_cmd(0xE1) < 0)                { printf("TFT: SPI fail E1\n"); spi_dump(); return -1; }
         for (int i = 0; i < 15; i++)
             if (xfer_data(gn[i]) < 0)          { printf("TFT: SPI fail E1-d[%d]\n", i); spi_dump(); return -1; }
-        u_dbg('+');
         if (xfer_cmd(0xE2) < 0)                { printf("TFT: SPI fail E2\n"); spi_dump(); return -1; }
         for (int i = 0; i < 15; i++)
             if (xfer_data(gn[i]) < 0)          { printf("TFT: SPI fail E2-d[%d]\n", i); spi_dump(); return -1; }
     }
     TFT_STAT = 0x15;
-    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x28) < 0) { printf("TFT: SPI fail MADCTL2\n"); spi_dump(); return -1; }
+    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0x20) < 0) { printf("TFT: SPI fail MADCTL2\n"); spi_dump(); return -1; }
     if (xfer_cmd(CMD_SLPOUT) < 0) { printf("TFT: SPI fail SLPOUT2\n"); spi_dump(); return -1; }
     delay_ms(50);
     if (xfer_cmd(CMD_DISPON) < 0) { printf("TFT: SPI fail DISPON (0x%X TCR=0x%X FSR=0x%X)\n",
@@ -289,8 +291,9 @@ int tft_init(void) {
     return -1;
 }
 
-// Полный кадр — каждый пиксель как 16-битное слово:
-//   [hi, lo] под CS, лэтч по подъёму.
+// Полный кадр — пиксель парой по-байтовых XCH (под одним CS), лэтч по CS↑
+// после NOP. Это проверенный рабочий вариант (r36, 6 МГц); попытка одним
+// 16-битным бурстом (tx16) собла панель — движок шлёт такты иначе.
 void tft_flush(void) {
     if (!g_tft_ready) return;
     if (set_window() < 0) return;
@@ -299,13 +302,33 @@ void tft_flush(void) {
     if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
     dc_data();
     for (int ty = 0; ty < TFT_H; ty++) {
-        const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
-        for (int tx = 0; tx < TFT_W; tx++) {
-            uint16_t p = row[tx];
-            cs_low();
-            if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
-                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto abort; }
-            cs_high();
+        if (g_mode) {
+            const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
+            for (int tx = 0; tx < TFT_W; tx++) {
+                uint16_t p = row[tx];
+                cs_low();
+                if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
+                    spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto abort; }
+                __asm volatile("nop; nop; nop; nop; nop"); /* ~50ns на стабильность шины */
+                cs_high();
+            }
+        } else {
+            /* Зеркало HDMI: даунскейл 1024x600 XRGB8888 -> 480x320 RGB565 */
+            const uint32_t* src = (const uint32_t*)0x5F900000;
+            int sy = (ty * 15) / 8;
+            const uint32_t* row0 = src + (uint32_t)sy * FB_W;
+            for (int tx = 0; tx < TFT_W; tx++) {
+                int sx = (tx * 32) / 15;
+                uint32_t c = row0[sx];
+                uint16_t p = (uint16_t)(((c>>3)&0x1F)<<11) |
+                             (uint16_t)(((c>>10)&0x3F)<<5) |
+                             (uint16_t)((c>>19)&0x1F);
+                cs_low();
+                if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
+                    spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto abort; }
+                __asm volatile("nop; nop; nop; nop; nop");
+                cs_high();
+            }
         }
     }
     return;
@@ -356,45 +379,58 @@ static void tft_fill_screen(uint16_t color) {
 
 // ---- CPU1 entry: probes, init, test fills ----
 void tft_core_main(void) {
-    u_dbg('E');
     TFT_STAT = 0x0A;
-    spi0_init();
-    TFT_STAT = 0x0B;
+    spi0_init();                     /* SPI0 — тактовая из spi0_init */
 
+    // Пробы XPT2046 — ему надо ≤2МГц
+    SPI0_CCR = (5u << 8);            /* 750 кГц — заведомо в норме для тача */
+    TFT_STAT = 0x0B;
     TFT_PROBE  = tft_touch_probe_cs(1, 0x90);
     TFT_STAT = 0x0C;
     TFT_PROBE2 = tft_touch_probe_cs(1, 0xD0);
     TFT_PROBE3 = tft_touch_probe_cs(0, 0x90);
     TFT_STAT = 0x0D;
 
+    // Замер реальной скорости SPI (uS на байт) — источник тактов заранее не известен.
+    {
+        uint32_t n = 2000, t1 = h3_hs_timer_lo_us();
+        for (uint32_t i = 0; i < n; i++) spi0_tx8(0xAA);
+        uint32_t dt = h3_hs_timer_lo_us() - t1;
+        printf("SPI: %u uS/byte (~%u kHz)\n",
+               (unsigned)(dt / n), (unsigned)(8000u / (dt / n)));
+    }
+    // Панель — скорость выставляет spi0_init внутри tft_init
+
     if (tft_init() < 0) {
-        TFT_STAT = 9;  u_dbg('F');
+        TFT_STAT = 9;
         for (;;) __asm volatile("wfi");
     }
 
     TFT_STAT = 2;
-    u_dbg('I');
     tft_set_menu_mode();
-    u_dbg('L'); u_dbg('P');
-
     SPI0_TCR = 0x0;
+
+    // Частота 8 МГц (CCR=0x1005) + усиленный драйвер PC0..PC3
+    SPI0_CCR = 0x1005;
     tft_fill_screen(0xF800);
     delay_ms(1500);
 
     for (;;) {
         TFT_STAT = 3;
-        u_dbg('R'); tft_fill_screen(0xF800);  u_dbg('r'); delay_ms(1000);
-        u_dbg('G'); tft_fill_screen(0x07E0);  u_dbg('g'); delay_ms(1000);
-        u_dbg('B'); tft_fill_screen(0x001F);  u_dbg('b'); delay_ms(1000);
-        u_dbg('W'); tft_fill_screen(0xFFFF);  u_dbg('w'); delay_ms(1000);
-        u_dbg('K'); tft_fill_screen(0x0000);  u_dbg('k'); delay_ms(1000);
-        u_dbg('|');
+        uint32_t t0 = h3_hs_timer_lo_us();
+        tft_fill_screen(0xF800);
+        tft_fill_screen(0x07E0);
+        tft_fill_screen(0x001F);
+        uint32_t dt = h3_hs_timer_lo_us() - t0;
+        printf("TFT: 3frames=%u ms\n", (unsigned)(dt / 1000));
+        delay_ms(500);
+        tft_fill_screen(0xFFFF); delay_ms(1000);
+        tft_fill_screen(0x0000); delay_ms(1000);
         tft_render_begin();
         tft_fill_rect(0,          0, TFT_W / 3, TFT_H, 0xF800);
         tft_fill_rect(TFT_W / 3,  0, TFT_W / 3, TFT_H, 0x07E0);
         tft_fill_rect(2 * TFT_W / 3, 0, TFT_W / 3, TFT_H, 0x001F);
         tft_flush();
-        u_dbg('!');
         delay_ms(1000);
     }
 }

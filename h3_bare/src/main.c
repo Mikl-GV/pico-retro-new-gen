@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r27 (mode0-fix)\n");
+    uart_puts("build: TFT self-test r42 (madctl)\n");
 
     led_init();
     led_set(0);
@@ -141,24 +141,7 @@ void main(void) {
     else
         uart_puts("smp: CPU1 FAILED to start\n");
 
-    // Диагностика: статус CPU1 из SRAM (0x24). 1=вошёл, 2=init ok, 3=тест,
-    // 9=не отвечает. Печатаем несколько раз — видно переходы даже если
-    // терминал рвёт вывод.
-    {
-        volatile uint32_t* st  = (volatile uint32_t*)0x24u;
-        volatile uint32_t* tx  = (volatile uint32_t*)0x28u;
-        volatile uint32_t* ty  = (volatile uint32_t*)0x2Cu;
-        volatile uint32_t* pc3 = (volatile uint32_t*)0x30u;
-        for (int i = 0; i < 10; i++) {
-            udelay(300000);
-            printf("TFT: st=%u tX=0x%04X tY=0x%04X pc3=0x%04X\n",
-                   (unsigned)*st, (unsigned)*tx, (unsigned)*ty, (unsigned)*pc3);
-        }
-    }
-
-    // Тест-режим: core0 в idle, весь SPI-тест панели на CPU1 (без меню).
-    for (;;) udelay(1000000);
-
+    // Меню на HDMI — обычная работа core0; TFT-тест живёт на CPU1.
     for (;;) {
         int sel = menu_run();
         if (sel == -2) {
