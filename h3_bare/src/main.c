@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test dcdf7d1 RXdrain\n");
+    uart_puts("build: TFT self-test r5 (d133f69+)\n");
 
     led_init();
     led_set(0);
