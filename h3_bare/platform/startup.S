@@ -276,9 +276,16 @@ _hang:
 .section .text
 .global cpu1_entry
 cpu1_entry:
-    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса) */
+    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
+     * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
+     * если core0 в этот момент допечатывает свою строку. */
+    ldr r1, =0x01C2807C      /* UART0_USR */
+0:  ldr r0, [r1]
+    tst r0, #2               /* TX FIFO not full */
+    beq 0b
     mov r0, #'C'
-    bl uart_dbg
+    ldr r1, =0x01C28000      /* UART0_THR */
+    strb r0, [r1]
     mrs r0, cpsr
     bic r0, r0, #0x1F
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
