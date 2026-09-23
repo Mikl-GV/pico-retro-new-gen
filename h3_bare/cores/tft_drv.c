@@ -30,6 +30,7 @@ extern const uint8_t font8x8[96][8];
 #define SPI0_FSR_TF_CNT_MASK (0xFFu << 16)
 
 #define PA_BASE  0x01C20800u
+#define PA_CFG0  (*(volatile uint32_t*)(PA_BASE + 0x00u))
 #define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
 #define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
 #define PC_BASE  0x01C20848u
@@ -112,8 +113,8 @@ static void spi0_init(void) {
 
     // PC0=SPI0_MOSI, PC1=SPI0_MISO, PC2=SPI0_CLK (func3), PC3=output(CS), PC7=output(DC)
     PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
-    PA_CFG1 &= ~(0xFu << 8);
-    PA_CFG1 |= (1u << 8);   // PA10 = output (RESET)
+    PA_CFG0 &= ~(0xFu << 8);
+    PA_CFG0 |= (1u << 8);   // PA2 = output (RESET)
 
     PC_DAT |= (1u << PIN_CS);
     PC_DAT &= ~(1u << PIN_DC);
