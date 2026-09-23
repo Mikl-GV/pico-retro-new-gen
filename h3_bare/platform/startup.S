@@ -296,6 +296,11 @@ cpu1_entry:
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    /* Пауза на стабилизацию ядра перед первыми SPI/MMIO операциями
+     * (~100 мс). В конфигурации без неё CPU1 молчал после 'C'. */
+    ldr r0, =0x600000
+1:  subs r0, r0, #1
+    bne 1b
     bl tft_core_main
 2:  b 2b
 .end

@@ -332,12 +332,14 @@ static int tft_patch_test(uint16_t color) {
 // Сырые маркеры (E I L P p ...): прямые записи в UART, показывают,
 // где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
-    u_dbg('E');
+    /* FIFO-safe маркер (uart_puts не теряет байт) */
+    uart_puts("E\n");
+    u_dbg('I');
     if (tft_init() < 0) {
         u_dbg('F');
         for (;;) __asm volatile("wfi");
     }
-    u_dbg('I');
+    u_dbg('J');
     tft_set_menu_mode();
     u_dbg('L');
     u_dbg('P');
