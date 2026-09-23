@@ -34,14 +34,22 @@ extern const uint8_t font8x8[96][8];
 #define PA_BASE  0x01C20800u
 #define PA_CFG0  (*(volatile uint32_t*)(PA_BASE + 0x00u))
 #define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
+#define PA_CFG2  (*(volatile uint32_t*)(PA_BASE + 0x08u))
 #define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
 #define PC_BASE  0x01C20848u
 #define PC_CFG0  (*(volatile uint32_t*)(PC_BASE + 0x00u))
 #define PC_DAT   (*(volatile uint32_t*)(PC_BASE + 0x10u))
 
 #define PIN_CS  3   // PC3
+#define PIN_CS2 21  // PA21 — дубль CS (на плате может быть перепутано)
 #define PIN_DC  7   // PC7
 #define PIN_RST 2   // PA2
+
+// Статус CPU1 для core0 (SRAM A1, вне кэшей): этапы инициализации.
+// 1=вошёл, 0x11..0x16=подэтапы панели, 2=init ok, 3=тест, 9=fail
+#define TFT_STAT  (*(volatile uint32_t*)0x24u)
+// Результат пробы XPT2046 (0xFFFF = не отвечает), пишет CPU1
+#define TFT_PROBE (*(volatile uint32_t*)0x28u)
 
 #define FB_W  1024
 #define FB_H  600
@@ -57,8 +65,14 @@ static int g_tft_ready = 0;
 // секция uncached через MMU, поэтому запись с core0 видна core1 сразу.
 volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
 
-static void cs_low(void)  { PC_DAT &= ~(1u << PIN_CS); }
-static void cs_high(void) { PC_DAT |=  (1u << PIN_CS); }
+static void cs_low(void)  {
+    PC_DAT &= ~(1u << PIN_CS);
+    PA_DAT &= ~(1u << PIN_CS2);   /* дубль CS на PA21 */
+}
+static void cs_high(void) {
+    PC_DAT |=  (1u << PIN_CS);
+    PA_DAT |=  (1u << PIN_CS2);
+}
 static void dc_cmd(void)  { PC_DAT &= ~(1u << PIN_DC); }
 static void dc_data(void) { PC_DAT |=  (1u << PIN_DC); }
 
@@ -113,6 +127,19 @@ static int tft_read_bytes(uint8_t cmd, uint8_t* out, int n) {
     return 0;
 }
 
+// Проба XPT2046 (тач-контроллер на той же SPI0-шине): шлём 0x90
+// (start|X pos|12bit), читаем 2 байта. Если MISO отвечает значением,
+// отличающимся от 0xFFFF — SPI жив независимо от панели.
+static uint16_t tft_touch_probe(void) {
+    uint8_t b0 = 0xFF, b1 = 0xFF;
+    cs_low();
+    if (spi0_txrx8(0x90, 0) < 0)                { cs_high(); return 0xFFFF; }
+    if (spi0_txrx8(0x00, &b0) < 0 ||
+        spi0_txrx8(0x00, &b1) < 0)             { cs_high(); return 0xFFFF; }
+    cs_high();
+    return (uint16_t)((b0 << 8) | b1);
+}
+
 static int xfer_cmd(uint8_t cmd) {
     cs_low();
     dc_cmd();
@@ -146,8 +173,11 @@ static void spi0_init(void) {
     PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
     PA_CFG0 &= ~(0xFu << 8);
     PA_CFG0 |= (1u << 8);   // PA2 = output (RESET)
+    PA_CFG2 &= ~(0xFu << 20);
+    PA_CFG2 |= (1u << 20);  // PA21 = output (CS2, дубль chip-select)
 
     PC_DAT |= (1u << PIN_CS);
+    PA_DAT |= (1u << PIN_CS2);
     PC_DAT &= ~(1u << PIN_DC);
     PA_DAT |= (1u << PIN_RST);
 
@@ -158,20 +188,19 @@ static void spi0_init(void) {
     udelay(100);
 }
 
-// Универсальная инициализация 480x320 (перекрывает ILI9486 и ILI9488).
-// ILI9488 без регистров F7/B0/B1/B6/B4/C0/C1/C5 не включает вывод
-// (белый экран); ILI9486 эти команды игнорирует — последовательность
-// безопасна для обоих.
 static int tft_ili_init(void) {
+    TFT_STAT = 0x11;
     PA_DAT &= ~(1u << PIN_RST);
     delay_ms(20);
     PA_DAT |= (1u << PIN_RST);
     delay_ms(150);
     if (xfer_cmd(CMD_SWRESET) < 0) { printf("TFT: SPI fail @SWRESET\n"); return -1; }
     delay_ms(150);
+    TFT_STAT = 0x12;
 
     if (xfer_cmd(CMD_SLPOUT) < 0) { printf("TFT: SPI fail @SLPOUT\n"); return -1; }
     delay_ms(150);
+    TFT_STAT = 0x13;
 
     if (xfer_cmd(0xB0) < 0 || xfer_data(0x00) < 0)                      { printf("TFT: SPI fail B0\n"); return -1; }
     if (xfer_cmd(0xB1) < 0 || xfer_data(0x00) < 0 || xfer_data(0x11) < 0){ printf("TFT: SPI fail B1\n"); return -1; }
@@ -183,6 +212,7 @@ static int tft_ili_init(void) {
     if (xfer_cmd(0xC5) < 0 || xfer_data(0x00) < 0 || xfer_data(0x12) < 0){ printf("TFT: SPI fail C5\n"); return -1; }
     if (xfer_cmd(0xF7) < 0 || xfer_data(0xA9) < 0 || xfer_data(0x51) < 0 ||
         xfer_data(0x2C) < 0 || xfer_data(0x82) < 0)                     { printf("TFT: SPI fail F7\n"); return -1; }
+    TFT_STAT = 0x14;
 
     if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xC8) < 0) { printf("TFT: SPI fail MADCTL\n"); return -1; }
     if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0) { printf("TFT: SPI fail COLMOD\n"); return -1; }
@@ -197,10 +227,12 @@ static int tft_ili_init(void) {
         if (xfer_cmd(0xE1) < 0) { printf("TFT: SPI fail E1\n"); return -1; }
         for (int i = 0; i < 15; i++) if (xfer_data(gn[i]) < 0) { printf("TFT: SPI fail E1\n"); return -1; }
     }
+    TFT_STAT = 0x15;
 
     if (xfer_cmd(CMD_INVON) < 0) { printf("TFT: SPI fail INVON (0x%X)\n", (unsigned)SPI0_TCR); return -1; }
     if (xfer_cmd(CMD_DISPON) < 0) { printf("TFT: SPI fail DISPON (0x%X TCR=0x%X FSR=0x%X)\n",
         (unsigned)CMD_DISPON, (unsigned)SPI0_TCR, (unsigned)SPI0_FSR); return -1; }
+    TFT_STAT = 0x16;
     delay_ms(50);
     printf("TFT: init done\n");
     return 0;
@@ -337,6 +369,8 @@ static int tft_patch_test(uint16_t color) {
 // где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
     u_dbg('E');
+    spi0_init();                       /* SPI0 вкл — до пробы XPT2046 */
+    TFT_PROBE = tft_touch_probe();     /* проверка: жив ли SPI */
     if (tft_init() < 0) {
         TFT_STAT = 9;
         u_dbg('F');

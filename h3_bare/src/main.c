@@ -145,10 +145,11 @@ void main(void) {
     // 9=не отвечает. Печатаем несколько раз — видно переходы даже если
     // терминал рвёт вывод.
     {
-        volatile uint32_t* st = (volatile uint32_t*)0x24u;
+        volatile uint32_t* st  = (volatile uint32_t*)0x24u;
+        volatile uint32_t* pr  = (volatile uint32_t*)0x28u;
         for (int i = 0; i < 10; i++) {
             udelay(300000);
-            printf("TFT: st=%u\n", (unsigned)*st);
+            printf("TFT: st=%u probe=0x%04X\n", (unsigned)*st, (unsigned)*pr);
         }
     }
 
