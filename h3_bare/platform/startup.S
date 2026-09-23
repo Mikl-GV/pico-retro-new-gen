@@ -300,6 +300,12 @@ cpu1_entry:
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    mov r2, #0x24
+    mov r3, #0x0A           /* st=0x0A — «сейчас прыгнем в tft_core_main» */
+    str r3, [r2]
     bl tft_core_main
+    mov r2, #0x24
+    mov r3, #0xAF           /* st=0xAF — вернулись (не должно) */
+    str r3, [r2]
 2:  b 2b
 .end
