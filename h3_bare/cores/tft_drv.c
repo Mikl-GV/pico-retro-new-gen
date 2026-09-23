@@ -372,9 +372,13 @@ static int tft_patch_test(uint16_t color) {
 // где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
     u_dbg('E');
-    spi0_init();                        /* SPI0 вкл — до пробы XPT2046 */
-    TFT_PROBE  = tft_touch_probe_cs(1); /* тач на CS=PC3 */
-    TFT_PROBE2 = tft_touch_probe_cs(0); /* тач на CS=PA21 */
+    TFT_STAT = 0x0A;                 /* вошли в tft_core_main */
+    spi0_init();                     /* SPI0 вкл — до пробы XPT2046 */
+    TFT_STAT = 0x0B;                 /* SPI0 инициализирован */
+    TFT_PROBE  = tft_touch_probe_cs(1);
+    TFT_STAT = 0x0C;                 /* проба PC3 прошла */
+    TFT_PROBE2 = tft_touch_probe_cs(0);
+    TFT_STAT = 0x0D;                 /* проба PA21 прошла */
     if (tft_init() < 0) {
         TFT_STAT = 9;
         u_dbg('F');
