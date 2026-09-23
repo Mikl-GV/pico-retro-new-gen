@@ -78,14 +78,18 @@ static int wait_done(void) {
 
 // Каждый байт — отдельный burst с XCH (как в рабочей инициализации).
 // CS остаётся низким между байтами. Это медленно (~50 мс кадр), но надёжно.
-// Возвращает 0 = ок, -1 = SPI не отвечает.
+// Возвращает 0 = ок, -1 = XCH не завершился, -2 = нет места в TX FIFO.
+// ВАЖНО: после каждой передачи читаем RX FIFO — иначе после ~64 байт
+// подряд RX переполняется и контроллер встаёт на длинных бурстах.
 static int spi0_tx8(uint8_t b) {
-    if (!wait_tx_room()) return -1;
+    if (!wait_tx_room()) return -2;
     SPI0_TXD8 = b;
     SPI0_MBC = 1;
     SPI0_BCC = 1;
     SPI0_TCR |= SPI0_TCR_XCH;
-    return wait_done() ? 0 : -1;
+    if (!wait_done()) return -1;
+    (void)SPI0_RXD8;   /* дренаж RX-байта */
+    return 0;
 }
 
 // Байтовая передача с приёмом MISO (нужно для чтения ID дисплея).
@@ -340,7 +344,12 @@ void tft_core_main(void) {
     tft_set_menu_mode();
     u_dbg('L');
     u_dbg('P');
-    if (tft_patch_test(0xF800) == 0) u_dbg('p'); else u_dbg('X');
+    {
+        int pr = tft_patch_test(0xF800);
+        if (pr == 0)      u_dbg('p');
+        else if (pr == -2) u_dbg('t');   /* некуда писать (TX FIFO) */
+        else              u_dbg('d');    /* XCH не завершился */
+    }
     u_dbg(' ');
     delay_ms(2000);
 
