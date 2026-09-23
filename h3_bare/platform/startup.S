@@ -276,16 +276,19 @@ _hang:
 .section .text
 .global cpu1_entry
 cpu1_entry:
-    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса) */
+    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
+     * Небольшая пауза, чтобы core0 успел допечатать свой статус —
+     * иначе строки из двух ядер перемешиваются в UART. */
     mov r0, #'C'
     bl uart_dbg
     mrs r0, cpsr
     bic r0, r0, #0x1F
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
-    mov r0, #'c'            /* DGN: SVC стек будет */
-    bl uart_dbg
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    ldr r0, =0x600000       /* ~100 мс при 600 МГц (CPU1 idle) */
+1:  subs r0, r0, #1
+    bne 1b
     bl tft_core_main
-1:  b 1b
+2:  b 2b
 .end

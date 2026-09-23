@@ -168,20 +168,9 @@ static int tft_ili_init(void) {
     if (xfer_cmd(CMD_SWRESET) < 0) { printf("TFT: SPI fail @SWRESET\n"); return -1; }
     delay_ms(150);
 
-    // Диагностика: read ID (0x04). Все байты 0xFF = дисплей не на этих
-    // пинах / MISO не соединён; 94 86 = ILI9486, 94 88 = ILI9488.
-    {
-        uint8_t id[4] = {0,0,0,0};
-        if (tft_read_bytes(0x04, id, 4) == 0)
-            printf("TFT: ID=%02X %02X %02X %02X\n", id[0], id[1], id[2], id[3]);
-        else
-            printf("TFT: ID read timeout (MISO?)\n");
-    }
-
     if (xfer_cmd(CMD_SLPOUT) < 0) { printf("TFT: SPI fail @SLPOUT\n"); return -1; }
     delay_ms(150);
 
-    // Управляющие регистры (ILI9488)
     if (xfer_cmd(0xB0) < 0 || xfer_data(0x00) < 0)                      { printf("TFT: SPI fail B0\n"); return -1; }
     if (xfer_cmd(0xB1) < 0 || xfer_data(0x00) < 0 || xfer_data(0x11) < 0){ printf("TFT: SPI fail B1\n"); return -1; }
     if (xfer_cmd(0xB4) < 0 || xfer_data(0x02) < 0)                      { printf("TFT: SPI fail B4\n"); return -1; }
@@ -193,11 +182,9 @@ static int tft_ili_init(void) {
     if (xfer_cmd(0xF7) < 0 || xfer_data(0xA9) < 0 || xfer_data(0x51) < 0 ||
         xfer_data(0x2C) < 0 || xfer_data(0x82) < 0)                     { printf("TFT: SPI fail F7\n"); return -1; }
 
-    // Ориентация и формат пикселей (16-bit RGB565)
     if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xC8) < 0) { printf("TFT: SPI fail MADCTL\n"); return -1; }
     if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0) { printf("TFT: SPI fail COLMOD\n"); return -1; }
 
-    // Гамма
     {
         static const uint8_t gp[15] = {0x00,0x07,0x10,0x09,0x17,0x0B,0x41,0x89,
                                        0x43,0x08,0x12,0x08,0x17,0x14,0x0F};
@@ -209,9 +196,9 @@ static int tft_ili_init(void) {
         for (int i = 0; i < 15; i++) if (xfer_data(gn[i]) < 0) { printf("TFT: SPI fail E1\n"); return -1; }
     }
 
-    if (xfer_cmd(CMD_INVON) < 0 || xfer_cmd(CMD_DISPON) < 0) {
-        printf("TFT: SPI fail @on\n"); return -1;
-    }
+    if (xfer_cmd(CMD_INVON) < 0) { printf("TFT: SPI fail INVON (0x%X)\n", (unsigned)SPI0_TCR); return -1; }
+    if (xfer_cmd(CMD_DISPON) < 0) { printf("TFT: SPI fail DISPON (0x%X TCR=0x%X FSR=0x%X)\n",
+        (unsigned)CMD_DISPON, (unsigned)SPI0_TCR, (unsigned)SPI0_FSR); return -1; }
     delay_ms(50);
     printf("TFT: init done\n");
     return 0;
@@ -316,14 +303,11 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
 // (ставит fb_flush на core0) и зеркалит главный экран на SPI-дисплей.
 // Основное ядро при этом не нагружается SPI-передачами.
 void tft_core_main(void) {
-    /* DGN 'T': начало tft_core_main (CPU1) */
-    printf("TFT-core: enter\n");
     if (tft_init() < 0) {
-        printf("TFT-core: display not responding, idle\n");
+    // Засыпаем — дисплей не подключён или SPI не отвечает
         for (;;) __asm volatile("wfi");
     }
     tft_set_dup_mode();
-    printf("TFT-core: mirroring HDMI\n");
     for (;;) {
         while (!g_tft_frame_ready)
             __asm volatile("yield");
