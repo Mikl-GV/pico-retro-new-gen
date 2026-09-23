@@ -18,6 +18,7 @@ extern int printf(const char* fmt, ...);
 
 #define SUNXI_CPUCFG_BASE  0x01C19000u
 #define SUNXI_PRCM_BASE    0x01F01400u
+#define SUNXI_SRAM_A1_BASE 0x00000000u
 
 #define CFG_PRIV0          0x1A4u   /* адрес входа CPU1..CPU3 */
 #define CFG_GEN_CTRL       0x184u
@@ -52,10 +53,38 @@ static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
 }
 
 static int h3_cpu_start_direct(int cpu, uint32_t entry) {
+    /* Ядро после сброса может стартовать не с priv0, а с адреса 0
+     * (SRAM A1). Кладём туда трамплин: стек + переход на entry в DRAM.
+     *  0x00: ldr sp, [pc, #4]   ; sp = 0x5FE01000
+     *  0x04: ldr r0, [pc, #4]   ; r0 = entry
+     *  0x08: bx  r0
+     *  0x0c: .word 0x5FE01000
+     *  0x10: .word entry
+     */
+    const uint32_t tramp[5] = {
+        0xE59FD004u,          /* ldr sp, [pc, #4]  */
+        0xE59F0004u,          /* ldr r0, [pc, #4]  */
+        0xE12FFF10u,          /* bx  r0            */
+        0x5FE01000u,          /* SP для CPU1       */
+        entry,
+    };
+    {
+        volatile uint32_t* s = (volatile uint32_t*)SUNXI_SRAM_A1_BASE;
+        for (int i = 0; i < 5; i++) s[i] = tramp[i];
+    }
+    /* clean SRAM-трамплина из D-cache core0 (SRAM на SoC-шине) */
+    {
+        uint32_t a = SUNXI_SRAM_A1_BASE & ~0x1Fu;
+        uint32_t e = a + 64;
+        for (; a < e; a += 32)
+            __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(a));
+    }
+    __asm volatile("dsb" ::: "memory");
+
     uint32_t volatile* p;
 
     p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_PRIV0);
-    *p = entry;
+    *p = SUNXI_SRAM_A1_BASE;
     __asm volatile("dsb" ::: "memory");
 
     p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu));
@@ -101,7 +130,8 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
         return r == 0 ? 0 : -1;
     }
 
-    /* Secure: прямая последовательность, как в u-boot psci.c */
-    printf("smp: direct CPUS boot\n");
+    /* Secure: прямая последовательность (как u-boot psci.c) +
+     * SRAM A1-трамплин на случай старта ядра с адреса 0 */
+    printf("smp: direct CPUS boot, sram_tramp=0x0 entry=0x%X\n", (unsigned)ep);
     return h3_cpu_start_direct(cpu, ep);
 }
