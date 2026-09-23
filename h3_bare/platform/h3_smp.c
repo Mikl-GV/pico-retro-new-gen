@@ -1,21 +1,20 @@
-// h3_smp.c — запуск вторичных ядер H3 (CPU1..CPU3) на примере CPU1.
+// h3_smp.c — запуск вторичных ядер H3 (CPU1).
 //
-// Последовательность взята из u-boot (arch/arm/cpu/armv7/sunxi/psci.c,
-// sunxi_cpu_set_power / clamp_release / psci_cpu_on) для sun8i (H3):
-//   1) записать адрес входа в CPUCFG.priv0 (0x01C191A4)
-//   2) CPU_RST = 0 (удержать в сбросе)
-//   3) gen_ctrl &= ~BIT(cpu) — сброс L1 (invalidate)
-//   4) dbg_ctrl1 &= ~BIT(cpu) — lock CPU
-//   5) power: PRCM cpu_pwr_clamp — плавное снятие (0x1ff>>1 ... 0)
-//      затем cpu_pwroff &= ~BIT(cpu)
-//   6) CPU_RST = BIT(1)|BIT(0) (RSTEN + release)
-//   7) dbg_ctrl1 |= BIT(cpu) — unlock
+// Современный u-boot H3 (PSCI) большинство плат переводит в NON-SECURE
+// состояние перед запуском прошивки. В non-secure мире регистры
+// CPUCFG/PRCM (secure-only) игнорируют наши записи — ядро не стартует.
+// Правильный путь: PSCI_CPU_ON (SMC #0, fid=0x84000003) — монитор u-boot
+// остаётся в SRAM A1 и сам выполняет power/reset последовательность.
 //
-// Вторичное ядро стартует БЕЗ MMU и кэшей (аппаратно выключены после
-// снятия ресета) — для цикла SPI-дисплея это как раз удобно: прямые
-// регистровые доступы и чтение DRAM без когерентности кэшей.
+// Прямая (без PSCI) последовательность из u-boot psci.c (stock secure):
+//   CPUCFG.priv0 = entry; CPU_RST=0; gen_ctrl and dev dbg; clamp release
+//   (PRCM); pwroff clear; CPU_RST=3. Оставлена для случая secure-загрузки.
+
 #include <stdint.h>
 #include "h3.h"
+#include "uart.h"
+
+extern int printf(const char* fmt, ...);
 
 #define SUNXI_CPUCFG_BASE  0x01C19000u
 #define SUNXI_PRCM_BASE    0x01F01400u
@@ -28,48 +27,81 @@
 #define PRCM_CPU_PWROFF    0x100u
 #define PRCM_CLAMP(cpu)    (0x140u + (cpu) * 0x4u)
 
-static void reg_set_bits(uint32_t addr, uint32_t bits) {
-    *(volatile uint32_t*)addr |= bits;
-    __asm volatile("dsb" ::: "memory");
+/* PSCI 0.2 SMC32: CPU_ON */
+#define PSCI_CPU_ON        0x84000003u
+
+static uint32_t h3_read_scr(void) {
+    uint32_t v;
+    __asm volatile("mrc p15, 0, %0, c1, c1, 0" : "=r"(v));
+    return v;
 }
 
-static void reg_clear_bits(uint32_t addr, uint32_t bits) {
-    *(volatile uint32_t*)addr &= ~bits;
+static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
+    uint32_t ret;
+    __asm volatile(
+        "mov r0, %[fid]\n\t"
+        "mov r1, %[cpu]\n\t"
+        "mov r2, %[entry]\n\t"
+        "mov r3, #0\n\t"
+        "smc #0\n\t"
+        "mov %[ret], r0\n\t"
+        : [ret] "=r"(ret)
+        : [fid] "r"((uint32_t)PSCI_CPU_ON), [cpu] "r"(cpu), [entry] "r"(entry)
+        : "r0", "r1", "r2", "r3", "memory");
+    return ret;
+}
+
+static int h3_cpu_start_direct(int cpu, uint32_t entry) {
+    uint32_t volatile* p;
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_PRIV0);
+    *p = entry;
     __asm volatile("dsb" ::: "memory");
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu));
+    *p = 0u;
+    __asm volatile("dsb" ::: "memory");
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_GEN_CTRL);
+    *p &= ~(1u << cpu);
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1);
+    *p &= ~(1u << cpu);
+
+    /* питание: плавно снимаем power-clamp, затем clear power-gate */
+    {
+        uint32_t volatile* clamp = (uint32_t volatile*)(SUNXI_PRCM_BASE + PRCM_CLAMP(cpu));
+        uint32_t tmp = 0x1FF;
+        do { tmp >>= 1; *clamp = tmp; __asm volatile("dsb" ::: "memory"); } while (tmp);
+        udelay(10000);
+        p = (uint32_t volatile*)(SUNXI_PRCM_BASE + PRCM_CPU_PWROFF);
+        *p &= ~(1u << cpu);
+    }
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu));
+    *p = 3u;   /* RSTEN | RST */
+    __asm volatile("dsb" ::: "memory");
+
+    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1);
+    *p |= (1u << cpu);
+    return 0;
 }
 
 int h3_cpu_start(int cpu, void (*entry)(void)) {
     if (cpu < 1 || cpu > 3) return -1;
 
-    /* 1. адрес входа вторичного ядра */
-    *(volatile uint32_t*)(SUNXI_CPUCFG_BASE + CFG_PRIV0) = (uint32_t)entry;
-    __asm volatile("dsb" ::: "memory");
+    uint32_t scr = h3_read_scr();
+    uint32_t ep  = (uint32_t)entry;
+    printf("smp: CPU%u sec=0x%X entry=0x%X\n", (unsigned)cpu, (unsigned)scr, (unsigned)ep);
 
-    /* 2. сброс целевого ядра */
-    *(volatile uint32_t*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu)) = 0;
-    __asm volatile("dsb" ::: "memory");
-
-    /* 3. invalidate L1 (gen_ctrl) */
-    reg_clear_bits(SUNXI_CPUCFG_BASE + CFG_GEN_CTRL, (1u << cpu));
-
-    /* 4. lock (disable external debug) */
-    reg_clear_bits(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1, (1u << cpu));
-
-    /* 5. питание: плавно снимаем clamp, затем clear power-gate */
-    {
-        volatile uint32_t* clamp = (volatile uint32_t*)(SUNXI_PRCM_BASE + PRCM_CLAMP(cpu));
-        uint32_t tmp = 0x1FF;
-        do { tmp >>= 1; *clamp = tmp; __asm volatile("dsb" ::: "memory"); } while (tmp);
-        udelay(10000);
-        reg_clear_bits(SUNXI_PRCM_BASE + PRCM_CPU_PWROFF, (1u << cpu));
+    if (scr & 1u) {
+        /* Non-secure: только PSCI монитор u-boot может поднять ядро */
+        uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
+        printf("smp: PSCI CPU_ON ret=0x%X\n", (unsigned)r);
+        return r == 0 ? 0 : -1;
     }
 
-    /* 6. снять reset (RSTEN | RST) */
-    *(volatile uint32_t*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu)) = 3u;
-    __asm volatile("dsb" ::: "memory");
-
-    /* 7. unlock */
-    reg_set_bits(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1, (1u << cpu));
-
-    return 0;
+    /* Secure: прямая последовательность, как в u-boot psci.c */
+    printf("smp: direct CPUS boot\n");
+    return h3_cpu_start_direct(cpu, ep);
 }
