@@ -133,14 +133,13 @@ void main(void) {
     if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
     else uart_puts("sega_pad: PCF8574 not found\n");
 
-    // Вторичное ядро CPU1: SPI-дисплей (заставка/зеркало HDMI) на своём
-    // ядре — основной core0 не нагружается SPI-передачами.
+    // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
-    if (h3_cpu_start(1, cpu1_entry) == 0)
+    if (h3_cpu_start(1, cpu1_entry) == 1)
         uart_puts("smp: CPU1 started (TFT core)\n");
     else
-        uart_puts("smp: CPU1 start failed\n");
+        uart_puts("smp: CPU1 FAILED to start\n");
 
     for (;;) {
         int sel = menu_run();

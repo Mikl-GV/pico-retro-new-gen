@@ -25,6 +25,11 @@ extern int printf(const char* fmt, ...);
 #define R_CPUCFG_BASE      0x01F01C00u
 #define CPU_RST_CTRL(cpu)  (R_CPUCFG_BASE + 0x40u + (cpu) * 0x40u)
 
+/* Флаг «CPU1 вошёл в свой код». В .coherent (uncached) — запись ядра видна
+ * core0 сразу, без синхронизации кэшей. Ставит cpu1_entry первой
+ * инструкцией перед любым выводом. */
+volatile uint32_t g_cpu1_alive __attribute__((section(".coherent"), aligned(4)));
+
 /* PSCI 0.2 SMC32: CPU_ON */
 #define PSCI_CPU_ON        0x84000003u
 
@@ -53,6 +58,8 @@ static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
 //   ldr sp, [pc, #4]   ; SP = 0x5FE01000
 //   ldr r0, [pc, #4]   ; r0 = entry (cpu1_entry в DRAM)
 //   bx  r0
+// После release опрашиваем g_cpu1_alive (CPU1 ставит его первой
+// инструкцией). Если ядро не ожило — повторяем hold/release (до 5 попыток).
 static int h3_secondary_start(int cpu, uint32_t entry) {
     const uint32_t tramp[5] = {
         0xE59FD004u,
@@ -72,12 +79,27 @@ static int h3_secondary_start(int cpu, uint32_t entry) {
     }
     __asm volatile("dsb" ::: "memory");
 
-    /* RST_CTRL: hold -> release */
-    *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 0u;
-    __asm volatile("dsb" ::: "memory");
-    udelay(2000);
-    *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 3u;
-    __asm volatile("dsb" ::: "memory");
+    for (int attempt = 0; attempt < 5; attempt++) {
+        g_cpu1_alive = 0;
+        __asm volatile("dsb" ::: "memory");
+
+        /* hold -> release */
+        *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 0u;
+        __asm volatile("dsb" ::: "memory");
+        udelay(2000);
+        *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 3u;
+        __asm volatile("dsb" ::: "memory");
+
+        /* ждём до ~20 мс, что CPU1 ожил */
+        for (uint32_t t = 0; t < 200; t++) {
+            udelay(100);
+            if (g_cpu1_alive) {
+                printf("smp: CPU%u alive after attempt %d\n", (unsigned)cpu, attempt + 1);
+                return 1;
+            }
+        }
+        printf("smp: CPU%u not alive (attempt %d)\n", (unsigned)cpu, attempt + 1);
+    }
     return 0;
 }
 
@@ -92,7 +114,7 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
         /* Non-secure: регистры R_CPUCFG закрыты — будим через PSCI */
         uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
         printf("smp: PSCI CPU_ON ret=0x%X\n", (unsigned)r);
-        return r == 0 ? 0 : -1;
+        return r == 0 ? 1 : 0;
     }
 
     printf("smp: direct R_CPUCFG boot (sram tramp 0x0)\n");

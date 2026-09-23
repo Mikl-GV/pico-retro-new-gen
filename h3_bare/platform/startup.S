@@ -276,6 +276,10 @@ _hang:
 .section .text
 .global cpu1_entry
 cpu1_entry:
+    /* Сразу отмечаем себя живым (uncached .coherent-флаг) */
+    ldr r2, =g_cpu1_alive
+    mov r3, #1
+    str r3, [r2]
     /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
      * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
      * если core0 в этот момент допечатывает свою строку. */

@@ -79,8 +79,6 @@ static int wait_done(void) {
 // Каждый байт — отдельный burst с XCH (как в рабочей инициализации).
 // CS остаётся низким между байтами. Это медленно (~50 мс кадр), но надёжно.
 // Возвращает 0 = ок, -1 = XCH не завершился, -2 = нет места в TX FIFO.
-// ВАЖНО: после каждой передачи читаем RX FIFO — иначе после ~64 байт
-// подряд RX переполняется и контроллер встаёт на длинных бурстах.
 static int spi0_tx8(uint8_t b) {
     if (!wait_tx_room()) return -2;
     SPI0_TXD8 = b;
@@ -88,7 +86,6 @@ static int spi0_tx8(uint8_t b) {
     SPI0_BCC = 1;
     SPI0_TCR |= SPI0_TCR_XCH;
     if (!wait_done()) return -1;
-    (void)SPI0_RXD8;   /* дренаж RX-байта */
     return 0;
 }
 
