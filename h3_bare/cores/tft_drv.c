@@ -26,6 +26,7 @@ extern const uint8_t font8x8[96][8];
 #define SPI0_MBC   (*(volatile uint32_t*)0x01C68030u)
 #define SPI0_BCC   (*(volatile uint32_t*)0x01C68038u)
 #define SPI0_TXD8  (*(volatile uint8_t*)0x01C68200u)
+#define SPI0_RXD8  (*(volatile uint8_t*)0x01C68204u)
 #define SPI0_TCR_XCH (1u << 31)
 #define SPI0_FSR_TF_CNT_MASK (0xFFu << 16)
 
@@ -86,6 +87,30 @@ static int spi0_tx8(uint8_t b) {
     return wait_done() ? 0 : -1;
 }
 
+// Байтовая передача с приёмом MISO (нужно для чтения ID дисплея).
+static int spi0_txrx8(uint8_t tx, uint8_t* rx) {
+    if (!wait_tx_room()) return -1;
+    SPI0_TXD8 = tx;
+    SPI0_MBC = 1;
+    SPI0_BCC = 1;
+    SPI0_TCR |= SPI0_TCR_XCH;
+    if (!wait_done()) return -1;
+    if (rx) *rx = SPI0_RXD8;
+    return 0;
+}
+
+// Чтение N байт по команде (DC низкий только на команде).
+static int tft_read_bytes(uint8_t cmd, uint8_t* out, int n) {
+    cs_low();
+    dc_cmd();
+    if (spi0_txrx8(cmd, 0) < 0) { cs_high(); return -1; }
+    dc_data();
+    for (int i = 0; i < n; i++)
+        if (spi0_txrx8(0x00, &out[i]) < 0) { cs_high(); return -1; }
+    cs_high();
+    return 0;
+}
+
 static int xfer_cmd(uint8_t cmd) {
     cs_low();
     dc_cmd();
@@ -131,34 +156,64 @@ static void spi0_init(void) {
     udelay(100);
 }
 
-static int ili9486_init(void) {
+// Универсальная инициализация 480x320 (перекрывает ILI9486 и ILI9488).
+// ILI9488 без регистров F7/B0/B1/B6/B4/C0/C1/C5 не включает вывод
+// (белый экран); ILI9486 эти команды игнорирует — последовательность
+// безопасна для обоих.
+static int tft_ili_init(void) {
     PA_DAT &= ~(1u << PIN_RST);
     delay_ms(20);
     PA_DAT |= (1u << PIN_RST);
     delay_ms(150);
-    if (xfer_cmd(CMD_SWRESET) < 0) { printf("ILI9486: SPI fail @SWRESET\n"); return -1; }
+    if (xfer_cmd(CMD_SWRESET) < 0) { printf("TFT: SPI fail @SWRESET\n"); return -1; }
     delay_ms(150);
+
+    // Диагностика: read ID (0x04). Все байты 0xFF = дисплей не на этих
+    // пинах / MISO не соединён; 94 86 = ILI9486, 94 88 = ILI9488.
     {
-    static const uint8_t pg[15] = {0x00,0x07,0x10,0x09,0x17,0x0B,0x41,0x89,
-                                   0x43,0x08,0x12,0x08,0x17,0x14,0x0F};
-    if (xfer_cmd(0xE0) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
-    for (int i = 0; i < 15; i++) if (xfer_data(pg[i]) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
+        uint8_t id[4] = {0,0,0,0};
+        if (tft_read_bytes(0x04, id, 4) == 0)
+            printf("TFT: ID=%02X %02X %02X %02X\n", id[0], id[1], id[2], id[3]);
+        else
+            printf("TFT: ID read timeout (MISO?)\n");
     }
+
+    if (xfer_cmd(CMD_SLPOUT) < 0) { printf("TFT: SPI fail @SLPOUT\n"); return -1; }
+    delay_ms(150);
+
+    // Управляющие регистры (ILI9488)
+    if (xfer_cmd(0xB0) < 0 || xfer_data(0x00) < 0)                      { printf("TFT: SPI fail B0\n"); return -1; }
+    if (xfer_cmd(0xB1) < 0 || xfer_data(0x00) < 0 || xfer_data(0x11) < 0){ printf("TFT: SPI fail B1\n"); return -1; }
+    if (xfer_cmd(0xB4) < 0 || xfer_data(0x02) < 0)                      { printf("TFT: SPI fail B4\n"); return -1; }
+    if (xfer_cmd(0xB6) < 0 || xfer_data(0x02) < 0 || xfer_data(0x02) < 0 ||
+        xfer_data(0x3B) < 0)                                           { printf("TFT: SPI fail B6\n"); return -1; }
+    if (xfer_cmd(0xC0) < 0 || xfer_data(0x0B) < 0)                      { printf("TFT: SPI fail C0\n"); return -1; }
+    if (xfer_cmd(0xC1) < 0 || xfer_data(0x41) < 0)                      { printf("TFT: SPI fail C1\n"); return -1; }
+    if (xfer_cmd(0xC5) < 0 || xfer_data(0x00) < 0 || xfer_data(0x12) < 0){ printf("TFT: SPI fail C5\n"); return -1; }
+    if (xfer_cmd(0xF7) < 0 || xfer_data(0xA9) < 0 || xfer_data(0x51) < 0 ||
+        xfer_data(0x2C) < 0 || xfer_data(0x82) < 0)                     { printf("TFT: SPI fail F7\n"); return -1; }
+
+    // Ориентация и формат пикселей (16-bit RGB565)
+    if (xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xC8) < 0) { printf("TFT: SPI fail MADCTL\n"); return -1; }
+    if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0) { printf("TFT: SPI fail COLMOD\n"); return -1; }
+
+    // Гамма
     {
-    static const uint8_t ng[15] = {0x00,0x17,0x1D,0x04,0x0B,0x04,0x47,0x33,
-                                   0x44,0x0A,0x0C,0x08,0x12,0x14,0x0F};
-    if (xfer_cmd(0xE1) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
-    for (int i = 0; i < 15; i++) if (xfer_data(ng[i]) < 0) { printf("ILI9486: SPI fail\n"); return -1; }
+        static const uint8_t gp[15] = {0x00,0x07,0x10,0x09,0x17,0x0B,0x41,0x89,
+                                       0x43,0x08,0x12,0x08,0x17,0x14,0x0F};
+        static const uint8_t gn[15] = {0x00,0x17,0x1D,0x04,0x0B,0x04,0x47,0x33,
+                                       0x44,0x0A,0x0C,0x08,0x12,0x14,0x0F};
+        if (xfer_cmd(0xE0) < 0) { printf("TFT: SPI fail E0\n"); return -1; }
+        for (int i = 0; i < 15; i++) if (xfer_data(gp[i]) < 0) { printf("TFT: SPI fail E0\n"); return -1; }
+        if (xfer_cmd(0xE1) < 0) { printf("TFT: SPI fail E1\n"); return -1; }
+        for (int i = 0; i < 15; i++) if (xfer_data(gn[i]) < 0) { printf("TFT: SPI fail E1\n"); return -1; }
     }
-    if (xfer_cmd(CMD_COLMOD) < 0 || xfer_data(0x55) < 0 ||
-        xfer_cmd(CMD_MADCTL) < 0 || xfer_data(0xC8) < 0 ||
-        xfer_cmd(CMD_INVON) < 0) { printf("ILI9486: SPI fail @cfg\n"); return -1; }
-    delay_ms(10);
-    if (xfer_cmd(CMD_SLPOUT) < 0 || xfer_cmd(CMD_DISPON) < 0) {
-        printf("ILI9486: SPI fail @on\n"); return -1;
+
+    if (xfer_cmd(CMD_INVON) < 0 || xfer_cmd(CMD_DISPON) < 0) {
+        printf("TFT: SPI fail @on\n"); return -1;
     }
     delay_ms(50);
-    printf("ILI9486: init done\n");
+    printf("TFT: init done\n");
     return 0;
 }
 
@@ -176,7 +231,7 @@ static int set_window(void) {
 // Возвращает 0 = готово, -1 = дисплей не отвечает (не блокируем загрузку).
 int tft_init(void) {
     spi0_init();
-    if (ili9486_init() == 0) {
+    if (tft_ili_init() == 0) {
         g_tft_ready = 1;
         printf("TFT DFR0428: ready (480x320, dup HDMI)\n");
         return 0;
