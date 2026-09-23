@@ -146,10 +146,12 @@ void main(void) {
     // терминал рвёт вывод.
     {
         volatile uint32_t* st  = (volatile uint32_t*)0x24u;
-        volatile uint32_t* pr  = (volatile uint32_t*)0x28u;
+        volatile uint32_t* p3  = (volatile uint32_t*)0x28u;
+        volatile uint32_t* p21 = (volatile uint32_t*)0x2Cu;
         for (int i = 0; i < 10; i++) {
             udelay(300000);
-            printf("TFT: st=%u probe=0x%04X\n", (unsigned)*st, (unsigned)*pr);
+            printf("TFT: st=%u pc3=0x%04X pa21=0x%04X\n",
+                   (unsigned)*st, (unsigned)*p3, (unsigned)*p21);
         }
     }
 

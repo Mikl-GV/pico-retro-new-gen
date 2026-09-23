@@ -48,8 +48,10 @@ extern const uint8_t font8x8[96][8];
 // Статус CPU1 для core0 (SRAM A1, вне кэшей): этапы инициализации.
 // 1=вошёл, 0x11..0x16=подэтапы панели, 2=init ok, 3=тест, 9=fail
 #define TFT_STAT  (*(volatile uint32_t*)0x24u)
-// Результат пробы XPT2046 (0xFFFF = не отвечает), пишет CPU1
-#define TFT_PROBE (*(volatile uint32_t*)0x28u)
+// Пробы XPT2046: 0x28 = тач с активным CS PC3, 0x2C = с активным PA21.
+// 0xFFFF = не отвечает на этом CS.
+#define TFT_PROBE  (*(volatile uint32_t*)0x28u)
+#define TFT_PROBE2 (*(volatile uint32_t*)0x2Cu)
 
 #define FB_W  1024
 #define FB_H  600
@@ -127,12 +129,13 @@ static int tft_read_bytes(uint8_t cmd, uint8_t* out, int n) {
     return 0;
 }
 
-// Проба XPT2046 (тач-контроллер на той же SPI0-шине): шлём 0x90
-// (start|X pos|12bit), читаем 2 байта. Если MISO отвечает значением,
-// отличающимся от 0xFFFF — SPI жив независимо от панели.
-static uint16_t tft_touch_probe(void) {
+// Проба XPT2046 (тач на той же SPI0-шине): шлём 0x90 (start|X pos|12bit),
+// читаем 2 байта. use_pc3 — каким CS селектим тач (1=PC3, 0=PA21),
+// второй при этом отпущен. Значение ≠ 0xFFFF = SPI жив, тач отвечает.
+static uint16_t tft_touch_probe_cs(int use_pc3) {
     uint8_t b0 = 0xFF, b1 = 0xFF;
-    cs_low();
+    if (use_pc3) { PC_DAT &= ~(1u << PIN_CS);  PA_DAT |= (1u << PIN_CS2); }
+    else         { PA_DAT &= ~(1u << PIN_CS2); PC_DAT |= (1u << PIN_CS); }
     if (spi0_txrx8(0x90, 0) < 0)                { cs_high(); return 0xFFFF; }
     if (spi0_txrx8(0x00, &b0) < 0 ||
         spi0_txrx8(0x00, &b1) < 0)             { cs_high(); return 0xFFFF; }
@@ -369,8 +372,9 @@ static int tft_patch_test(uint16_t color) {
 // где именно CPU1 движется. Сначала маленький патч-тест панели.
 void tft_core_main(void) {
     u_dbg('E');
-    spi0_init();                       /* SPI0 вкл — до пробы XPT2046 */
-    TFT_PROBE = tft_touch_probe();     /* проверка: жив ли SPI */
+    spi0_init();                        /* SPI0 вкл — до пробы XPT2046 */
+    TFT_PROBE  = tft_touch_probe_cs(1); /* тач на CS=PC3 */
+    TFT_PROBE2 = tft_touch_probe_cs(0); /* тач на CS=PA21 */
     if (tft_init() < 0) {
         TFT_STAT = 9;
         u_dbg('F');
