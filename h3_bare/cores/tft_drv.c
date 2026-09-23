@@ -5,6 +5,7 @@
 #include "h3_ccu.h"
 #include "h3_hs_timer.h"
 #include "tft_drv.h"
+#include "uart.h"
 
 extern int printf(const char*, ...);
 extern const uint8_t font8x8[96][8];
@@ -308,17 +309,21 @@ static void tft_fill_screen(uint16_t color) {
 // Самопроверка панели: сплошные заливки + цветовые полосы. К HDMI не
 // привязано — проверяем весь путь: init -> RAMWR -> 595-шина -> панель.
 void tft_core_main(void) {
+    uart_puts("TFT-CORE: enter\n");
     if (tft_init() < 0) {
+        uart_puts("TFT-CORE: no display, idle\n");
         for (;;) __asm volatile("wfi");
     }
+    uart_puts("TFT-CORE: init ok\n");
     tft_set_menu_mode();
+    uart_puts("TFT-CORE: starting test loop\n");
     for (;;) {
-        printf("TFT-TEST: RED\n");       tft_fill_screen(0xF800); delay_ms(1000);
-        printf("TFT-TEST: GREEN\n");     tft_fill_screen(0x07E0); delay_ms(1000);
-        printf("TFT-TEST: BLUE\n");      tft_fill_screen(0x001F); delay_ms(1000);
-        printf("TFT-TEST: WHITE\n");     tft_fill_screen(0xFFFF); delay_ms(1000);
-        printf("TFT-TEST: BLACK\n");     tft_fill_screen(0x0000); delay_ms(1000);
-        printf("TFT-TEST: BARS\n");
+        uart_puts("TFT-TEST: RED\n");       tft_fill_screen(0xF800); delay_ms(1000);
+        uart_puts("TFT-TEST: GREEN\n");     tft_fill_screen(0x07E0); delay_ms(1000);
+        uart_puts("TFT-TEST: BLUE\n");      tft_fill_screen(0x001F); delay_ms(1000);
+        uart_puts("TFT-TEST: WHITE\n");     tft_fill_screen(0xFFFF); delay_ms(1000);
+        uart_puts("TFT-TEST: BLACK\n");     tft_fill_screen(0x0000); delay_ms(1000);
+        uart_puts("TFT-TEST: BARS\n");
         tft_render_begin();
         tft_fill_rect(0,          0, TFT_W / 3, TFT_H, 0xF800);
         tft_fill_rect(TFT_W / 3,  0, TFT_W / 3, TFT_H, 0x07E0);
