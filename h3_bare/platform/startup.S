@@ -276,10 +276,15 @@ _hang:
 .section .text
 .global cpu1_entry
 cpu1_entry:
+    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса) */
+    mov r0, #'C'
+    bl uart_dbg
     mrs r0, cpsr
     bic r0, r0, #0x1F
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
+    mov r0, #'c'            /* DGN: SVC стек будет */
+    bl uart_dbg
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
     bl tft_core_main
 1:  b 1b

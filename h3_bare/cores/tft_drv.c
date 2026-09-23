@@ -261,10 +261,14 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
 // (ставит fb_flush на core0) и зеркалит главный экран на SPI-дисплей.
 // Основное ядро при этом не нагружается SPI-передачами.
 void tft_core_main(void) {
+    /* DGN 'T': начало tft_core_main (CPU1) */
+    printf("TFT-core: enter\n");
     if (tft_init() < 0) {
+        printf("TFT-core: display not responding, idle\n");
         for (;;) __asm volatile("wfi");
     }
     tft_set_dup_mode();
+    printf("TFT-core: mirroring HDMI\n");
     for (;;) {
         while (!g_tft_frame_ready)
             __asm volatile("yield");
