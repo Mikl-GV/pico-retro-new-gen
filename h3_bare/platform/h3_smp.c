@@ -25,10 +25,11 @@ extern int printf(const char* fmt, ...);
 #define R_CPUCFG_BASE      0x01F01C00u
 #define CPU_RST_CTRL(cpu)  (R_CPUCFG_BASE + 0x40u + (cpu) * 0x40u)
 
-/* Флаг «CPU1 вошёл в свой код». В .coherent (uncached) — запись ядра видна
- * core0 сразу, без синхронизации кэшей. Ставит cpu1_entry первой
- * инструкцией перед любым выводом. */
-volatile uint32_t g_cpu1_alive __attribute__((section(".coherent"), aligned(4)));
+/* «Почта» CPU1 в SRAM A1: ядро пишет magic в 0x20 первой инструкцией,
+ * core0 ждёт его после release. SRAM вне кэшей — видимость мгновенная,
+ * независимо от состояния MMU/кэшей обоих ядер. */
+#define CPU1_MAIL_ADDR 0x00000020u
+#define CPU1_MAGIC     0x13579BDFu
 
 /* PSCI 0.2 SMC32: CPU_ON */
 #define PSCI_CPU_ON        0x84000003u
@@ -58,8 +59,9 @@ static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
 //   ldr sp, [pc, #4]   ; SP = 0x5FE01000
 //   ldr r0, [pc, #4]   ; r0 = entry (cpu1_entry в DRAM)
 //   bx  r0
-// После release опрашиваем g_cpu1_alive (CPU1 ставит его первой
-// инструкцией). Если ядро не ожило — повторяем hold/release (до 5 попыток).
+// После release опрашиваем SRAM-почту (0x20: magic). CPU1 ставит magic
+// первой инструкцией — SRAM вне кэшей, видимость гарантирована.
+// Если ядро не ожило — повторяем hold/release (до 5 попыток).
 static int h3_secondary_start(int cpu, uint32_t entry) {
     const uint32_t tramp[5] = {
         0xE59FD004u,
@@ -70,7 +72,6 @@ static int h3_secondary_start(int cpu, uint32_t entry) {
     };
     volatile uint32_t* s = (volatile uint32_t*)SUNXI_SRAM_A1_BASE;
     for (int i = 0; i < 5; i++) s[i] = tramp[i];
-    /* clean трамплина из D-cache core0 */
     {
         uint32_t a = SUNXI_SRAM_A1_BASE & ~0x1Fu;
         uint32_t e = a + 64;
@@ -80,20 +81,19 @@ static int h3_secondary_start(int cpu, uint32_t entry) {
     __asm volatile("dsb" ::: "memory");
 
     for (int attempt = 0; attempt < 5; attempt++) {
-        g_cpu1_alive = 0;
+        volatile uint32_t* mail = (volatile uint32_t*)CPU1_MAIL_ADDR;
+        *mail = 0;
         __asm volatile("dsb" ::: "memory");
 
-        /* hold -> release */
         *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 0u;
         __asm volatile("dsb" ::: "memory");
         udelay(2000);
         *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 3u;
         __asm volatile("dsb" ::: "memory");
 
-        /* ждём до ~20 мс, что CPU1 ожил */
         for (uint32_t t = 0; t < 200; t++) {
             udelay(100);
-            if (g_cpu1_alive) {
+            if (*mail == CPU1_MAGIC) {
                 printf("smp: CPU%u alive after attempt %d\n", (unsigned)cpu, attempt + 1);
                 return 1;
             }

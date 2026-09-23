@@ -276,9 +276,10 @@ _hang:
 .section .text
 .global cpu1_entry
 cpu1_entry:
-    /* Сразу отмечаем себя живым (uncached .coherent-флаг) */
-    ldr r2, =g_cpu1_alive
-    mov r3, #1
+    /* «Почта» в SRAM A1: ядро пишет magic первой инструкцией —
+     * core0 ждёт его в h3_secondary_start (SRAM вне кэшей, видно сразу) */
+    mov r2, #0x20
+    ldr r3, =0x13579BDF
     str r3, [r2]
     /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
      * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
