@@ -1,14 +1,19 @@
 // h3_smp.c — запуск вторичных ядер H3 (CPU1).
 //
-// Современный u-boot H3 (PSCI) большинство плат переводит в NON-SECURE
-// состояние перед запуском прошивки. В non-secure мире регистры
-// CPUCFG/PRCM (secure-only) игнорируют наши записи — ядро не стартует.
-// Правильный путь: PSCI_CPU_ON (SMC #0, fid=0x84000003) — монитор u-boot
-// остаётся в SRAM A1 и сам выполняет power/reset последовательность.
+// РЕАЛЬНАЯ регистровая карта H3 (проверено bare-metal фреймворком
+// allwinner-bare-metal для Orange Pi H3, uli):
+//   R_CPUCFG (0x01F01C00):
+//     RST_CTRL(cpu)  = +0x40 + cpu*0x40   (CPU1: 0x01F01C40)
+//     CTRL(cpu)      = +0x44 + cpu*0x40
+//     STATUS(cpu)    = +0x48 + cpu*0x40
+//   Трамплин кладётся в SRAM A1 (0x00000000) — после сброса ядро
+//   стартует именно оттуда. Запуск = RST_CTRL: 0 (удержать) -> 3.
 //
-// Прямая (без PSCI) последовательность из u-boot psci.c (stock secure):
-//   CPUCFG.priv0 = entry; CPU_RST=0; gen_ctrl and dev dbg; clamp release
-//   (PRCM); pwroff clear; CPU_RST=3. Оставлена для случая secure-загрузки.
+// НЕ используется устаревшая карта A31 (CPUCFG 0x01C19000 / PRCM
+// 0x01F01400) — на H3 эти записи не влияют на загрузку ядра.
+//
+// В non-secure мире (PSCI u-boot) регистры R_CPUCFG закрыты, поэтому там
+// запуск через PSCI_CPU_ON (SMC #0, fid=0x84000003).
 
 #include <stdint.h>
 #include "h3.h"
@@ -16,17 +21,9 @@
 
 extern int printf(const char* fmt, ...);
 
-#define SUNXI_CPUCFG_BASE  0x01C19000u
-#define SUNXI_PRCM_BASE    0x01F01400u
 #define SUNXI_SRAM_A1_BASE 0x00000000u
-
-#define CFG_PRIV0          0x1A4u   /* адрес входа CPU1..CPU3 */
-#define CFG_GEN_CTRL       0x184u
-#define CFG_DBG_CTRL1      0x1E4u
-#define CFG_CPU_RST(cpu)   (0x40u + (cpu) * 0x40u)
-
-#define PRCM_CPU_PWROFF    0x100u
-#define PRCM_CLAMP(cpu)    (0x140u + (cpu) * 0x4u)
+#define R_CPUCFG_BASE      0x01F01C00u
+#define CPU_RST_CTRL(cpu)  (R_CPUCFG_BASE + 0x40u + (cpu) * 0x40u)
 
 /* PSCI 0.2 SMC32: CPU_ON */
 #define PSCI_CPU_ON        0x84000003u
@@ -52,27 +49,21 @@ static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
     return ret;
 }
 
-static int h3_cpu_start_direct(int cpu, uint32_t entry) {
-    /* Ядро после сброса может стартовать не с priv0, а с адреса 0
-     * (SRAM A1). Кладём туда трамплин: стек + переход на entry в DRAM.
-     *  0x00: ldr sp, [pc, #4]   ; sp = 0x5FE01000
-     *  0x04: ldr r0, [pc, #4]   ; r0 = entry
-     *  0x08: bx  r0
-     *  0x0c: .word 0x5FE01000
-     *  0x10: .word entry
-     */
+// Трамплин в SRAM A1 (0x00000000). Ядро после сброса стартует отсюда:
+//   ldr sp, [pc, #4]   ; SP = 0x5FE01000
+//   ldr r0, [pc, #4]   ; r0 = entry (cpu1_entry в DRAM)
+//   bx  r0
+static int h3_secondary_start(int cpu, uint32_t entry) {
     const uint32_t tramp[5] = {
-        0xE59FD004u,          /* ldr sp, [pc, #4]  */
-        0xE59F0004u,          /* ldr r0, [pc, #4]  */
-        0xE12FFF10u,          /* bx  r0            */
-        0x5FE01000u,          /* SP для CPU1       */
+        0xE59FD004u,
+        0xE59F0004u,
+        0xE12FFF10u,
+        0x5FE01000u,
         entry,
     };
-    {
-        volatile uint32_t* s = (volatile uint32_t*)SUNXI_SRAM_A1_BASE;
-        for (int i = 0; i < 5; i++) s[i] = tramp[i];
-    }
-    /* clean SRAM-трамплина из D-cache core0 (SRAM на SoC-шине) */
+    volatile uint32_t* s = (volatile uint32_t*)SUNXI_SRAM_A1_BASE;
+    for (int i = 0; i < 5; i++) s[i] = tramp[i];
+    /* clean трамплина из D-cache core0 */
     {
         uint32_t a = SUNXI_SRAM_A1_BASE & ~0x1Fu;
         uint32_t e = a + 64;
@@ -81,38 +72,12 @@ static int h3_cpu_start_direct(int cpu, uint32_t entry) {
     }
     __asm volatile("dsb" ::: "memory");
 
-    uint32_t volatile* p;
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_PRIV0);
-    *p = SUNXI_SRAM_A1_BASE;
+    /* RST_CTRL: hold -> release */
+    *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 0u;
     __asm volatile("dsb" ::: "memory");
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu));
-    *p = 0u;
+    udelay(2000);
+    *(volatile uint32_t*)CPU_RST_CTRL(cpu) = 3u;
     __asm volatile("dsb" ::: "memory");
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_GEN_CTRL);
-    *p &= ~(1u << cpu);
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1);
-    *p &= ~(1u << cpu);
-
-    /* питание: плавно снимаем power-clamp, затем clear power-gate */
-    {
-        uint32_t volatile* clamp = (uint32_t volatile*)(SUNXI_PRCM_BASE + PRCM_CLAMP(cpu));
-        uint32_t tmp = 0x1FF;
-        do { tmp >>= 1; *clamp = tmp; __asm volatile("dsb" ::: "memory"); } while (tmp);
-        udelay(10000);
-        p = (uint32_t volatile*)(SUNXI_PRCM_BASE + PRCM_CPU_PWROFF);
-        *p &= ~(1u << cpu);
-    }
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_CPU_RST(cpu));
-    *p = 3u;   /* RSTEN | RST */
-    __asm volatile("dsb" ::: "memory");
-
-    p = (uint32_t volatile*)(SUNXI_CPUCFG_BASE + CFG_DBG_CTRL1);
-    *p |= (1u << cpu);
     return 0;
 }
 
@@ -124,14 +89,12 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
     printf("smp: CPU%u sec=0x%X entry=0x%X\n", (unsigned)cpu, (unsigned)scr, (unsigned)ep);
 
     if (scr & 1u) {
-        /* Non-secure: только PSCI монитор u-boot может поднять ядро */
+        /* Non-secure: регистры R_CPUCFG закрыты — будим через PSCI */
         uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
         printf("smp: PSCI CPU_ON ret=0x%X\n", (unsigned)r);
         return r == 0 ? 0 : -1;
     }
 
-    /* Secure: прямая последовательность (как u-boot psci.c) +
-     * SRAM A1-трамплин на случай старта ядра с адреса 0 */
-    printf("smp: direct CPUS boot, sram_tramp=0x0 entry=0x%X\n", (unsigned)ep);
-    return h3_cpu_start_direct(cpu, ep);
+    printf("smp: direct R_CPUCFG boot (sram tramp 0x0)\n");
+    return h3_secondary_start(cpu, ep);
 }
