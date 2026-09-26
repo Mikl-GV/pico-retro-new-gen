@@ -40,27 +40,29 @@ void emu_scale(int src_w, int src_h);
 
 Вызов: сразу после прорисовки кадра, перед `fb_flush()`.
 
-## Реализация
+## Реализация (emu.c, актуально r158)
+
+- `emu_scale(w,h)` — nearest neighbour по всей высоте 600, ширина пропорционально,
+  центрировано. Без делений в пиксельном цикле: таблица колонок `sx_tab[dst_w]`
+  (аккумулятор 16.16) считается один раз, построковый аккумулятор `step_y` 16.16.
+- `emu_scale_int(w,h)` — целочисленный множитель N×N (для портативных: GB/GBA/NGP/GG),
+  чёткая картинка без «лесенки».
+- `emu_set_border_color()` — цвет полей (XRGB8888), свой для системы.
+- Vectrex — отдельный портретный рендер `vx_render_hdmi()` (330×410 → 1024×600,
+  минует EMU_FB/emu_scale, см. vecx_host.c).
 
 ```c
-void emu_scale(int src_w, int src_h) {
-    int dst_w = (src_w * FB_H) / src_h;   // 600 = вся высота
-    int dst_h = FB_H;
-    int dst_x = (FB_W - dst_w) / 2;       // центр по горизонтали
-
-    for (int dy = 0; dy < dst_h; dy++) {
-        int sy = (dy * src_h) / dst_h;    // nearest: строка источника
-        for (int dx = 0; dx < dst_w; dx++) {
-            int sx = (dx * src_w) / dst_w;
-            dst[dy * FB_W + dst_x + dx] = RGB(EMU_FB[sy * EMU_W + sx]);
-        }
-    }
+// суть emu_scale: каждая целевая колонка = src[ (dx*src_w)/dst_w ]
+// предрасчёт: sx_tab[dx] = накопитель 16.16 → без '/' в цикле
+for (int dy = 0; dy < FB_H; dy++) {          /* dst_h = 600 всегда */
+    int sy = (y_acc >> 16);                  /* 16.16 по строкам */
+    for (int dx = 0; dx < dst_w; dx++)
+        dst[dy*FB_W + dst_x + dx] = RGB565toXRGB(EMU_FB[sy*EMU_W + sx_tab[dx]]);
 }
 ```
 
-Это чистый nearest neighbour: каждый пиксель вывода берёт ближайший пиксель
-источника (масштаб не целый, поэтому без размытия, но с лёгкой «лесенкой»
-на диагоналях — ожидаемо для ретро).
+Это чистый nearest neighbour: без размытия, лёгкая «лесенка» на диагоналях —
+ожидаемо для ретро.
 
 ## Память
 

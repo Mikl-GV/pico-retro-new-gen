@@ -26,7 +26,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  usb_kbd.c  usb_ohci.c  sd.c  fat.c  led.c  fb_text.c         │
 │  uart.c  printf.c  libc_min.c  cxx_runtime.cpp                │
 │  cheatdb.c (чит-менеджер, парсер .cht)  gp_cheats.c (GPGX)    │
-│  sega_pad.c (Sega 6-btn геймпад, PCF8574)                      │
+│  sega_pad.c (Sega 6-btn геймпад, PCF8574)  i2s.c (звук, off)  │
+├───────────────────────────────────────────────────────────────┤
+│  CPU1 (tft_drv.c): SPI0 ILI9486 480×320 + тач TSC2046I (PA21) │
+│  зв′язь — SRAM A1 (0x34..0x70), heartbeat — PL10              │
 ├───────────────────────────────────────────────────────────────┤
 │  HDMI: h3_de2 + h3_hdmi + dw_hdmi + h3_lcd                    │
 │  (1024×600, DE2 → TCON1 → HDMI PHY)                            │
@@ -175,13 +178,15 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   A=0x10 (Z) B=0x20 (X) Select=0x40 (S) Start=0x80 (Enter)); читается в 0x6F82
 - Палитра: totalpalette (RGB565) заполняется palette_init16(0xF800,0x07E0,0x001F) в graphics_init
 
-### led.c (светодиоды)
+### led.c (светодиоды) — роли с r155
 
-- PA15 — «код жив» (мигает в emu_throttle, по таймеру кадров)
-- PL10 — «обращение к SD» (led_sd_on/off в sd_read_sector)
+- **PL10** — зелёный, «проц жив»: мигает 0.5/0.5 с с **CPU1** (`led_heartbeat_cpu1`).
+  Вынесен на R_PIO специально — CPU1 не трогает PA_DAT (меньше RMW-гонки с падом/тачем).
+- **PA15** — красный, «обращение к SD» (`led_sd_on/off` в sd.c). Живёт на PA_DAT —
+  редкие короткие всплески, RMW-гонка возможна (см. sega_pad.c / tft_drv.c).
 - Активный уровень HIGH (проверено на железе: горит при DAT=1)
-- R_PIO требует включения тактирования (PRCM) — PL10 может не заводиться из bare-metal,
-  настраивается через U-Boot `gpio set PL10` в boot.scr
+- R_PIO требует включения тактирования (PRCM) — настраивается через U-Boot `gpio set PL10`
+  в boot.scr (или остаётся в функции 7)
 
 ### system_atari_h3.cpp (A2600, MCUME)
 
@@ -225,36 +230,50 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | # | Функция |
 |---|---------|
-| 1 | Создать папки ROM на SD (основная + alt_dir для NES/SMS) |
+| 1 | Создать папки ROM на SD (основная + alt_dir для NES/SMS, двойное подтверждение) |
 | 2 | Input Test (тест кнопок NES/A2600) |
-| 3 | Video Mode / Throttle: 6 частот (60, 50, 45, 40, 35, 30 Hz), ←/→ или Enter — циклически |
-| 4 | Atari 2600 Difficulty: Novice ⇄ Expert |
-| 5 | Sega 6-button gamepad — тест скана геймпада (сырые чтения, биты, время; UART при смене) |
-| 6 | ROM partition info (справка по разметке SD) |
+| 3 | Atari 2600 Difficulty: Novice ⇄ Expert (Enter или ←/→) |
+| 4 | Sega 6-button gamepad — тест скана геймпада (сырые чтения, биты, время; UART при смене) |
+| 5 | Keyboard remap (по системам, `/retro.cfg`) |
+| 6 | Touch Calibration (TFT, тач TSC2046I) |
+| 7 | ROM partition info (справка по разметке SD) |
+
+> Порядок пунктов совпадает с TFT-меню (`tft_drv.c`) — при изменении править оба.
+> Настройки частоты кадра **убраны** (r158): эмуляторы всегда 60 Гц.
 
 ## Ввод (usb_kbd.c / usb_ohci.c)
 
 - USB-клавиатура (boot protocol), автоповтор; OHCI1/OHCI2 (два порта)
-- `usb_input_poll()` — общий ввод меню: сначала клавиатура, затем Sega-геймпад
-  (фронт нажатия: крестовина → стрелки, A/Start → Enter, B/Mode → ESC),
-  затем тач-экран (если устройство энумерировано) по зонам: верх = Up, низ = Down,
-  середина слева = ESC, справа = Enter; только фронт касания
-- Тач (Waveshare GT911, VID 0EEF / PID 0005): парсер HID-пакета — Report ID 0x01,
-  Status бит0 = нажатие, X/Y 16-бит Little-Endian, диапазон 0..4095 (матрица GT911);
-  `usb_touch_poll()` в usb_kbd.c
+- `usb_input_poll()` — общий ввод меню. **Клавиатура и Sega-геймпад равноправны (r155)**:
+  фронт джоя обрабатывается всегда, одновременное клавиатурное событие не теряется
+  (`g_kbd_saved`), затем тач-экран (если USB-устройство энумерировано) по зонам:
+  верх = Up, низ = Down, середина слева = ESC, справа = Enter; только фронт касания
+- USB-тач (Waveshare GT911, VID 0EEF / PID 0005): парсер HID-пакета — Report ID 0x01,
+  Status бит0 = нажатие, X/Y 16-бит Little-Endian, диапазон 0..4095; `usb_touch_poll()`
+- **SPI-тач TFT TSC2046I** — на CPU1 (tft_drv.c): протокол XPT2046 (Mode 1 только),
+  CS=PA21, калибровка 5 мишеней. Подробно в `docs/HARDWARE.md`
 
 ## Sega-геймпад 6-button (sega_pad.c)
 
+> **⚠️ НЕ ЛАЗИТЬ без стенда** — подробно в начале `sega_pad.c`. Тайминги и фазы
+> подобраны эмпирически; изменения ломают детект 6-btn. Проверка любого изменения —
+> Settings → Sega 6-button test (C3: Z/Y/X/Mode при отпущенной крестовине).
+
 - `sega_pad_scan()` — классический протокол Sega 6-button через PCF8574@0x20
-  (bit-bang I2C ~400 кГц, TWI0 PA11=SCL/PA12=SDA): 4 цикла SELECT, X/Y/Z/Mode
-  читаются в Цикле 4 после 3 холостых циклов переключения TH. Подробно — в `docs/HARDWARE.md`
+  (bit-bang I2C ~370 кГц, TWI0 PA11=SCL/PA12=SDA): 8 уровней TH, старшие кнопки
+  в ур.7 после маркера 6-btn (ур.6), скан ~1.4 мс < окна чипа 1.6 мс, idle TH=1.
+  **Clash-защита линий D0-D3 (r157)**: старшая кнопка выдаётся только если линия
+  не занята крестовиной (иначе «вправо» давало «фантом Mode/Select»).
 - Маска пада: UP=0x01 DOWN=0x02 LEFT=0x04 RIGHT=0x08 A=0x10 B=0x20 C=0x40
   START=0x80 X=0x100 Y=0x200 Z=0x400 MODE=0x800
-- Статус: `sega_pad_get_status()` (SEGA_STATUS_ACK / SEGA_STATUS_PAD), время скана
-  `sega_pad_get_scan_us()`, сырые чтения `sega_pad_get_raw()`
-- Встроен в меню (`usb_input_poll`) и в хосты: GPGX, SNES, NES, GB, Lynx, NGP,
-  A2600, A5200, A7800 (у систем мапятся только существующие кнопки; таблица в `docs/CONTROLS.md`)
-- Atari Portfolio — клавиатурный компьютер, геймпад не подключается
+- **Два режима использования**: меню — слой `usb_pad_update` (кэш 12 мс + антидребезг
+  3 скана); игры — прямой `sega_pad_scan()` раз в кадр из host-слоёв.
+- **Re-init пада** на входе/выходе эмулятора (`sega_pad_init`) + **выход Start+Mode
+  ~0.9 с** (armed + sticky в emu.c).
+- **Пауза = Start, а не Mode** (r155): у всех систем правит правило маппингов в docs/CONTROLS.md.
+- Встроен в меню (`usb_input_poll`) и во все хосты; Atari Portfolio — клавиатурный
+  компьютер, геймпад не подключается.
+- Статус: `sega_pad_get_status()` (ACK/PAD/PAD6), `sega_pad_get_scan_us()`, `sega_pad_get_raw()`
 
 ## Читы (cheatdb.c / gp_cheats.c)
 
@@ -293,24 +312,27 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (DRAM)
+## Карта памяти (DRAM, сверено по r158)
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x40000000 | Образ: .text → .rodata → .ARM.exidx → .data → .bss (подряд, ALIGN(4)) |
-| 0x42804320 | `_bend1` — конец BSS |
-| (BSS+12МБ) | `_gb_heap_start/end` — bump-пул кучи (Snes9x/Handy/binjgb), за BSS |
-| (после кучи) | `_hend` — старт свободной памяти (_sbrk из libc_min.c растёт отсюда) |
-| 0x4F000000 | `_menu_arena` — арена пунктов меню (символ линкера, 512 слотов + имена) |
+| 0x41FE7F2C | `_bend1` — конец BSS |
+| 0x41FE93A0 | `_gb_heap_start` — bump-пул кучи **24 МБ** (Snes9x/Handy/binjgb/NGP/…) |
+| 0x437E93A0 | `_gb_heap_end` = `_hend` (старт свободной памяти) |
+| 0x43800000 | `.coherent` (1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, g_ts_* |
+| _hend … 0x4F000000 | свободно; `_sbrk`-арена (libc_min.c, SBRK_LIMIT=0x4F000000) |
+| 0x4F000000 | `_menu_arena` (512 слотов + имена, символ линкера) |
 | 0x50000000 | Буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000 | EMU_FB — общий кадровый буфер эмуляторов (320×240 RGB565) |
-| 0x5F900000 | HDMI framebuffer (1024×600 XRGB8888) |
-| 0x60000000 | Стек (конец 512 МБ DRAM, растёт вниз; сверху ничего нет) |
+| 0x5F900000 | HDMI framebuffer (1024×600 XRGB8888, конец ≈ 0x5FB58000) |
+| 0x5FDFD000..0x5FE01000 | стеки CPU1 (исключения + SVC, TFT-ядро) |
+| 0x5FF00000..0x5FF03000 | стеки исключений core0 |
+| 0x60000000 | SVC-стек core0 (растёт вниз) |
 
-Жёстких адресов между секциями образа нет — `_hend` вычисляется линкером
-сразу после `.bss` (см. `h3_bare/platform/linker.ld`). Секции: .text, .rodata,
-.ARM.exidx, .data, .bss, затем резерв кучи `_gb_heap_start.._gb_heap_end`,
-после него `_hend`. `_menu_arena` и framebuffer'ы — фиксированные адреса вне образа.
+Пересечений нет. `_hend` вычисляется линкером сразу после резерва кучи
+(см. `h3_bare/platform/linker.ld`); `.coherent`, `_menu_arena` и framebuffer'ы —
+фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`.
 
 ## Загрузка
 
@@ -323,9 +345,8 @@ U-Boot SPL → U-Boot → (boot.scr: gpio-настройка светодиод�
 
 ## Производительность
 
-Оценка на A2600: ~8000 опкодов/кадр, ~192 строки рендера, ~2 мс блит на 1024×600.
-Укладывается в 16.6 мс (60 FPS) с запасом >10×.
-
-Более тяжёлые системы (A5200 — ANTIC 140K, A7800 — MARIA 55K вызовов/кадр,
-Portfolio — 8088 интерпретация + LCD-рендер) могут быть в 5-10× тяжелее.
+A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останавливается на границе
+кадра (`tv_draw_count`); на железе run/s=60, sim/s=60, кадр ≈ 2–5.8 мс —
+запас до 16.6 мс. Более тяжёлые системы (A5200 — ANTIC 140K, A7800 — MARIA 55K
+вызовов/кадр, Portfolio — 8088 интерпретация + LCD-рендер) тяжелее, но укладываются.
 512 МБ DRAM + Cortex-A7 @ 1.2 ГГц — запас достаточен.

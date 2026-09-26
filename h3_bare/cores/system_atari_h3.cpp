@@ -1,4 +1,12 @@
 // system_atari_h3.cpp — host-слой MCUME (Virtual VCS) для H3.
+//
+// ВАЖНЫЕ СТЕНД-ПРАВИЛА ПО A2600:
+//   * mainloop (mcume/Cpu.c) ОСТАНАВЛИВАЕТСЯ на границе кадра по tv_draw_count
+//     (r157). НЕ убирать break: иначе 7600 инструкций покрывают ~3.4 кадра и
+//     эмулятор летит в ~3 раза быстрее (проверено логом run/s vs sim/s).
+//   * Start на джойстике = Game Reset (r156, решение пользователя) — иначе
+//     «нельзя начать игру на джойстике».
+//   * tv_draw_count объявлен с extern "C" — его обязан видеть C-код Cpu.c.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
