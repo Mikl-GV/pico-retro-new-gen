@@ -205,17 +205,11 @@ static inline uint16_t tft_swap_rb(uint16_t c) {
 #define TFT_H 320
 
 static uint16_t tft_fb[TFT_H * TFT_W] __attribute__((aligned(16)));
-static int g_mode = 1;      // 1 = вывод tft_fb, 0 = зеркало HDMI (0x5F900000)
 static int g_tft_ready = 0;
 
-// Флаг «HDMI-кадр готов»: пока не используется (зеркало отложено).
-volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
-
-// r124: g_tft_help_id/g_tft_help_epoch/g_tft_request УДАЛЕНЫ — межъядерная
-// связь полностью переведена на SRAM-почту (TFT_HELP_ID/EPOCH, TFT_BTN).
-// Ранее лежали здесь в .coherent, но mmu_mark_uncached звался только из
-// usb_ohci_init() и без USB секция оставалась write-back — записи core0
-// не были видны CPU1. SRAM A1 (0x34..0x74) не кэшируется ни одним ядром.
+// r130: g_tft_frame_ready/g_help_id/g_tft_help_epoch/g_tft_request удалены —
+// вся межъядерная связь в SRAM-почте (0x34..0x74). Флаг «кадр готов» не
+// имел потребителя (зеркало HDMI отложено).
 
 // --- Буфер тача: CPU1 пишет, core0 печатает (драки за UART нет) ---
 volatile uint16_t g_ts_rx __attribute__((section(".coherent"), aligned(4)));   // сырой X (0x90)
@@ -482,9 +476,7 @@ int tft_init(void) {
     return -1;
 }
 
-void tft_tick(void) { tft_flush(); }
-void tft_set_menu_mode(void) { g_mode = 1; }
-void tft_set_dup_mode(void)  { g_mode = 0; }
+// r130: tft_tick/set_menu_mode/set_dup_mode удалены (мёртвый код, P6-P8)
 
 void tft_render_begin(void) { memset(tft_fb, 0, TFT_W * TFT_H * 2); }
 
@@ -981,7 +973,6 @@ void tft_core_main(void) {
     TFT_DIFF = 0;
     TFT_PERIOD = 16667;
     TFT_CMD = 0;   // r127: без этого мусор 0x34 (==1) сразу запускал бы калибровку
-    tft_set_menu_mode();
     SPI0_TCR = 0x0;
     SPI0_CCR = 0x1005;             // 8 MHz
 

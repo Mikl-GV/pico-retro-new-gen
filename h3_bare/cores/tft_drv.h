@@ -18,15 +18,6 @@ int  tft_init(void);
 // Однократная полная отправка текущего источника (блокирующая, для теста)
 void tft_flush(void);
 
-// Порционный вызов из главного цикла (не блокирует)
-void tft_tick(void);
-
-// Источник кадра для TFT:
-//  tft_set_menu_mode() — рисовать из внутреннего буфера tft_fb (рендер меню)
-//  tft_set_dup_mode()  — даунскейл HDMI-фреймбуфера (эмуляторы/игры)
-void tft_set_menu_mode(void);
-void tft_set_dup_mode(void);
-
 // Диагностика: залить весь экран сплошным цветом (проверка SPI/RAMWR)
 void tft_test_red(void);
 void tft_test_fill(uint16_t color);
@@ -59,10 +50,7 @@ extern volatile uint32_t g_ts_dbg_flag;
 extern volatile uint32_t g_ts_dbg_data[8];
 
 // ---- TFT core (CPU1) ----
-// Флаг «HDMI кадр готов» — ставится в fb_flush (core0), читается TFT-ядром.
-// Лежит в .coherent (uncached) — виден между ядрами сразу.
-extern volatile uint32_t g_tft_frame_ready;
-// Зацикленный процессор TFT: init дисплея + зеркалирование HDMI-кадра.
+// Зацикленный процессор TFT: init дисплея + справка + тач.
 // Запускается на CPU1 через cpu1_entry (startup.S) + h3_cpu_start.
 void tft_core_main(void);
 

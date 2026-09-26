@@ -139,11 +139,6 @@ void emu_clear_fb(void) {
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
 }
 
-// ---- OSD громкости ----
-// ---- OSD громкости отключён вместе со звуком (был i2s-зависим) ----
-void emu_osd_apply(void) {
-}
-
 // ---- throttle ----
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
