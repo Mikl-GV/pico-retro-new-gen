@@ -60,8 +60,8 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 | Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 | Vectrex |
 |------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|:-------:|
 | ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик |
-| **A** | A | Button 2 | A | A (огонь) | A | A | A | A | Fire | Fire | A | Кноп.1 |
-| **B** | B | Button 1 | B | B | B | B | B | B | — | Pause | B | Кноп.2 |
+| **A** | A | **Button 1** | A | A (огонь) | A | A | A | A | Fire | Fire | A | Кноп.1 |
+| **B** | B | **Button 2** | B | B | B | B | B | B | — | Pause | B | Кноп.2 |
 | **C** | C | — | L | — | — | **L** | — | — | — | — | — | — |
 | **X** | X | — | Y | — | — | **R** | Option 1 | — | — | — | — | Кноп.3 |
 | **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — | Кноп.4 |

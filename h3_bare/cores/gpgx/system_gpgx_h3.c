@@ -54,32 +54,41 @@ static uint16_t bitmap_data_[720 * 576] __attribute__((aligned(64)));
 // ---- ввод: USB-клавиатура -> геймпад GPGX ----
 // Маппинг 6-кнопочного геймпада Mega Drive:
 //   Z=A  X=B  C=C  A=X  S=Y  D=Z  Q=Mode  Enter=Start, стрелки=D-Pad
-// Для SMS/GG: S=Pause (Pause на корпусе), Enter=Start
+// Для SMS/GG: кнопки 1/2 — Sega A/B (r158), Start = Pause (NMI на SMS),
+//   Enter=Start (S replacable), S = корпусная Pause.
 // Sega-геймпад (PCF8574): маска Sega -> GPGX (биты разные, ремап).
+// ВНИМАНИЕ: биты Input отличаются от Sega-маски! См. input_hw/input.h:
+//   INPUT_A=0x40 INPUT_B=0x10 INPUT_C=0x20 INPUT_START=0x80 …,
+//   а SMS-кнопки — INPUT_BUTTON1=0x10 (=INPUT_B), INPUT_BUTTON2=0x20 (=INPUT_C).
+//   Поэтому A/B для SMS/GG мапятся в INPUT_BUTTON1/2 (иначе «A сдвигается в B/C»).
 static void gpgx_poll_input(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
     uint16_t pad = 0;
 
-    // Sega-геймпад: крестовина/A/B/C/Start/Mode + X/Y/Z
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) pad |= INPUT_UP;
     if (sp & 0x0002) pad |= INPUT_DOWN;
     if (sp & 0x0004) pad |= INPUT_LEFT;
     if (sp & 0x0008) pad |= INPUT_RIGHT;
-    if (sp & 0x0010) pad |= INPUT_A;        // Sega A -> MD A
-    if (sp & 0x0020) pad |= INPUT_B;        // Sega B -> MD B
-    if (sp & 0x0040) pad |= INPUT_C;        // Sega C -> MD C
-    if (sp & 0x0080) pad |= INPUT_START;    // Start
-    if (sp & 0x0100) pad |= INPUT_X;        // Sega X -> MD X
-    if (sp & 0x0200) pad |= INPUT_Y;        // Sega Y -> MD Y
-    if (sp & 0x0400) pad |= INPUT_Z;        // Sega Z -> GPGX Z
-    // r155: пауза — это START, а не Mode. На MD Mode остаётся системной
-    // кнопкой режима; на SMS/GG-играх Mode больше НЕ дублирует Pause.
-    if (g_is_md && (sp & 0x0800)) pad |= INPUT_MODE;
+    if (sp & 0x0080) pad |= INPUT_START;    // Start (SMS = пауза NMI)
+    if (g_is_md) {
+        // MD: A/B/C прямые, X/Y/Z — старшие, Mode — кнопка режима
+        if (sp & 0x0010) pad |= INPUT_A;
+        if (sp & 0x0020) pad |= INPUT_B;
+        if (sp & 0x0040) pad |= INPUT_C;
+        if (sp & 0x0100) pad |= INPUT_X;
+        if (sp & 0x0200) pad |= INPUT_Y;
+        if (sp & 0x0400) pad |= INPUT_Z;
+        if (sp & 0x0800) pad |= INPUT_MODE;
+    } else {
+        // SMS/GG: кнопки Button1/Button2 (INPUT_BUTTON1=0x10, INPUT_BUTTON2=0x20).
+        // r158: Sega A -> Button 1, Sega B -> Button 2 (исправлен сдвиг A/B/C).
+        if (sp & 0x0010) pad |= INPUT_BUTTON1;
+        if (sp & 0x0020) pad |= INPUT_BUTTON2;
+    }
 
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
-    // Дедолт: Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start, стрелки=D-Pad.
     // Платформа: MD (REMAP_PLAT_MD) или SMS/GG (REMAP_PLAT_SMS / REMAP_PLAT_GG).
     int plat = g_is_md ? REMAP_PLAT_MD
               : (system_hw == SYSTEM_GG ? REMAP_PLAT_GG : REMAP_PLAT_SMS);
@@ -87,14 +96,19 @@ static void gpgx_poll_input(void) {
     if (remap_kbd_pressed(plat, BTN_DOWN, keys, n))  pad |= INPUT_DOWN;
     if (remap_kbd_pressed(plat, BTN_LEFT, keys, n))  pad |= INPUT_LEFT;
     if (remap_kbd_pressed(plat, BTN_RIGHT, keys, n)) pad |= INPUT_RIGHT;
-    if (remap_kbd_pressed(plat, BTN_A, keys, n))     pad |= INPUT_A;
-    if (remap_kbd_pressed(plat, BTN_B, keys, n))     pad |= INPUT_B;
-    // C/X/Y/Z/Mode — только для MD (для SMS/GG их нет, остаются 0)
-    if (g_is_md && remap_kbd_pressed(plat, BTN_C, keys, n))    pad |= INPUT_C;
-    if (g_is_md && remap_kbd_pressed(plat, BTN_X, keys, n))    pad |= INPUT_X;
-    if (g_is_md && remap_kbd_pressed(plat, BTN_Y, keys, n))    pad |= INPUT_Y;
-    if (g_is_md && remap_kbd_pressed(plat, BTN_Z, keys, n))    pad |= INPUT_Z;
-    if (g_is_md && remap_kbd_pressed(plat, BTN_MODE, keys, n)) pad |= INPUT_MODE;
+    if (g_is_md) {
+        if (remap_kbd_pressed(plat, BTN_A, keys, n)) pad |= INPUT_A;
+        if (remap_kbd_pressed(plat, BTN_B, keys, n)) pad |= INPUT_B;
+        if (remap_kbd_pressed(plat, BTN_C, keys, n)) pad |= INPUT_C;
+        if (remap_kbd_pressed(plat, BTN_X, keys, n)) pad |= INPUT_X;
+        if (remap_kbd_pressed(plat, BTN_Y, keys, n)) pad |= INPUT_Y;
+        if (remap_kbd_pressed(plat, BTN_Z, keys, n)) pad |= INPUT_Z;
+        if (remap_kbd_pressed(plat, BTN_MODE, keys, n)) pad |= INPUT_MODE;
+    } else {
+        // SMS/GG: клавиши A и B = кнопки 1 и 2 (дефолт: Z=A, X=B)
+        if (remap_kbd_pressed(plat, BTN_A, keys, n)) pad |= INPUT_BUTTON1;
+        if (remap_kbd_pressed(plat, BTN_B, keys, n)) pad |= INPUT_BUTTON2;
+    }
     // Start — игровой (MD) / пауза (SMS: NMI) / Start (GG)
     if (remap_kbd_pressed(plat, BTN_START, keys, n)) pad |= INPUT_START;
     // Корпусная Pause (SMS) — отдельная кнопка, в ядре тоже INPUT_START (NMI)
@@ -141,7 +155,6 @@ static void gpgx_render_emu(int max_w, int max_h) {
 
 // ---- Public API ----
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
-    printf("GPGX: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gb_heap_reset();
 
@@ -242,19 +255,11 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     audio_init(48000, 60.0);
 
     g_loaded = 1;
-    printf("GPGX: hw=%02X romsize=%u md=%d\n", (unsigned)system_hw,
-           (unsigned)cart.romsize, g_is_md);
-
     // применение читов, отмеченных в меню (загружены в rom_browser через cheats_load)
     gp_cheats_compile(g_is_md);
     gp_cheats_apply();
 
-    printf("GPGX: region=%s vdp_pal=%d sram=%d\n",
-           rominfo.country, vdp_pal, sram.on);
-    printf("GPGX: viewport %dx%d+%d+%d\n",
-           bitmap.viewport.w, bitmap.viewport.h,
-           bitmap.viewport.x, bitmap.viewport.y);
-    return 1;
+
 }
 
 // ---- вывод звука отключён: дрейним blip-буферы ядра, чтобы они
@@ -336,7 +341,6 @@ void sms_run_frame(void) {
 
 // ---- интерфейс для emu.c: Sega Game Gear через GPGX ----
 int gg_init_game(const uint8_t* rom, uint32_t size) {
-    printf("GG: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gb_heap_reset();
 
@@ -401,10 +405,6 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     audio_init(48000, 60.0);
 
     g_loaded = 1;
-    printf("GG: hw=%02X size=%u\n", (unsigned)system_hw, (unsigned)cart.romsize);
-    printf("GG: viewport %dx%d+%d+%d\n",
-           bitmap.viewport.w, bitmap.viewport.h,
-           bitmap.viewport.x, bitmap.viewport.y);
 
     // применение читов, отмеченных в меню (как в gpgx_init_game)
     gp_cheats_compile(g_is_md);

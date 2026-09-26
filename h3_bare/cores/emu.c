@@ -306,7 +306,6 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }
-    printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
     emu_ts0 = 0;
     emu_esc_hold_reset();
@@ -325,7 +324,6 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     if (gg_init_game(rom, size) != 1) {
         printf("GG: init failed\n"); return;
     }
-    printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00082030);   // тёмно-синий (GG)
     emu_ts0 = 0;
     emu_esc_hold_reset();
