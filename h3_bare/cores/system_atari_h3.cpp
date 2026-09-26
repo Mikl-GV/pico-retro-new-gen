@@ -57,8 +57,8 @@ extern "C" int emu_GetPad(void) {
     int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
 
-    // Sega-геймпад: крестовина, A=Fire, Mode=Select. Start НЕ мапим —
-    // на A2600 нет паузы, Start как Reset опасен (случайный сброс игры).
+    // Sega-геймпад: крестовина, A/B=Fire (дубль: у A2600 одна кнопка),
+    // Start=Reset (запуск игры), Mode=Select (выбор игры/уровня).
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) k |= 0x0004;   // Up
     if (sp & 0x0002) k |= 0x0008;   // Down
@@ -66,6 +66,7 @@ extern "C" int emu_GetPad(void) {
     if (sp & 0x0008) k |= 0x0001;   // Right
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
     if (sp & 0x0020) k |= 0x0010;   // B -> Fire (дубль: у A2600 одна кнопка)
+    if (sp & 0x0080) k |= 0x0020;   // Start -> Reset (старт игры, r155)
     if (sp & 0x0800) k |= 0x0040;   // Mode -> Select
 
     // Клавиатура -> A2600 (ремап через Settings → Keyboard remap)

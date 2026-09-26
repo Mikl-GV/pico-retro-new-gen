@@ -63,7 +63,7 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 | **X** | X | — | Y | — | — | **R** | Option 1 | — | — | — | — | Кноп.3 |
 | **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — | Кноп.4 |
 | **Z** | Z | — | R | — | — | — | — | — | — | — | Pause | — |
-| **Start** | Start | Start¹ | Start | Start | Start | Start | **Pause** | Start | — | Start | Start | — |
+| **Start** | Start | Start¹ | Start | Start | Start | Start | **Pause** | Start | **Game Reset** | Start | Start | — |
 | **Mode** | Mode | —² | Select | Select | Select | Select | — | Select | Select | — | Select | — |
 
 ¹ SMS/GG: Start — пауза (NMI) и запуск.
