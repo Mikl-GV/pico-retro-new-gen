@@ -142,9 +142,13 @@ extern "C" void gb_run_frame(void) {
     emulator_set_joypad_buttons(g_emu, &jp);
 
     EmulatorEvent events;
+    int guard = 0;
+    // r158: safety-лимит — если binjgb не выставляет NEW_FRAME (зависший ROM
+    // или сбой), не крутим вечно: кадр возвращается, и emu_esc_hold вызывается
+    // (иначе «не работает выход из эмулятора»).
     do {
         events = emulator_run_until(g_emu, emulator_get_ticks(g_emu) + PPU_FRAME_TICKS);
-    } while (!(events & EMULATOR_EVENT_NEW_FRAME));
+    } while (!(events & EMULATOR_EVENT_NEW_FRAME) && ++guard < 4);
 
     // Звук отключён (без I2S): сбрасываем буфер, ядро перезапишет
     AudioBuffer* ab = emulator_get_audio_buffer(g_emu);

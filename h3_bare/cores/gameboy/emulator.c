@@ -4752,6 +4752,9 @@ static const char* get_result_string(Result value) {
   return get_enum_string(s_strings, ARRAY_SIZE(s_strings), value);
 }
 
+#if 0
+/* r158: log_cart_info заглушена — дамп заголовка картриджа спамил UART
+ * при каждом запуске Game Boy (7 строк printf в libc_min → UART). */
 static void log_cart_info(CartInfo* cart_info) {
   unsigned char title[TITLE_MAX_LENGTH + 1] = {0};
   char* title_start = (char*)cart_info->data + TITLE_START_ADDR;
@@ -4772,9 +4775,10 @@ static void log_cart_info(CartInfo* cart_info) {
   printf("ext ram size: %s\n",
          get_ext_ram_size_string(cart_info->ext_ram_size));
   printf("header checksum: 0x%02x [%s]\n",
-         cart_info->data[HEADER_CHECKSUM_ADDR],
-         get_result_string(validate_header_checksum(cart_info)));
+cart_info->data[HEADER_CHECKSUM_ADDR],
+          get_result_string(validate_header_checksum(cart_info)));
 }
+#endif
 
 Result init_audio_buffer(Emulator* e, u32 frequency, u32 frames) {
   AudioBuffer* audio_buffer = &e->audio_buffer;
@@ -4823,7 +4827,7 @@ Result init_emulator(Emulator* e, const EmulatorInit* init) {
       0xc0, 0xde, 0xf0, 0x0d, 0xbe, 0xef, 0xfe, 0xed,
   };
   CHECK(SUCCESS(get_cart_infos(e)));
-  log_cart_info(e->cart_info);
+  /* r158: log_cart_info(e->cart_info); — заглушено (UART-шум при старте GB) */
   MMAP_STATE.rom_base[0] = 0;
   MMAP_STATE.rom_base[1] = 1 << ROM_BANK_SHIFT;
   IS_CGB = !init->force_dmg && (e->cart_info->cgb_flag == CGB_FLAG_SUPPORTED ||

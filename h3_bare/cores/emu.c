@@ -172,6 +172,7 @@ static uint32_t g_pad_esc_t = 0;
 static uint16_t g_pad_esc_val = 0;
 static int      g_esc_armed = 0;
 static uint32_t g_no_esc_since = 0;   // r155: sticky — отсутствие нажатия выхода
+static uint32_t g_esc_arm_t = 0;      // r158: сколько держится «доезд» после входа
 
 void emu_esc_hold_reset(void) {
     g_esc_hold_us = 0;
@@ -179,6 +180,7 @@ void emu_esc_hold_reset(void) {
     g_pad_esc_t   = 0;
     g_esc_armed   = 0;
     g_no_esc_since = 0;
+    g_esc_arm_t   = 0;
 }
 
 int emu_esc_hold(void) {
@@ -196,28 +198,21 @@ int emu_esc_hold(void) {
     }
     if ((g_pad_esc_val & 0x0080) && (g_pad_esc_val & 0x0800)) esc = 1;
 
-    // r155 DEBUG: печать удержания выхода (только когда кнопка нажата,
-    // раз в ~500 мс) — по UART видно, доходит ли нажатие до esc_hold.
-    if (esc) {
-        static uint32_t dbg_t = 0;
-        if (now - dbg_t > 500000) {
-            dbg_t = now;
-            printf("EXIT: kbd=%d pad=0x%04X armed=%d hold=%u\n",
-                   (int)(raw_keys[0] == 41 || raw_keys[1] == 41 ||
-                         raw_keys[2] == 41 || raw_keys[3] == 41 ||
-                         raw_keys[4] == 41 || raw_keys[5] == 41
-                             ? 1 : 0),
-                   (unsigned)g_pad_esc_val, g_esc_armed,
-                   (unsigned)(now - g_esc_hold_us));
-        }
-    }
-
     if (esc) {
         g_no_esc_since = 0;
-        if (!g_esc_armed) return 0;         // ещё не было чистого кадра — игнор
+        if (!g_esc_armed) {
+            // «Доезд» из прошлой игры блокируем, НО не навсегда: если нажатие
+            // держится >1.5 с — это не остаток, а залип пада или реальное
+            // удержание. Разоружаемся, иначе выход был бы мёртв навсегда
+            // (симптом: «не выходит из эмулятора» + спам при esc=1).
+            if (!g_esc_arm_t) g_esc_arm_t = now;
+            else if (now - g_esc_arm_t > 1500000) { g_esc_armed = 1; g_esc_arm_t = 0; }
+            if (!g_esc_armed) return 0;
+        }
         if (!g_esc_hold_us) g_esc_hold_us = now;
         else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
     } else {
+        g_esc_arm_t = 0;
         // r155: клавиатура шлёт отчёты ПАЧКАМИ (между ними «пустые» промежутки),
         // поэтому непрерывное удержание не требуется: отсчёт выхода теряется
         // только если нажатие отсутствует >250 мс подряд. Иначе после
