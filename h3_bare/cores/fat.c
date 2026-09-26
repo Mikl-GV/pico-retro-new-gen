@@ -54,6 +54,9 @@ static uint32_t cluster_to_sector(uint32_t cl) {
 
 // ---- чтение следующего кластера по FAT ----
 static uint32_t fat_next_cluster(uint32_t cl) {
+    // P30: кластеры начинаются с 2; cl<2 = служебные записи FAT (0/1) —
+    // не читаем их как кластеры, сразу обрыв цепочки.
+    if (cl < 2) return 0x0FFFFFFF;
     uint32_t fat_off = cl * 4;
     uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
     if (sd_read_sector(sec, g_sector) < 0) return 0x0FFFFFFF;
