@@ -306,10 +306,10 @@ static void render_menu(void) {
 
     fb_puts(60, FOOTER_Y, "  ^v : select    Enter : open    ESC : back", 0x00888888);
 
-    // r158: версия прошивки в строке справки главного меню (HDMI).
-    // На TFT версия уже рисуется в правом нижнем углу (tft_drv.c) — не дублируем.
+    // r: версия прошивки в строке справки главного меню (HDMI).
+    // Отступ 40px, чтобы текст точно не заезжал за правый край экрана.
     extern const char g_fw_version[];
-    fb_puts(PHYS_W - (int)strlen(g_fw_version) * 8 - 16, FOOTER_Y, g_fw_version, 0x00666666);
+    fb_puts(PHYS_W - (int)strlen(g_fw_version) * 8 - 40, FOOTER_Y, g_fw_version, 0x00666666);
 
     fb_flush();
     // крестик рисуется плавно в input_wait; после полной перерисовки
