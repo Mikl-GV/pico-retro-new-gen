@@ -73,13 +73,17 @@ static int msx_launch_dialog(int has_dir) {
     }
 }
 
+// Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
+// Обновлять при каждой сборке (совпадает с баннером build:).
+const char g_fw_version[] = "r154 (15.2.1)";
+
 void main(void) {
     int sd_ok = 0;
 
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r131 (15.2.1)\n");
+    uart_puts("build: TFT self-test r154 (15.2.1)\n");
 
     led_init();
     led_set(0);

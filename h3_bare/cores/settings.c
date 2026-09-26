@@ -19,6 +19,13 @@ extern int printf(const char* fmt, ...);
 #define CAL_RX  ((volatile uint32_t*)0x3Cu)    // CPU1→core0: rx4[5]
 #define CAL_RY  ((volatile uint32_t*)0x50u)    // CPU1→core0: ry4[5]
 
+// r135: меню настроек на TFT (слоты, см. tft_drv.c)
+#define SET_CMD   (*(volatile uint32_t*)0x78u) // core0→CPU1: 1 = режим настроек
+#define SET_EV    (*(volatile uint32_t*)0x80u) // CPU1→core0: тап (0..7, 8=Back)
+#define SET_EPOCH (*(volatile uint32_t*)0x84u) // core0→CPU1: перерисовать
+#define SET_MODE  (*(volatile uint32_t*)0x88u) // core0→CPU1: подрежим (0=список,1=partition,2=confirm,3=result)
+#define SET_INFO  (*(volatile uint32_t*)0x8Cu) // core0→CPU1: результат подрежима (create-счётчики)
+
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
 
@@ -587,5 +594,110 @@ partition_info:
         fb_puts_s(60, 270, "Press any key", 1, 0x00888888);
         fb_flush();
         input_wait();
+    }
+}
+
+// r135: обработчик меню настроек на TFT. core0 держит SET_CMD=1; CPU1 в
+// tft_settings_mode рисует кнопки-строки и шлёт тапы в SET_EV. Здесь читаем
+// события и выполняем действия пунктов (порядок = SET_*).
+extern void remap_menu(void);
+
+// r136: создание папок без HDMI-экранов (только для TFT). Возвращает
+// упакованный счётчик: (created) | (existing<<8) | (failed<<16)
+static uint32_t create_folders_silent(void) {
+    int created = 0, existing = 0, fail = 0;
+    for (int i = 0; i < (int)NUM_SYSTEMS; i++) {
+        int r = ensure_dir(system_rom_dir(i));
+        if (r == 1) created++;
+        else if (r == 2) existing++;
+        else fail++;
+        if (systems[i].alt_dir) {
+            r = ensure_dir(systems[i].alt_dir);
+            if (r == 1) created++;
+            else if (r == 2) existing++;
+            else fail++;
+        }
+    }
+    return (uint32_t)created | ((uint32_t)existing << 8) | ((uint32_t)fail << 16);
+}
+
+// r141: ждём, пока CPU1 пришлёт событие из тача (SET_EV), либо SET_CMD снимется.
+// «Нет события» = -1 (0 — валидный пункт Create folders!). Параллельно
+// опрашиваем клавиатуру: ESC = Back(8), Enter = Continue/CREATE(1).
+static int tft_set_wait_ev(void) {
+    for (;;) {
+        if (SET_CMD != 1) return -1;
+        int ev = (int)SET_EV;
+        if (ev >= 0 && ev <= 8) { SET_EV = (uint32_t)0xFFFFFFFFu; return ev; }
+        int k = usb_input_poll();
+        if (k == 41) { SET_EV = (uint32_t)0xFFFFFFFFu; return 8; }   // ESC = Back
+        if (k == 40) { SET_EV = (uint32_t)0xFFFFFFFFu; return 1; }   // Enter = Continue/CREATE
+        for (int j = 0; j < 300; j++) udelay(100);
+    }
+}
+
+void touch_settings_run(void) {
+    SET_EV = (uint32_t)0xFFFFFFFFu;   // r141: нет события (0 = пункт!)
+    SET_EPOCH++;                      // перерисовать меню при входе
+    SET_CMD = 1;
+    while (SET_CMD == 1) {
+        int ev = (int)SET_EV;
+        if (ev < 0 || ev > 8) { for (int j = 0; j < 300; j++) udelay(100); continue; }
+        SET_EV = (uint32_t)0xFFFFFFFFu;   // взял событие
+        if (ev == 8) { SET_CMD = 0; break; }   // Back
+        switch (ev) {
+            case 0: {
+                // Create folders — ДВОЙНОЕ подтверждение на TFT (как HDMI):
+                // 1) предупреждение (mode 2, Continue/Back)
+                // 2) «Are you SURE?» (mode 4, CREATE/Back)
+                SET_MODE = 2; SET_EPOCH++;
+                int a = tft_set_wait_ev();       // ждём Continue(1) или Back(8)
+                if (a == 1) {
+                    SET_MODE = 4; SET_EPOCH++;   // Are you SURE?
+                    int s = tft_set_wait_ev();   // ждём CREATE(1) или Back(8)
+                    if (s == 1) {
+                        SET_INFO = (int32_t)create_folders_silent();
+                        SET_MODE = 3; SET_EPOCH++;   // результат
+                    } else {
+                        SET_MODE = 0; SET_EPOCH++;
+                        break;
+                    }
+                } else {
+                    SET_MODE = 0; SET_EPOCH++;
+                    break;
+                }
+                tft_set_wait_ev();               // ждём Back(8) с результата
+                SET_MODE = 0; SET_EPOCH++;
+                break;
+            }
+            case 1: input_test_run(); break;   // HDMI-тесты — следующая итерация
+            case 2:
+                freq_next_dir(1);
+                *(volatile uint32_t*)0x74u = emu_period_us;   // синхрон для TFT
+                break;
+            case 3:
+                a2600_diff_expert = !a2600_diff_expert;
+                *(volatile uint32_t*)0x70u = a2600_diff_expert;
+                break;
+            case 4: sega_pad_test_run(); break; // HDMI-тесты — следующая итерация
+            case 5: remap_menu(); break;        // HDMI-ремап — следующая итерация
+            case 6: {
+                // калибровка: выйти из меню, запустить CAL_CMD, вернуться
+                SET_CMD = 0;
+                CAL_CMD = 1;
+                while (CAL_CMD == 1) { for (int j = 0; j < 1000; j++) udelay(100); }
+                SET_EPOCH++;
+                SET_CMD = 1;
+                break;
+            }
+            case 7: {
+                // Partition info — подрежим на TFT
+                SET_MODE = 1; SET_EPOCH++;
+                tft_set_wait_ev();              // ждём Back(8)
+                SET_MODE = 0; SET_EPOCH++;
+                break;
+            }
+        }
+        SET_EPOCH++;         // вернулись из действия — перерисовать на TFT
     }
 }

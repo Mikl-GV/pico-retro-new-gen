@@ -357,7 +357,11 @@ static int input_wait(void) {
         if (*(volatile int32_t*)0x64u) {
             int r = *(volatile int32_t*)0x64u;
             *(volatile int32_t*)0x64u = 0;
-            if (r == -2) { printf("BTN: -2 Settings\n", r); return r; }
+            if (r == -2) { printf("BTN: -2 Settings\n", r);
+                // r135: настройки открываем НА TFT (кнопки-строки)
+                extern void touch_settings_run(void);
+                touch_settings_run();
+                continue; }
             if (r == -4) { printf("BTN: -4 About\n", r);    // About — показываем на TFT
                 extern void tft_help_show(const char* sys_id);
                 tft_help_show("about");
@@ -665,6 +669,9 @@ void menu_about(void) {
             else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
             line++;
         }
+        // r140: версия прошивки (g_fw_version из main.c)
+        extern const char g_fw_version[];
+        fb_puts_s(80, 65 + line * 20 + 6, g_fw_version, 1, 0x0000FFFF);
 
         fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
         fb_flush();

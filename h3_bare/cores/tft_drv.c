@@ -198,6 +198,13 @@ static inline uint16_t tft_swap_rb(uint16_t c) {
 // CPU1 видит stale-значения из кэша core0 и на TFT всегда старые строки).
 #define TFT_DIFF     (*(volatile int32_t*)0x70u) // A2600 diff: 1=Expert
 #define TFT_PERIOD   (*(volatile int32_t*)0x74u) // период кадра мкс (16667=60Гц)
+// r135: меню настроек на TFT (режим CPU1, аналогично калибровке)
+#define TFT_SET_CMD   (*(volatile int32_t*)0x78u) // core0→CPU1: 1 = режим настроек
+#define TFT_SET_SEL   (*(volatile int32_t*)0x7Cu) // core0→CPU1: выбранный пункт 0..7 (подсветка)
+#define TFT_SET_EV    (*(volatile int32_t*)0x80u) // CPU1→core0: тап (0..7, 8=Back)
+#define TFT_SET_EPOCH (*(volatile int32_t*)0x84u) // core0→CPU1: перерисовать
+#define TFT_SET_MODE  (*(volatile int32_t*)0x88u) // core0→CPU1: подрежим (0=список,1=partition,2=confirm,3=result)
+#define TFT_SET_INFO  (*(volatile int32_t*)0x8Cu) // core0→CPU1: результат подрежима (create-folder счётчики)
 
 #define FB_W  1024
 #define FB_H  600
@@ -784,6 +791,11 @@ static void tft_help_render(int id, int full) {
     tft_puts(sx + 6, sy + 13, "About", 0xFFFF);
 
 tft_puts(4, TFT_H - 12, "ESC hold = exit emulator", 0x7BEF);
+    // r140: версия прошивки в правом нижнем углу TFT (r142: прижата вправо целиком)
+    extern const char g_fw_version[];
+    int fw_w = 8 * (int)strlen(g_fw_version);   // шрифт 8x8
+    if (fw_w > TFT_W - 8) fw_w = TFT_W - 8;
+    tft_puts(TFT_W - fw_w - 4, TFT_H - 12, g_fw_version, 0x7BEF);
 
     // Эхо в UART: что рисуем на TFT + сырые значения тача (отладка)
     // r113: TXT-эхо убрано — калибровка рисует результат на экран,
@@ -947,6 +959,161 @@ static void tft_calib_mode(void) {
         i, (int)g_cal_rx[i], (int)g_cal_ry[i]);
 }
 
+// r135: меню настроек на TFT — вызывается из главного цикла при TFT_SET_CMD==1.
+// Рисует кнопки-строки (порядок = SET_* в settings.c), тап строит TFT_SET_EV.
+// ВАЖНО: CPU1 НЕ ждёт ответа core0 вечно — после записи EV крутит цикл дальше
+// (событие останется в слоте, core0 прочитает когда сможет). Это исключает
+// взаимоблокировку ядер и «мертвый» экран.
+static void tft_settings_mode(void) {
+    static const char* const items[8] = {
+        "Create ROM folders",
+        "Input test (NES/A2600)",
+        "Video Mode / Throttle",
+        "A2600 difficulty",
+        "Sega 6-button pad",
+        "Keyboard remap",
+        "Touch calibration",
+        "ROM partition info",
+    };
+    TFT_STAT = 0x3E;
+
+    int prev = 0;
+    int last_ep = -1, last_mode = -1;
+
+    // r139: ждём, что палец, которым тапнули кнопку Settings, УЖЕ ОТПУЩЕН.
+    // Без этого тот же тап засчитывается за выбор 1-го пункта («сразу в меню
+    // записи»). Таймаут 3 с на случай залипшего тача.
+    {
+        int dpx, dpy; uint16_t drx = 0, dry = 0, drz = 0;
+        uint32_t dbg0 = h3_hs_timer_lo_us();
+        while (tft_touch_scan(&dpx, &dpy, &drx, &dry, &drz) &&
+               (h3_hs_timer_lo_us() - dbg0 < 3000000)) {
+            extern void led_heartbeat_cpu1(void);
+            led_heartbeat_cpu1();
+            for (int d = 0; d < 500; d++) udelay(30);
+        }
+    }
+
+    while (TFT_SET_CMD == 1) {
+        extern void led_heartbeat_cpu1(void);
+        led_heartbeat_cpu1();   // PA15 жив и в меню настроек
+
+        int ep = TFT_SET_EPOCH;
+        int mode = TFT_SET_MODE;
+        if (ep != last_ep || mode != last_mode) {
+            last_ep = ep; last_mode = mode;
+            tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);
+            if (mode == 1) {                              // partition info
+                tft_puts2(4, 2, "ROM partition setup", 0xF800);
+                tft_puts(4, 32,  "1. Create FAT32 partition", 0xFFFF);
+                tft_puts(4, 48,  "   (Win: DiskPart/GUI)", 0xAAAA);
+                tft_puts(4, 72,  "2. Create folder 'roms'", 0xFFFF);
+                tft_puts(4, 88,  "3. Put ROMs in /roms/<sys>/", 0xFFFF);
+                tft_puts(4, 112, "4. Reboot the console", 0xFFFF);
+                tft_puts(4, 136, "Then Settings -> Create folders", 0xFFE0);
+                tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
+            } else if (mode == 2) {                       // create folders confirm #1
+                tft_puts2(4, 2, "Create ROM folders?", 0xF800);
+                tft_puts(4, 36, "Creates /roms/<system>/", 0xFFFF);
+                tft_puts(4, 52, "for ALL registered systems.", 0xFFFF);
+                tft_puts(4, 68, "No data will be deleted.", 0xAAAA);
+                tft_puts2(4, TFT_H - 76, "Continue  (tap here)", 0x07E0);
+                tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
+            } else if (mode == 4) {                       // SURE — второе подтверждение
+                tft_puts2(4, 2, "Are you SURE?", 0xF800);
+                tft_puts(4, 40, "This writes folders to SD", 0xFFFF);
+                tft_puts(4, 56, "and is not reversible.", 0xFFFF);
+                tft_puts2(4, TFT_H - 76, "CREATE  (tap here)", 0xF800);
+                tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
+            } else if (mode == 3) {                       // create folders result
+                uint32_t info = (uint32_t)TFT_SET_INFO;
+                tft_puts2(4, 2, "Folders", 0xF800);
+                char row[48];
+                char* p = row;
+                tft_strcat(&p, "Created: "); tft_itoa(&p, (info >> 0) & 0xFF); *p = 0;
+                tft_puts(4, 36, row, 0x07E0);
+                p = row;
+                tft_strcat(&p, "Already: "); tft_itoa(&p, (info >> 8) & 0xFF); *p = 0;
+                tft_puts(4, 56, row, 0xFFFF);
+                p = row;
+                tft_strcat(&p, "Failed: ");  tft_itoa(&p, (info >> 16) & 0xFF); *p = 0;
+                if ((info >> 16) & 0xFF) tft_puts(4, 76, row, 0xF800);
+                tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
+            } else {                                      // mode 0: список пунктов — КНОПКИ
+                static const char icons[8] = {'F','T','V','D','S','K','C','I'};
+                static const int  BTN_SP = 32, BTN_H = 28;
+                tft_puts2(4, 2, "Settings (TFT)", 0xF800);
+                for (int i = 0; i < 8; i++) {
+                    int y = 24 + i * BTN_SP;
+                    int on = (i == TFT_SET_SEL);
+                    uint16_t frame = on ? 0xFFE0 : 0xFFFF;
+                    tft_fill_rect(4, y, TFT_W - 8, BTN_H, on ? 0x1010 : 0x0200);
+                    tft_fill_rect(4, y, TFT_W - 8, 1, frame);         // рамка
+                    tft_fill_rect(4, y + BTN_H - 1, TFT_W - 8, 1, frame);
+                    tft_fill_rect(4, y, 1, BTN_H, frame);
+                    tft_fill_rect(TFT_W - 5, y, 1, BTN_H, frame);
+                    // иконка слева
+                    tft_fill_rect(9, y + 4, 20, BTN_H - 8, 0x0018);
+                    char ic[2] = { icons[i], 0 };
+                    tft_puts(13, y + (BTN_H - 8) / 2, ic, 0xFFFF);
+                    // текст пункта (+ значения для 2/3)
+                    char row[48];
+                    char* p = row;
+                    tft_strcat(&p, items[i]);
+                    if (i == 2) {
+                        tft_strcat(&p, ": ");
+                        switch (TFT_PERIOD) {
+                            case 16667: tft_strcat(&p, "60"); break;
+                            case 20000: tft_strcat(&p, "50"); break;
+                            case 22222: tft_strcat(&p, "45"); break;
+                            case 25000: tft_strcat(&p, "40"); break;
+                            default:    tft_strcat(&p, "30"); break;
+                        }
+                        tft_strcat(&p, " Hz");
+                    } else if (i == 3) {
+                        tft_strcat(&p, ": ");
+                        tft_strcat(&p, TFT_DIFF ? "Expert" : "Novice");
+                    }
+                    *p = 0;
+                    tft_puts(36, y + (BTN_H - 8) / 2, row, 0xFFFF);
+                }
+                tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
+            }
+            tft_flush();
+        }
+
+        int px, py;
+        uint16_t rawx = 0, rawy = 0, rawz = 0;
+        int pressed = tft_touch_scan(&px, &py, &rawx, &rawy, &rawz);
+        if (pressed && !prev) {
+            if (mode == 0) {
+                if (py >= TFT_H - 28) TFT_SET_EV = 8;              // Back
+                else if (py >= 24) {
+                    int i = (py - 24) / 32;                        // кнопки: старт 24, шаг 32
+                    if (i < 8) TFT_SET_EV = i;                     // пункт 0..7
+                }
+            } else if (mode == 2 || mode == 4) {
+                if (py >= TFT_H - 76) TFT_SET_EV = 1;              // Continue/CREATE
+                if (py >= TFT_H - 28) TFT_SET_EV = 8;              // Back (приоритетнее)
+            } else {
+                if (py >= TFT_H - 28) TFT_SET_EV = 8;              // Back
+            }
+            // ждём ОТЖАТИЯ пальца: чтобы переход в следующий подрежим не
+            // «дожимался» тем же нажатием (r137). Ограничено таймаутом 3 с —
+            // если тач залип/дребезжит, CPU1 не зависнет навсегда.
+            uint32_t rel_t0 = h3_hs_timer_lo_us();
+            while (tft_touch_scan(&px, &py, &rawx, &rawy, &rawz) &&
+                   (h3_hs_timer_lo_us() - rel_t0 < 3000000)) {
+                led_heartbeat_cpu1();
+                for (int d = 0; d < 500; d++) udelay(30);
+            }
+        }
+        prev = pressed;
+        for (int d = 0; d < 200; d++) udelay(30);   // ~6 мс
+    }
+    TFT_STAT = 0x3F;
+}
+
 // ---- CPU1 entry: probes, init, help display + touch ----
 void tft_core_main(void) {
     TFT_STAT = 0x0A;
@@ -973,6 +1140,12 @@ void tft_core_main(void) {
     TFT_DIFF = 0;
     TFT_PERIOD = 16667;
     TFT_CMD = 0;   // r127: без этого мусор 0x34 (==1) сразу запускал бы калибровку
+    TFT_SET_CMD = 0;   // r135: меню настроек на TFT
+    TFT_SET_SEL = 0;
+    TFT_SET_EV = (int32_t)-1;   // r141: «нет события» = -1 (0 = пункт Create folders!)
+    TFT_SET_EPOCH = 0;
+    TFT_SET_MODE = 0;
+    TFT_SET_INFO = 0;
     SPI0_TCR = 0x0;
     SPI0_CCR = 0x1005;             // 8 MHz
 
@@ -1004,6 +1177,9 @@ void tft_core_main(void) {
         if (TFT_CMD == 1) {
             last = cur; last_epoch = cur_e;   // проглотить висящие help-запросы
             tft_calib_mode();
+        } else if (TFT_SET_CMD == 1) {        // r135: меню настроек на TFT
+            last = cur; last_epoch = cur_e;
+            tft_settings_mode();
         } else if (cur != last || cur_e != last_epoch) {
             int full = (cur != last);   // смена страницы = полный флаш, иначе refresh
             last = cur; last_epoch = cur_e;

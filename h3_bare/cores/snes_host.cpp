@@ -126,8 +126,8 @@ static void build_input(void) {
     if (sp & 0x0020) g_joydata |= SNES_B_MASK;        // Sega B -> SNES B
     if (sp & 0x0040) g_joydata |= SNES_TL_MASK;       // Sega C -> L
     if (sp & 0x0080) g_joydata |= SNES_START_MASK;    // Start
-    if (sp & 0x0100) g_joydata |= SNES_Y_MASK;        // Sega X -> Y
-    if (sp & 0x0200) g_joydata |= SNES_X_MASK;        // Sega Y -> X
+    if (sp & 0x0100) g_joydata |= SNES_X_MASK;        // Sega X -> SNES X
+    if (sp & 0x0200) g_joydata |= SNES_Y_MASK;        // Sega Y -> SNES Y
     if (sp & 0x0400) g_joydata |= SNES_TR_MASK;       // Sega Z -> R
     if (sp & 0x0800) g_joydata |= SNES_SELECT_MASK;   // Mode -> Select
 

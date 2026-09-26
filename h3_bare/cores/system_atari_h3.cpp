@@ -65,6 +65,7 @@ extern "C" int emu_GetPad(void) {
     if (sp & 0x0004) k |= 0x0002;   // Left
     if (sp & 0x0008) k |= 0x0001;   // Right
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
+    if (sp & 0x0020) k |= 0x0010;   // B -> Fire (дубль: у A2600 одна кнопка)
     if (sp & 0x0800) k |= 0x0040;   // Mode -> Select
 
     // Клавиатура -> A2600 (ремап через Settings → Keyboard remap)
