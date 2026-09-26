@@ -230,11 +230,13 @@ extern "C" void fceumm_run_frame(void) {
     (void)snd; (void)ssize;
 
     // Рендер: gfx = XBuf[256×240] индексов палитры.
-    // Деэмфазис строки из XDBuf: база 256 + (deemp&7)<<6, иначе база 0.
+    // Деэмфазис строки из XDBuf: база 256 + (deemp<<6), иначе база 0.
+    // r125: кламп deemp&0x03 — палитра только 512 записей, при deemp 4..7
+    // (база 256+4..7<<6 = 512..704) доступ выходил за буфер.
     extern uint8_t *XDBuf;
     for (int y = 0; y < 240; y++) {
         uint8_t deemp = XDBuf ? XDBuf[y * 256] : 0;
-        uint32_t base = deemp ? (256u + ((unsigned)(deemp & 0x07) << 6)) : 0;
+        uint32_t base = deemp ? (256u + ((unsigned)(deemp & 0x03) << 6)) : 0;
         const uint8_t* src = gfx + y * 256;
         uint16_t* dst = EMU_FB + y * EMU_W;
         for (int x = 0; x < 256; x++)

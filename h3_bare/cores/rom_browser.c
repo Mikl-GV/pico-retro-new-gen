@@ -420,8 +420,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
     sort_entries(list, n);
     printf("rom_browser: %s n=%d\n", path, n);
-    for (int i = 0; i < n; i++)
-        printf("  [%d] '%s' size=%u\n", i, list[i].name, (unsigned)list[i].size);
+    // (пофайловый список убран из отладки — спамил дерево при каждом входе)
 
     int cursor = 0;
     int scroll = 0;

@@ -296,7 +296,7 @@ $(BUILD)/remap.o: $(TOP)h3_bare/cores/remap.c | $(BUILD)
 $(BUILD)/i2s.o: $(TOP)h3_bare/cores/i2s.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/tft_drv.o: $(TOP)h3_bare/cores/tft_drv.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<   # r58: вернул -O2 (r57 -O0 тормозил дисплей)
 
 $(BUILD)/system_atari_h3.o: $(TOP)h3_bare/cores/system_atari_h3.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<

@@ -11,6 +11,14 @@
 #include "h3_hs_timer.h"
 extern int printf(const char* fmt, ...);
 
+// r118: SRAM A1 почта калибровки тача (определена в tft_drv.c — дублируем
+// адреса). .coherent между ядрами на этой плате не работает, поэтому запуск
+// и результат калибровки идут через некэшируемую SRAM A1.
+#define CAL_CMD (*(volatile uint32_t*)0x34u)   // core0→CPU1: 1 = калибровка
+#define CAL_OK  (*(volatile uint32_t*)0x38u)   // CPU1→core0: 1 = OK
+#define CAL_RX  ((volatile uint32_t*)0x3Cu)    // CPU1→core0: rx4[5]
+#define CAL_RY  ((volatile uint32_t*)0x50u)    // CPU1→core0: ry4[5]
+
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
 
@@ -20,6 +28,63 @@ uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
 #define FOOTER_Y (PHYS_H - 30)
 
 static void sega_pad_test_run(void);   // прототип — определён ниже
+static int input_wait(void);           // определена ниже — для touch_cal_run
+
+// r112: калибровка тача — вызов из меню настроек
+// r118: команда и результат — через SRAM-почту (TFT_CMD/CAL_*). CPU1 рисует
+// мишени, кладёт результат в CAL_OK/CAL_RX/CAL_RY и снимает CAL_CMD=0.
+static void touch_cal_run(void) {
+    fb_clear();
+    fb_puts_s(60, 150, "Touch calibration...", 2, 0x00FFAA00);
+    fb_puts_s(60, 200, "tap 5 TFT targets (1-4-C)", 1, 0x00FFFFFF);
+    fb_puts_s(60, 225, "ESC - cancel", 1, 0x00888888);
+    fb_flush();
+
+    // r117 debug: что CPU1 делает перед калибровкой (ожидаем 0x02 = меню)
+    printf("cal: TFT_STAT=0x%X before\n", *(volatile uint32_t*)0x24u);
+
+    CAL_OK = 0;    // r119: чистим результат перед запуском (SRAM не zero-инициализируется)
+    CAL_CMD = 1;
+
+    // ждём завершения калибровки без таймаута: CPU1 выходит сам по 5 тапам
+    // (снимет CAL_CMD в 0), либо прерываем по ESC с клавиатуры/геймпада.
+    int cancelled = 0;
+    while (CAL_CMD == 1) {
+        int k = usb_input_poll();
+        if (k == 41) {              // ESC — прервать калибровку
+            cancelled = 1;
+            CAL_CMD = 0;
+            break;
+        }
+        for (int j = 0; j < 1000; j++) udelay(100);   // ~100 мс
+    }
+
+    int calok = (int)CAL_OK;
+    // r117 debug: TFT_STAT=0x2E → CPU1 входил в калибровку, 0x2F → завершил
+    printf("cal: TFT_STAT=0x%X after cmd=%d cancel=%d ok=%d\n",
+           *(volatile uint32_t*)0x24u, (int)CAL_CMD, cancelled, calok);
+
+    fb_clear();
+    if (cancelled) {
+        fb_puts_s(60, 100, "Cancelled", 2, 0x00FFAA00);
+        fb_puts_s(60, 150, "Calibration not changed", 1, 0x00FFFFFF);
+    } else if (calok) {
+        fb_puts_s(60, 100, "OK", 2, 0x0000FF00);
+        fb_puts_s(60, 150, "Touch calibrated!", 2, 0x00FFAA00);
+    } else {
+        fb_puts_s(60, 100, "NOT OK", 2, 0x00FF4444);
+        fb_puts_s(60, 150, "Repeat calibration", 1, 0x00FFFFFF);
+    }
+    for (int i = 0; i < 5; i++) {
+        char buf[64];
+        snprintf(buf, 64, "pt%d rx=%d ry=%d", i + 1,
+                 (int)(int32_t)CAL_RX[i], (int)(int32_t)CAL_RY[i]);
+        fb_puts_s(60, 180 + i * 20, buf, 1, 0x00AAAAAA);
+    }
+    fb_puts_s(60, 300, "Press any key", 1, 0x00888888);
+    fb_flush();
+    input_wait();
+}
 
 static const char* key_name(uint8_t sc) {
     switch (sc) {
@@ -307,6 +372,7 @@ enum {
     SET_SEGA_PAD,
     SET_KEYBOARD_REMAP,
     SET_PART_INFO,
+    SET_TOUCH_CAL,
     SET_COUNT,
 };
 
@@ -318,6 +384,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Sega 6-button gamepad",
     "Keyboard remap (per system)",
     "ROM partition info",
+    "Touch Calibration (TFT)",
 };
 
 // Рисуем меню настроек с курсором
@@ -488,6 +555,9 @@ void settings_run(void) {
             case SET_KEYBOARD_REMAP:
                 remap_menu();
                 break;
+            case SET_TOUCH_CAL:
+                touch_cal_run();
+                break;
             case SET_PART_INFO:
                 goto partition_info;
             }
@@ -500,6 +570,7 @@ void settings_run(void) {
         else if (k == 34) { sel = SET_SEGA_PAD; }
         else if (k == 35) { sel = SET_KEYBOARD_REMAP; }
         else if (k == 38) { sel = SET_PART_INFO; }
+        else if (k == 39) { sel = SET_TOUCH_CAL; }
     }
 
 partition_info:

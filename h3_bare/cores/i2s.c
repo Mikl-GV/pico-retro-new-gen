@@ -7,10 +7,10 @@
 //     переносит кольцо → аппаратный TX-FIFO с РИТМОМ 48 кГц. Если кольцо
 //     пусто — пишет тишину (0), чтобы FIFO не проседал до нуля (нет шума).
 //
-// ТАЙМЕР: HSTMR тактируется от OSC24M (24 МГц). h3_hs_timer_lo_us()
-// = ~(CURNT_LO/100) → значение «20» на самом деле = 4.17*20 = 83 мкс.
-// Для 48 кГц нужна пара за 20.8 мкс = 5 единиц (4.17*5). ЭТО ПРОВЕРЕНО:
-// при 5 звук после починки паттерна был, при 20 — 12 кГц/искажения.
+// ТАЙМЕР: HSTMR тактируется от PLL (~96.8 МГц), h3_hs_timer_lo_us() даёт
+// настоящие микросекунды (делитель 97, см. h3_hs_timer.h r127).
+// Для 48 кГц нужна пара за 20.8 мкс → I2S_PACE_UNITS=21.
+// (До r127 единица была 0.248 мкс и PACE=21 давал ~190 кГц — звук ускорялся.)
 #include <stdint.h>
 #include "h3.h"
 #include "h3_ccu.h"
@@ -77,6 +77,7 @@ static void pll_audio_enable(void) {
 static int g_i2s_ready = 0;
 static int g_volume_pct = 20;
 static int g_muted = 1;
+static uint32_t g_i2s_next = 0;   // r124: момент следующей пары (для повторного init)
 
 void i2s_volume(int p) {
     if (p < 0) p = 0;
@@ -123,6 +124,7 @@ int i2s_init(void) {
              | I2S_CTRL_TX_EN | I2S_CTRL_SDO_EN0 | I2S_CTRL_GL_EN;
     udelay(1000);
 
+    g_i2s_next = 0;   // r124: сброс темпа при (повторном) init
     g_i2s_ready = 1;
     printf("I2S: ready (48000 Hz, vol=%d%%)\n", g_volume_pct);
     return 0;
@@ -133,7 +135,7 @@ int i2s_init(void) {
 static int16_t g_ring_l[AUDIO_RING_SIZE];
 static int16_t g_ring_r[AUDIO_RING_SIZE];
 static volatile uint32_t g_ring_wr = 0;
-static uint32_t g_ring_rd = 0;
+static volatile uint32_t g_ring_rd = 0;   // r124: volatile — читается в нескольких местах
 static inline uint32_t ring_count(void) { return (uint32_t)(g_ring_wr - g_ring_rd); }
 
 // Приём сэмпла: НЕБЛОКИРУЮЩИЙ. Громкость здесь.
@@ -156,7 +158,7 @@ void i2s_push_sample(int16_t left, int16_t right) {
     g_ring_wr++;
 }
 
-// Ритм: 21 единицы HS-таймера ≈ 20.8 мкс = 48000 Гц
+// Ритм: 21 мкс на пару ≈ 20.8 мкс = 48000 Гц
 // (таймер 24 МГц, lo_us() даёт настоящие микросекунды: 48кГц → пара за 20.8 мкс).
 #define I2S_PACE_UNITS 21
 
@@ -164,11 +166,10 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // Если кольцо пусто — доливаем тишину (FIFO не уходит в ноль).
 void i2s_flush_max(int max_pairs) {
     if (!g_i2s_ready) return;
-    static uint32_t s_next = 0;
     int n = 0;
     while (n < max_pairs) {
-        if (s_next) { while ((int32_t)(h3_hs_timer_lo_us() - s_next) < 0); }
-        s_next = h3_hs_timer_lo_us() + I2S_PACE_UNITS;
+        if (g_i2s_next) { while ((int32_t)(h3_hs_timer_lo_us() - g_i2s_next) < 0); }
+        g_i2s_next = h3_hs_timer_lo_us() + I2S_PACE_UNITS;
 
         if (ring_count() > 0) {
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);

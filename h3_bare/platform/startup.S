@@ -285,6 +285,12 @@ cpu1_entry:
     mov r2, #0x24
     mov r3, #1
     str r3, [r2]
+    /* VBAR = таблица векторов core0 (0x40000000). Иначе исключение на CPU1
+     * уходит в SRAM-трамплин (0x0) тихо, без следов — P:/D: в UART не увидим. */
+    ldr r0, =_vectors
+    mcr p15, 0, r0, c12, c0, 0
+    dsb
+    isb
     /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
      * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
      * если core0 в этот момент допечатывает свою строку. */
@@ -300,6 +306,34 @@ cpu1_entry:
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
     msr cpsr, r0
     ldr sp, =0x5FE01000     /* стек CPU1: 4 МБ ниже верхнего банка */
+    /* Стеки исключений CPU1. Обязательно: обработчики _undef/_prefetch/
+     * _dataabort (UART-лог P:/D:) используют банковские SP режимов, иначе
+     * сам обработчик упадёт. Адреса — ниже SVC-стека CPU1 (0x5FE01000),
+     * не пересекаются с банками core0 (0x5FF0x000) и с EMU_FB. */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xDF       /* FIQ (0x11), I|F=1 */
+    msr cpsr, r0
+    ldr sp, =0x5FE00000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD2       /* IRQ (0x12) */
+    msr cpsr, r0
+    ldr sp, =0x5FDFF000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD7       /* ABT (0x17) */
+    msr cpsr, r0
+    ldr sp, =0x5FDFE000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xDB       /* UND (0x1B) */
+    msr cpsr, r0
+    ldr sp, =0x5FDFD000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD3       /* обратно в SVC */
+    msr cpsr, r0
     /* VFP/NEON для CPU1: ядро выходит из сброса с CPACR=0 и FPEXC.EN=0.
      * С -O2 -mfpu=neon tft_core_main начинается с vpush {d8-d9} — без
      * этого разрешения первая же инструкция даёт UNDEF, а VBAR CPU1 ещё

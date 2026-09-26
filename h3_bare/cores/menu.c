@@ -332,21 +332,50 @@ static void pad_cursor_draw(void) {
 
 static int input_wait(void) {
     uint32_t fc = 0;
+    // r80: печать тача делает core0 (CPU1 printf НЕ зовёт — драка за UART).
+    extern volatile uint32_t g_ts_seq;
+    extern volatile uint16_t g_ts_rx, g_ts_ry;
+    extern volatile uint8_t  g_ts_pressed;
+    extern volatile uint32_t g_ts_dbg_flag;
+    extern volatile uint32_t g_ts_dbg_data[8];
+    extern int printf(const char*, ...);
+    uint32_t last_ts_seq = 0;
+    int dbg_printed = 0;
     for (;;) {
         int k = usb_input_poll();
-        // Запрос с TFT (Settings / About от тача) — сразу обслужить
-        extern volatile int32_t g_tft_request;
-        if (g_tft_request) {
-            int r = g_tft_request;
-            g_tft_request = 0;
-            return r;
+        // r80: по изменению g_ts_seq (CPU1 пишет) выводим тач-данные.
+        if (g_ts_seq != last_ts_seq) {
+            last_ts_seq = g_ts_seq;
+            printf("TCH: rx=%u ry=%u rx4=%u ry4=%u%s\n",
+                   (unsigned)g_ts_rx, (unsigned)g_ts_ry,
+                   (unsigned)(g_ts_rx >> 4), (unsigned)(g_ts_ry >> 4),
+                   g_ts_pressed ? "" : " (up)");
+        }
+        // Запрос с TFT (Settings / About от тача) — SRAM-почта 0x64 (см. tft_drv.c).
+        // .coherent между ядрами не работает, поэтому читаем из некэшируемой SRAM.
+        // Только валидные коды: мусор из ненициализированной SRAM игнорируем.
+        if (*(volatile int32_t*)0x64u) {
+            int r = *(volatile int32_t*)0x64u;
+            *(volatile int32_t*)0x64u = 0;
+            if (r == -2) { printf("BTN: -2 Settings\n", r); return r; }
+            if (r == -4) { printf("BTN: -4 About\n", r);    // About — показываем на TFT
+                extern void tft_help_show(const char* sys_id);
+                tft_help_show("about");
+                continue;
+            }
+            // прочий мусор из SRAM молча игнорируем (r123: после обнуления 0x64
+            // на core0 при старте его быть не должно)
+        }
+        if (!dbg_printed && g_ts_dbg_flag == 0x5353) {
+            dbg_printed = 1;
+            printf("TSDBG: nz=%u first=%u\n",
+                   (unsigned)g_ts_dbg_data[0], (unsigned)g_ts_dbg_data[1]);
         }
         usb_pad_poll();
         pad_cursor_draw();
         if (k) return k;
-        // мигаем LED, пока ждём ввод (видно, что не зависли)
-        extern void led_set(int);
-        if ((++fc & 0x1FFFF) == 0) led_set(fc & 0x20000);
+        // r55: led_set/мигание PA15 убрано — PA15 теперь мигает с ЯДРА 1,
+        // чтобы core0 не писал в PA_DAT (гонка с PA21/CS тача).
     }
 }
 
@@ -395,11 +424,18 @@ int menu_run(void) {
             }
         } else if (k == 58 || k == 59) {   // F1 / F2 — быстрые переключатели меню
             // F2: 50/60 Hz (емкость TFT-эхо обновит), F1: A2600 diff.
+            // r121: дублируем значения в SRAM-почту (0x70/0x74) — CPU1 рисует
+            // динамические строки TFT по ним, иначе видит stale из кэша core0.
             extern uint8_t  a2600_diff_expert;
             extern uint16_t emu_period_us;
             extern void tft_help_show(const char* sys_id);
-            if (k == 58) a2600_diff_expert = !a2600_diff_expert;              // Novice/Expert
-            else         emu_period_us = (emu_period_us == 20000) ? 16667 : 20000; // 50/60 Hz
+            if (k == 58) {
+                a2600_diff_expert = !a2600_diff_expert;
+                *(volatile int32_t*)0x70u = a2600_diff_expert;
+            } else {
+                emu_period_us = (emu_period_us == 20000) ? 16667 : 20000;
+                *(volatile int32_t*)0x74u = emu_period_us;
+            }
             tft_help_show(NULL);   // эпоха++ → TFT перерисует меню с новыми значениями
             continue;
         } else if (k == 40) {

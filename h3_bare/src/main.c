@@ -79,7 +79,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r43 (final-ccr)\n");
+    uart_puts("build: TFT self-test r129 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -134,6 +134,12 @@ void main(void) {
     else uart_puts("sega_pad: PCF8574 not found\n");
 
     // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
+    // r124: когерентность .coherent включаем ЯВНО, не полагаясь на USB —
+    // mmu_mark_uncached() звался только из usb_ohci_init(), а если USB не
+    // инициализирован (нет клавиатуры), межъядерная связь через .coherent
+    // не работала. SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
+    extern void mmu_mark_uncached(uint32_t addr);
+    mmu_mark_uncached((uint32_t)0x43800000u);   // libh3_coherent_region (1 МБ)
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
     if (h3_cpu_start(1, cpu1_entry) == 1)
@@ -142,6 +148,9 @@ void main(void) {
         uart_puts("smp: CPU1 FAILED to start\n");
 
 // Меню на HDMI — обычная работа core0; справка на TFT.
+    // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может
+    // содержать мусор, пока CPU1 ещё не стартовал — чистим заранее.
+    *(volatile int32_t*)0x64u = 0;
     for (;;) {
         tft_help_show(NULL);
         int sel = menu_run();

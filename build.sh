@@ -54,6 +54,8 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/sega_pad.o" "$TOP/h3_bare/cores/sega_pad.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/remap.o" "$TOP/h3_bare/cores/remap.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/fb_text.o" "$TOP/h3_bare/cores/fb_text.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/led.o" "$TOP/h3_bare/cores/led.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/i2s.o" "$TOP/h3_bare/cores/i2s.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/tft_drv.o" "$TOP/h3_bare/cores/tft_drv.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/emu.o" "$TOP/h3_bare/cores/emu.c"
 
 # --- MCUME (Atari 2600) ---
@@ -246,6 +248,7 @@ $CC $CFLAGS $INCLUDES -c -o "$BUILD/udelay.o" "$TOP/h3_bare/platform/udelay.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_hs_timer.o" "$TOP/h3_bare/platform/h3_hs_timer.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_ccu.o" "$TOP/h3_bare/platform/h3_ccu.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3.o" "$TOP/h3_bare/platform/h3.c"
+$CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_smp.o" "$TOP/h3_bare/platform/h3_smp.c"
 
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_de2.o" "$TOP/h3_bare/platform/fb/h3_de2.c"
 $CC $CFLAGS $INCLUDES -c -o "$BUILD/h3_hdmi.o" "$TOP/h3_bare/platform/fb/h3_hdmi.c"
@@ -326,8 +329,9 @@ $CXX -T "$TOP/h3_bare/platform/linker.ld" -nostdlib -Wl,-gc-sections \
     "$BUILD/gc_Blip_Buffer.o" "$BUILD/gc_Effects_Buffer.o" "$BUILD/gc_Multi_Buffer.o" "$BUILD/gc_Sms_Apu.o" "$BUILD/gc_miniz.o" \
     "$BUILD/sd.o" "$BUILD/fat.o" \
     "$BUILD/usb_ohci.o" "$BUILD/usb_kbd.o" "$BUILD/sega_pad.o" "$BUILD/remap.o" "$BUILD/fb_text.o" "$BUILD/led.o" \
+    "$BUILD/i2s.o" "$BUILD/tft_drv.o" \
     "$BUILD/uart.o" "$BUILD/printf.o" "$BUILD/libc_min.o" "$BUILD/main.o" "$BUILD/cxx_runtime.o" \
-    "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" \
+    "$BUILD/udelay.o" "$BUILD/h3_hs_timer.o" "$BUILD/h3_ccu.o" "$BUILD/h3.o" "$BUILD/h3_smp.o" \
     "$BUILD/h3_de2.o" "$BUILD/h3_hdmi.o" "$BUILD/dw_hdmi.o" "$BUILD/h3_lcd.o" \
     -lstdc++ -lgcc -lc -lm -lgcc
 

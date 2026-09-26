@@ -1,7 +1,7 @@
 // tft_drv.c — TFT-ядро DFR0428 (ILI9486, 480×320 RGB565)
 // через 74HC4094×2 + 74HC4040 → параллельная шина D0–D15.
 // SPI0 H3 (PC0=MOSI, PC1=MISO, PC2=SCLK, PC3=CS дисплея, PC7=DC),
-// PA21=CS тача XPT2046, PA2=RST. CPU1, MMU off.
+// PA21=CS тача **TSC2046I** (аналог XPT2046), PA2=RST. CPU1, MMU off.
 //
 // Ключевые находки по ходу отладки (r1..r28):
 //   1) SPI_RXD на 0x300, а не 0x204 — иначе MISO читается как 0.
@@ -13,7 +13,7 @@
 //      Команда ILI9486 (RS=0) читается с D0–D7 → вторым байтом.
 //      Пиксель на шине: [старший байт, младший] (hi первым).
 //      Mode 0 (CPOL=0, CPHA=0).
-//   4) Тач = XPT2046 на PA21, MISO на PC1.
+//   4) Тач = TSC2046I на PA21, MISO на PC1, протокол XPT2046 Mode 1.
 
 #include <stdint.h>
 #include <string.h>
@@ -150,6 +150,7 @@ static const uint8_t tft_font[96][8] = {
 
 #define PA_BASE  0x01C20800u
 #define PA_CFG0  (*(volatile uint32_t*)(PA_BASE + 0x00u))
+#define PA_PULL0 (*(volatile uint32_t*)(PA_BASE + 0x1Cu))
 #define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
 #define PA_CFG2  (*(volatile uint32_t*)(PA_BASE + 0x08u))
 #define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
@@ -162,12 +163,41 @@ static const uint8_t tft_font[96][8] = {
 #define PIN_CS2 21  // PA21 — CS тача XPT2046 (CE1)
 #define PIN_DC  7   // PC7
 #define PIN_RST 2   // PA2
+#define PIN_PEN 1   // PA1 — PENIRQ TSC2046: 0 = касание (активный низкий)
+
+// MADCTL=0xE0 → панель работает в BGR: красный и синий каналы поменяны местами.
+// RGB565: R=биты[15:11], G=[10:5], B=[4:0]. Меняем R↔B, зелёный не трогаем.
+// Белый (0xFFFF), чёрный и серые (R==B) не изменятся; красный↔синий — да.
+static inline uint16_t tft_swap_rb(uint16_t c) {
+    return (uint16_t)(((c & 0x001Fu) << 11) | (c & 0x07E0u) | ((c >> 11) & 0x001Fu));
+}
+
+// ВНИМАНИЕ (гонка PA_DAT): мы (CPU1) пишем PA_DAT для тача/RST; с CPU0 туда же
+// пишет sega_pad.c (бит-банг I2C на PA11/PA12). RMW-гонка редкая и не критична
+// (тач второстепенен). Полное решение — аппаратный TWI0 для геймпада (TODO в
+// sega_pad.c). LED-моргалка «проц жив» переведена на CPU1 сознательно (led.c).
 
 // SRAM A1 почта (вне кэшей, MMU-disabled на CPU1)
 #define TFT_STAT  (*(volatile uint32_t*)0x24u)  // st=1..3,9,0x11..0x16 — статус CPU1
 #define TFT_PROBE  (*(volatile uint32_t*)0x28u) // PA21 X
 #define TFT_PROBE2 (*(volatile uint32_t*)0x2Cu) // PA21 Y
 #define TFT_PROBE3 (*(volatile uint32_t*)0x30u) // PC3 контроль
+// r118: команды/результат калибровки через SRAM-почту. .coherent между
+// ядрами на этой плате не работает (mmu_mark_uncached не зовётся, если
+// USB не инициализировался) — SRAM A1 не кэшируется ни одним ядром.
+#define TFT_CMD    (*(volatile uint32_t*)0x34u) // core0→CPU1: 1 = калибровка
+#define TFT_CALOK  (*(volatile uint32_t*)0x38u) // CPU1→core0: 1 = OK
+#define TFT_CALRX  ((volatile uint32_t*)0x3Cu)  // CPU1→core0: rx4[5]
+#define TFT_CALRY  ((volatile uint32_t*)0x50u)  // CPU1→core0: ry4[5]
+// r120: кнопки/справка — тоже через SRAM (не .coherent): калибровка заняла
+// 0x34-0x5F, берём следующие адреса.
+#define TFT_BTN      (*(volatile int32_t*)0x64u) // CPU1→core0: -2 Settings, -4 About
+#define TFT_HELP_ID  (*(volatile int32_t*)0x68u) // core0→CPU1: страница справки
+#define TFT_HELP_EPOCH (*(volatile int32_t*)0x6Cu)// core0→CPU1: эпоха (перерисовать)
+// r121: значения переключателей F1/F2 — пишет core0, читает CPU1 (иначе
+// CPU1 видит stale-значения из кэша core0 и на TFT всегда старые строки).
+#define TFT_DIFF     (*(volatile int32_t*)0x70u) // A2600 diff: 1=Expert
+#define TFT_PERIOD   (*(volatile int32_t*)0x74u) // период кадра мкс (16667=60Гц)
 
 #define FB_W  1024
 #define FB_H  600
@@ -181,18 +211,37 @@ static int g_tft_ready = 0;
 // Флаг «HDMI-кадр готов»: пока не используется (зеркало отложено).
 volatile uint32_t g_tft_frame_ready __attribute__((section(".coherent"), aligned(4)));
 
-// Индекс справки для TFT: 0 = меню, 1..N = страница эмулятора
-// (см. tft_help_list). Пишет core0 (tft_help_show), читает CPU1.
-volatile int32_t g_tft_help_id __attribute__((section(".coherent"), aligned(4)));
+// r124: g_tft_help_id/g_tft_help_epoch/g_tft_request УДАЛЕНЫ — межъядерная
+// связь полностью переведена на SRAM-почту (TFT_HELP_ID/EPOCH, TFT_BTN).
+// Ранее лежали здесь в .coherent, но mmu_mark_uncached звался только из
+// usb_ohci_init() и без USB секция оставалась write-back — записи core0
+// не были видны CPU1. SRAM A1 (0x34..0x74) не кэшируется ни одним ядром.
 
-// Эпоха справки: растёт при каждом tft_help_show. Нужна, чтобы CPU1
-// перерисовал текущую страницу, даже если id не изменился (меню:
-// F1/F2 меняют значения, а id остаётся 0).
-volatile int32_t g_tft_help_epoch __attribute__((section(".coherent"), aligned(4)));
+// --- Буфер тача: CPU1 пишет, core0 печатает (драки за UART нет) ---
+volatile uint16_t g_ts_rx __attribute__((section(".coherent"), aligned(4)));   // сырой X (0x90)
+volatile uint16_t g_ts_ry __attribute__((section(".coherent"), aligned(4)));   // сырой Y (0xD0)
+volatile int16_t  g_ts_px __attribute__((section(".coherent"), aligned(4)));   // масштабированный x
+volatile int16_t  g_ts_py __attribute__((section(".coherent"), aligned(4)));   // масштабированный y
+volatile uint32_t g_ts_seq __attribute__((section(".coherent"), aligned(4)));  // растёт на каждом событии
+volatile uint8_t  g_ts_pressed __attribute__((section(".coherent"), aligned(4))); // 1 = сейчас нажат
+volatile uint32_t g_ts_dbg_flag __attribute__((section(".coherent"), aligned(4)));
+volatile uint32_t g_ts_dbg_data[8] __attribute__((section(".coherent"), aligned(4)));
 
-// Нажатие по иконке на TFT (Settings=-2, About=-4). Пишет CPU1, сбрасывает
-// core0 (menu/input_wait). Живёт в .coherent — виден между ядрами сразу.
-volatile int32_t g_tft_request __attribute__((section(".coherent"), aligned(4)));
+// r115: применяемые границы (сканер использует их). Значения НЕ
+// инициализировать в объявлении: .coherent не копируется из .data,
+// статики остаются нулями → деление на 0 даёт pos=0/319. Дефолты
+// выставляются в tft_core_main при старте; калибровка обновляет.
+volatile int32_t g_cal_rx[5] __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_cal_ry[5] __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_cal_ok   __attribute__((section(".coherent"), aligned(4))); // 1=OK, 0=NOT OK
+volatile int32_t g_cal_xmin __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_cal_xmax __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_cal_ymin __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_cal_ymax __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_touch_xmin __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_touch_xmax __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_touch_ymin __attribute__((section(".coherent"), aligned(4)));
+volatile int32_t g_touch_ymax __attribute__((section(".coherent"), aligned(4)));
 
 static void cs_low(void)  {
     PC_DAT &= ~(1u << PIN_CS);
@@ -201,6 +250,12 @@ static void cs_low(void)  {
 static void cs_high(void) {
     PC_DAT |=  (1u << PIN_CS);
     PA_DAT |=  (1u << PIN_CS2);
+}
+// r126: подъём ТОЛЬКО CS дисплея (PC3) — не дёргает PA21 (тач).
+// Используется в xfer*/tft_flush* вместо cs_high(); спайки на CS тача
+// исключены (см. P5: cs_low/cs_high трогали оба CS).
+static void cs_disp_high(void) {
+    PC_DAT |=  (1u << PIN_CS);
 }
 static void dc_cmd(void)  { PC_DAT &= ~(1u << PIN_DC); }
 static void dc_data(void) { PC_DAT |=  (1u << PIN_DC); }
@@ -230,14 +285,26 @@ static int spi0_tx8(uint8_t b) {
     return 0;
 }
 
-static int spi0_txrx8(uint8_t tx, uint8_t* rx) {
+// Тот же сброс TX/RX FIFO, что и в spi0_tx8(): TF_CNT монотонен, без
+// SPI0_FCR после каждого байта тач-скан упрётся в 64 и «зависнет» навсегда.
+// Тут ещё и читаем принятый байт ДО сброса (RX FIFO дёргает MISO XPT2046).
+// r59: данные появляются в RX FIFO с задержкой относительно XCH — ждём
+// RF_CNT>0 (иначе читаем пустоту и теряем байт), эталон — sun6i-драйвер.
+static int spi0_txrx8(uint8_t tx, uint8_t* rx, uint32_t* rf_out) {
+    uint32_t rf_cnt = 0;
     if (!wait_tx_room()) return -1;
     SPI0_TXD8 = tx;
     SPI0_MBC = 1;
     SPI0_BCC = 1;
     SPI0_TCR |= SPI0_TCR_XCH;
     if (!wait_done()) return -1;
-    if (rx) *rx = SPI0_RXD8;
+    for (int t = 0; t < 2000; t++) {
+        rf_cnt = SPI0_FSR & 0xFF;
+        if (rf_cnt) break;
+    }
+    if (rx) *rx = rf_cnt ? SPI0_RXD8 : 0;
+    if (rf_out) *rf_out = rf_cnt;
+    SPI0_FCR = (1u << 31) | (1u << 15);
     return 0;
 }
 
@@ -250,15 +317,23 @@ static void cs_select(int sel) {
 
 static uint16_t tft_touch_probe_cs(int sel, uint8_t cmd) {
     uint16_t v = 0;
+    // r89: TSC2046 читается в SPI Mode 1 (CPHA=1, SDM=1); дисплей Mode 0,
+    // поэтому TCR переключаем на время чтения тача и возвращаем.
+    uint32_t tcr_save = SPI0_TCR;
+    SPI0_TCR = (SPI0_TCR & ~((1u << 1) | (1u << 0))) | (1u << 0) | (1u << 13);
+    __asm volatile("dsb" ::: "memory");
     for (int pass = 0; pass < 2; pass++) {
         uint8_t d0, d1, d2;
         cs_select(sel);
-        if (spi0_txrx8(cmd, &d0) < 0 ||
-            spi0_txrx8(0x00, &d1) < 0 ||
-            spi0_txrx8(0x00, &d2) < 0) { cs_high(); return 0xFFFF; }
-        cs_high();
+        __asm volatile("dsb" ::: "memory");   // CS зажат — барьер ДО SPI
+        if (spi0_txrx8(cmd, &d0, NULL) < 0 ||
+            spi0_txrx8(0x00, &d1, NULL) < 0 ||
+            spi0_txrx8(0x00, &d2, NULL) < 0) { PA_DAT |= (1u << PIN_CS2); SPI0_TCR = tcr_save; return 0xFFFF; }
+        PA_DAT |= (1u << PIN_CS2);   // поднимаем ТОЛЬКО PA21 (cs_high после P5 не трогает тач)
         v = (uint16_t)((d1 << 8) | d2);
     }
+    SPI0_TCR = tcr_save;
+    __asm volatile("dsb" ::: "memory");
     return v;
 }
 
@@ -270,20 +345,20 @@ static uint16_t tft_touch_probe_cs(int sel, uint8_t cmd) {
 // Подъём CS = лэтч в 4094 + WR.
 
 static int xfer_cmd(uint8_t cmd) {
-    cs_low();
+    cs_select(0);
     dc_cmd();
     int r = spi0_tx8(0x00);
     if (r == 0) r = spi0_tx8(cmd);
     dc_data();
-    cs_high();
+    cs_disp_high();
     return r < 0 ? r : 0;
 }
 
 static int xfer_data(uint8_t d) {
-    cs_low();
+    cs_select(0);
     int r = spi0_tx8(0x00);
     if (r == 0) r = spi0_tx8(d);
-    cs_high();
+    cs_disp_high();
     return r < 0 ? r : 0;
 }
 
@@ -301,6 +376,12 @@ static void spi0_init(void) {
     udelay(1000);
 
     PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
+    // r103: PA1 = PENIRQ тача. Вход + внутренняя ПОДТЯЖКА проца:
+    // на рабочем таче внешней подтяжки нет, без неё PA1 плавает и
+    // детект по значению сыпет мусор 0/2048/4095 без нажатия.
+    PA_CFG0 &= ~(0xFu << 4);              // PA1 = input
+    PA_PULL0 &= ~(0x3u << 2);             // биты [3:2] для PA1
+    PA_PULL0 |=  (0x1u << 2);             // 01 = pull-up
     // Максимальная сила драйвера (8 мА) на MOSI/SCLK/CS — быстрое нарастание
     // фронтов; слабый драйвер по умолчанию режет 8+ МГц на ёмкости шлейфа.
     PC_DRV0 |= (3u << 0) | (3u << 2) | (3u << 4) | (3u << 6);   /* PC0..PC3 */
@@ -414,19 +495,19 @@ void tft_render_begin(void) { memset(tft_fb, 0, TFT_W * TFT_H * 2); }
 void tft_flush(void) {
     if (!g_tft_ready) return;
     if (set_window() < 0) return;
-    cs_low();
+    cs_select(0);
     dc_cmd();
-    if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
+    if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_disp_high(); return; }
     dc_data();
     for (int ty = 0; ty < TFT_H; ty++) {
         const uint16_t* row = tft_fb + (uint32_t)ty * TFT_W;
         for (int tx = 0; tx < TFT_W; tx++) {
             uint16_t p = row[tx];
-            cs_low();
+            cs_select(0);
             if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
-                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); goto bye; }
+                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_disp_high(); goto bye; }
             __asm volatile("nop; nop; nop; nop; nop"); /* ~50ns на стабильность шины */
-            cs_high();
+            cs_disp_high();
         }
     }
 bye:
@@ -452,19 +533,19 @@ void tft_flush_rect(int x, int y, int w, int h) {
     xfer_data((uint8_t)(y >> 8)); xfer_data((uint8_t)(y & 0xFF));
     xfer_data((uint8_t)((y + h - 1) >> 8)); xfer_data((uint8_t)((y + h - 1) & 0xFF));
 
-    cs_low();
+    cs_select(0);
     dc_cmd();
-    if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_high(); return; }
+    if (spi0_tx8(0x00) < 0 || spi0_tx8(CMD_RAMWR) < 0) { cs_disp_high(); return; }
     dc_data();
     for (int yy = y; yy < y + h; yy++) {
         const uint16_t* row = tft_fb + (uint32_t)yy * TFT_W + x;
         for (int xx = 0; xx < w; xx++) {
             uint16_t p = row[xx];
-            cs_low();
+            cs_select(0);
             if (spi0_tx8((uint8_t)(p >> 8)) < 0 ||
-                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_high(); return; }
+                spi0_tx8((uint8_t)(p & 0xFF)) < 0) { cs_disp_high(); return; }
             __asm volatile("nop; nop; nop; nop; nop");
-            cs_high();
+            cs_disp_high();
         }
     }
 }
@@ -474,6 +555,7 @@ void tft_fill_rect(int x, int y, int w, int h, uint16_t color) {
     if (x >= TFT_W || y >= TFT_H) return;
     if (x + w > TFT_W) w = TFT_W - x;
     if (y + h > TFT_H) h = TFT_H - y;
+    color = tft_swap_rb(color);   // MADCTL=0xE0: BGR → RGB
     for (int yy = y; yy < y + h; yy++) {
         uint16_t* row = tft_fb + (uint32_t)yy * TFT_W;
         for (int xx = x; xx < x + w; xx++) row[xx] = color;
@@ -481,6 +563,7 @@ void tft_fill_rect(int x, int y, int w, int h, uint16_t color) {
 }
 
 void tft_puts(int x, int y, const char* s, uint16_t color) {
+    color = tft_swap_rb(color);   // MADCTL=0xE0: BGR → RGB
     while (*s) {
         char ch = *s++;
         if (ch < 0x20 || ch > 0x7F) { x += 8; continue; }
@@ -500,6 +583,7 @@ void tft_puts(int x, int y, const char* s, uint16_t color) {
 
 // Текст с масштабом 2x (заголовки). Аккуратно: каждый глиф рисуется 16x16.
 static void tft_puts2(int x, int y, const char* s, uint16_t color) {
+    color = tft_swap_rb(color);   // MADCTL=0xE0: BGR → RGB
     while (*s) {
         char ch = *s++;
         if (ch < 0x20 || ch > 0x7F) { x += 16; continue; }
@@ -602,18 +686,24 @@ static const struct {
       "Atari Portfolio",
       {"Full keyboard emulation","INS = on-screen kbd","ESC hold = exit to menu","",NULL}
     },
+    // r122: About по тап-иконке на TFT (не трогает HDMI)
+    { "about",
+      "MultiTool Retro",
+      {"Allwinner H3 4x Cortex-A7","bare-metal multiboot","SPI TFT 480x320 (ILI9486)","touch TSC2046I","ESC - back to menu","",NULL}
+    },
 };
 #define TFT_HELP_COUNT (sizeof(g_help_list)/sizeof(g_help_list[0]))
 
 // Ставит справку для системы sys_id (NULL = меню). Вызывается с core0.
+// r120: пишем в SRAM-почту (не .coherent) — между ядрами видно сразу.
 void tft_help_show(const char* sys_id) {
-    if (!sys_id) { g_tft_help_id = 0; g_tft_help_epoch++; return; }   // меню
+    if (!sys_id) { TFT_HELP_ID = 0; TFT_HELP_EPOCH++; return; }   // меню
     int id = 0;
     for (int i = 1; i < (int)TFT_HELP_COUNT; i++) {
         if (g_help_list[i].id && strcmp(g_help_list[i].id, sys_id) == 0) { id = i; break; }
     }
-    g_tft_help_id = id;
-    g_tft_help_epoch++;
+    TFT_HELP_ID = id;
+    TFT_HELP_EPOCH++;
 }
 
 // Сборка строки вручную (нет snprintf в bare-metal): число 0..999 + текст.
@@ -630,11 +720,11 @@ static void tft_strcat(char** pp, const char* s) {
 
 // Рендер справки по индексу id в tft_fb (выполняется на CPU1).
 // Верстка: слева столбиком подсказки по кнопкам, справа — колонка иконок
-// Settings/About (тап по ним = меню-пункты, код в g_tft_request).
+// Settings/About (тап по ним = меню-пункты, код в SRAM TFT_BTN).
 #define ICON_X  384
 #define ICON_W  (TFT_W - ICON_X - 4)   // ~92px
 #define ICON_H  34
-static void tft_help_render(int id) {
+static void tft_help_render(int id, int full) {
     if (id < 0 || id >= (int)TFT_HELP_COUNT) id = 0;
     const char* title = g_help_list[id].title;
     const char* const* lines = g_help_list[id].lines;
@@ -642,12 +732,13 @@ static void tft_help_render(int id) {
     tft_render_begin();
     tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);
 
-    // Заголовок — крупный, красный
+    // Заголовок — крупный, красный (шрифт 2x: глиф 16px, от y=2 до y≈18)
     tft_puts2(4, 2, title, 0xF800);
-    tft_fill_rect(0, 22, TFT_W, 2, 0xFFFF);
+    // Разделитель НИЖЕ заголовка (y=24), не пересекается с ним
+    tft_fill_rect(0, 24, TFT_W, 2, 0xFFFF);
 
-    // Строки справки — столбиком в левой зоне
-    int y = 20;
+    // Строки справки — столбиком, НАЧИНАЯ ПОСЛЕ разделителя (y=30)
+    int y = 30;
     for (int i = 0; lines[i] && i < 12; i++) {
         tft_puts(4, y, lines[i], 0xFFFF);
         y += 14;
@@ -655,20 +746,23 @@ static void tft_help_render(int id) {
 
     // Динамические строки F1/F2 (страница меню, id=0): показывают текущие
     // значения переключателей (см. menu.c: F1/F2 меняют их прямо из меню).
+    // r121: значения читаем из SRAM-почты — core0 пишет туда при F1/F2,
+    // иначе CPU1 видит stale-значения из кэша core0.
+    // Сдвинуты вниз (y=124/138), чтобы не пересекаться со строками списка.
     if (id == 0) {
-        extern uint8_t  a2600_diff_expert;
-        extern uint16_t emu_period_us;
+        int diff = TFT_DIFF, period = TFT_PERIOD;
+        tft_fill_rect(0, 116, TFT_W, 44, 0x0000);   // затирка зоны строк
         char dynbuf[64];
         char* p = dynbuf;
 
         tft_strcat(&p, "F1: A2600 diff: ");
-        tft_strcat(&p, a2600_diff_expert ? "Expert" : "Novice");
+        tft_strcat(&p, diff ? "Expert" : "Novice");
         *p = 0;
-        tft_puts(4, 90, dynbuf, 0xFFFF);
+        tft_puts(4, 124, dynbuf, 0xFFFF);
 
         p = dynbuf;
         tft_strcat(&p, "F2: 50/60 Hz: ");
-        switch (emu_period_us) {
+        switch (period) {
             case 16667: tft_strcat(&p, "60"); break;
             case 20000: tft_strcat(&p, "50"); break;
             case 22222: tft_strcat(&p, "45"); break;
@@ -677,7 +771,7 @@ static void tft_help_render(int id) {
         }
         tft_strcat(&p, " Hz");
         *p = 0;
-        tft_puts(4, 104, dynbuf, 0xFFFF);
+        tft_puts(4, 138, dynbuf, 0xFFFF);
     }
 
     // Иконки справа (Settings / About)
@@ -700,35 +794,177 @@ static void tft_help_render(int id) {
 tft_puts(4, TFT_H - 12, "ESC hold = exit emulator", 0x7BEF);
 
     // Эхо в UART: что рисуем на TFT + сырые значения тача (отладка)
-    printf("TXT: title=\"%s\"\n", title);
-    for (int i = 0; lines[i] && i < 12; i++) printf("TXT: %s\n", lines[i]);
+    // r113: TXT-эхо убрано — калибровка рисует результат на экран,
+    // печатает CAL-строки; TXT спамили UART при каждой перерисовке меню.
+    (void)title; (void)lines;
 
-    tft_flush();
+    // r121: полный флаш только при смене страницы; refresh (F1/F2) отправляем
+    // только зону динамических строк (y 116..159) — быстрее и без мельканий.
+    if (full || id != 0) tft_flush();
+    else                 tft_flush_rect(0, 116, TFT_W, 44);
 }
 
-// ---- Сканирование тача XPT2046 (CPU1) ----
+// ---- Сканирование тача TSC2046I (CPU1) — протокол XPT2046 ----
 // Калибровка грубая (waveshare35a-overlay: xmin=200,xmax=3900, swapxy=1).
-// 0 = отпущен, 1 = нажат; координаты 0..TFT_W/H.
-static int tft_touch_scan(int* px, int* py) {
+// Маппинг под ориентацию 0xE0: скан X-канала (0x90) идёт в ВЕРТИКАЛЬ (sy),
+// скан Y-канала (0xD0) — в ГОРИЗОНТАЛЬ (sx). Если координаты зеркально
+// неверны — менять знаки/места по отладочным raw (печатаются в UART).
+// 0 = отпущен, 1 = нажат; координаты 0..TFT_W/H; raw отдаются для калибровки.
+static int tft_touch_scan(int* px, int* py, uint16_t* rawx, uint16_t* rawy, uint16_t* rawz) {
+    // r105: детект касания по Z1-каналу (0xB0, давление) — как в заводском
+    // драйвере xpt2046. X/Y в отпущенном таче плавают (0/2048/4095) и не
+    // дают надёжного порога, а Z1 при нажатии уходит из крайних значений.
+    // Читаем X, Y и Z1; нажатие: Z1 в среднем диапазоне (не 0 и не 4095).
+    // r129: watchdog — если SPI-шина залипла, скан не должен вешать CPU1
+    // навсегда (симптом: PA15 замолчала, дисплей замер). После 100 мс
+    // сбрасываем FIFO/TCR и выходим, главный цикл продолжит работу.
+    uint32_t t0 = h3_hs_timer_lo_us();
     uint32_t save = SPI0_CCR;
-    SPI0_CCR = (4u << 8);            // 1,5 МГц — в норме для XPT2046
-    uint16_t rx = tft_touch_probe_cs(1, 0x90);  // X
-    uint16_t ry = tft_touch_probe_cs(1, 0xD0);  // Y
+    SPI0_CCR = (6u << 8);            // 1,5 МГц (96/2^6)
+    uint16_t rx = tft_touch_probe_cs(1, 0x90);  // X-канал
+    if (h3_hs_timer_lo_us() - t0 > 100000) goto ts_wd;
+    uint16_t ry = tft_touch_probe_cs(1, 0xD0);  // Y-канал
+    if (h3_hs_timer_lo_us() - t0 > 100000) goto ts_wd;
+    uint16_t rz = tft_touch_probe_cs(1, 0xB0);  // Z1-канал (давление)
+    if (h3_hs_timer_lo_us() - t0 > 100000) goto ts_wd;
     SPI0_CCR = save;
-    if (rx < 150 && ry < 150) return 0;
-    int sx = ((int)ry - 200) * TFT_W / 3700;
-    int sy = ((int)rx - 200) * TFT_H / 3700;
+    if (rawx) *rawx = rx;
+    if (rawy) *rawy = ry;
+    if (rawz) *rawz = rz;
+int rx4 = (int)(rx >> 4), ry4 = (int)(ry >> 4), rz4 = (int)(rz >> 4);
+    // r110: калибровка по факту (тапны 1-4-C):
+    //   rx4 2401(лево)..3920(право) — горизонталь  sx
+    //   ry4 3664(верх)..2496(низ)    — вертикаль инвертирована: sy = 319 - ...
+    // Диапазоны узкие: X 2350..3950, Y 2450..3700. Z1-порог 2140.
+    if (rz4 < 2140) { g_ts_pressed = 0; return 0; }
+    int sx = (rx4 - (int)g_touch_xmin) * TFT_W / ((int)g_touch_xmax - (int)g_touch_xmin);
+    int sy = 319 - (ry4 - (int)g_touch_ymin) * TFT_H / ((int)g_touch_ymax - (int)g_touch_ymin);
     if (sx < 0) sx = 0; if (sx >= TFT_W) sx = TFT_W - 1;
     if (sy < 0) sy = 0; if (sy >= TFT_H) sy = TFT_H - 1;
     *px = sx; *py = sy;
+    g_ts_pressed = 1;
     return 1;
+ts_wd:
+    printf("TSTOUCH watchdog: reset SPI\n");   // r129: единственный printf из тач-цикла
+    SPI0_FCR = (1u << 31) | (1u << 15);   // сброс TX/RX FIFO
+    SPI0_TCR = 0x0;                         // вернуть Mode 0 (дисплей)
+    SPI0_CCR = save;
+    g_ts_pressed = 0;
+    return 0;
+}
+
+// ---- Калибровка тача: мишени в 4 углах + центр (r97) ----
+// Рисуем квадраты с цифрами, по которым надо тапнуть. После снятия
+// угловых значений (rx4/ry4 строками 1..4,C) вернуть tft_help_render(0)
+// и подогнать 200/3900 в tft_touch_scan под фактические значения.
+static void tft_calib_draw_markers(void) {
+    const int M = 24;       // размер мишени
+    const int OFF = 30;     // отступ от края
+    const struct { int x, y; const char* label; } tg[5] = {
+        { OFF,              OFF,              "1" },  // верхний-левый
+        { TFT_W - OFF - M,  OFF,              "2" },  // верхний-правый
+        { OFF,              TFT_H - OFF - M,  "3" },  // нижний-левый
+        { TFT_W - OFF - M,  TFT_H - OFF - M,  "4" },  // нижний-правый
+        { TFT_W/2 - M/2,    TFT_H/2 - M/2,    "C" },  // центр
+    };
+    for (int i = 0; i < 5; i++) {
+        int x = tg[i].x, y = tg[i].y;
+        tft_puts2(x + 4, y - 28, tg[i].label, 0xFFFF);   // подпись НАД мишенью
+        tft_fill_rect(x - 1, y - 1, M + 2, M + 2, 0xFFFF); // рамка
+        tft_fill_rect(x,     y,     M,     M,     0x07E0); // зелёная
+        tft_fill_rect(x + 4, y + 4, M - 8, M - 8, 0x0000); // ядро
+    }
+}
+
+// r112: режим калибровки тача — вызывается из tft_core_main когда
+// core0 (Settings → Touch Calibration) ставит TFT_CMD=1 (SRAM-почта).
+// CPU1 рисует мишени, ждёт 5 ФРОНТОВ касания (1,2,3,4,C), собирает
+// rx4/ry4 в g_cal_rx/g_cal_ry, вычисляет границы и выводит OK/NOT OK.
+static void tft_calib_mode(void) {
+    TFT_STAT = 0x2E;   // r117 debug: CPU1 вошёл в калибровку
+    tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);
+    tft_calib_draw_markers();
+    tft_puts(4, TFT_H - 12, "tap 1 2 3 4 C", 0xFFFF);
+    tft_flush();
+
+    int got = 0, prev = 0, calok = 0;
+    for (int i = 0; i < 5; i++) { g_cal_rx[i] = -1; g_cal_ry[i] = -1; }
+    g_cal_ok = 0;
+
+    // Без таймаута: выход по 5 тапам либо по отмене с core0 (ESC в Settings).
+    while (got < 5 && TFT_CMD == 1) {
+        extern void led_heartbeat_cpu1(void);
+        led_heartbeat_cpu1();   // r127: PA15 мигает и в калибровке (лайв-индикатор)
+        int px, py;
+        uint16_t rawx = 0, rawy = 0, rawz = 0;
+        int p = tft_touch_scan(&px, &py, &rawx, &rawy, &rawz);
+        if (p && !prev) {
+            int rx4 = (int)(rawx >> 4), ry4 = (int)(rawy >> 4);
+            g_cal_rx[got] = rx4; g_cal_ry[got] = ry4;
+            got++;
+            // подсветка прогресса: рисуем номер принятой мишени
+            char tmp[4]; tmp[0] = (char)('1' + got - 1); tmp[1] = 0;
+            if (got == 5) tmp[0] = 'C';
+            tft_puts2(300 + got * 20, 300, tmp, 0x07E0);
+            tft_flush();
+            // ждём отпускания (анти-дребезг: повторяющийся фронт не тап)
+            while (tft_touch_scan(&px, &py, &rawx, &rawy, &rawz) && TFT_CMD == 1)
+                { for (int d = 0; d < 1000; d++) udelay(30); }
+        }
+        prev = p;
+        for (int d = 0; d < 1000; d++) udelay(30);   // ~30 мс между опросами
+    }
+
+    if (got == 5) {
+        // границы: 1 и 3 — левые, 2 и 4 — правые; 1 и 2 — верх, 3 и 4 — низ
+        int xmin = (g_cal_rx[0] < g_cal_rx[2]) ? g_cal_rx[0] : g_cal_rx[2];
+        int xmax = (g_cal_rx[1] > g_cal_rx[3]) ? g_cal_rx[1] : g_cal_rx[3];
+        int ymin = (g_cal_ry[2] < g_cal_ry[3]) ? g_cal_ry[2] : g_cal_ry[3];
+        int ymax = (g_cal_ry[0] > g_cal_ry[1]) ? g_cal_ry[0] : g_cal_ry[1];
+
+        // грубый допуск: размах по каждой оси не менее 300, границы не в краях
+        int ok = (xmax - xmin > 300) && (ymax - ymin > 300) &&
+                 xmin > 100 && xmax < 4095 - 100 &&
+                 ymin > 100 && ymax < 4095 - 100;
+
+        if (ok) {
+            g_cal_xmin = xmin; g_cal_xmax = xmax;
+            g_cal_ymin = ymin; g_cal_ymax = ymax;
+            g_touch_xmin = xmin; g_touch_xmax = xmax;
+            g_touch_ymin = ymin; g_touch_ymax = ymax;
+        }
+        g_cal_ok = ok;
+        calok = ok;
+        tft_fill_rect(0, 0, TFT_W, TFT_H, 0x0000);
+        tft_puts2(20, 140, ok ? "OK" : "NOT OK", ok ? 0x07E0 : 0xF800);
+        tft_puts(20, 200, ok ? "calibration saved" : "repeat calibration", 0xFFFF);
+        tft_flush();
+    }
+
+    // возврат в меню: результат через SRAM-почту (core0 читает оттуда)
+    TFT_STAT = 0x2F;   // r117 debug: калибровка завершена
+    for (int i = 0; i < 5; i++) {
+        TFT_CALRX[i] = (uint32_t)(int32_t)g_cal_rx[i];
+        TFT_CALRY[i] = (uint32_t)(int32_t)g_cal_ry[i];
+    }
+    TFT_CALOK = (uint32_t)calok;
+    TFT_CMD = 0;       // r118: снять команду — core0 выйдет из ожидания
+    TFT_HELP_ID = 0;   // r120: на TFT снова меню-справка
+    TFT_HELP_EPOCH++;
+    for (int i = 0; i < 5; i++) printf("CAL %d rx=%d ry=%d\n",
+        i, (int)g_cal_rx[i], (int)g_cal_ry[i]);
 }
 
 // ---- CPU1 entry: probes, init, help display + touch ----
 void tft_core_main(void) {
     TFT_STAT = 0x0A;
+    // r115: .coherent не копируется из .data — статики приходят нулями.
+    // Явно выставляем границы-по-умолчанию (r110, рабочий модуль).
+    g_touch_xmin = 2350; g_touch_xmax = 3950;
+    g_touch_ymin = 2450; g_touch_ymax = 3700;
+    g_cal_ok = 0;
     spi0_init();
-    SPI0_CCR = (5u << 8);
+    SPI0_CCR = (6u << 8);          // 1,5 МГц — стартовые пробы тача
     TFT_STAT = 0x0B;
     TFT_PROBE  = tft_touch_probe_cs(1, 0x90);
     TFT_STAT = 0x0C;
@@ -738,36 +974,75 @@ void tft_core_main(void) {
 
     if (tft_init() < 0) { TFT_STAT = 9; for (;;) __asm volatile("wfi"); }
     TFT_STAT = 2;
+    // r120: SRAM-почта не zero-инициализируется — чистим при старте
+    TFT_BTN = 0;
+    TFT_HELP_ID = 0;
+    TFT_HELP_EPOCH = 0;
+    TFT_DIFF = 0;
+    TFT_PERIOD = 16667;
+    TFT_CMD = 0;   // r127: без этого мусор 0x34 (==1) сразу запускал бы калибровку
     tft_set_menu_mode();
     SPI0_TCR = 0x0;
     SPI0_CCR = 0x1005;             // 8 MHz
 
-    // Заставка: меню по умолчанию
+// Обычное поведение: меню по умолчанию. Калибровочный режим — это
+    // ОТДЕЛЬНЫЙ режим CPU1: core0 ставит TFT_CMD=1 (SRAM-почта) из Settings.
     int last = -1;
     int last_epoch = -1;
-    tft_help_render(0);
+    tft_help_render(0, 1);
     last = 0;
     last_epoch = 0;
 
     int prev_pressed = 0;
     for (;;) {
-        // Смена страницы справки по команде core0 (id или эпоха = перерисовать)
-        int cur = g_tft_help_id;
-        int cur_e = g_tft_help_epoch;
-        if (cur != last || cur_e != last_epoch) { last = cur; last_epoch = cur_e; tft_help_render(cur); }
+        // r129: stall-детектор — если итерация цикла занимает >1.5 с, CPU1 где-то
+        // застрял (SPI, flush). Печатаем, какой шаг стал долгим — иначе зависание
+        // PA15 останется немым (UART без единой строки).
+        uint32_t loop_t0 = h3_hs_timer_lo_us();
+        // Индикатор «проц жив»: PA15 мигает с CPU1 (единственный владелец
+        // PA_DAT). Если это ядро крутится — проц жив, даже если CPU0/эмулятор
+        // завис. При зависании CPU1 моргание прекращается.
+        extern void led_heartbeat_cpu1(void);
+        led_heartbeat_cpu1();
 
-        // Сканирование тача; по фронту нажатия — попадание в иконку -> меню-код
+        // Смена страницы справки по команде core0 (id или эпоха = перерисовать)
+        // r120: читаем из SRAM-почты — .coherent между ядрами не работает.
+        int cur = TFT_HELP_ID;
+        int cur_e = TFT_HELP_EPOCH;
+        // r118: калибровку запускаем по SRAM-почте TFT_CMD.
+        if (TFT_CMD == 1) {
+            last = cur; last_epoch = cur_e;   // проглотить висящие help-запросы
+            tft_calib_mode();
+        } else if (cur != last || cur_e != last_epoch) {
+            int full = (cur != last);   // смена страницы = полный флаш, иначе refresh
+            last = cur; last_epoch = cur_e;
+            tft_help_render(cur, full);
+        }
+
+        // Сканирование тача; по фронту нажатия — попадание в иконку -> меню-код.
+        // СЫРЫЕ rx/ry печатаются по каждому нажатию И удержанию (для калибровки),
+        // событие в меню — только по фронту (0→1), чтобы не «зациклить» экран.
         int px, py;
-        int pressed = tft_touch_scan(&px, &py);
+        uint16_t rawx = 0, rawy = 0, rawz = 0;
+        int pressed = tft_touch_scan(&px, &py, &rawx, &rawy, &rawz);
+        if (h3_hs_timer_lo_us() - loop_t0 > 1500000)   // r129
+            printf("TFT: slow after scan %u us\n", (unsigned)(h3_hs_timer_lo_us() - loop_t0));
+        // r113: TCH-печать убрана (калибровка рисует результат на экран,
+        // печатает CAL-строки). Здесь только иконки Settings/About.
         if (pressed && !prev_pressed) {
-            printf("TCH: press px=%d py=%d\n", px, py);  // отладка тача
             if (px >= ICON_X && px < ICON_X + ICON_W) {
-                if (py >= 30 && py < 30 + ICON_H)       g_tft_request = -2;  // Settings
-                else if (py >= 30 + ICON_H + 10 &&
-                         py < 30 + 2*(ICON_H + 10) - 10) g_tft_request = -4; // About
+                // r122 debug: координаты тапа по иконкам (для отладки попадания)
+                printf("TBTN: px=%d py=%d rx4=%d ry4=%d\n", px, py,
+                       (int)(rawx >> 4), (int)(rawy >> 4));
+                // r123: расширенные зоны — тач по дефолт-калибровке бьёт на ~10px
+                // выше отрисованной иконки. Settings [16..74), About [74..130).
+                if (py >= 16 && py < 74)                TFT_BTN = -2;  // Settings
+                else if (py >= 74 && py < 130)           TFT_BTN = -4; // About
             }
         }
         prev_pressed = pressed;
         delay_ms(30);
+        if (h3_hs_timer_lo_us() - loop_t0 > 1500000)   // r129
+            printf("TFT: slow after delay %u us\n", (unsigned)(h3_hs_timer_lo_us() - loop_t0));
     }
 }

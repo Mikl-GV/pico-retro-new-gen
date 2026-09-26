@@ -4,6 +4,7 @@
 
 void led_init(void);
 void led_set(int on);
+void led_heartbeat_cpu1(void);
 
 void led_sd_on(void);
 void led_sd_off(void);

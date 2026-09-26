@@ -148,9 +148,8 @@ void emu_osd_apply(void) {
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
-    // Мигаем светодиодом: видно, что код жив и кадры идут
-    static uint32_t led_fc = 0;
-    if ((++led_fc & 0x1F) == 0) led_set(led_fc & 0x20);
+    // r55: мигание PA15 («код жив») убрано — теперь его делает ЯДРО 1,
+    // чтобы core0 не писал в PA_DAT (гонка с PA21/CS тача).
 
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;

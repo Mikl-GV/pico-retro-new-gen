@@ -123,9 +123,7 @@ extern "C" void lynx_run_frame(void) {
     }
 
     // Гоняем Update() пока display_callback не поставит флаг готового кадра.
-    // Мигаем PA15 прямо здесь — видно, что функция выполняется.
-    static uint32_t led_fc = 0;
-    if ((++led_fc & 0xFFFF) == 0) led_set((led_fc >> 16) & 1);
+    // r125: мигание PA15 убрано — его делает CPU1 (led_heartbeat_cpu1).
 
     // Диагностика: проверяем, рисует ли что-то Handy
     static uint32_t frame_cnt = 0;

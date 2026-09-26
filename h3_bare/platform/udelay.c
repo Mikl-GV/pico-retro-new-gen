@@ -38,7 +38,7 @@ void udelay(uint32_t d) {
 		t1 = H3_TIMER->AVS_CNT1;
 	}while (t2 >= t1);
 #elif defined (_USE_HS_TIMER_UDELAY)
-	h3_hs_timer_delay(24 * d);   // 24 МГц → 24 тика на микросекунду
+	h3_hs_timer_delay(HSTMR_MHZ * d);   // HSTMR на ~97 МГц (см. h3_hs_timer.h) → d мкс
 #else
 	uint64_t cval;
 	asm volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (cval));
