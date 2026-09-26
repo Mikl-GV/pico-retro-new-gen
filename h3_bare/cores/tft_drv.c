@@ -197,7 +197,7 @@ static inline uint16_t tft_swap_rb(uint16_t c) {
 // r121: значения переключателей F1/F2 — пишет core0, читает CPU1 (иначе
 // CPU1 видит stale-значения из кэша core0 и на TFT всегда старые строки).
 #define TFT_DIFF     (*(volatile int32_t*)0x70u) // A2600 diff: 1=Expert
-#define TFT_PERIOD   (*(volatile int32_t*)0x74u) // период кадра мкс (16667=60Гц)
+// r158: TFT_PERIOD (0x74) удалён — настройка частоты кадра убрана из меню.
 // r135: меню настроек на TFT (режим CPU1, аналогично калибровке)
 #define TFT_SET_CMD   (*(volatile int32_t*)0x78u) // core0→CPU1: 1 = режим настроек
 #define TFT_SET_SEL   (*(volatile int32_t*)0x7Cu) // core0→CPU1: выбранный пункт 0..7 (подсветка)
@@ -215,7 +215,7 @@ static uint16_t tft_fb[TFT_H * TFT_W] __attribute__((aligned(16)));
 static int g_tft_ready = 0;
 
 // r130: g_tft_frame_ready/g_help_id/g_tft_help_epoch/g_tft_request удалены —
-// вся межъядерная связь в SRAM-почте (0x34..0x74). Флаг «кадр готов» не
+// вся межъядерная связь в SRAM-почте (0x34..0x70). Флаг «кадр готов» не
 // имел потребителя (зеркало HDMI отложено).
 
 // --- Буфер тача: CPU1 пишет, core0 печатает (драки за UART нет) ---
@@ -743,14 +743,13 @@ static void tft_help_render(int id, int full) {
         y += 14;
     }
 
-    // Динамические строки F1/F2 (страница меню, id=0): показывают текущие
-    // значения переключателей (см. menu.c: F1/F2 меняют их прямо из меню).
-    // r121: значения читаем из SRAM-почты — core0 пишет туда при F1/F2,
+    // Динамическая строка переключателя (страница меню, id=0): F1 — A2600 diff.
+    // Частоту кадра убрали из меню (r158) — строка F2 больше не рисуется.
+    // r121: значения читаем из SRAM-почты — core0 пишет туда при F1,
     // иначе CPU1 видит stale-значения из кэша core0.
-    // Сдвинуты вниз (y=124/138), чтобы не пересекаться со строками списка.
     if (id == 0) {
-        int diff = TFT_DIFF, period = TFT_PERIOD;
-        tft_fill_rect(0, 116, TFT_W, 44, 0x0000);   // затирка зоны строк
+        int diff = TFT_DIFF;
+        tft_fill_rect(0, 116, TFT_W, 30, 0x0000);   // затирка зоны строки
         char dynbuf[64];
         char* p = dynbuf;
 
@@ -758,19 +757,6 @@ static void tft_help_render(int id, int full) {
         tft_strcat(&p, diff ? "Expert" : "Novice");
         *p = 0;
         tft_puts(4, 124, dynbuf, 0xFFFF);
-
-        p = dynbuf;
-        tft_strcat(&p, "F2: 50/60 Hz: ");
-        switch (period) {
-            case 16667: tft_strcat(&p, "60"); break;
-            case 20000: tft_strcat(&p, "50"); break;
-            case 22222: tft_strcat(&p, "45"); break;
-            case 25000: tft_strcat(&p, "40"); break;
-            default:    tft_itoa(&p, 30); break;
-        }
-        tft_strcat(&p, " Hz");
-        *p = 0;
-        tft_puts(4, 138, dynbuf, 0xFFFF);
     }
 
     // Иконки справа (Settings / About)
@@ -965,10 +951,9 @@ static void tft_calib_mode(void) {
 // (событие останется в слоте, core0 прочитает когда сможет). Это исключает
 // взаимоблокировку ядер и «мертвый» экран.
 static void tft_settings_mode(void) {
-    static const char* const items[8] = {
+    static const char* const items[7] = {
         "Create ROM folders",
         "Input test (NES/A2600)",
-        "Video Mode / Throttle",
         "A2600 difficulty",
         "Sega 6-button pad",
         "Keyboard remap",
@@ -1040,10 +1025,10 @@ static void tft_settings_mode(void) {
                 if ((info >> 16) & 0xFF) tft_puts(4, 76, row, 0xF800);
                 tft_puts2(4, TFT_H - 24, "Back", 0x07E0);
             } else {                                      // mode 0: список пунктов — КНОПКИ
-                static const char icons[8] = {'F','T','V','D','S','K','C','I'};
+                static const char icons[7] = {'F','T','D','S','K','C','I'};
                 static const int  BTN_SP = 32, BTN_H = 28;
                 tft_puts2(4, 2, "Settings (TFT)", 0xF800);
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < 7; i++) {
                     int y = 24 + i * BTN_SP;
                     int on = (i == TFT_SET_SEL);
                     uint16_t frame = on ? 0xFFE0 : 0xFFFF;
@@ -1056,21 +1041,11 @@ static void tft_settings_mode(void) {
                     tft_fill_rect(9, y + 4, 20, BTN_H - 8, 0x0018);
                     char ic[2] = { icons[i], 0 };
                     tft_puts(13, y + (BTN_H - 8) / 2, ic, 0xFFFF);
-                    // текст пункта (+ значения для 2/3)
+                    // текст пункта (+ текущее значение для A2600 difficulty)
                     char row[48];
                     char* p = row;
                     tft_strcat(&p, items[i]);
                     if (i == 2) {
-                        tft_strcat(&p, ": ");
-                        switch (TFT_PERIOD) {
-                            case 16667: tft_strcat(&p, "60"); break;
-                            case 20000: tft_strcat(&p, "50"); break;
-                            case 22222: tft_strcat(&p, "45"); break;
-                            case 25000: tft_strcat(&p, "40"); break;
-                            default:    tft_strcat(&p, "30"); break;
-                        }
-                        tft_strcat(&p, " Hz");
-                    } else if (i == 3) {
                         tft_strcat(&p, ": ");
                         tft_strcat(&p, TFT_DIFF ? "Expert" : "Novice");
                     }
@@ -1138,7 +1113,6 @@ void tft_core_main(void) {
     TFT_HELP_ID = 0;
     TFT_HELP_EPOCH = 0;
     TFT_DIFF = 0;
-    TFT_PERIOD = 16667;
     TFT_CMD = 0;   // r127: без этого мусор 0x34 (==1) сразу запускал бы калибровку
     TFT_SET_CMD = 0;   // r135: меню настроек на TFT
     TFT_SET_SEL = 0;

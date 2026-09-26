@@ -85,7 +85,7 @@ extern "C" void emu_printf(const char* text) { printf("%s", text); }
 extern "C" void emu_printi(int val) { printf("%d", val); }
 
 static uint16_t atari_rgb565_lut[256];
-int tv_draw_count = 0;
+extern "C" int tv_draw_count = 0;   // r157: C-линковка для mainloop (Cpu.c)
 
 extern "C" void emu_SetPaletteEntry(unsigned char r, unsigned char g, unsigned char b, int index) {
     atari_rgb565_lut[index] = ((((r) >> 3) & 0x1F) << 11) | ((((g) >> 2) & 0x3F) << 5) | ((((b) >> 3) & 0x1F) << 0);
@@ -148,8 +148,19 @@ extern "C" void atari2600_run_frame(void) {
     if (!mcume_ready) return;
     extern void mainloop(void);
     extern void vcs_Input(int key);
+
+    // r157: крутим ровно до КОНЦА следующего кадра (target = before+1).
+    // mainloop (Cpu.c) теперь сам останавливается на границе кадра 2600,
+    // здесь лишь страховка для длинных кадров (guard до 200).
     int before = tv_draw_count;
+    int target = before + 1;
     int guard = 0;
+    while (tv_draw_count < target && guard < 200) {
+        vcs_Input(0);   // обновляет k = emu_GetPad() — иначе кнопки «застывают»
+        mainloop();
+        guard++;
+    }
+
     // RAW-читы: пишем байт каждый кадр (RIOT RAM 128 байт, адрес &0x7f)
     extern BYTE theRam[];
     int rc = cheats_raw_count();
@@ -159,11 +170,6 @@ extern "C" void atari2600_run_frame(void) {
             a &= 0x7F;
             if (!hc || theRam[a] == c) theRam[a] = v;
         }
-    }
-    while (tv_draw_count == before && guard < 40) {
-        vcs_Input(0);   // обновляет k = emu_GetPad() — иначе кнопки «застывают»
-        mainloop();
-        guard++;
     }
 }
 

@@ -28,6 +28,10 @@
 #include "cpu.h"
 #include "macro.h"
 #include "vmachine.h"
+
+/* r157: счётчик отрисованных кадров 2600 (host-слой system_atari_h3.cpp).
+   Используется mainloop, чтобы останавливаться на границе кадра. */
+extern int tv_draw_count;
 #include "Memory.h"
 #include "vcs_display.h"
 #include "exmacro.h"
@@ -100,6 +104,7 @@ mainloop (void)
 
 //  int i=6000;
   int i=15200/2;
+  const int frame0 = tv_draw_count;   /* r157: точка отсчёта кадра */
 
 while (i--) 
 {
@@ -4970,6 +4975,13 @@ while (i--)
 	    }			/* switch */
 
 	  clk += clkcount;
+
+	  /* r157: останавливаемся на границе кадра 2600. 7600 инструкций
+	     перекрывают ~3.4 кадра — эмулятор «летел» (sim/s ~195 при run/s ~57).
+	     Теперь один вызов mainloop = ровно один кадр (или меньше, если
+	     кадр длиннее — host добьёт циклом до target). */
+	  if (tv_draw_count != frame0)
+	    break;
 
   }		/* while(!pausing) */
 

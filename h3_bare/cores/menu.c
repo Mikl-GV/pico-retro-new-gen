@@ -306,6 +306,11 @@ static void render_menu(void) {
 
     fb_puts(60, FOOTER_Y, "  ^v : select    Enter : open    ESC : back", 0x00888888);
 
+    // r158: версия прошивки в строке справки главного меню (HDMI).
+    // На TFT версия уже рисуется в правом нижнем углу (tft_drv.c) — не дублируем.
+    extern const char g_fw_version[];
+    fb_puts(PHYS_W - (int)strlen(g_fw_version) * 8 - 16, FOOTER_Y, g_fw_version, 0x00666666);
+
     fb_flush();
     // крестик рисуется плавно в input_wait; после полной перерисовки
     // сбрасываем флаг, чтобы он не стирал «чужую» область
@@ -432,21 +437,15 @@ int menu_run(void) {
                 sel_row = r;
                 menu_scroll_to(sel_row, max_visible);
             }
-        } else if (k == 58 || k == 59) {   // F1 / F2 — быстрые переключатели меню
-            // F2: 50/60 Hz (емкость TFT-эхо обновит), F1: A2600 diff.
-            // r121: дублируем значения в SRAM-почту (0x70/0x74) — CPU1 рисует
-            // динамические строки TFT по ним, иначе видит stale из кэша core0.
+        } else if (k == 58) {   // F1 — быстрый переключатель A2600 diff
+            // r121: дублируем значение в SRAM-почту (0x70) — CPU1 рисует
+            // динамическую строку TFT по ней, иначе видит stale из кэша core0.
+            // r158: F2 (частота кадра) убран из меню.
             extern uint8_t  a2600_diff_expert;
-            extern uint16_t emu_period_us;
             extern void tft_help_show(const char* sys_id);
-            if (k == 58) {
-                a2600_diff_expert = !a2600_diff_expert;
-                *(volatile int32_t*)0x70u = a2600_diff_expert;
-            } else {
-                emu_period_us = (emu_period_us == 20000) ? 16667 : 20000;
-                *(volatile int32_t*)0x74u = emu_period_us;
-            }
-            tft_help_show(NULL);   // эпоха++ → TFT перерисует меню с новыми значениями
+            a2600_diff_expert = !a2600_diff_expert;
+            *(volatile int32_t*)0x70u = a2600_diff_expert;
+            tft_help_show(NULL);   // эпоха++ → TFT перерисует меню с новым значением
             continue;
         } else if (k == 40) {
             int item = rows[sel_row].item;
@@ -487,8 +486,8 @@ void menu_help(void) {
     static const char* pages[] = {
         // страница 0: меню + общие
         "MENU: ^v=sel Enter=open",
-        "ESC=back  Settings 1..5",
-        "50/60Hz(S3)  A2600diff(S4)",
+        "ESC=back  Settings",
+        "F1 = A2600 diff",
         "",
         "EMULATORS: Z=A/X=B S=Sel",
         "Enter=Start  ESC=hold-exit",

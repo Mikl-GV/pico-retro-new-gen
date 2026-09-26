@@ -18,14 +18,17 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 
 ## Настройки (Settings)
 
-| Клавиша | Действие |
-|---------|----------|
-| 1 | Создать папки ROM на SD |
-| 2 | Input Test (тест кнопок) |
-| 3 | Video Mode / Throttle: 60, 50, 45, 40, 35, 30 Hz (←/→ или Enter — циклически) |
-| 4 | Atari 2600 Difficulty: Novice / Expert |
-| 5 | **Sega 6-button gamepad** — тест скана геймпада (сырые чтения + биты, в UART при смене) |
-| 6 | ROM partition info (справка по разметке SD) |
+| Пункт | Действие |
+|-------|----------|
+| Create ROM folders | Создать папки ROM на SD (двойное подтверждение) |
+| Input Test (NES/A2600) | Тест кнопок |
+| A2600 difficulty | Atari 2600: Novice / Expert (Enter или ←/→) |
+| Sega 6-button pad | Тест скана геймпада (сырые чтения + биты, в UART при смене) |
+| Keyboard remap | Ремап клавиатуры по системам (/retro.cfg) |
+| Touch calibration | Калибровка SPI-тача TSC2046I (5 мишеней на TFT) |
+| ROM partition info | Справка по разметке SD |
+
+> Настройки частоты кадра (50/60 Гц) **убраны из меню** (r158) — эмуляторы всегда идут 60 Гц.
 
 ## Эмуляторы (игровой маппинг — клавиатура)
 
