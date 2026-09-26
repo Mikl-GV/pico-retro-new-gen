@@ -179,8 +179,10 @@ void main(void) {
         // Самодостаточные системы (BIOS вшит, ROM с SD не нужен) —
         // запускаются напрямую из меню, минуя браузер ROM.
         if (strcmp(id, "portfolio") == 0) {
+            sega_pad_init();             // чистый пад перед входом
             tft_help_show("portfolio");
             emu_run_portfolio(NULL, 0, name);
+            sega_pad_init();             // и после выхода
             continue;
         }
 
@@ -203,9 +205,12 @@ void main(void) {
 
             int choice = msx_launch_dialog(has_dir);
             if (choice == 1) {
+                sega_pad_init();         // чистый пад перед входом
                 tft_help_show("msx");
                 emu_run_msx(NULL, 0, name);    // BASIC
+                sega_pad_init();         // и после выхода
             } else if (choice == 2) {
+                sega_pad_init();         // чистый пад перед браузером картриджей
                 tft_help_show("msx");
                 rom_browser_run("msx", name, "msx");
             }

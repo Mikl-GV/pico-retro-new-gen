@@ -1,4 +1,5 @@
-// led.c — светодиоды Orange Pi Lite (H3): PA15 (красный, alive), PL10 (зелёный, SD).
+// led.c — светодиоды Orange Pi Lite (H3): PA15 (красный, SD-активность),
+// PL10 (зелёный, alive).
 // HIGH-active: зажечь = DAT=1, погасить = DAT=0 (подтверждено на железе).
 // PL10: R_PIO — включаем такт PRCM + снимаем софт-ресет, пишем CFG с барьерами.
 #include <stdint.h>
@@ -59,18 +60,18 @@ void led_init(void) {
     printf("led: initialized\n");
 }
 
-// PA15: 1 = горит (HIGH-active). ВАЖНО: PA_DAT (порт A) — единственный владелец
-// CPU1 (TFT-ядро: тач PA21, RST PA2). Сюда НЕ писать с CPU0 — иначе RMW-гонка
-// с тач-CS теряет изменения (см. tft_drv.c). Моргалка живёт на CPU1:
-// led_heartbeat_cpu1() вызывается из tft_core_main каждые 30 мс.
+// PL10 (зелёный) = «проц жив»: 1 = горит (HIGH-active). Мигалка живёт на
+// CPU1 (led_heartbeat_cpu1 вызывается из tft_core_main каждые 30 мс).
+// Вынесена на R_PIO специально: CPU1 больше НЕ пишет в PA_DAT для LED,
+// что сокращает окно RMW-гонки с Sega-падом (PA11/PA12) и тачем (PA21).
 void led_set(int on) {
-    if (on) PA_DAT |= (1u << 15);
-    else    PA_DAT &= ~(1u << 15);
+    if (on) PL_DAT |= (1u << 10);
+    else    PL_DAT &= ~(1u << 10);
     mb();
 }
 
 // Индикатор «проц жив» — вызывать с CPU1 (tft_core_main, раз в ~30 мс).
-// Моргает PA15: 0.5 с горит / 0.5 с гаснет. Не зависит от того, что делает
+// Мигает PL10: 0.5 с горит / 0.5 с гаснет. Не зависит от того, что делает
 // CPU0 (завис эмулятор или нет) — если CPU1 крутится, проц жив.
 void led_heartbeat_cpu1(void) {
     static uint32_t hb_t0 = 0;   // локальный счёт на CPU1 (не общий с CPU0)
@@ -84,7 +85,11 @@ void led_heartbeat_cpu1(void) {
     }
 }
 
-// PL10: 1 = горит (HIGH-active)
-void led_sd_on(void)  { PL_DAT |= (1u << 10); mb(); }
-void led_sd_off(void) { PL_DAT &= ~(1u << 10); mb(); }
-void led_sd_toggle(void) { PL_DAT ^= (1u << 10); mb(); }
+// PA15 (красный) = SD-активность: 1 = горит (HIGH-active).
+// ВАЖНО: PA15 живёт на PA_DAT (порт A), который делят Sega-пад (PA11/12,
+// CPU0), тач CS (PA21, CPU1) и SD-LED. led_sd_on/off — редкие короткие
+// всплески (чтение сектора), RMW-гонка возможна, но на порядок реже, чем
+// у прежней мигалки alive на PA15 (которая дергала PA_DAT каждые 0,5 с).
+void led_sd_on(void)  { PA_DAT |= (1u << 15); mb(); }
+void led_sd_off(void) { PA_DAT &= ~(1u << 15); mb(); }
+void led_sd_toggle(void) { PA_DAT ^= (1u << 15); mb(); }

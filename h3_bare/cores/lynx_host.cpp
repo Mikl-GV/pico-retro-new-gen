@@ -36,7 +36,8 @@ static UBYTE* display_callback(ULONG objref) {
 
 // Ввод: USB-клавиатура + Sega-геймпад -> Lynx кнопки (susie.h:
 // BUTTON_UP=0x40, BUTTON_DOWN=0x80, BUTTON_LEFT=0x10, BUTTON_RIGHT=0x20)
-// Sega-геймпад: A->A B->B X->Option1 Y->Option2, Start/Mode не мапятся (нет)
+// Sega-геймпад: A->A B->B X->Option1 Y->Option2, Start = Pause (корпусная).
+// r155: пауза на Start, а НЕ на Mode (было Mode->Pause, Start не использовался).
 static ULONG lynx_buttons_from_kbd(void) {
     uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
@@ -51,7 +52,7 @@ static ULONG lynx_buttons_from_kbd(void) {
     if (sp & 0x0020) b |= 0x02;   // Sega B = B
     if (sp & 0x0100) b |= 0x08;   // Sega X = Option 1
     if (sp & 0x0200) b |= 0x04;   // Sega Y = Option 2
-    if (sp & 0x0800) b |= 0x0100; // Sega Mode = Pause (корпусная кнопка Lynx)
+    if (sp & 0x0080) b |= 0x0100; // Sega Start = Pause (корпусная кнопка Lynx)
 
     // Клавиатура -> Lynx (ремап через Settings → Keyboard remap).
     if (remap_kbd_pressed(REMAP_PLAT_LYNX, BTN_UP, keys, n))    b |= 0x40;   // BUTTON_UP
@@ -123,7 +124,7 @@ extern "C" void lynx_run_frame(void) {
     }
 
     // Гоняем Update() пока display_callback не поставит флаг готового кадра.
-    // r125: мигание PA15 убрано — его делает CPU1 (led_heartbeat_cpu1).
+    // r125: мигание alive (PL10) делает CPU1 (led_heartbeat_cpu1).
 
     // Диагностика: проверяем, рисует ли что-то Handy
     static uint32_t frame_cnt = 0;

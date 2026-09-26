@@ -74,10 +74,9 @@ static void gpgx_poll_input(void) {
     if (sp & 0x0100) pad |= INPUT_X;        // Sega X -> MD X
     if (sp & 0x0200) pad |= INPUT_Y;        // Sega Y -> MD Y
     if (sp & 0x0400) pad |= INPUT_Z;        // Sega Z -> GPGX Z
-    if (sp & 0x0800) {
-        if (g_is_md) pad |= INPUT_MODE;     // Mode (MD)
-        else         pad |= INPUT_START;    // Pause (SMS/GG)
-    }
+    // r155: пауза — это START, а не Mode. На MD Mode остаётся системной
+    // кнопкой режима; на SMS/GG-играх Mode больше НЕ дублирует Pause.
+    if (g_is_md && (sp & 0x0800)) pad |= INPUT_MODE;
 
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
     // Дедолт: Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start, стрелки=D-Pad.
@@ -238,7 +237,8 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     system_init();
     system_reset();
 
-    // Звук: PSG+FM синтез ядра + вывод через I2S (MAX98357A)
+    // Звук: PSG+FM синтез ядра. Вывод НЕ выполняется (i2s не подключён) —
+    // сэмплы дренятся в gpgx_audio_out, чтобы blip-буферы не переполнялись.
     audio_init(48000, 60.0);
 
     g_loaded = 1;
@@ -395,8 +395,9 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     system_init();
     system_reset();
 
-    // Звук: PSG+FM синтез ядра через I2S (MAX98357A) — без audio_init()
-    // blips[0]==NULL и gg_run_frame падает в blip_end_frame.
+    // Звук: PSG+FM синтез ядра; вывод НЕ выполняется (i2s не подключён).
+    // audio_init обязателен: без него blips[0]==NULL и gg_run_frame падает
+    // в blip_end_frame.
     audio_init(48000, 60.0);
 
     g_loaded = 1;

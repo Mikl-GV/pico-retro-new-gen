@@ -88,6 +88,10 @@ static int g_repeat_sc = 0;    // последний сканкод
 static int g_was_repeat = 0;   // флаг удержания (сброс в wait_release)
 static uint32_t g_repeat_start = 0;
 static int g_kbd_pending = 0;  // сканкод, прочитанный wait_release и не отданный
+// r155: отложенный клавиатурный сканкод. Если в одном проходе пришли и
+// клавиша, и фронт джоя — возвращаем джой (оба источника равноправны),
+// а клавишу выдаём в следующем вызове, чтобы событие не терялось.
+static uint8_t g_kbd_saved = 0;
 
 // Автоповтор Sega-геймпада — ЗАМЕДЛЕННЫЙ (в меню D-Pad не должен летать)
 #define PAD_REPEAT_DELAY_US 400000   // ~0,4 с до первого повтора
@@ -113,7 +117,12 @@ static uint16_t g_pad_deb = 0;    // последний стабильный к�
 static int      g_pad_deb_cnt = 0; // сколько одинаковых сканов подряд
 
 // ---- СВОЙ слой геймпада: кэш скана + фронт ----
-#define PAD_CACHE_US 2000          // 2 мс: повторные вызовы не дёргают чип
+// r155: кэш 12 мс (было 2 мс). В бесконечном цикле input_wait() главного
+// меню без паузы скан каждые 2 мс = 500 сканов/с × ~1,4 мс ≈ 70% времени
+// шины — любая RMW-пакость CPU1 (тач/LED на PA_DAT) попадала в идущий I2C,
+// срывала бит и «тупил» джой. 12 мс достаточно для меню (60 Гц + автоповтор)
+// и меньше окно пересечения с TFT-ядром на порядок.
+#define PAD_CACHE_US 12000         // 12 мс: повторные вызовы не дёргают чип
 static uint32_t g_pad_cache_t = 0; // время последнего реального скана (мкс)
 static uint16_t g_pad_cur = 0;     // стабильное состояние (антидребезг применён)
 static uint16_t g_pad_edge = 0;    // фронт нажатия (0→1)
@@ -520,9 +529,16 @@ uint16_t usb_pad_just_pressed(void) {
 
 // Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
 // нажатия), чтобы зажатая кнопка не «доехала» в новое подменю.
+// r155: ждём не дольше 500 мс — если пад «залип» (сбой I2C после гонки PA_DAT
+// с TFT-ядром), переинициализируем PCF8574 и выходим, иначе меню висло
+// на тысячи секунд (старый лимит 1 000 000 итераций × 1 мс).
 void usb_pad_wait_release(void) {
     uint32_t guard = 0;
-    while (sega_pad_scan() != 0 && ++guard < 1000000) udelay(1000);
+    while (sega_pad_scan() != 0 && ++guard < 500) udelay(1000);
+    if (guard >= 500) {
+        // Залипший пад: сброс PCF8574 (0xFF → TH=1 idle), как в sega_pad_test_run
+        sega_pad_init();
+    }
     g_pad_prev = 0;
     g_pad_repeat_start = 0;
     g_pad_was_repeat = 0;
@@ -531,6 +547,7 @@ void usb_pad_wait_release(void) {
     g_pad_cache_t = 0;
     g_pad_cur = 0;
     g_pad_edge = 0;
+    g_kbd_saved = 0;   // r155: отложенный сканкод не должен «доехать» в подменю
 }
 
 // Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
@@ -542,6 +559,7 @@ void usb_kbd_wait_release(void) {
     // Любой сканкод, прочитанный здесь (кроме Enter/ESC), сохраняем в
     // g_kbd_pending — он не должен теряться для следующего usb_kbd_poll.
     g_kbd_pending = 0;
+    g_kbd_saved = 0;   // r155: отложенный сканкод не должен «доехать» в подменю
     uint32_t t0 = h3_hs_timer_lo_us();
     for (;;) {
         if (kbd_read_report() == 0) {
@@ -568,14 +586,36 @@ void usb_kbd_wait_release(void) {
     g_was_repeat = 0;
 }
 
-// ---- Объединённый ввод для меню: клавиатура, при отсутствии — Sega-геймпад, тач ----
+// Джой-фронт → сканкод меню (та же таблица, что была внутри usb_input_poll)
+static int pad_pressed_to_key(uint16_t pressed) {
+    if (pressed & 0x0001) return 82;   // Up → Up
+    if (pressed & 0x0002) return 81;   // Down → Down
+    if (pressed & 0x0004) return 80;   // Left → Left
+    if (pressed & 0x0008) return 79;   // Right → Right
+    if (pressed & 0x0010) return 40;   // A → Enter
+    if (pressed & 0x0080) return 40;   // Start → Enter
+    if (pressed & 0x0020) return 41;   // B → ESC
+    if (pressed & 0x0800) return 22;   // Mode → S (открыть читы в браузере)
+    return 0;
+}
+
+// ---- Объединённый ввод для меню: клавиатура И Sega-геймпад равноправны ----
 // Возвращает HID-сканкод (82=Up, 81=Down, 79=Right, 80=Left, 40=Enter, 41=ESC)
 // либо 0, если ничего не нажато. Тач переводится в «клавиши» по зонам экрана.
 // Sega-геймпад: использует СВОЙ слой (usb_pad_update/get/edge) — один аппаратный
 // скан на кадр, антидребезг 3 скана, удержание D-Pad = автоповтор.
+// r155: раньше клавиатура стояла первой и «перебивала» джой (if (k) return k —
+// при нажатой клавише или её автоповторе джой не опрашивался вовсе).
+// Теперь джой-фронт обрабатывается всегда; клавиатурное событие, пришедшее
+// в тот же проход, откладывается в g_kbd_saved и не теряется.
 int usb_input_poll(void) {
+    if (g_kbd_saved) {
+        int p = g_kbd_saved;
+        g_kbd_saved = 0;
+        return p;
+    }
+
     int k = usb_kbd_poll();
-    if (k) return k;
 
     usb_pad_update();
     uint16_t pad = usb_pad_get();
@@ -585,36 +625,39 @@ int usb_input_poll(void) {
     if (pressed && pad) {
         g_pad_was_repeat = 0;
         g_pad_repeat_start = h3_hs_timer_lo_us();
-        if (pressed & 0x0001) return 82;   // Up → Up
-        if (pressed & 0x0002) return 81;   // Down → Down
-        if (pressed & 0x0004) return 80;   // Left → Left
-        if (pressed & 0x0008) return 79;   // Right → Right
-        if (pressed & 0x0010) return 40;   // A → Enter
-        if (pressed & 0x0080) return 40;   // Start → Enter
-        if (pressed & 0x0020) return 41;   // B → ESC
-        if (pressed & 0x0800) return 22;   // Mode → S (открыть читы в браузере)
-    } else if (pad) {
+        int j = pad_pressed_to_key(pressed);
+        if (j) {
+            // клавиатурное событие не теряем — выдадим следующим вызовом
+            if (k) g_kbd_saved = (uint8_t)k;
+            return j;
+        }
+        // неизвестный бит фронта — не теряем клавиатуру, идём дальше
+    }
+    if (k) return k;
+
+    if (pad) {
         // удержание СТРЕЛКИ — автоповтор (как клавиатура); кнопки не повторяются
         uint32_t now = h3_hs_timer_lo_us();
         uint32_t elapsed = now - g_pad_repeat_start;
         uint16_t held = pad & 0x000F;   // только D-Pad
-        if (!held) return 0;
-        if (g_pad_was_repeat) {
-            if (elapsed >= PAD_REPEAT_RATE_US) {
-                g_pad_repeat_start = now;
-                if (held & 0x0001) return 82;
-                if (held & 0x0002) return 81;
-                if (held & 0x0004) return 80;
-                if (held & 0x0008) return 79;
-            }
-        } else {
-            if (elapsed >= PAD_REPEAT_DELAY_US) {
-                g_pad_repeat_start = now;
-                g_pad_was_repeat = 1;
-                if (held & 0x0001) return 82;
-                if (held & 0x0002) return 81;
-                if (held & 0x0004) return 80;
-                if (held & 0x0008) return 79;
+        if (held) {
+            if (g_pad_was_repeat) {
+                if (elapsed >= PAD_REPEAT_RATE_US) {
+                    g_pad_repeat_start = now;
+                    if (held & 0x0001) return 82;
+                    if (held & 0x0002) return 81;
+                    if (held & 0x0004) return 80;
+                    if (held & 0x0008) return 79;
+                }
+            } else {
+                if (elapsed >= PAD_REPEAT_DELAY_US) {
+                    g_pad_repeat_start = now;
+                    g_pad_was_repeat = 1;
+                    if (held & 0x0001) return 82;
+                    if (held & 0x0002) return 81;
+                    if (held & 0x0004) return 80;
+                    if (held & 0x0008) return 79;
+                }
             }
         }
     }

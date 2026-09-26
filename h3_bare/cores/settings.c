@@ -117,6 +117,10 @@ static int input_wait(void) {
     for (;;) {
         int k = usb_input_poll();
         if (k) return k;
+        // r155: холостая итерация — пауза ~1 кадр, иначе usb_input_poll
+        // дёргает I2C геймпада каждые 2 мс (500 сканов/с) и джой «тупит»
+        // от гонок PA_DAT с TFT-ядром (то же, что в главном меню).
+        udelay(16000);
     }
 }
 
@@ -253,6 +257,7 @@ static void sega_pad_test_run(void) {
     uint16_t prev = 0xFFFF;
     uint32_t last_tick = 0;
     uint32_t start_hold = 0;
+    uint32_t no_start_since = 0;   // r155: сколько времени Start отсутствует
     for (;;) {
         // --- СВОЙ слой: один аппаратный скан на кадр, антидребезг внутри ---
         usb_pad_update();
@@ -317,23 +322,31 @@ static void sega_pad_test_run(void) {
         fb_puts(60, FOOTER_Y, "ESC / hold Start: back", 0x00888888);
         fb_flush();
 
-        // Ограничение ~60 fps для комфорта
+        // Ограничение ~60 fps для комфорта.
+        // r155: правильная мкс-пауза через udelay (множитель 97 в udelay.c).
+        // Раньше стояло h3_hs_timer_delay((16667-elapsed)*24) — множитель 24
+        // от старой шкалы 24 МГц: при 97 МГц тест крутился в ~4 раза быстрее.
         uint32_t now = h3_hs_timer_lo_us();
-        if (now - last_tick < 16667) {
-            h3_hs_timer_delay((16667 - (now - last_tick)) * 24);
-        }
+        uint32_t elapsed = now - last_tick;
+        if (elapsed < 16667) udelay(16667 - elapsed);
         last_tick = h3_hs_timer_lo_us();
 
         // Выход: клавиша ESC (41), или удержание Start ~0.8 с (бит 0x0080).
         // НЕ через usb_input_poll — он мапит B в ESC; здесь обрабатываем
         // слой геймпада напрямую (скан уже сделан в начале кадра).
+        // r155: счётчик НЕ сбрасывается на одиночном «моргании» скана —
+        // start_hold теряется только если Start отсутствует >200 мс подряд.
+        // Иначе дребезг/сбой I2C не давал выйти (тест «зависал» на выходе).
         int k = usb_kbd_poll();
         if (k == 41) return;
         if (pad & 0x0080) {
+            no_start_since = 0;
             if (!start_hold) start_hold = h3_hs_timer_lo_us();
             else if (h3_hs_timer_lo_us() - start_hold > 800000) return;
-        } else {
-            start_hold = 0;
+        } else if (start_hold) {
+            uint32_t ns = now;
+            if (!no_start_since) no_start_since = ns;
+            else if (ns - no_start_since > 200000) { start_hold = 0; no_start_since = 0; }
         }
     }
 }

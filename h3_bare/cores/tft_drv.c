@@ -820,7 +820,7 @@ static int tft_touch_scan(int* px, int* py, uint16_t* rawx, uint16_t* rawy, uint
     // дают надёжного порога, а Z1 при нажатии уходит из крайних значений.
     // Читаем X, Y и Z1; нажатие: Z1 в среднем диапазоне (не 0 и не 4095).
     // r129: watchdog — если SPI-шина залипла, скан не должен вешать CPU1
-    // навсегда (симптом: PA15 замолчала, дисплей замер). После 100 мс
+    // навсегда (симптом: PL10 замолчала, дисплей замер). После 100 мс
     // сбрасываем FIFO/TCR и выходим, главный цикл продолжит работу.
     uint32_t t0 = h3_hs_timer_lo_us();
     uint32_t save = SPI0_CCR;
@@ -898,7 +898,7 @@ static void tft_calib_mode(void) {
     // Без таймаута: выход по 5 тапам либо по отмене с core0 (ESC в Settings).
     while (got < 5 && TFT_CMD == 1) {
         extern void led_heartbeat_cpu1(void);
-        led_heartbeat_cpu1();   // r127: PA15 мигает и в калибровке (лайв-индикатор)
+        led_heartbeat_cpu1();   // r127: PL10 мигает и в калибровке (лайв-индикатор)
         int px, py;
         uint16_t rawx = 0, rawy = 0, rawz = 0;
         int p = tft_touch_scan(&px, &py, &rawx, &rawy, &rawz);
@@ -996,7 +996,7 @@ static void tft_settings_mode(void) {
 
     while (TFT_SET_CMD == 1) {
         extern void led_heartbeat_cpu1(void);
-        led_heartbeat_cpu1();   // PA15 жив и в меню настроек
+        led_heartbeat_cpu1();   // PL10 жив и в меню настроек
 
         int ep = TFT_SET_EPOCH;
         int mode = TFT_SET_MODE;
@@ -1161,11 +1161,12 @@ void tft_core_main(void) {
     for (;;) {
         // r129: stall-детектор — если итерация цикла занимает >1.5 с, CPU1 где-то
         // застрял (SPI, flush). Печатаем, какой шаг стал долгим — иначе зависание
-        // PA15 останется немым (UART без единой строки).
+        // PL10 останется немой (UART без единой строки).
         uint32_t loop_t0 = h3_hs_timer_lo_us();
-        // Индикатор «проц жив»: PA15 мигает с CPU1 (единственный владелец
-        // PA_DAT). Если это ядро крутится — проц жив, даже если CPU0/эмулятор
-        // завис. При зависании CPU1 моргание прекращается.
+        // Индикатор «проц жив»: PL10 мигает с CPU1 (R_PIO, не трогает PA_DAT —
+        // нет RMW-гонки с тачем/Sega-падом). Если это ядро крутится — проц
+        // жив, даже если CPU0/эмулятор завис. При зависании CPU1 мигание
+        // прекращается.
         extern void led_heartbeat_cpu1(void);
         led_heartbeat_cpu1();
 

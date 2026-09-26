@@ -49,6 +49,16 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
 // запуск эмулятора по sys_id (общая логика для Enter и меню читов)
 static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
                          const char* sel_name) {
+    // Вход в эмулятор: переинициализация PCF8574 (0xFF → TH=1 idle).
+    // Лечит «мёртвый» пад после сбоя I2C (гонка PA_DAT с TFT-ядром на
+    // полном рендере справки) — тот же приём, что в Sega 6-button test.
+    sega_pad_init();
+
+    // r155: ждём ОТПУСКАНИЯ пада (макс 500 мс), чтобы зажатая в браузере
+    // кнопка (Enter/A/Start) не «доехала» в первый кадр игры как ложное
+    // нажатие. См. usb_pad_wait_release — лимит 500 итераций × 1 мс.
+    usb_pad_wait_release();
+
     // Показать справку на TFT по кнопкам этой системы.
     extern void tft_help_show(const char* sys_id);
     tft_help_show(sys_id);
@@ -93,6 +103,10 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         fb_flush();
         input_wait();
     }
+
+    // Выход из эмулятора: снова переинициализация геймпада — возвращаемся
+    // в меню с чистым падом (полный TFT-рендер меню мог снова сорвать I2C).
+    sega_pad_init();
 }
 
 static void sort_entries(fat_entry_t *list, int n) {

@@ -5,6 +5,7 @@
 #include "fat.h"
 #include "uart.h"
 #include "usb_kbd.h"
+#include "h3.h"
 
 #define PHYS_W 1024
 #define PHYS_H 600
@@ -378,7 +379,12 @@ static int input_wait(void) {
         usb_pad_poll();
         pad_cursor_draw();
         if (k) return k;
-        // r55: led_set/мигание PA15 убрано — PA15 теперь мигает с ЯДРА 1,
+        // r155: холостая итерация — пауза ~1 кадр (как в ROM-браузере).
+        // Без неё цикл крутится на максимальной скорости: usb_input_poll
+        // дёргает I2C геймпада каждые 2 мс, клавиатуру — на каждом проходе,
+        // и любая гонка PA_DAT с TFT-ядром оборачивалась «тупым» джоем.
+        udelay(16000);
+        // r155: led_set/мигание убрано с core0 — alive (PL10) мигает с ЯДРА 1,
         // чтобы core0 не писал в PA_DAT (гонка с PA21/CS тача).
     }
 }

@@ -5,6 +5,7 @@
 #include "fb_text.h"
 #include "uart.h"
 #include "usb_kbd.h"
+#include "sega_pad.h"
 #include "h3_hs_timer.h"
 #include "led.h"
 
@@ -143,8 +144,8 @@ void emu_clear_fb(void) {
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
-    // r55: мигание PA15 («код жив») убрано — теперь его делает ЯДРО 1,
-    // чтобы core0 не писал в PA_DAT (гонка с PA21/CS тача).
+    // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
+    // ЯДРО 1 (led_heartbeat_cpu1), чтобы core0 не писал в PA_DAT (гонка с PA21/CS).
 
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
@@ -158,11 +159,26 @@ void emu_throttle_reset(void) {
     emu_ts0 = 0;
 }
 
-// ---- единый выход из эмулятора: удержание ESC ~0.9 с ----
+// ---- единый выход из эмулятора: удержание ~0.9 с ----
+// Клавиша ESC (USB) ИЛИ Sega-геймпад Start+Mode вместе.
+// Для геймпада не сканируем пад каждый кадр: кэш 50 мс — достаточно,
+// чтобы поймать удержание, и не плодим лишние I2C-транзакции на шине.
+// r155: armed-предохранитель — удержание НЕ стартует, пока после входа в
+// эмулятор не случился хотя бы один «чистый» кадр без нажатий. Иначе
+// зажатый при выходе из предыдущей игры ESC/Start+Mode «доезжает» в новую
+// и через ~0.9 с выкидывает её обратно в меню («условие выхода осталось»).
 static uint32_t g_esc_hold_us = 0;
+static uint32_t g_pad_esc_t = 0;
+static uint16_t g_pad_esc_val = 0;
+static int      g_esc_armed = 0;
+static uint32_t g_no_esc_since = 0;   // r155: sticky — отсутствие нажатия выхода
 
 void emu_esc_hold_reset(void) {
     g_esc_hold_us = 0;
+    g_pad_esc_val = 0;
+    g_pad_esc_t   = 0;
+    g_esc_armed   = 0;
+    g_no_esc_since = 0;
 }
 
 int emu_esc_hold(void) {
@@ -171,12 +187,49 @@ int emu_esc_hold(void) {
     int esc = 0;
     for (int i = 0; i < n; i++)
         if (raw_keys[i] == 41) { esc = 1; break; }
+
+    // Геймпад: Start (0x0080) + Mode (0x0800) вместе = выход
+    uint32_t now = h3_hs_timer_lo_us();
+    if (now - g_pad_esc_t > 50000) {
+        g_pad_esc_t = now;
+        g_pad_esc_val = sega_pad_scan();
+    }
+    if ((g_pad_esc_val & 0x0080) && (g_pad_esc_val & 0x0800)) esc = 1;
+
+    // r155 DEBUG: печать удержания выхода (только когда кнопка нажата,
+    // раз в ~500 мс) — по UART видно, доходит ли нажатие до esc_hold.
     if (esc) {
-        uint32_t now = h3_hs_timer_lo_us();
+        static uint32_t dbg_t = 0;
+        if (now - dbg_t > 500000) {
+            dbg_t = now;
+            printf("EXIT: kbd=%d pad=0x%04X armed=%d hold=%u\n",
+                   (int)(raw_keys[0] == 41 || raw_keys[1] == 41 ||
+                         raw_keys[2] == 41 || raw_keys[3] == 41 ||
+                         raw_keys[4] == 41 || raw_keys[5] == 41
+                             ? 1 : 0),
+                   (unsigned)g_pad_esc_val, g_esc_armed,
+                   (unsigned)(now - g_esc_hold_us));
+        }
+    }
+
+    if (esc) {
+        g_no_esc_since = 0;
+        if (!g_esc_armed) return 0;         // ещё не было чистого кадра — игнор
         if (!g_esc_hold_us) g_esc_hold_us = now;
         else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
     } else {
-        g_esc_hold_us = 0;
+        // r155: клавиатура шлёт отчёты ПАЧКАМИ (между ними «пустые» промежутки),
+        // поэтому непрерывное удержание не требуется: отсчёт выхода теряется
+        // только если нажатие отсутствует >250 мс подряд. Иначе после
+        // «поиграть» пустой пакет клавы каждые ~10-30 мс рвал бы удержание
+        // и выход никогда не накапливался.
+        if (g_esc_hold_us) {
+            if (!g_no_esc_since) g_no_esc_since = now;
+            else if (now - g_no_esc_since > 250000) { g_esc_hold_us = 0; g_no_esc_since = 0; }
+        } else {
+            g_no_esc_since = 0;
+            g_esc_armed = 1;   // чистый кадр без удержания — «доезд» разряжен
+        }
     }
     return 0;
 }
