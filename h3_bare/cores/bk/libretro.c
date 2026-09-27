@@ -1050,6 +1050,28 @@ void libretro_vfs_read(struct libretro_handle *h, void *s, uint64_t len)
 
 void *load_rom_file(const char * rompath, size_t *sz, size_t min_sz, size_t max_sz)
 {
+	/* Вшитые ROM БК (bk_roms.c): отдаём из памяти, без файлов на SD.
+	   Имя ищется по basename так, как его запрашивает ядро (MONIT10.ROM и т.д.). */
+	{
+		extern int bk_rom_lookup(const char*, const unsigned char**, unsigned int*);
+		const unsigned char *edata; unsigned int esize;
+		if (bk_rom_lookup(rompath, &edata, &esize)) {
+			if (esize > max_sz) esize = (unsigned int)max_sz;
+			if ((size_t)esize < min_sz) {
+				log_cb(RETRO_LOG_ERROR, "Baked ROM '%s' too small (%u)\n", rompath, esize);
+				environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+				return NULL;
+			}
+			char *bret = malloc(esize + 1);
+			if (!bret) return NULL;
+			memcpy(bret, edata, esize);
+			bret[esize] = '\0';
+			*sz = esize;
+			log_cb(RETRO_LOG_INFO, "Baked ROM %s (%u bytes)\n", rompath, esize);
+			return bret;
+		}
+	}
+
 	char *path = malloc(strlen(romdir)+strlen(rompath)+2);
 
 	if (!path) {

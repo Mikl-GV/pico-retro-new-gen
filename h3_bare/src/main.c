@@ -83,6 +83,8 @@ static const char* const zx_models[] = {
 
 extern void fuse_set_model(const char* m);
 extern void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void bk_set_model(const char* m);
+extern void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 static int zx_model_dialog(void) {
     int sel = 0, scroll = 0, dirty = 1;
@@ -138,9 +140,43 @@ static int zx_source_dialog(void) {
     }
 }
 
+// ---- BK-0010/0011M: выбор модели (опция bk_model ядра), затем ROM/BASIC ----
+static const char* const bk_models[] = {
+    "BK-0010", "BK-0010.01", "BK-0010.01 + FDD",
+    "BK-0011M + FDD", "Terak 8510/a", "Slow BK-0011M",
+};
+#define BK_MODEL_COUNT ((int)(sizeof(bk_models) / sizeof(bk_models[0])))
+
+static int bk_model_dialog(void) {
+    int sel = 0, scroll = 0, dirty = 1;
+    const int per = 13;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "BK-0010/0011M", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            for (int i = 0; i < per && scroll + i < BK_MODEL_COUNT; i++) {
+                int idx = scroll + i, y = 120 + i * 24;
+                uint32_t clr = (idx == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (idx == sel) fb_fill_rect(50, y - 2, 500, 22, 0x00222222);
+                fb_puts(70, y, bk_models[idx], clr);
+            }
+            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; if (sel < scroll) scroll = sel; dirty = 1; }
+        else if (k == 81) { if (sel < BK_MODEL_COUNT - 1) sel++; if (sel >= scroll + per) scroll = sel - per + 1; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.242 (15.2.1)";
+const char g_fw_version[] = "r0.243 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -148,7 +184,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r0.242 (15.2.1)\n");
+    uart_puts("build: TFT self-test r0.243 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -318,6 +354,30 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM через браузер (0x74 ставит run_emulator)
                 rom_browser_run("zxspectrum", name, "zxspectrum");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // BK-0010/0011M: выбор модели -> ROM (.bin) или BASIC
+        if (strcmp(id, "bk0010") == 0) {
+            int m = bk_model_dialog();
+            if (m < 0) continue;
+            bk_set_model(bk_models[m]);
+            int src = zx_source_dialog();   // 1=ROM, 2=BASIC (универсальный)
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("bk0010");
+            if (src == 2) {                  // BASIC
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_bk(NULL, 0, "basic");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // ROM через браузер (0x74 ставит run_emulator)
+                rom_browser_run("bk0010", name, "bk0010");
             }
             sega_pad_init();
             continue;

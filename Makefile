@@ -198,7 +198,23 @@ $(BUILD)/fuse_host.o: $(TOP)h3_bare/cores/fuse_host.c | $(BUILD)
 $(BUILD)/fuse_stubs.o: $(TOP)h3_bare/cores/fuse_stubs.c | $(BUILD)
 	$(CC) $(FUSEFLAGS) $(FUSE_INC) $(INCLUDES) -c -o $@ $<
 
-# Vectrex (vecx)# Vectrex (vecx)# Vectrex (vecx)
+# ---- BK-0010/0011M (libretro-bk / BK-Terak-Emu, PDP-11) ----
+# Вшитые ROM — bk_roms.c (генерируется из открытого набора). API ядра plain
+# retro_* конфликтует с PCE → bk_rename.sh переименовывает в bk_retro_*.
+BK_ROOT := $(TOP)h3_bare/cores/bk
+BK_REL := access.c boot.c branch.c covox.c double.c ea.c itab.c libretro.c service.c timer.c \
+ tape.c disk.c mouse.c single.c weird.c tty.c io.c timing.c sound.c terakdisk.c synth.c \
+ emu2149.c main.c scr-libretro.c scr.c tty-libretro.c joystick.c bk_roms.c
+BK_OBJ := $(foreach f,$(BK_REL),$(BUILD)/bk_$(f).o)
+OBJ += $(BK_OBJ) $(BUILD)/bk_host.o
+BK_INC := -I$(BK_ROOT)
+BKFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
+    -Wall -O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG -DLIBRETRO -DINLINE=inline
+include $(TOP)h3_bare/cores/bk/bk_rules.mk
+$(BUILD)/bk_host.o: $(TOP)h3_bare/cores/bk_host.c | $(BUILD)
+	$(CC) $(BKFLAGS) $(BK_INC) $(INCLUDES) -c -o $@ $<
+
+# Vectrex (vecx)
 VECX := $(TOP)h3_bare/cores/vecx
 VECX_INC := -I$(VECX)
 # e6809.c/vecx.c ждут INLINE (как в libretro Makefile.common: -DINLINE=inline)
