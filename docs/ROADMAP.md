@@ -18,7 +18,7 @@
 | 10 | Atari Lynx | 6502 | ✅ работает | Handy |
 | 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
 | 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
-| 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты) | fMSX 6.0 |
+| 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты; r0.211: джойстик/50Гц/BPal/ESC) | fMSX 6.0 |
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | 🔲 план | — |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
@@ -56,6 +56,7 @@
 3. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
 4. **PC Engine / TurboGrafx** — **готово (r0.202)**: Beetle PCE Fast (mednafen_pce_fast) vendored в `h3_bare/cores/pce_fast/`, host `pce_host.c` (libretro-shell без libretro-common), HuCard only, звук отключён, CD заглушен (`pce_stubs.c`). Проверено на железе. Осталось (необязательно): звук (PSG/Blip → I2S), CD, TFT-справка.
 5. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
+6. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
 
 ## Перспективы (идеи, не начаты)
 
@@ -76,7 +77,7 @@
 - Sega-геймпад 6-button через PCF8574@0x20 (меню + игры)
 - HDMI 1024×600 @ 60 Гц
 - UART-отладка 115200 8N1
-- 15 эмуляторов в одном бинаре (~4.2 МБ)
+- 16 эмуляторов в одном бинаре (~7.07 МБ, r0.205; +PC Engine r0.202)
 - GPT/поддержка нескольких FAT-разделов, авто-поиск /roms
 ## Отложено на последний этап отладки
 

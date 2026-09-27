@@ -57,6 +57,7 @@ unsigned image_buffer_height = HEIGHT;
 #include "h3_hs_timer.h"
 
 extern int printf(const char* fmt, ...);
+extern uint16_t emu_period_us;   // r0.210: для MSX ставим 50 Гц (PAL)
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -65,10 +66,22 @@ extern int printf(const char* fmt, ...);
 // Состояние
 static int g_loaded = 0;
 
-// ---- SetColor — вызывается ядром для установки цвета палитры XPal ----
+// r0.208: выход по удержанию ESC. Детектим из ТОГО ЖЕ boot-отчёта, что читает
+// и ядро (emu_run_msx больше не полагается на повторный usb_kbd_get_raw внутри
+// emu_esc_hold — у Low-Speed донгла второй опрос за кадр мог отдать пусто и
+// «терял» ESC, из-за чего из MSX нельзя было выйти).
+int  msx_exit_req = 0;
+static uint32_t msx_esc_t0 = 0;
+
+// ---- SetColor — вызывается ядром для установки цвета палитры ----
+// fMSX рисует текстовые/graphics-режимы (SCREEN 0-4) через XPal[], а
+// BITMAP-режимы (SCREEN 5-8 — почти все MSX2-игры) через BPal[]. Раньше
+// BPal нигде не заполнялся → MSX2-картриджи давали ЧЁРНЫЙ экран (r0.206).
 void SetColor(uint8_t N, uint8_t R, uint8_t G, uint8_t B) {
-    if (N < 80) XPal[N] = PIXEL(R, G, B);
-    if (N == 0) XPal0 = XPal[0];  // цвет фона
+    uint16_t c = PIXEL(R, G, B);
+    if (N < 80) XPal[N] = c;
+    if (N == 0) XPal0 = c;  // цвет фона
+    BPal[N] = c;            // r0.206: bitmap-палитра (SCREEN 5-8)
 }
 
 // ---- Joystick — вызывается ядром на строке 192 каждого кадра ----
@@ -79,10 +92,16 @@ unsigned int Joystick(void) {
     if (pad & 0x0002) js |= JST_DOWN;
     if (pad & 0x0004) js |= JST_LEFT;
     if (pad & 0x0008) js |= JST_RIGHT;
-    if (pad & 0x0010) js |= JST_FIREA;   // A = fire
-    if (pad & 0x0020) js |= JST_FIREB;   // B = fire2
-    if (pad & 0x0080) js |= JST_FIREA;    // Start = fire тоже
-    return js;
+    if (pad & 0x0010) js |= JST_FIREA;   // A
+    if (pad & 0x0020) js |= JST_FIREB;   // B
+    if (pad & 0x0040) js |= JST_FIREA;   // C
+    if (pad & 0x0100) js |= JST_FIREB;   // X
+    if (pad & 0x0200) js |= JST_FIREA;   // Y
+    if (pad & 0x0080) js |= JST_FIREA;   // Start
+    if (pad & 0x0800) js |= JST_FIREB;   // Mode
+    // r0.209: дублируем в ОБЕ половины (младший байт = джойстик 1, старший = 2) —
+    // игры читают то порт 1, то порт 2; без дублирования пад «не работает».
+    return js | (js << 8);
 }
 
 // ---- Mouse — заглушка ----
@@ -116,6 +135,17 @@ static void update_image_buffer_size(uint8_t screen_mode) {
 
 void PutImage(void) {
     update_image_buffer_size(ScrMode);
+
+    /* r0.206: диагностика режима — видно в UART при смене экрана MSX
+     * (проверяем рассинхрон ScrMode/iw, от которого возможны двоение/мусор). */
+    static int dbg_last_scr = -1;
+    if ((int)ScrMode != dbg_last_scr) {
+        dbg_last_scr = (int)ScrMode;
+        printf("MSX: ScrMode=%d iw=%u ih=%u VDP0=%02X VDP1=%02X\n",
+               (int)ScrMode, (unsigned)image_buffer_width, (unsigned)image_buffer_height,
+               (unsigned)VDP[0], (unsigned)VDP[1]);
+    }
+
     int iw = (int)image_buffer_width;     // 272 или 544
     int ih = (int)image_buffer_height;    // 228
     if (iw <= 0) iw = WIDTH;
@@ -161,6 +191,8 @@ uint8_t DiskWrite(uint8_t ID, const uint8_t *Buf, int N) { (void)ID; (void)Buf; 
 int msx_init_game(const uint8_t* rom, uint32_t size) {
     printf("MSX: init size=%u\n", (unsigned)size);
     g_loaded = 0;
+    msx_exit_req = 0;   // r0.208
+    msx_esc_t0 = 0;
 
     // Очищаем обращения к глобальным переменным через TrashMSX (если был предыдущий запуск)
     TrashMSX();
@@ -184,6 +216,13 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
         return 0;
     }
 
+    // r0.211: включить джойстики в сокетах 1/2. Без этого JOYTYPE(N)==JOY_NONE
+    // (Mode=…0005), и порт PSG 0xA2 отдаёт 0x7F — т.е. пад «не активен»
+    // (клавиатура при этом работает, т.к. идёт по матрице). Как в эталоне
+    // fMSX libretro.c:1277-1278.
+    SETJOYTYPE(0, JOY_STICK);
+    SETJOYTYPE(1, JOY_STICK);
+
     // Если был передан образ картриджа — загружаем в слот A.
     // LoadCart() в ядре делает rfopen("CARTA.ROM"), поэтому даём стабу
     // валидный источник через msx_compat_set_cart() (буфер в памяти).
@@ -192,7 +231,8 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
         // StartMSX уже загрузил системные картриджи (MSXDOS2 и т.д.),
         // но пользовательский ROMName[0]="CARTA.ROM" грузится ТОЛЬКО
         // в StartMSX (строка 592). Он уже выполнен. Поэтому повторно:
-        LoadCart("CARTA.ROM", 0, ROMGUESS(0) | ROMTYPE(0));
+        int lr = LoadCart("CARTA.ROM", 0, ROMGUESS(0) | ROMTYPE(0));
+        printf("MSX: LoadCart -> %d (%u КБ)\n", lr, (unsigned)(size >> 10));
     }
 
     printf("MSX: Mode=%08X RAM=%d VRAM=%d\n", (unsigned)Mode, RAMPages, VRAMPages);
@@ -248,9 +288,9 @@ static int hid_to_fmsx(uint8_t sc) {
     case 0x5D: return KBD_NUMDOT;  case 0x5F: return KBD_NUMMUL;
     case 0x60: return KBD_NUMMINUS; case 0x61: return KBD_NUMPLUS;
     case 0x62: return KBD_NUMDIV;
-    case 0xE0: return KBD_SHIFT; case 0xE4: return KBD_SHIFT;
-    case 0xE1: return KBD_CONTROL; case 0xE5: return KBD_CONTROL;
-    case 0xE2: return KBD_GRAPH;   case 0xE6: return KBD_GRAPH;
+    case 0xE0: return KBD_CONTROL; case 0xE4: return KBD_CONTROL;   /* L/R Ctrl  */
+    case 0xE1: return KBD_SHIFT;   case 0xE5: return KBD_SHIFT;     /* L/R Shift */
+    case 0xE2: return KBD_GRAPH;   case 0xE6: return KBD_GRAPH;     /* L/R Alt → GRAPH */
     default: return -1;
     }
 }
@@ -269,8 +309,17 @@ void msx_run_frame(void) {
         KeyState[Keys[i][0]] |= Keys[i][1];
     }
 
-    // 2) Модификаторы (из первого байта boot-отчёта)
+    // 2) Сырые сканкоды USB (обновляет boot-отчёт из USB)
+    uint8_t keys[8];
+    int n = usb_kbd_get_raw(keys, 8);
+
+    // 3) Модификаторы — из первого байта ТОГО ЖЕ свежего отчёта (r0.207:
+    //    раньше mods читались ДО get_raw и были на кадр позади)
     uint8_t mods = usb_kbd_get_mods();
+    {   /* r0.207: диагностика — видно в UART, доходит ли Shift (bit1/bit5) до ядра */
+        static uint8_t dbg_mods = 0xFF;
+        if (mods != dbg_mods) { dbg_mods = mods; printf("MSX: mods=%02X\n", (unsigned)mods); }
+    }
     if (mods & 0x02) { KeyState[6] &= ~0x01; } // LShift
     if (mods & 0x20) { KeyState[6] &= ~0x01; } // RShift
     if (mods & 0x01) { KeyState[6] &= ~0x02; } // LCtrl
@@ -278,9 +327,6 @@ void msx_run_frame(void) {
     if (mods & 0x04) { KeyState[6] &= ~0x04; } // LAlt → GRAPH
     if (mods & 0x40) { KeyState[6] &= ~0x04; } // RAlt → GRAPH
 
-    // 3) Сырые сканкоды USB
-    uint8_t keys[8];
-    int n = usb_kbd_get_raw(keys, 8);
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i]; // HID-сканкод (0x04='a', 0x28=Enter, и т.д.)
         int fmsx = hid_to_fmsx(sc);
@@ -288,6 +334,22 @@ void msx_run_frame(void) {
             KeyState[Keys[fmsx][0]] &= ~Keys[fmsx][1];
         }
     }
+
+    /* r0.208: выход по удержанию ESC (~0.9с) — из этого же отчёта */
+    {
+        int esc = 0;
+        for (int i = 0; i < n; i++) if (keys[i] == 0x29) esc = 1;
+        uint32_t now = h3_hs_timer_lo_us();
+        if (esc) {
+            if (!msx_esc_t0) msx_esc_t0 = now;
+            else if (now - msx_esc_t0 > 900000u) msx_exit_req = 1;
+        } else {
+            msx_esc_t0 = 0;
+        }
+    }
+
+    /* r0.208: heartbeat — понятно, жив ли host-цикл (печать каждые ~5 с) */
+    { static uint32_t dbg_fc = 0; if ((++dbg_fc % 300) == 0) printf("MSX: fc=%u\n", (unsigned)dbg_fc); }
 
     // 4) Запускаем Z80 до конца кадра. RunZ80 сам переустанавливает
 //    CPU.ICount через LoopZ80 (IPeriod) и выходит по INT_QUIT,
@@ -316,20 +378,24 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         return;
     }
     emu_set_border_color(0x00000000);
+    /* r0.210: MSX у нас PAL (YIS-503II, 50 Гц). emu_throttle гнал 60 Гц →
+     * гость шёл 1.2× и «рывками» (смена кадров 50↔60). Держим 50 Гц. */
+    uint16_t saved_period = emu_period_us;
+    emu_period_us = 20000;
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         msx_run_frame();
         emu_throttle();
-        // MSX выводит 256x212 (MSX2 NTSC) — скейлим по ширине экрана
-        // image_buffer_width = 272 (с бордюром), image_buffer_height = 228
         int vw = (int)image_buffer_width;
+        if (vw > EMU_W) vw = EMU_W;
         int vh = (int)image_buffer_height;
         emu_scale(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
         fb_flush();
-        if (emu_esc_hold()) goto exit;  // ESC удержание — выход
+        if (emu_esc_hold() || msx_exit_req) goto exit;  // r0.208: ESC-hold из отчёта ядра
     }
 exit:
+    emu_period_us = saved_period;   // r0.210: вернуть общий период
     msx_stop();
     fb_clear(); fb_flush();
 }

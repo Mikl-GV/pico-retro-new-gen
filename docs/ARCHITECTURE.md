@@ -336,19 +336,19 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (r0.198, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (r0.205, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` |
-| 0x40000000..0x403797A4 | `.text` + init_array (код 0x3797A4 ≈ 3.63 МБ) |
-| 0x403797C0..0x404B5908 | `.rodata` (0x13C148 ≈ 1.29 МБ) |
-| 0x404B91B0..0x40503654 | `.data` (0x04A4A4 ≈ 304 КБ, копируется из образа) |
-| 0x40503680..0x4200509C | `.bss` (`_bstart1.._bend1`, 0x1B01A1C ≈ 28.3 МБ, обнуляется в `startup.S`) |
-| 0x420050A0..0x438050A0 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (Snes9x/Handy/binjgb/NGP/Gearcoleco; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x438050A0 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
-| 0x43900000..0x4390071E | `.libh3_coherent` (reserved 1 МБ до 0x43A00000, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Начало помечается `mmu_mark_uncached(libh3_coherent_region)` |
+| 0x40000000..0x4038E644 | `.text` + init_array (код 0x38E644 ≈ 3.56 МБ) |
+| 0x4038E660..0x404F9830 | `.rodata` (0x16B1D0 ≈ 1.42 МБ) |
+| 0x404FD0D8..0x406BDA6C | `.data` (0x1C0994 ≈ 1.75 МБ, копируется из образа) |
+| 0x406BDA80..0x42302FEC | `.bss` (`_bstart1.._bend1`, 0x1C4556C ≈ 28.3 МБ, обнуляется в `startup.S`) |
+| 0x42303000..0x43B03000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (Snes9x/Handy/binjgb/NGP/Gearcoleco/mednafen; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x43B03000 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
+| 0x43C00000..0x43C0071E | `.libh3_coherent` (резерв 1 МБ до 0x43D00000, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Начало помечается `mmu_mark_uncached(libh3_coherent_region)` — **символ линкера, а не хардкод**: адрес уезжает при росте образа (r0.180 → 0x43900000, r0.201+PCE → 0x43C00000) |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена) |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
@@ -362,9 +362,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r0.198, `arm-none-eabi-readelf -SW`):** `.text` 0x3797A4 (3.63 МБ),
-`.rodata` 0x13C148 (1.29 МБ), `.data` 0x04A4A4 (304 КБ), `.bss` 0x1B01A1C (28.3 МБ),
-образ `h3_bare.bin` 5 256 788 Б.
+**Числа-размеры (r0.205, `arm-none-eabi-readelf -SW`):** `.text` 0x38E644 (3.56 МБ),
+`.rodata` 0x16B1D0 (1.42 МБ), `.data` 0x1C0994 (1.75 МБ), `.bss` 0x1C4556C (28.3 МБ),
+образ `h3_bare.bin` 7 068 268 Б.
 
 ## Загрузка
 
