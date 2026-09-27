@@ -228,6 +228,9 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         snprintf(g_rom_path, sizeof(g_rom_path), "game.z80");
     }
 
+    printf("FUSE: %s: %s (%u bytes)\n", g_model,
+           (rom && size) ? g_rom_path : "BASIC", (unsigned)size);
+
     fuse_retro_set_environment(host_environment);
     fuse_retro_set_video_refresh(host_video);
     fuse_retro_set_audio_sample(host_audio_sample);
@@ -254,7 +257,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_deinit();
         return;
     }
-    printf("FUSE: %s (%u bytes)\n", g_model, (unsigned)size);
+    printf("FUSE: loaded %s\n", g_model);
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
