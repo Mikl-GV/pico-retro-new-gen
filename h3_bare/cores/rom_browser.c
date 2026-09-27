@@ -107,6 +107,9 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
     // Выход из эмулятора: снова переинициализация геймпада — возвращаемся
     // в меню с чистым падом (полный TFT-рендер меню мог снова сорвать I2C).
     sega_pad_init();
+
+    // Игра окончилась — TFT снова жив (r162): снимаем «заморозку» CPU1.
+    *(volatile uint32_t*)0x74u = 0;
 }
 
 static void sort_entries(fat_entry_t *list, int n) {
@@ -531,7 +534,12 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     uint8_t* rom = 0;
                     uint32_t size = 0;
                     if (load_rom(path, sel_name, &rom, &size) == 0) {
-                        emu_clear_fb();
+// r162: «игра активна» — CPU1 замораживает TFT (SRAM 0x74), чтобы не
+    // трогать PA_DAT (RMW-гонка с Sega-падом). Выставляем ПОСЛЕ tft_help_show,
+    // чтобы справка успела отрисоваться; снимаем после выхода из эмулятора.
+    *(volatile uint32_t*)0x74u = 1;
+
+    emu_clear_fb();
                         run_emulator(sys_id, rom, size, sel_name);
                     } else {
                         fb_clear();

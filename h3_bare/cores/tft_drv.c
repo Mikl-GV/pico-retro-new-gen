@@ -1149,6 +1149,15 @@ void tft_core_main(void) {
         extern void led_heartbeat_cpu1(void);
         led_heartbeat_cpu1();
 
+        // r162: во время игры (SRAM-флаг 0x74, ставит core0 в rom_browser/main)
+        // CPU1 не трогает PA_DAT ВООБЩЕ — нет тач-скана, нет рендера, нет почты.
+        // Это полностью убирает RMW-гонку с Sega-падом внутри эмулятора (дисплей
+        // «заморожен», меню не нужно). Живой-индикатор (PL10, R_PIO) продолжает.
+        if (*(volatile uint32_t*)0x74u == 1) {
+            delay_ms(30);
+            continue;
+        }
+
         // Смена страницы справки по команде core0 (id или эпоха = перерисовать)
         // r120: читаем из SRAM-почты — .coherent между ядрами не работает.
         int cur = TFT_HELP_ID;

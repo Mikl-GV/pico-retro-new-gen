@@ -63,31 +63,38 @@ BOOL mute = TRUE;
 
 #define HOST_FPS 60
 
+// NGP/NGPC state — ФИЗИЧЕСКАЯ раскладка регистра 0x6F82 (см. железу NGPC):
+//   bit0=Up, bit1=Down, bit2=Left, bit3=Right, bit4=A, bit5=B, bit6=Start,
+//   bit7=Option(Select). Up=0x01 Down=0x02 Left=0x04 Right=0x08 A=0x10 B=0x20
+//   Start=0x40 Option=0x80.
+// r168: имена KEY_* в main.h RACE СДВИНУТЫ (называют Start=0x10 и т.д.) —
+// верить железу, а не им. Отсюда был «Start стреляет, B прыгает» в Metal Slug.
 static int ngp_input_state(void) {
     uint8_t raw[6];
     int n = usb_kbd_get_raw(raw, 6);
     unsigned char state = 0;
 
-    // Sega-геймпад: крестовина + A/B/Start/Mode->Select
+    // Sega-геймпад: крестовина + A/B + Start + Mode->Option
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) state |= 0x01;   // Up
     if (sp & 0x0002) state |= 0x02;   // Down
     if (sp & 0x0004) state |= 0x04;   // Left
     if (sp & 0x0008) state |= 0x08;   // Right
-    if (sp & 0x0010) state |= 0x10;   // Sega A -> A
-    if (sp & 0x0020) state |= 0x20;   // Sega B -> B
-    if (sp & 0x0080) state |= 0x80;   // Start
-    if (sp & 0x0800) state |= 0x40;   // Mode -> Select
+    if (sp & 0x0010) state |= 0x10;   // Sega A -> NGPC A
+    if (sp & 0x0020) state |= 0x20;   // Sega B -> NGPC B
+    if (sp & 0x0080) state |= 0x40;   // Sega Start -> NGPC Start
+    if (sp & 0x0800) state |= 0x80;   // Sega Mode -> NGPC Option (Select)
 
-    // Клавиатура -> NGP (ремап через Settings → Keyboard remap)
+    // Клавиатура -> NGP: та же раскладка (A=0x10, B=0x20, Start=0x40,
+    // Select=0x80); ремап через Settings → Keyboard remap.
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_UP, raw, n))    state |= 0x01;
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_DOWN, raw, n))  state |= 0x02;
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_LEFT, raw, n))  state |= 0x04;
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_RIGHT, raw, n)) state |= 0x08;
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_A, raw, n))     state |= 0x10;
     if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_B, raw, n))     state |= 0x20;
-    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_SELECT, raw, n)) state |= 0x40;
-    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_START, raw, n)) state |= 0x80;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_START, raw, n)) state |= 0x40;
+    if (remap_kbd_pressed(REMAP_PLAT_NGP, BTN_SELECT, raw, n)) state |= 0x80;
     return state;
 }
 

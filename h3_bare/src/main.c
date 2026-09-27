@@ -75,7 +75,7 @@ static int msx_launch_dialog(int has_dir) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r158 (15.2.1)";
+const char g_fw_version[] = "r169 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -83,7 +83,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r158 (15.2.1)\n");
+    uart_puts("build: TFT self-test r169 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -181,7 +181,9 @@ void main(void) {
         if (strcmp(id, "portfolio") == 0) {
             sega_pad_init();             // чистый пад перед входом
             tft_help_show("portfolio");
+            *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
             emu_run_portfolio(NULL, 0, name);
+            *(volatile uint32_t*)0x74u = 0;
             sega_pad_init();             // и после выхода
             continue;
         }
@@ -207,7 +209,9 @@ void main(void) {
             if (choice == 1) {
                 sega_pad_init();         // чистый пад перед входом
                 tft_help_show("msx");
+                *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
                 emu_run_msx(NULL, 0, name);    // BASIC
+                *(volatile uint32_t*)0x74u = 0;
                 sega_pad_init();         // и после выхода
             } else if (choice == 2) {
                 sega_pad_init();         // чистый пад перед браузером картриджей
