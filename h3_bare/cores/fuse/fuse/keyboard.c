@@ -338,21 +338,25 @@ keyboard_read( libspectrum_byte porth )
 void
 keyboard_press( keyboard_key_name key )
 {
-  struct key_bit *ptr;
-
-  ptr = g_hash_table_lookup( keyboard_data, &key );
-
-  if( ptr ) keyboard_return_values[ ptr->port ] &= ~( ptr->bit );
+  struct key_info *p;
+  for (p = keyboard_data_table; p->key != KEYBOARD_NONE; p++) {
+    if (p->key == key) {
+      keyboard_return_values[ p->bit.port ] &= ~( p->bit.bit );
+      break;
+    }
+  }
 }
 
 void
 keyboard_release( keyboard_key_name key )
 {
-  struct key_bit *ptr;
-
-  ptr = g_hash_table_lookup( keyboard_data, &key );
-
-  if( ptr ) keyboard_return_values[ ptr->port ] |= ptr->bit;
+  struct key_info *p;
+  for (p = keyboard_data_table; p->key != KEYBOARD_NONE; p++) {
+    if (p->key == key) {
+      keyboard_return_values[ p->bit.port ] |= p->bit.bit;
+      break;
+    }
+  }
 }
 
 int keyboard_release_all( void )
@@ -367,7 +371,10 @@ int keyboard_release_all( void )
 const keyboard_spectrum_keys_t*
 keyboard_get_spectrum_keys( input_key keysym )
 {
-  return g_hash_table_lookup( spectrum_keys, &keysym );
+  struct spectrum_keys_wrapper *p = spectrum_keys_table;
+  for (; p->input != INPUT_KEY_NONE; p++)
+    if (p->input == keysym) return &p->spectrum;
+  return NULL;
 }
 
 input_key

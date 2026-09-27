@@ -162,9 +162,11 @@ g_hash_table_lookup_node (GHashTable    *hash_table,
                           gconstpointer  key)
 {
   GHashNode **node;
-  
-  node = &hash_table->nodes
-    [(* hash_table->hash_func) (key) % HASH_TABLE_SIZE];
+  guint hv;
+
+  hv = (*hash_table->hash_func) (key);
+
+  node = &hash_table->nodes[hv % HASH_TABLE_SIZE];
 
   while( *node ) {
     if( hash_table->key_equal_func ) {

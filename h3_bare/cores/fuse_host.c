@@ -91,6 +91,8 @@ static uint8_t  g_kbd[RETROK_LAST];         // RETROK -> нажата
 static int      g_fuse_exit_req = 0;
 static uint32_t g_fuse_esc_t0   = 0;
 
+static uint32_t g_dbg_key_t = 0;   // r0.234 TEMP: время последнего отчёта клавы (sticky-индикатор)
+
 static uint16_t hid_to_retrok(uint8_t sc)
 {
     switch (sc) {
@@ -321,6 +323,16 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_run();
         emu_throttle();
         emu_scale(EMU_FB_W, EMU_FB_H);
+        {   // r0.233 TEMP: индикаторы прямо на экране (HDMI FB 1024x600, XRGB8888)
+            static uint32_t bt0 = 0; static int blk = 0;
+            uint32_t now = h3_hs_timer_lo_us();
+            if (now - bt0 >= 1000000u) { bt0 = now; blk ^= 1; }
+            uint32_t* fb = (uint32_t*)0x5F900000u;
+            uint32_t c = blk ? 0x00FF0000u : 0x00000000u;   // лев.верх: мигание = экран обновляется
+            for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) fb[y * 1024 + x] = c;
+            uint32_t ck = (now - g_dbg_key_t < 500000u) ? 0x0000FF00u : 0x00000000u;  // прав.верх: зелёный = были отчёты клавы (sticky 0.5с)
+            for (int y = 0; y < 32; y++) for (int x = 1024 - 32; x < 1024; x++) fb[y * 1024 + x] = ck;
+        }
         fb_flush();
         if (emu_esc_hold() || g_fuse_exit_req) break;
     }
