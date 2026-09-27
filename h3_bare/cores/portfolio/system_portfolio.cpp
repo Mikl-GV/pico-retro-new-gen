@@ -1494,6 +1494,7 @@ extern "C" void pofo_render(void)
  * pofo counter_tick). Синхронизация по wall-clock, не по кадрам — иначе
  * DIP DOS дата/время летят (per-frame ++ делает дни/часы быстрыми). */
 static uint32_t pofo_counter_last_us = 0;
+static uint32_t pofo_timer_last_us = 0;   /* r0.205: аккумулятор системного тика IRQ0 */
 
 extern "C" void pofo_timer_tick(void)
 {
@@ -1503,6 +1504,19 @@ extern "C" void pofo_timer_tick(void)
         pofo_counter_last_us += 500000;
         m_counter++;
     }
+
+    /* r0.205: СИСТЕМНЫЙ ТАЙМЕР (IRQ0 -> INT 08h). Раньше бит таймера
+     * `m_ip |= 1` НИГДЕ не выставлялся — можно было только снять его ниже,
+     * поэтому doirq(0)/INT 08h не срабатывал НИ РАЗУ, а код, ждущий таймер
+     * (idle/HLT-циклы DIP DOS), «зависал». Тикаем по wall-clock ~18.2 Гц
+     * (стандартный BIOS-тик PC/DOS = 54945 мкс). Частота — константа,
+     * при необходимости легко подстроить. */
+    if (!pofo_timer_last_us) pofo_timer_last_us = now;
+    if ((now - pofo_timer_last_us) >= 54945u) {
+        pofo_timer_last_us = now;   /* не копим «догон» — достаточно факта тика */
+        m_ip |= 1;                  /* INT_TIMER pending */
+    }
+
     if (m_ip & m_ie) {
         m_ip &= ~1;
         doirq(0);

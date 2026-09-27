@@ -838,6 +838,7 @@ void exec86(uint32_t execloops) {
     reptype = 0; segoverride = 0;
     useseg = segregs[regds]; docontinue = 0;
     firstip = ip;
+    uint32_t pfxguard = 0;   /* r0.205: счётчик префиксов текущей инструкции */
     while (!docontinue) {
       segregs[regcs] = segregs[regcs] & 0xFFFF; ip = ip & 0xFFFF;
       savecs = segregs[regcs]; saveip = ip;
@@ -863,6 +864,13 @@ void exec86(uint32_t execloops) {
           docontinue = 1;
           break;
       }
+
+      /* r0.205: предохранитель от зависания — если исполнение попало в data
+       * (байты-префиксы 0x26 '&', 0x2E '.', 0x36 '6', 0x3E '>', 0xF2/0xF3
+       * идут подряд), while (!docontinue) крутился бы БЕСКОНЕЧНО (лимит
+       * execloops не работает внутри одной «инструкции»). После 32 префиксов
+       * принудительно выходим и трактуем опкод как обычный (no-op в default). */
+      if (++pfxguard > 32) break;
     }
     totalexec++;
     //printf("%04X:%04X %02X\n", segregs[regcs], ip, opcode);
