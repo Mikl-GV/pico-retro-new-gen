@@ -20,7 +20,7 @@
 | 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
 | 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты; r0.211: джойстик/50Гц/BPal/ESC) | fMSX 6.0 |
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
-| 15 | ZX Spectrum | Z80 | 🔲 план | — |
+| 15 | ZX Spectrum | Z80 | ✅ работает (r0.213; меню model→ROM/.z80/.sna или BASIC) | fuse-libretro (h3_bare/cores/fuse/) |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
