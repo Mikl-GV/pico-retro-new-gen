@@ -162,7 +162,9 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
 
 static void host_log(enum retro_log_level level, const char* fmt, ...)
 {
-    (void)level; (void)fmt;
+    (void)level;
+    if (!fmt) return;
+    printf("BKLOG: %s", fmt);   // r0.245 TEMP: видно, что делает ядро (загрузка ROM, ошибки)
 }
 
 static bool host_environment(unsigned cmd, void* data)
