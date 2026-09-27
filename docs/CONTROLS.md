@@ -58,17 +58,17 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 
 Геймпад Sega и клавиатура — **равноправные параллельные источники ввода** (r155). Маппинг от «сеговского эталона», у систем мапятся только существующие кнопки. **Правило проекта: пауза/подтверждение — Start, а не Mode (r155).**
 
-| Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 | Vectrex | Coleco | PC Engine |
-|------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|:-------:|:------:|:---------:|
-| ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик | D-Pad | D-Pad |
-| **A** | A | **Button 1** | A | A (огонь) | A | A | A | A | Fire | Fire | A | Кноп.1 | Fire 1 | **I** |
-| **B** | B | **Button 2** | B | B | B | B | B | B | — | Pause | B | Кноп.2 | Fire 2 | **II** |
-| **C** | C | — | L | — | — | **L** | — | — | — | — | — | — | — | — |
-| **X** | X | — | X | — | — | **R** | Option 1 | — | — | — | — | Кноп.3 | — | **Select** |
-| **Y** | Y | — | Y | — | — | — | Option 2 | — | — | — | — | Кноп.4 | — | — |
-| **Z** | Z | — | R | — | — | — | — | — | — | — | Pause | — | — | — |
-| **Start** | Start | Start¹ | Start | Start | Start | Start | **Pause** | Start | **Game Reset** | Start | Start | — | keypad 8 | **Run** |
-| **Mode** | Mode | —² | Select | Select | Select | Select | — | Select | Select | **# (keypad)** | Select | — | **# (keypad)** | — |
+| Кнопка Sega | MD | SMS/GG | SNES | NES | Game Boy | GBA | Lynx | NGP | A2600 | A5200 | A7800 | Vectrex | Coleco | PC Engine | **ZX Spectrum** |
+|------------|:---:|:------:|:---:|:--:|:--------:|:---:|:---:|:---:|:-----:|:-----:|:-----:|:-------:|:------:|:---------:|:---:|
+| ↑↓←→ | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик | D-Pad | D-Pad | Кемпстон |
+| **A** | A | **Button 1** | A | A (огонь) | A | A | A | A | Fire | Fire | A | Кноп.1 | Fire 1 | **I** | Fire |
+| **B** | B | **Button 2** | B | B | B | B | B | B | — | Pause | B | Кноп.2 | Fire 2 | **II** | Fire 2 |
+| **C** | C | — | L | — | — | **L** | — | — | — | — | — | — | — | — | — |
+| **X** | X | — | X | — | — | **R** | Option 1 | — | — | — | — | Кноп.3 | — | **Select** | X |
+| **Y** | Y | — | Y | — | — | — | Option 2 | — | — | — | — | Кноп.4 | — | — | Y |
+| **Z** | Z | — | R | — | — | — | — | — | — | — | Pause | — | — | — | — |
+| **Start** | Start | Start¹ | Start | Start | Start | Start | **Pause** | Start | **Game Reset** | Start | Start | — | keypad 8 | **Run** | **Enter** |
+| **Mode** | Mode | —² | Select | Select | Select | Select | — | Select | Select | **# (keypad)** | Select | — | **# (keypad)** | — | **Space** |
 
 ¹ SMS/GG: Start — пауза (NMI) и запуск.
 ² Mode на SMS/GG больше **не** дублирует паузу (r155) — пауза только Start.
@@ -76,6 +76,7 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 - В меню геймпад работает как клавиатура: D-Pad = навигация, **A/Start = Enter**, **B = ESC**. (Mode → S; r0.181: в браузере S = поиск ROM по букве).
 - Atari Portfolio — клавиатурный компьютер, геймпад **не подключён**.
 - **MSX**: Sega-пад = **джойстик** (D-Pad; A/C/Y/Start → Fire A, B/X/Mode → Fire B), клавиатура — полная (r0.211: `JOYTYPE=JOY_STICK`, оба порта, 50 Гц).
+- **ZX Spectrum (Fuse, r0.242)**: клавиатура — полная (`a–z`, `0–9`, Space, Enter, Shift=Caps Shift, Ctrl=Symbol Shift; ядро читает клавиши на порту 2). Пад: D-Pad + A/B/X/Y = Kempston, Start = Enter, Mode = Space. Выход — **удержание ESC ~0.9 с** (детект из того же отчёта, что читает ядро) или Start+Mode. Выбор модели и ROM/BASIC — в меню до запуска.
 - Меню читов убрано (r0.181) — чит-функция больше не открывается из браузера.
 
 ## Джойстик: внутреннее устройство (читать перед разработкой)

@@ -20,12 +20,12 @@
 | 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
 | 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты; r0.211: джойстик/50Гц/BPal/ESC) | fMSX 6.0 |
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
-| 15 | ZX Spectrum | Z80 | ✅ работает (r0.213; меню model→ROM/.z80/.sna или BASIC) | fuse-libretro (h3_bare/cores/fuse/) |
+| 15 | ZX Spectrum | Z80 | ✅ работает (r0.242: 48K..TS2068, ввод/печать, меню model→ROM/.z80/.sna или BASIC, ESC-выход) | fuse-libretro (h3_bare/cores/fuse/) |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
-| 20 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
+| 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | 🚧 БК-0010 — в работе (следующий); остальные — план | — |
 | 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
@@ -51,12 +51,13 @@
 
 ## Очередь работ
 
-1. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
-2. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
-3. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
-4. **PC Engine / TurboGrafx** — **готово (r0.202)**: Beetle PCE Fast (mednafen_pce_fast) vendored в `h3_bare/cores/pce_fast/`, host `pce_host.c` (libretro-shell без libretro-common), HuCard only, звук отключён, CD заглушен (`pce_stubs.c`). Проверено на железе. Осталось (необязательно): звук (PSG/Blip → I2S), CD, TFT-справка.
-5. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
-6. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
+1. **БК-0010 / БК-0011М** (К1801ВМ1, 16-бит PDP-11-подобный) — **текущая задача**. Референсы: `pico-bk` (Мурмулятор, RP2040), emu80 (исходники), libretro. Ядро — CPU К1801ВМ1 (аналог PDP-11), видео 512×256 моно, ROM БК-0010.01 (встроенный Бейсик/Монитор; ROM вшивать/класть на SD). План: vendor ядра → host по образцу PCE/Fuse (EMU_FB 320×240 → emu_scale), меню (система уже в `systems.h` как PLANNED), ввод (клавиатура USB + Sega-пад как джойстик), TFT-справка.
+2. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
+3. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
+4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
+5. **PC Engine / TurboGrafx** — **готово (r0.202)**: Beetle PCE Fast (mednafen_pce_fast) vendored в `h3_bare/cores/pce_fast/`, host `pce_host.c` (libretro-shell без libretro-common), HuCard only, звук отключён, CD заглушен (`pce_stubs.c`). Проверено на железе. Осталось (необязательно): звук (PSG/Blip → I2S), CD, TFT-справка.
+6. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
+7. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
 
 ## Перспективы (идеи, не начаты)
 
@@ -77,7 +78,7 @@
 - Sega-геймпад 6-button через PCF8574@0x20 (меню + игры)
 - HDMI 1024×600 @ 60 Гц
 - UART-отладка 115200 8N1
-- 16 эмуляторов в одном бинаре (~7.07 МБ, r0.205; +PC Engine r0.202)
+- 17 эмуляторов в одном бинаре (~8.35 МБ, r0.242; +ZX Spectrum/Fuse)
 - GPT/поддержка нескольких FAT-разделов, авто-поиск /roms
 ## Отложено на последний этап отладки
 
