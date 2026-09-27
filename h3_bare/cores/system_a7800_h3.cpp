@@ -58,7 +58,7 @@ void maria_LineReady(const byte* line, int length) {
             EMU_FB[y * EMU_W + x] = a7_pal_rgb565[line[x] & 0xFF];
 }
 
-static void a7_build_input(byte* input, uint8_t pad) {
+static void a7_build_input(byte* input, uint16_t pad) {
     input[0] = (pad & 0x80) ? 0 : 1;
     input[1] = (pad & 0x40) ? 0 : 1;
     input[2] = (pad & 0x20) ? 0 : 1;
@@ -66,9 +66,10 @@ static void a7_build_input(byte* input, uint8_t pad) {
     input[4] = (pad & 0x01) ? 0 : 1;
     input[5] = (pad & 0x02) ? 0 : 1;
     for (int i = 6; i < 12; i++) input[i] = 0;
-    input[12] = 0;
-    input[13] = (pad & 0x04) ? 0 : 1;
-    input[14] = 0;
+    // r174: Start -> Reset (запуск), Mode -> Select, Z -> Pause (корпусная)
+    input[12] = (pad & 0x08) ? 0 : 1;       // Sega Start -> Reset
+    input[13] = (pad & 0x04) ? 0 : 1;       // Mode -> Select
+    input[14] = (pad & 0x100) ? 0 : 1;      // Z -> Pause
     input[15] = 0;
     input[16] = 0;
 }
@@ -139,7 +140,7 @@ extern "C" void a7800_run_frame(void) {
     }
     prev_pause = pause_now;
 
-    a7_build_input(input, (uint8_t)pad);
+    a7_build_input(input, pad);   // r174: uint16 — Z (Pause) не режется кастом
     // RAW-читы: пишем байт каждый кадр в RAM 7800 (адреса < 0x4000)
     extern byte *memory_ram;
     int rc = cheats_raw_count();
