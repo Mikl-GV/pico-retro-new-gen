@@ -48,6 +48,34 @@ void fuse_retro_deinit(void);
 static const char* g_model = "Spectrum 48K";
 void fuse_set_model(const char* m) { if (m && m[0]) g_model = m; }
 
+// Список опций ядра (retro_variable[], отданный через SET_VARIABLES —
+// статичен в ядре, валиден весь сеанс).
+static const struct retro_variable* g_core_vars = 0;
+
+// r0.226: вернуть ДЕФОЛТ опции (первое значение после "; ") из списка ядра.
+// Раньше отдавали "" — ядро делает atoi("")=0 для fuse_emulation_speed →
+// эмуляция на 0% → звук вне диапазона → some_audio не ставится → retro_run
+// выжигает 10000 итераций на кадр («застрял на первом экране»).
+static const char* core_default_for(const char* key)
+{
+    static char buf[64];
+    if (!g_core_vars) return "";
+    for (const struct retro_variable* v = g_core_vars; v->key; v++) {
+        if (strcmp(v->key, key) == 0) {
+            const char* p = strchr(v->value, ';');
+            if (!p) return "";
+            p++;
+            while (*p == ' ') p++;
+            size_t n = 0;
+            while (p[n] && p[n] != '|' && n < sizeof(buf) - 1) n++;
+            memcpy(buf, p, n);
+            buf[n] = 0;
+            return buf;
+        }
+    }
+    return "";
+}
+
 // ---- ROM (для ROM-варианта) ----
 static const void* g_rom = 0;
 static uint32_t    g_rom_size = 0;
@@ -100,11 +128,6 @@ static void host_update_input(void)
 
     uint8_t keys[8];
     int n = usb_kbd_get_raw(keys, 8);
-    // r0.224 (TEMPORARY): видны ли отчёты клавиатуры в host-слое
-    { static int dbg_k = 0; if (n > 0 && dbg_k < 6) { dbg_k++;
-        printf("FUSE: k n=%d %02X %02X %02X %02X %02X %02X\n", n,
-               (unsigned)keys[0], (unsigned)keys[1], (unsigned)keys[2],
-               (unsigned)keys[3], (unsigned)keys[4], (unsigned)keys[5]); } }
     for (int i = 0; i < n; i++) {
         uint16_t rk = hid_to_retrok(keys[i]);
         if (rk) g_kbd[rk] = 1;
@@ -169,10 +192,6 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; ret
 // Кадр RGB565 (pitch в байтах) -> EMU_FB 320x240 (с downscale для Timex 640x480).
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
-    // r0.224 (TEMPORARY): диагностика — идут ли кадры из ядра после первого
-    { static int dbg_v = 0; if (dbg_v < 6) { dbg_v++;
-        if (data) printf("FUSE: v %ux%u pitch=%u\n", width, height, (unsigned)pitch);
-        else      printf("FUSE: v NULL\n"); } }
     if (!data) return;
     uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
     const uint16_t* src = (const uint16_t*)data;
@@ -208,9 +227,8 @@ static bool host_environment(unsigned cmd, void* data)
             if (strcmp(v->key, "fuse_machine") == 0) {
                 v->value = g_model;
             } else {
-                // r0.213: НЕЛЬЗЯ отдавать false с value=NULL — Fuse/coreopt()
-                // делает strstr(option, NULL) → Data Abort на чтении 0.
-                v->value = "";
+                // r0.226: дефолт из списка ядра (не ""), см. core_default_for
+                v->value = core_default_for(v->key);
             }
             return true;
         }
@@ -224,7 +242,9 @@ static bool host_environment(unsigned cmd, void* data)
         if (l) l->log = host_log;
         return true;
     }
-    case RETRO_ENVIRONMENT_SET_VARIABLES:            return true;
+    case RETRO_ENVIRONMENT_SET_VARIABLES:
+        g_core_vars = (const struct retro_variable*)data;   // r0.226: дефолты опций
+        return true;
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:      return true;
     case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:       return true;
     case RETRO_ENVIRONMENT_SET_GEOMETRY:             return true;
@@ -297,19 +317,11 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_fuse_exit_req = 0;
     g_fuse_esc_t0 = 0;
 
-    printf("FUSE: loop enter\n");   // r0.225 TEMP
-
-    uint32_t last_beat = 0;
     for (;;) {
         fuse_retro_run();
-        { static int dbg_r = 0; if (dbg_r < 4) { dbg_r++; printf("FUSE: run ok\n"); } }  // r0.225 TEMP
         emu_throttle();
         emu_scale(EMU_FB_W, EMU_FB_H);
         fb_flush();
-        {   // r0.225 TEMP: heartbeat раз в секунду — жив ли цикл
-            uint32_t now = h3_hs_timer_lo_us();
-            if (now - last_beat >= 1000000u) { last_beat = now; printf("FUSE: beat\n"); }
-        }
         if (emu_esc_hold() || g_fuse_exit_req) break;
     }
 

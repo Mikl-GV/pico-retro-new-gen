@@ -189,7 +189,7 @@ FUSE_INC  := -I$(FUSE_ROOT) -I$(FUSE_ROOT)/fuse -I$(FUSE_ROOT)/libspectrum \
     -I$(FUSE_ROOT)/src -I$(FUSE_ROOT)/deps/libretro-common/include \
     -I$(FUSE_ROOT)/zlib -I$(FUSE_ROOT)/bzip2 -I$(FUSE_ROOT)/shim
 FUSEFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
-    -Wall -O1 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+    -Wall -O1 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
     -D__GNU_LIBRARY__ '-DPRId64="lld"' '-DPRIu64="llu"' '-DPRIx64="llx"' \
     '-DPRIX64="llX"' '-DPRIuPTR="u"'
 include $(TOP)h3_bare/cores/fuse/fuse_rules.mk
