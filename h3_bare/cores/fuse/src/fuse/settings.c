@@ -1,0 +1,35 @@
+#include <externs.h>
+
+// Rename settings_init so we can extend it
+
+#define settings_init fuse_settings_init
+#include <fuse/settings.c>
+#undef settings_init
+
+// Replacement function for settings_init so we can change the settings before
+// the emulation starts without having to build an extensive argv.
+int settings_init(int *first_arg, int argc, char **argv)
+{
+   int res = fuse_settings_init(first_arg, argc, argv);
+  
+   settings_current.detect_loader = 1;
+   
+   settings_current.printer = 0;
+   
+   settings_current.bw_tv = 0;
+
+   settings_current.sound = 1;
+   settings_current.sound_force_8bit = 0;
+   settings_current.sound_freq = 44100;
+   settings_current.sound_load = 1;
+   
+   settings_current.joy_kempston = 1;
+   /* settings_current.fuller is deliberately left at Fuse's default of 0 and
+      driven by the fuse_fuller_box core option from update_variables() below.
+      Forcing it on here left the Fuller Box AY permanently decoded at ports
+      0x3f/0x5f on every machine, so plain 48K titles that poke those ports
+      (Vixen, Andy Capp, ...) got AY music no real 48K would have produced. */
+   
+   update_variables(1);
+   return res;
+}

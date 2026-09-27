@@ -69,7 +69,7 @@ static const system_entry_t systems[] = {
     SYS("toaplan",    "Toaplan 1",                    ARCADE,   PLANNED),
 
     // -- Компьютеры --
-    SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, PLANNED),
+    SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),
     SYS_BUILTIN("msx",  "MSX / Yamaha YIS-503II",  COMPUTER, READY),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
     SYS("bk0010",     "BK-0010/0011M",               COMPUTER, PLANNED),

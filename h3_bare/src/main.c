@@ -73,9 +73,74 @@ static int msx_launch_dialog(int has_dir) {
     }
 }
 
+// ---- ZX Spectrum (Fuse): выбор модели, затем ROM / BASIC ----
+static const char* const zx_models[] = {
+    "Spectrum 48K", "Spectrum 128K", "Spectrum +2", "Spectrum +2A",
+    "Spectrum +3", "Spectrum +3e", "Spectrum 48K (NTSC)", "Spectrum SE",
+    "Timex TC2048", "Timex TC2068", "Timex TS2068", "Spectrum 16K",
+};
+#define ZX_MODEL_COUNT ((int)(sizeof(zx_models) / sizeof(zx_models[0])))
+
+extern void fuse_set_model(const char* m);
+extern void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
+
+static int zx_model_dialog(void) {
+    int sel = 0, scroll = 0, dirty = 1;
+    const int per = 13;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "ZX Spectrum", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            for (int i = 0; i < per && scroll + i < ZX_MODEL_COUNT; i++) {
+                int idx = scroll + i, y = 120 + i * 24;
+                uint32_t clr = (idx == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (idx == sel) fb_fill_rect(50, y - 2, 500, 22, 0x00222222);
+                fb_puts(70, y, zx_models[idx], clr);
+            }
+            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; if (sel < scroll) scroll = sel; dirty = 1; }
+        else if (k == 81) { if (sel < ZX_MODEL_COUNT - 1) sel++; if (sel >= scroll + per) scroll = sel - per + 1; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
+// 1 = ROM (браузер /roms/zxspectrum), 2 = BASIC, 0 = назад
+static int zx_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "ZX Spectrum: load", 2, 0x00FFAA00);
+            const char* opts[2] = { "1. ROM (snapshot .z80/.sna)", "2. BASIC" };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 600, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return sel + 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.211 (15.2.1)";
+const char g_fw_version[] = "r0.212 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -83,7 +148,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r0.211 (15.2.1)\n");
+    uart_puts("build: TFT self-test r0.212 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -231,6 +296,29 @@ void main(void) {
                 tft_help_show("msx");
                 rom_browser_run("msx", name, "msx");
             }
+            continue;
+        }
+
+        // ZX Spectrum: выбор модели -> ROM (.z80/.sna) или BASIC
+        if (strcmp(id, "zxspectrum") == 0) {
+            int m = zx_model_dialog();
+            if (m < 0) continue;
+            fuse_set_model(zx_models[m]);
+            int src = zx_source_dialog();
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("zxspectrum");
+            if (src == 2) {                  // BASIC
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_fuse(NULL, 0, "basic");
+                usb_wait_release_all();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // ROM через браузер (0x74 ставит run_emulator)
+                rom_browser_run("zxspectrum", name, "zxspectrum");
+            }
+            sega_pad_init();
             continue;
         }
 

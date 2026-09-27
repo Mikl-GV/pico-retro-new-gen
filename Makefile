@@ -125,7 +125,80 @@ $(BUILD)/pce_stubs.o: $(TOP)h3_bare/cores/pce_stubs.c | $(BUILD)
 .PHONY: pce-obj
 pce-obj: $(PCE_OBJ)
 
-# Vectrex (vecx)
+# ---- ZX Spectrum (Fuse / fuse-libretro) ----
+# Vendored в h3_bare/cores/fuse/ (fuse + libspectrum + vendored libretro-common).
+# libretro-API и libretro-common символы collide с PCE — objcopy переименовывает
+# их в fuse_* (fuse_rename.sh) согласованно во всех fuse-объектах.
+FUSE_ROOT := $(TOP)h3_bare/cores/fuse
+FUSE_REL := bzip2/blocksort.c bzip2/bzlib.c bzip2/compress.c bzip2/crctable.c bzip2/decompress.c \
+ bzip2/huffman.c bzip2/randtable.c deps/libretro-common/compat/compat_posix_string.c \
+ deps/libretro-common/compat/compat_strcasestr.c deps/libretro-common/compat/compat_strl.c \
+ deps/libretro-common/compat/fopen_utf8.c deps/libretro-common/encodings/encoding_utf.c \
+ deps/libretro-common/file/file_path.c deps/libretro-common/file/file_path_io.c \
+ deps/libretro-common/lists/string_list.c deps/libretro-common/streams/file_stream.c \
+ deps/libretro-common/string/stdstring.c deps/libretro-common/time/rtime.c \
+ deps/libretro-common/vfs/vfs_implementation.c fuse/debugger/breakpoint.c fuse/debugger/command.c \
+ fuse/debugger/commandl.c fuse/debugger/commandy.c fuse/debugger/debugger.c \
+ fuse/debugger/disassemble.c fuse/debugger/event.c fuse/debugger/expression.c \
+ fuse/debugger/system_variable.c fuse/debugger/variable.c fuse/display.c fuse/event.c \
+ fuse/infrastructure/startup_manager.c fuse/input.c fuse/keyboard.c fuse/loader.c fuse/machine.c \
+ fuse/machines/machines_periph.c fuse/machines/pentagon1024.c fuse/machines/pentagon512.c \
+ fuse/machines/pentagon.c fuse/machines/scorpion.c fuse/machines/spec128.c fuse/machines/spec16.c \
+ fuse/machines/spec48.c fuse/machines/spec48_ntsc.c fuse/machines/specplus2a.c \
+ fuse/machines/specplus2.c fuse/machines/specplus3.c fuse/machines/specplus3e.c \
+ fuse/machines/spec_se.c fuse/machines/tc2048.c fuse/machines/tc2068.c fuse/machines/ts2068.c \
+ fuse/memory_pages.c fuse/mempool.c fuse/module.c fuse/periph.c fuse/peripherals/ay.c \
+ fuse/peripherals/covox.c fuse/peripherals/dck.c fuse/peripherals/disk/beta.c \
+ fuse/peripherals/disk/crc.c fuse/peripherals/disk/didaktik.c fuse/peripherals/disk/disciple.c \
+ fuse/peripherals/disk/disk.c fuse/peripherals/disk/fdd.c fuse/peripherals/disk/opus.c \
+ fuse/peripherals/disk/plusd.c fuse/peripherals/disk/trdos.c fuse/peripherals/disk/upd_fdc.c \
+ fuse/peripherals/disk/wd_fdc.c fuse/peripherals/flash/am29f010.c fuse/peripherals/fuller.c \
+ fuse/peripherals/ide/divide.c fuse/peripherals/ide/divmmc.c fuse/peripherals/ide/divxxx.c \
+ fuse/peripherals/ide/ide.c fuse/peripherals/ide/simpleide.c fuse/peripherals/ide/zxatasp.c \
+ fuse/peripherals/ide/zxcf.c fuse/peripherals/ide/zxmmc.c fuse/peripherals/if1.c \
+ fuse/peripherals/if2.c fuse/peripherals/joystick.c fuse/peripherals/kempmouse.c \
+ fuse/peripherals/melodik.c fuse/peripherals/multiface.c fuse/peripherals/printer.c \
+ fuse/peripherals/scld.c fuse/peripherals/sound/sp0256.c fuse/peripherals/sound/uspeech.c \
+ fuse/peripherals/speccyboot.c fuse/peripherals/specdrum.c fuse/peripherals/spectranet.c \
+ fuse/peripherals/ttx2000s.c fuse/peripherals/ula.c fuse/peripherals/usource.c \
+ fuse/phantom_typist.c fuse/pokefinder/pokefinder.c fuse/pokefinder/pokemem.c fuse/psg.c \
+ fuse/rectangle.c fuse/rzx.c fuse/slt.c fuse/sound/blipbuffer.c fuse/sound.c fuse/spectrum.c \
+ fuse/svg.c fuse/tape.c fuse/timer/native.c fuse/timer/timer.c fuse/uidisplay.c fuse/uimedia.c \
+ fuse/unittests/unittests.c fuse/z80/z80.c fuse/z80/z80_debugger_variables.c fuse/z80/z80_ops.c \
+ libspectrum/buffer.c libspectrum/bzip2.c libspectrum/creator.c libspectrum/crypto.c \
+ libspectrum/csw.c libspectrum/dck.c libspectrum/ide.c libspectrum/libspectrum.c \
+ libspectrum/memory.c libspectrum/microdrive.c libspectrum/mmc.c libspectrum/myglib/garray.c \
+ libspectrum/myglib/ghash.c libspectrum/myglib/gslist.c libspectrum/plusd.c libspectrum/pzx_read.c \
+ libspectrum/rzx.c libspectrum/sna.c libspectrum/snap_accessors.c libspectrum/snapshot.c \
+ libspectrum/snp.c libspectrum/sp.c libspectrum/symbol_table.c libspectrum/szx.c libspectrum/tap.c \
+ libspectrum/tape_accessors.c libspectrum/tape_block.c libspectrum/tape.c libspectrum/tape_set.c \
+ libspectrum/timings.c libspectrum/tzx_read.c libspectrum/tzx_write.c libspectrum/utilities.c \
+ libspectrum/warajevo_read.c libspectrum/wav.c libspectrum/z80.c libspectrum/z80em.c \
+ libspectrum/zip.c libspectrum/zlib.c libspectrum/zxs.c src/compat/dir.c src/compat/display.c \
+ src/compat/fat.c src/compat/file.c src/compat/joystick.c src/compat/keyboard.c src/compat/mouse.c \
+ src/compat/osname.c src/compat/paths.c src/compat/sound.c src/compat/timer.c src/compat/ui.c \
+ src/coreopt.c src/fuse/fuse.c src/fuse/options_enumerate.c src/fuse/settings.c src/fuse/snapshot.c \
+ src/fuse/ui.c src/fuse/utils.c src/libretro.c src/missing.c src/version.c zlib/adler32.c \
+ zlib/compress.c zlib/crc32.c zlib/deflate.c zlib/gzclose.c zlib/gzlib.c zlib/gzread.c \
+ zlib/gzwrite.c zlib/infback.c zlib/inffast.c zlib/inflate.c zlib/inftrees.c zlib/trees.c \
+ zlib/uncompr.c zlib/zutil.c
+FUSE_OBJ  := $(foreach f,$(FUSE_REL),$(BUILD)/fz_$(subst /,_,$(f)).o)
+FUSE_OBJ  += $(BUILD)/fuse_host.o $(BUILD)/fuse_stubs.o
+OBJ       += $(FUSE_OBJ)
+FUSE_INC  := -I$(FUSE_ROOT) -I$(FUSE_ROOT)/fuse -I$(FUSE_ROOT)/libspectrum \
+    -I$(FUSE_ROOT)/src -I$(FUSE_ROOT)/deps/libretro-common/include \
+    -I$(FUSE_ROOT)/zlib -I$(FUSE_ROOT)/bzip2 -I$(FUSE_ROOT)/shim
+FUSEFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
+    -Wall -O1 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+    -D__GNU_LIBRARY__ '-DPRId64="lld"' '-DPRIu64="llu"' '-DPRIx64="llx"' \
+    '-DPRIX64="llX"' '-DPRIuPTR="u"'
+include $(TOP)h3_bare/cores/fuse/fuse_rules.mk
+$(BUILD)/fuse_host.o: $(TOP)h3_bare/cores/fuse_host.c | $(BUILD)
+	$(CC) $(FUSEFLAGS) $(FUSE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/fuse_stubs.o: $(TOP)h3_bare/cores/fuse_stubs.c | $(BUILD)
+	$(CC) $(FUSEFLAGS) $(FUSE_INC) $(INCLUDES) -c -o $@ $<
+
+# Vectrex (vecx)# Vectrex (vecx)# Vectrex (vecx)
 VECX := $(TOP)h3_bare/cores/vecx
 VECX_INC := -I$(VECX)
 # e6809.c/vecx.c ждут INLINE (как в libretro Makefile.common: -DINLINE=inline)

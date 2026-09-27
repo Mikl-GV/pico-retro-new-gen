@@ -136,16 +136,6 @@ static void update_image_buffer_size(uint8_t screen_mode) {
 void PutImage(void) {
     update_image_buffer_size(ScrMode);
 
-    /* r0.206: диагностика режима — видно в UART при смене экрана MSX
-     * (проверяем рассинхрон ScrMode/iw, от которого возможны двоение/мусор). */
-    static int dbg_last_scr = -1;
-    if ((int)ScrMode != dbg_last_scr) {
-        dbg_last_scr = (int)ScrMode;
-        printf("MSX: ScrMode=%d iw=%u ih=%u VDP0=%02X VDP1=%02X\n",
-               (int)ScrMode, (unsigned)image_buffer_width, (unsigned)image_buffer_height,
-               (unsigned)VDP[0], (unsigned)VDP[1]);
-    }
-
     int iw = (int)image_buffer_width;     // 272 или 544
     int ih = (int)image_buffer_height;    // 228
     if (iw <= 0) iw = WIDTH;
@@ -316,10 +306,6 @@ void msx_run_frame(void) {
     // 3) Модификаторы — из первого байта ТОГО ЖЕ свежего отчёта (r0.207:
     //    раньше mods читались ДО get_raw и были на кадр позади)
     uint8_t mods = usb_kbd_get_mods();
-    {   /* r0.207: диагностика — видно в UART, доходит ли Shift (bit1/bit5) до ядра */
-        static uint8_t dbg_mods = 0xFF;
-        if (mods != dbg_mods) { dbg_mods = mods; printf("MSX: mods=%02X\n", (unsigned)mods); }
-    }
     if (mods & 0x02) { KeyState[6] &= ~0x01; } // LShift
     if (mods & 0x20) { KeyState[6] &= ~0x01; } // RShift
     if (mods & 0x01) { KeyState[6] &= ~0x02; } // LCtrl
@@ -347,9 +333,6 @@ void msx_run_frame(void) {
             msx_esc_t0 = 0;
         }
     }
-
-    /* r0.208: heartbeat — понятно, жив ли host-цикл (печать каждые ~5 с) */
-    { static uint32_t dbg_fc = 0; if ((++dbg_fc % 300) == 0) printf("MSX: fc=%u\n", (unsigned)dbg_fc); }
 
     // 4) Запускаем Z80 до конца кадра. RunZ80 сам переустанавливает
 //    CPU.ICount через LoopZ80 (IPeriod) и выходит по INT_QUIT,
