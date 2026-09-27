@@ -57,6 +57,12 @@ static char        g_rom_path[128] = "game.z80";
 static uint16_t g_joy = 0;                  // RETRO_DEVICE_ID_JOYPAD биты
 static uint8_t  g_kbd[RETROK_LAST];         // RETROK -> нажата
 
+// r0.220: выход по ESC-удержанию — из ТОГО ЖЕ отчёта, что читает ядро
+// (у Low-Speed донгла повторный usb_kbd_get_raw за кадр может отдать пусто,
+// и emu_esc_hold не накапливает 900 мс — паттерн msx_exit_req, r0.208).
+static int      g_fuse_exit_req = 0;
+static uint32_t g_fuse_esc_t0   = 0;
+
 static uint16_t hid_to_retrok(uint8_t sc)
 {
     switch (sc) {
@@ -94,9 +100,27 @@ static void host_update_input(void)
 
     uint8_t keys[8];
     int n = usb_kbd_get_raw(keys, 8);
+    // r0.224 (TEMPORARY): видны ли отчёты клавиатуры в host-слое
+    { static int dbg_k = 0; if (n > 0 && dbg_k < 6) { dbg_k++;
+        printf("FUSE: k n=%d %02X %02X %02X %02X %02X %02X\n", n,
+               (unsigned)keys[0], (unsigned)keys[1], (unsigned)keys[2],
+               (unsigned)keys[3], (unsigned)keys[4], (unsigned)keys[5]); } }
     for (int i = 0; i < n; i++) {
         uint16_t rk = hid_to_retrok(keys[i]);
         if (rk) g_kbd[rk] = 1;
+    }
+
+    // ESC-удержание (~0.9 с) из этого же отчёта (r0.220)
+    {
+        int esc = 0;
+        for (int i = 0; i < n; i++) if (keys[i] == 0x29) esc = 1;
+        uint32_t now = h3_hs_timer_lo_us();
+        if (esc) {
+            if (!g_fuse_esc_t0) g_fuse_esc_t0 = now;
+            else if (now - g_fuse_esc_t0 > 900000u) g_fuse_exit_req = 1;
+        } else {
+            g_fuse_esc_t0 = 0;
+        }
     }
     uint8_t mods = usb_kbd_get_mods();
     if (mods & 0x02) g_kbd[RETROK_LSHIFT] = 1;
@@ -127,11 +151,15 @@ static void host_input_poll(void) { host_update_input(); }
 static int16_t host_input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
     (void)index;
-    if (port != 0) return 0;
-    if (device == RETRO_DEVICE_JOYPAD)
-        return (g_joy & (1u << id)) ? 1 : 0;
+    // r0.223: ядро Fuse скан-клавиатуру делает на ПОРТУ 2 (retro_init ставит
+    // port0=Cursor, port1=Kempston, port2=Spectrum Keyboard в Src/libretro.c).
+    // Раньше отвечали 0 на всё, кроме port==0 → клавиатура не передавалась
+    // вообще («первый экран и всё», 128K не выбирается).
     if (device == RETRO_DEVICE_KEYBOARD)
         return (id < RETROK_LAST && g_kbd[id]) ? 1 : 0;
+    if (port > 1) return 0;
+    if (device == RETRO_DEVICE_JOYPAD)
+        return (g_joy & (1u << id)) ? 1 : 0;
     return 0;
 }
 
@@ -141,6 +169,10 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; ret
 // Кадр RGB565 (pitch в байтах) -> EMU_FB 320x240 (с downscale для Timex 640x480).
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
+    // r0.224 (TEMPORARY): диагностика — идут ли кадры из ядра после первого
+    { static int dbg_v = 0; if (dbg_v < 6) { dbg_v++;
+        if (data) printf("FUSE: v %ux%u pitch=%u\n", width, height, (unsigned)pitch);
+        else      printf("FUSE: v NULL\n"); } }
     if (!data) return;
     uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
     const uint16_t* src = (const uint16_t*)data;
@@ -262,13 +294,23 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
     emu_esc_hold_reset();
+    g_fuse_exit_req = 0;
+    g_fuse_esc_t0 = 0;
 
+    printf("FUSE: loop enter\n");   // r0.225 TEMP
+
+    uint32_t last_beat = 0;
     for (;;) {
         fuse_retro_run();
+        { static int dbg_r = 0; if (dbg_r < 4) { dbg_r++; printf("FUSE: run ok\n"); } }  // r0.225 TEMP
         emu_throttle();
         emu_scale(EMU_FB_W, EMU_FB_H);
         fb_flush();
-        if (emu_esc_hold()) break;
+        {   // r0.225 TEMP: heartbeat раз в секунду — жив ли цикл
+            uint32_t now = h3_hs_timer_lo_us();
+            if (now - last_beat >= 1000000u) { last_beat = now; printf("FUSE: beat\n"); }
+        }
+        if (emu_esc_hold() || g_fuse_exit_req) break;
     }
 
     fuse_retro_unload_game();

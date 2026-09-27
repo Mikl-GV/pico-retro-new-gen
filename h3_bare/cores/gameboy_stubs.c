@@ -1,6 +1,7 @@
 // gameboy_stubs.c — stubs для ядра binjgb на freestanding H3.
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 // fprintf — заглушка (emulator.c: PRINT_ERROR использует fprintf)
 int fprintf(void*, const char*, ...) { return 0; }
@@ -19,6 +20,7 @@ int fprintf(void*, const char*, ...) { return 0; }
 extern uint8_t _gb_heap_start[];
 extern uint8_t _gb_heap_end[];
 #define GB_HEAP_SIZE ((size_t)(_gb_heap_end - _gb_heap_start))
+#define GB_HDR_SZ 8u          /* заголовок блока: [size_t size; 4 паддинга], payload 8-выровнен */
 static size_t gb_heap_pos = 0;
 // адрес и размер НАИБОЛЕЕ ПОЗДНЕГО блока — для LIFO free/realloc
 static uint8_t* gb_last = 0;
@@ -28,13 +30,20 @@ static void* gb_alloc(size_t sz) {
     // r180: выравнивание 8 байт (было 4) — C++-ядра (Gearcoleco/Lynx/A7800)
     // делают 64-битные доступы (VFP vstr/ldrd): объекты по 4-mod-8 могли
     // давать Alignment Data Abort при SCTLR.A=1.
+    // Заголовок 8 байт хранит payload-размер — realloc() умеет копировать.
     sz = (sz + 7) & ~7;
-    if (gb_heap_pos + sz > GB_HEAP_SIZE) return 0;
-    void* p = (void*)(_gb_heap_start + gb_heap_pos);
-    gb_heap_pos += sz;
-    gb_last = (uint8_t*)p;
+    if (gb_heap_pos + sz + GB_HDR_SZ > GB_HEAP_SIZE) return 0;
+    uint8_t* p = _gb_heap_start + gb_heap_pos;
+    ((size_t*)p)[0] = sz;
+    gb_heap_pos += sz + GB_HDR_SZ;
+    uint8_t* payload = p + GB_HDR_SZ;
+    gb_last = payload;
     gb_last_size = sz;
-    return p;
+    return payload;
+}
+
+static size_t gb_blk_size(void* p) {
+    return ((size_t*)((uint8_t*)p - GB_HDR_SZ))[0];
 }
 
 void gb_heap_reset(void) {
@@ -57,22 +66,34 @@ void* calloc(size_t count, size_t sz) {
 }
 void* realloc(void* p, size_t sz) {
     if (!p) return gb_alloc(sz);
-    sz = (sz + 3) & ~3;
-    // LIFO: если p — последний блок, откатываем позицию и выделяем заново
-    if (gb_last && (uint8_t*)p == gb_last && gb_heap_pos >= gb_last_size) {
-        gb_heap_pos -= gb_last_size;
-        gb_last = 0;
-        gb_last_size = 0;
-        return gb_alloc(sz);
+    sz = (sz + 7) & ~7;
+    size_t old = gb_blk_size(p);
+    if (sz == old) return p;
+    // LIFO: p — последний блок → меняем размер на месте (bump не затирает),
+    // содержимое сохраняется.
+    if (gb_last && (uint8_t*)p == gb_last) {
+        if (sz > old) {
+            if (gb_heap_pos + (sz - old) > GB_HEAP_SIZE) return 0;
+            gb_heap_pos += sz - old;
+        } else {
+            gb_heap_pos -= old - sz;
+        }
+        ((size_t*)((uint8_t*)p - GB_HDR_SZ))[0] = sz;
+        gb_last_size = sz;
+        return p;
     }
-    // Не последний — bump (старый остаётся; для нашего использования это
-    // редкий случай — строка/список, рост некритичен)
-    return gb_alloc(sz);
+    // Не последний — новый блок + копия старых данных (r0.219: раньше
+    // bump-переезд терял содержимое → GArray/"растущие" буферы ломались)
+    void* np = gb_alloc(sz);
+    if (!np) return 0;
+    size_t cpy = old < sz ? old : sz;
+    memcpy(np, p, cpy);
+    return np;
 }
 void free(void* p) {
     // LIFO: освобождаем только если p — последний выделенный блок
     if (p && gb_last && (uint8_t*)p == gb_last) {
-        gb_heap_pos -= gb_last_size;
+        gb_heap_pos -= gb_last_size + GB_HDR_SZ;
         gb_last = 0;
         gb_last_size = 0;
     }

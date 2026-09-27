@@ -140,7 +140,7 @@ static int zx_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.215 (15.2.1)";
+const char g_fw_version[] = "r0.225 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -148,7 +148,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r0.215 (15.2.1)\n");
+    uart_puts("build: TFT self-test r0.225 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -313,6 +313,7 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
                 emu_run_fuse(NULL, 0, "basic");
                 usb_wait_release_all();
+                usb_kbd_restart_intr();
                 *(volatile uint32_t*)0x74u = 0;
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM через браузер (0x74 ставит run_emulator)

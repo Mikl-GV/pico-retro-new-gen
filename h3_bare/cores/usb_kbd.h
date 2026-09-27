@@ -6,6 +6,10 @@
 int  usb_kbd_init(void);
 int  usb_kbd_poll(void);       // клавиатура: scancode или 0
 int  usb_kbd_get_raw(uint8_t* buf, int max_buf);
+// КЭШ последнего успешно принятого boot-отчёта, БЕЗ нового IN-запроса:
+// у Low-Speed донгла второй опрос за кадр может отдать пусто («украсть»
+// отчёт у host-слоя ядра). Для детекта ESC-удержания (emu_esc_hold).
+int  usb_kbd_get_last(uint8_t* buf, int max_buf);
 // модификаторы из первого байта boot-отчёта: LCtrl=1 LShift=2 LAlt=4 LGui=8 RCtrl=0x10 RShift=0x20 RAlt=0x40 RGui=0x80
 uint8_t usb_kbd_get_mods(void);
 
@@ -31,6 +35,10 @@ void usb_kbd_wait_release(void);
 // эмулятора: зажатая кнопка выхода (ESC / Start+Mode) не должна «доехать»
 // в меню и прыгнуть курсор в первую строку. r0.204
 void usb_wait_release_all(void);
+// r0.222: перезапуск interrupt-IN цепочки клавиатуры (после эмулятора) —
+// быстрые поллы могли рассинхронизировать ED; меню после выхода должно
+// снова получать отчёты.
+void usb_kbd_restart_intr(void);
 
 // ---- Sega-геймпад: СВОЙ слой ввода (не через клавиатурные скан-коды) ----
 // usb_pad_update(): один аппаратный скан (sega_pad_scan) не чаще раза в

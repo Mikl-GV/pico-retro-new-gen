@@ -186,7 +186,12 @@ void emu_esc_hold_reset(void) {
 
 int emu_esc_hold(void) {
     uint8_t raw_keys[6];
-    int n = usb_kbd_get_raw(raw_keys, 6);
+    // r0.221: НИ ОДНОГО нового USB-чтения здесь! Два usb_kbd_get_raw за кадр
+    // (ядро + этот полл) пере-армят interrupt-IN TD, пока HC ещё обрабатывает
+    // его → ED-цепочка OHCI рассинхронизируется и клавиатура «замирает» во
+    // всех эмуляторах и в меню после выхода. Читаем ТОЛЬКО кэш последнего
+    // отчёта, который обновил host-слой ядра на этом кадре.
+    int n = usb_kbd_get_last(raw_keys, 6);
     int esc = 0;
     for (int i = 0; i < n; i++)
         if (raw_keys[i] == 41) { esc = 1; break; }

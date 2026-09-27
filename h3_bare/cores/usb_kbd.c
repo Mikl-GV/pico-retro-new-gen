@@ -440,20 +440,40 @@ static void kbd_intr_start(void) {
 // ВСЕ клавиши отпущенными (иначе в играх get_raw «залипали» нажатия).
 static uint32_t g_raw_fresh_t = 0;
 
+// r0.222: лимит частоты аппаратных поллов interrupt-IN. Каждый
+// usb_ohci_intr_in_poll пере-армит TD/ED «на лету»; пакетные поллы (зажатый
+// wait_release на выходе, быстрые кадры) рассинхронизируют ED-цепочку OHCI,
+// и клавиатура «замирает» во всех последующих чтениях (и в меню после
+// выхода). Не чаще одного полла за 1000 мкс, остальное отдаём кэшем.
+static uint32_t g_ls_poll_t = 0;
+static int     g_ls_poll_res = -1;
+
 static int kbd_read_report(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return -1;
     if (kbd_low_speed) {
-        if (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) {
-            g_raw_fresh_t = h3_hs_timer_lo_us();
-            return 0;
+        uint32_t now = h3_hs_timer_lo_us();
+        if (now - g_ls_poll_t >= 1000u) {
+            g_ls_poll_t = now;
+            g_ls_poll_res = (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) ? 0 : -1;
         }
-        return -1;
+        if (g_ls_poll_res == 0) g_raw_fresh_t = now;
+        return g_ls_poll_res;
     } else {
         if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
         cache_inv((uint32_t)g_kbd.report, 8);
         g_raw_fresh_t = h3_hs_timer_lo_us();
         return 0;
     }
+}
+
+// r0.222: перезапуск interrupt-IN цепочки ED/TD с нуля. Быстрые пакетные
+// поллы (wait_release/эмулятор) могут рассинхронизировать ED — клавиатура
+// «замирает». Зовём после выхода из эмулятора, чтобы меню снова получало
+// отчёты. Само устройство не перечисливается (g_kbd/report целы).
+void usb_kbd_restart_intr(void) {
+    kbd_intr_started = 0;
+    g_ls_poll_res = -1;
+    kbd_intr_start();
 }
 
 int usb_kbd_poll(void) {
@@ -521,6 +541,17 @@ int usb_kbd_get_raw(uint8_t* buf, int max_buf) {
 uint8_t usb_kbd_get_mods(void) {
     if (!g_kbd.found) return 0;
     return g_kbd.report[0]; // modifiers: bit0=LCtrl bit1=LShift bit2=LAlt bit3=LGui bit4=RCtrl bit5=RShift
+}
+
+int usb_kbd_get_last(uint8_t* buf, int max_buf) {
+    // r0.220: кэш последнего отчёта без нового IN — второй usb_kbd_get_raw
+    // за кадр у Low-Speed донгла «ворует» отчёт и может вернуть пусто,
+    // из-за чего ESC-удержание (emu_esc_hold) не накапливает 900 мс.
+    if (!g_kbd.found) return 0;
+    int cnt = 0;
+    for (int i = 2; i < 8 && cnt < max_buf; i++)
+        if (g_kbd.report[i]) buf[cnt++] = g_kbd.report[i];
+    return cnt;
 }
 
 // ---- Тач (Waveshare GT911, 0eef:0005) через GET_REPORT ----
