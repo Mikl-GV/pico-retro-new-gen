@@ -75,7 +75,7 @@ static int msx_launch_dialog(int has_dir) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.202 (15.2.1)";
+const char g_fw_version[] = "r0.204 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -83,7 +83,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r0.202 (15.2.1)\n");
+    uart_puts("build: TFT self-test r0.204 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -191,6 +191,7 @@ void main(void) {
             *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
             __asm volatile("dsb st" ::: "memory");   // r0.198: флаг виден CPU1 до входа
             emu_run_portfolio(NULL, 0, name);
+            usb_wait_release_all();                  // r0.204: кнопка выхода не «доезжает» в меню
             *(volatile uint32_t*)0x74u = 0;
             __asm volatile("dsb st" ::: "memory");
             sega_pad_init();             // и после выхода
@@ -221,6 +222,7 @@ void main(void) {
                 *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
                 __asm volatile("dsb st" ::: "memory");   // r0.198: флаг виден CPU1
                 emu_run_msx(NULL, 0, name);    // BASIC
+                usb_wait_release_all();        // r0.204: кнопка выхода не «доезжает» в меню
                 *(volatile uint32_t*)0x74u = 0;
                 __asm volatile("dsb st" ::: "memory");
                 sega_pad_init();         // и после выхода

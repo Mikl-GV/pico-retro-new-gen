@@ -259,7 +259,9 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     gp_cheats_compile(g_is_md);
     gp_cheats_apply();
 
-
+    return 1;   // r0.203: без этого функция «проваливалась» в конец и возвращала
+                // мусор → sms_init_game()/emu_run_megadrive() видели !=1 и выходили
+                // в меню (GCC -Wreturn-type: system_gpgx_h3.c:263)
 }
 
 // ---- вывод звука отключён: дрейним blip-буферы ядра, чтобы они

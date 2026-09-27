@@ -624,6 +624,15 @@ void usb_kbd_wait_release(void) {
     g_was_repeat = 0;
 }
 
+// Дождаться отпускания ВСЕХ кнопок (клавиатура + Sega-геймпад) при ВЫХОДЕ из
+// эмулятора: кнопка выхода держится ~0.9-1 с (ESC или Start+Mode), и без этой
+// паузы она «доезжает» в меню — Start→Enter активирует первый пункт, т.е.
+// пользователь «автоматически попадает в первую строку». r0.204
+void usb_wait_release_all(void) {
+    usb_kbd_wait_release();   // клавиатура (тишина 20 мс без новых сканкодов)
+    usb_pad_wait_release();   // геймпад (со сбросом кэша/фронтов; залип → re-init)
+}
+
 // Джой-фронт → сканкод меню (та же таблица, что была внутри usb_input_poll)
 static int pad_pressed_to_key(uint16_t pressed) {
     if (pressed & 0x0001) return 82;   // Up → Up
