@@ -516,8 +516,9 @@ void menu_help(void) {
         // страница 2: A5200
         "--- ATARI 5200 ---",
         "Arrows = D-Pad",
-        "Z = Fire  X = Pause",
-        "S = Start  Enter = Key3",
+        "Z = Fire   X = Pause/Fire2",
+        "Enter = Start  S = Key3",
+        "1..9,0 = keypad  (джой: Start=Start Mode=#)",
         "ESC hold=exit",
         0,
         // страница 3: A7800

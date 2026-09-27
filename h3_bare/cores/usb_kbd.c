@@ -435,13 +435,23 @@ static void kbd_intr_start(void) {
     kbd_intr_started = 1;
 }
 
+// r172: время последнего СВЕЖЕГО отчёта клавиатуры. Low-Speed донгл при
+// отжатии не шлёт пустой отчёт — просто замолкает; по тишине >25 мс считаем
+// ВСЕ клавиши отпущенными (иначе в играх get_raw «залипали» нажатия).
+static uint32_t g_raw_fresh_t = 0;
+
 static int kbd_read_report(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return -1;
     if (kbd_low_speed) {
-        return (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) ? 0 : -1;
+        if (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) {
+            g_raw_fresh_t = h3_hs_timer_lo_us();
+            return 0;
+        }
+        return -1;
     } else {
         if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
         cache_inv((uint32_t)g_kbd.report, 8);
+        g_raw_fresh_t = h3_hs_timer_lo_us();
         return 0;
     }
 }
@@ -492,7 +502,12 @@ int usb_kbd_get_raw(uint8_t* buf, int max_buf) {
     uint8_t cur[8];
     memcpy(cur, g_kbd.report, 8);
     if (kbd_read_report() < 0) {
-        memcpy(cur, g_kbd.report, 8);
+        // r172: нет свежего отчёта — Low-Speed донгл молчит при отжатии.
+        // Тишина >25 мс = клавиши отпущены (иначе «залипают» в играх).
+        if (h3_hs_timer_lo_us() - g_raw_fresh_t > 25000)
+            memset(cur, 0, 8);
+        else
+            memcpy(cur, g_kbd.report, 8);
     }
     int cnt = 0;
     for (int i = 2; i < 8 && cnt < max_buf; i++)

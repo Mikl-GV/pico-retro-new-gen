@@ -545,6 +545,17 @@ void at5_Step(void)
   else
       which->key[14] = 0;
 
+  // r171: keypad 1-9,0,*,# — из верхних битов k (задаёт host a5_GetPad).
+  // Индексы: key[0..8]=1..9, key[9]=0, key[10]='*', key[11]='#'.
+  {
+    static const unsigned long kp[12] = {0x20000,0x30000,0x40000,0x50000,0x60000,
+                                         0x70000,0x80000,0x90000,0xA0000,0x10000,
+                                         0xB0000,0xC0000};
+    int i;
+    for (i = 0; i < 12; i++)
+        which->key[i] = (k & kp[i]) ? 1 : 0;
+  }
+
 /*
   if (countKey) {
     if (prevKey >= 0) which->key[prevKey] = 1;

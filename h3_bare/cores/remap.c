@@ -166,11 +166,12 @@ static const uint16_t def_a2600[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_FIRE]=KBD_Z, [BTN_SELECT]=KBD_S, [BTN_RESET]=KBD_ENTER, [BTN_DIFF]=KBD_Q,
 };
-// A5200: Stick + Fire1/Fire2 + Start/Pause/Reset + Keypad
+// A5200: Stick + Fire1/Fire2 + Start/Pause + Keypad
+// r170: Enter = Start (а не Key3), S = Key3, P = Pause — привычная схема
 static const uint16_t def_a5200[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_FIRE]=KBD_Z, [BTN_FIRE2]=KBD_X,
-    [BTN_START]=KBD_S, [BTN_PAUSE]=KBD_P, [BTN_KEY3]=KBD_ENTER,
+    [BTN_START]=KBD_ENTER, [BTN_PAUSE]=KBD_P, [BTN_KEY3]=KBD_S,
 };
 // A7800: Stick + B1/B2 + Start + Select + корпусные Reset/Diff
 static const uint16_t def_a7800[BTN_MAX] = {

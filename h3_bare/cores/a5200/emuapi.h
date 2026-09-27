@@ -20,6 +20,20 @@
 #define MASK_KEY_USER4  0x2000
 #define MASK_OSKB       0x8000
 
+/* r171: keypad (1-9,0,*,#) через верхние биты k (не конфликтуют с JOY/USER) */
+#define MASK_KP0    0x00010000
+#define MASK_KP1    0x00020000
+#define MASK_KP2    0x00030000
+#define MASK_KP3    0x00040000
+#define MASK_KP4    0x00050000
+#define MASK_KP5    0x00060000
+#define MASK_KP6    0x00070000
+#define MASK_KP7    0x00080000
+#define MASK_KP8    0x00090000
+#define MASK_KP9    0x000A0000
+#define MASK_KP_STAR 0x000B0000
+#define MASK_KP_HASH 0x000C0000
+
 void *a5_Malloc(int size);
 void a5_Free(void *ptr);
 void a5_printf(const char *text);

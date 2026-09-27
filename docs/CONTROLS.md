@@ -40,12 +40,12 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 | **C** | — | — | — | — | — | — | — | — | — | **C** | **L** | Кноп.3 |
 | **V** | — | — | — | — | — | — | — | — | — | — | — | Кноп.4 |
 | **A** | — | — | — | — | — | — | — | — | — | **X** | **A** | — |
-| **S** | Select | Select | Start | Select | Pause | Select | Select | Option 1 | **Select** | **Y** | **X** | — |
+| **S** | Select | Select | **Key 3** | Select | Pause | Select | Select | Option 1 | **Select** | **Y** | **X** | — |
 | **D** | — | — | — | — | — | — | — | — | — | **Z** | — | — |
 | **Q** | — | — | — | — | — | — | **L** | — | — | Mode | — | — |
 | **W** | — | — | — | — | — | — | **R** | — | — | — | **R** | — |
 | Space | — | — | — | — | — | — | — | — | — | — | Select | — |
-| Enter | Start | Game Reset | Key 3 | Start | **Start** | Start | Start | Option 2 | **Start** | Start | Start | — |
+| Enter | Start | Game Reset | **Start** | Start | **Start** | Start | Start | Option 2 | **Start** | Start | Start | — |
 | ESC (удерж. ~1с)¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 | Start+Mode (джой, удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
@@ -67,7 +67,7 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 | **Y** | Y | — | X | — | — | — | Option 2 | — | — | — | — | Кноп.4 |
 | **Z** | Z | — | R | — | — | — | — | — | — | — | Pause | — |
 | **Start** | Start | Start¹ | Start | Start | Start | Start | **Pause** | Start | **Game Reset** | Start | Start | — |
-| **Mode** | Mode | —² | Select | Select | Select | Select | — | Select | Select | — | Select | — |
+| **Mode** | Mode | —² | Select | Select | Select | Select | — | Select | Select | **# (keypad)** | Select | — |
 
 ¹ SMS/GG: Start — пауза (NMI) и запуск.
 ² Mode на SMS/GG больше **не** дублирует паузу (r155) — пауза только Start.

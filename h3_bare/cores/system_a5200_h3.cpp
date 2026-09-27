@@ -90,7 +90,9 @@ extern "C" int a5_GetPad(void) {
     int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
 
-    // Sega-геймпад: крестовина, A=Fire, B=Pause, Start=Start, Mode=Start
+    // Sega-геймпад: крестовина, A=Fire, B=Pause,
+    // r173: Start = Start (запуск игры), Mode = keypad '#';
+    // keypad '0'/'#': '0' — клавиатура, '#' — Mode-джой/клавиатура.
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) k |= 0x0004;   // Up
     if (sp & 0x0002) k |= 0x0008;   // Down
@@ -98,8 +100,9 @@ extern "C" int a5_GetPad(void) {
     if (sp & 0x0008) k |= 0x0001;   // Right
     if (sp & 0x0010) k |= 0x0010;   // A -> Fire
     if (sp & 0x0020) k |= 0x0020;   // B -> Pause
-    if (sp & 0x0080) k |= 0x0040;   // Start (игровой)
-    // Mode не мапим: у A5200 нет своего Mode; Start уже на Start-кнопке.
+    if (sp & 0x0080) k |= MASK_KEY_USER2;   // Sega Start -> Start (запуск игры)
+    if (sp & 0x0800) k |= MASK_KP_HASH;     // Sega Mode -> keypad '#'
+    // keypad '0' на джое не мапим — цифры вводятся с клавиатуры (1..9,0).
 
     // Клавиатура -> A5200 (ремап через Settings → Keyboard remap)
     if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_UP, keys, n))    k |= 0x0004;
@@ -109,8 +112,16 @@ extern "C" int a5_GetPad(void) {
     if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_FIRE, keys, n))  k |= 0x0010;
     if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_FIRE2, keys, n)) k |= 0x0020;   // второй огонь
     if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_PAUSE, keys, n)) k |= 0x0020;   // Pause
-    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_START, keys, n)) k |= 0x0040;
-    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_KEY3, keys, n))  k |= 0x0080;
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_START, keys, n)) k |= 0x0040;   // Start (Enter)
+    if (remap_kbd_pressed(REMAP_PLAT_A5200, BTN_KEY3, keys, n))  k |= 0x0080;   // Key 3 (S)
+
+    // r171: клавиатурные цифры 1..9,0 -> keypad (сканкоды 30..39)
+    for (int i = 0; i < n; i++) {
+        uint8_t sc = keys[i];
+        if (sc >= 30 && sc <= 37) k |= (0x00020000u << (sc - 30)); // 1..8
+        else if (sc == 38) k |= MASK_KP9;                          // 9
+        else if (sc == 39) k |= MASK_KP0;                          // 0
+    }
     return k;
 }
 
