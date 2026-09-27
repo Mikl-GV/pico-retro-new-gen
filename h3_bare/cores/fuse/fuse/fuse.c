@@ -507,6 +507,7 @@ creator_register_startup( void )
 
 static void fuse_show_copyright(void)
 {
+#ifndef ALLWINNER_BARE_METAL
   printf( "\n" );
   fuse_show_version();
   printf(
@@ -520,11 +521,14 @@ static void fuse_show_copyright(void)
    "but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
    "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
    "GNU General Public License for more details.\n\n");
+#endif
 }
 
 static void fuse_show_version( void )
 {
+#ifndef ALLWINNER_BARE_METAL
   printf( "The Free Unix Spectrum Emulator (Fuse) version " VERSION ".\n" );
+#endif
 }
 
 static void fuse_show_help( void )
