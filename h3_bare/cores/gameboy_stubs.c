@@ -25,7 +25,10 @@ static uint8_t* gb_last = 0;
 static size_t   gb_last_size = 0;
 
 static void* gb_alloc(size_t sz) {
-    sz = (sz + 3) & ~3;
+    // r180: выравнивание 8 байт (было 4) — C++-ядра (Gearcoleco/Lynx/A7800)
+    // делают 64-битные доступы (VFP vstr/ldrd): объекты по 4-mod-8 могли
+    // давать Alignment Data Abort при SCTLR.A=1.
+    sz = (sz + 7) & ~7;
     if (gb_heap_pos + sz > GB_HEAP_SIZE) return 0;
     void* p = (void*)(_gb_heap_start + gb_heap_pos);
     gb_heap_pos += sz;
@@ -34,7 +37,14 @@ static void* gb_alloc(size_t sz) {
     return p;
 }
 
-void gb_heap_reset(void) { gb_heap_pos = 0; gb_last = 0; gb_last_size = 0; }
+void gb_heap_reset(void) {
+    // r0.196: затирание пула (r0.191) убрано — диагностический оверхед.
+    // Реальная причина краша Coleco была в рассинхроне blargg-символов
+    // между Lynx и Gearcoleco (gc_rename.sh), а не в содержимом пула.
+    gb_heap_pos = 0;
+    gb_last = 0;
+    gb_last_size = 0;
+}
 
 void* malloc(size_t sz) { return gb_alloc(sz); }
 void* calloc(size_t count, size_t sz) {

@@ -33,6 +33,7 @@ extern "C" {
 
 extern "C" int printf(const char* fmt, ...);
 extern "C" void gb_heap_reset(void);
+extern "C" uint32_t g_s9x_guard;   // r175: safety SNES (cpuexec.c)
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
@@ -116,7 +117,7 @@ static void build_input(void) {
     g_joydata = 0;
 
     // Sega-геймпад (PCF8574): крестовина + A/B/C/X/Y/Z/Start/Mode
-    // Таблица: A->A B->B C->L X->Y Y->X Z->R Start Mode->Select
+    // Таблица: A->A B->B C->L X->X Y->Y Z->R Start Mode->Select
     uint16_t sp = sega_pad_scan();
     if (sp & 0x0001) g_joydata |= SNES_UP_MASK;
     if (sp & 0x0002) g_joydata |= SNES_DOWN_MASK;
@@ -254,8 +255,8 @@ extern "C" void snes_run_frame(void) {
     // вызов S9xMainLoop вернётся сразу без эмуляции.
     IPPU.RenderThisFrame = true;
 
-    // ВНИМАНИЕ: safety-таймаута НЕТ. Если ROM зависнет, S9xMainLoop() может
-    // не вернуться до VBlank — кадр повиснет (симптом: «зависание SNES»).
+    // r175: safety-счётчик кадра (cpuexec.c: g_s9x_guard) — форсит finishedFrame
+    g_s9x_guard = 0;
     S9xMainLoop();
 
     // Звук отключён: дрейним сэмплы (S9xMixSamples), вывод не делаем

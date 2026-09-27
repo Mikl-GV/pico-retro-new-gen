@@ -26,6 +26,10 @@ void S9xMainLoop_NoSA1_NoSFX(void);
  * to propagate modifications to the SA1_NoSFX, NoSA1_SFX and NoSA1_NoSFX
  * versions.
  */
+/* r175: safety — если зависший ROM не даёт кадра, форсим finishedFrame,
+   чтобы S9xMainLoop вернул управление (выход/меню работают). */
+uint32_t g_s9x_guard = 0;
+
 void S9xMainLoop()
 {
    if (Settings.SA1)
@@ -96,6 +100,9 @@ void S9xMainLoop_SA1_SFX()
          CPU.PCAtOpcodeStart = CPU.PC;
          CPU.Cycles += CPU.MemSpeed;
          (*ICPU.S9xOpcodes [*CPU.PC++].S9xOpcode)();
+         g_s9x_guard++;
+         if (g_s9x_guard > 50000000) { finishedFrame = true; break; }   /* r175 */
+
 
          if (SA1.Executing)
             S9xSA1MainLoop();
@@ -184,6 +191,9 @@ void S9xMainLoop_SA1_NoSFX()
          CPU.PCAtOpcodeStart = CPU.PC;
          CPU.Cycles += CPU.MemSpeed;
          (*ICPU.S9xOpcodes [*CPU.PC++].S9xOpcode)();
+         g_s9x_guard++;
+         if (g_s9x_guard > 50000000) { finishedFrame = true; break; }   /* r175 */
+
 
          if (SA1.Executing)
             S9xSA1MainLoop();
@@ -272,6 +282,9 @@ void S9xMainLoop_NoSA1_SFX()
          CPU.PCAtOpcodeStart = CPU.PC;
          CPU.Cycles += CPU.MemSpeed;
          (*ICPU.S9xOpcodes [*CPU.PC++].S9xOpcode)();
+         g_s9x_guard++;
+         if (g_s9x_guard > 50000000) { finishedFrame = true; break; }   /* r175 */
+
          DO_HBLANK_CHECK_SFX();
 
 #ifdef LAGFIX
@@ -357,6 +370,9 @@ void S9xMainLoop_NoSA1_NoSFX()
          CPU.PCAtOpcodeStart = CPU.PC;
          CPU.Cycles += CPU.MemSpeed;
          (*ICPU.S9xOpcodes [*CPU.PC++].S9xOpcode)();
+         g_s9x_guard++;
+         if (g_s9x_guard > 50000000) { finishedFrame = true; break; }   /* r175 */
+
          DO_HBLANK_CHECK_NoSFX();
 
 #ifdef LAGFIX

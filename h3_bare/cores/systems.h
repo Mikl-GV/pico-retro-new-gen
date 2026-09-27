@@ -54,7 +54,7 @@ static const system_entry_t systems[] = {
     SYS_ALT("sms",    "Sega Master System",        NULL, "sms_roms", CONSOLE, READY),
     SYS("coleco",     "ColecoVision",                CONSOLE,  READY),
     SYS_ALT("nes",    "NES / Famicom (Dendy)",     NULL, "nes_roms", CONSOLE, READY),
-    SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  PLANNED),
+    SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  READY),
     SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),
     SYS("megadrive",  "Sega Mega Drive / Genesis",     CONSOLE,  READY),
     SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, READY),

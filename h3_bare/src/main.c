@@ -75,7 +75,7 @@ static int msx_launch_dialog(int has_dir) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r174 (15.2.1)";
+const char g_fw_version[] = "r0.202 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -83,7 +83,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: TFT self-test r174 (15.2.1)\n");
+    uart_puts("build: TFT self-test r0.202 (15.2.1)\n");
 
     led_init();
     led_set(0);
@@ -143,7 +143,13 @@ void main(void) {
     // инициализирован (нет клавиатуры), межъядерная связь через .coherent
     // не работала. SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
     extern void mmu_mark_uncached(uint32_t addr);
-    mmu_mark_uncached((uint32_t)0x43800000u);   // libh3_coherent_region (1 МБ)
+    // r0.198: адрес брали жёстко (0x43800000), но после r180 (*(.bss.*) в linker.ld)
+    // .bss вырос, _bend1 перешёл через 0x42000000, и .coherent сдвинулся на 1 МБ
+    // (nm: _coherent_start=0x43900000). Жёсткий адрес помечал ЧУЖУЮ секцию (хвост
+    // gb-пула), оставляя реальный .coherent кэшируемым. Берём символ линкера —
+    // он всегда совпадает с началом 1МБ-области (как H3_MEM_COHERENT_REGION).
+    extern unsigned char libh3_coherent_region[];
+    mmu_mark_uncached((uint32_t)libh3_coherent_region);
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
     if (h3_cpu_start(1, cpu1_entry) == 1)
@@ -155,6 +161,7 @@ void main(void) {
     // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может
     // содержать мусор, пока CPU1 ещё не стартовал — чистим заранее.
     *(volatile int32_t*)0x64u = 0;
+    __asm volatile("dsb st" ::: "memory");   // r0.198: закрыть запись до чтения CPU1
     for (;;) {
         tft_help_show(NULL);
         int sel = menu_run();
@@ -182,8 +189,10 @@ void main(void) {
             sega_pad_init();             // чистый пад перед входом
             tft_help_show("portfolio");
             *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
+            __asm volatile("dsb st" ::: "memory");   // r0.198: флаг виден CPU1 до входа
             emu_run_portfolio(NULL, 0, name);
             *(volatile uint32_t*)0x74u = 0;
+            __asm volatile("dsb st" ::: "memory");
             sega_pad_init();             // и после выхода
             continue;
         }
@@ -210,8 +219,10 @@ void main(void) {
                 sega_pad_init();         // чистый пад перед входом
                 tft_help_show("msx");
                 *(volatile uint32_t*)0x74u = 1;   // r162: игра — TFT (CPU1) заморожен
+                __asm volatile("dsb st" ::: "memory");   // r0.198: флаг виден CPU1
                 emu_run_msx(NULL, 0, name);    // BASIC
                 *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
                 sega_pad_init();         // и после выхода
             } else if (choice == 2) {
                 sega_pad_init();         // чистый пад перед браузером картриджей

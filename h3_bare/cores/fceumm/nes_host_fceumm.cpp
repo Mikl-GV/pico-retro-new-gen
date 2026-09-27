@@ -239,8 +239,13 @@ extern "C" void fceumm_run_frame(void) {
         uint32_t base = deemp ? (256u + ((unsigned)(deemp & 0x03) << 6)) : 0;
         const uint8_t* src = gfx + y * 256;
         uint16_t* dst = EMU_FB + y * EMU_W;
-        for (int x = 0; x < 256; x++)
-            dst[x] = nes_pal_rgb565[base + (src[x] & 0xFF)];
+        for (int x = 0; x < 256; x++) {
+            uint32_t idx = base + (src[x] & 0xFF);
+            // r180: палитра только 512 записей; deemp 1..3 дали индекс до 703 —
+            // OOB-чтение за буфер. Защитный фолбэк на базовую палитру.
+            if (idx >= 512) idx = src[x] & 0xFF;
+            dst[x] = nes_pal_rgb565[idx];
+        }
     }
 }
 

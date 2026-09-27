@@ -59,6 +59,8 @@ OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 sys
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,uart printf libc_min main cxx_runtime udelay h3_hs_timer h3_ccu h3 h3_smp h3_de2 h3_hdmi dw_hdmi h3_lcd))
+OBJ  += $(BUILD)/coleco_bios.o
+
 
 # MCUME
 MCUME := $(TOP)h3_bare/cores/mcume
@@ -86,6 +88,42 @@ OBJ  += $(addprefix $(BUILD)/,lynx_blip_buffer.o lynx_blip_stereo.o)
 # NGP
 NGP := $(TOP)h3_bare/cores/ngp
 OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o)
+
+# ---- PC Engine / TurboGrafx (Beetle PCE Fast / mednafen_pce_fast, HuCard) ----
+# Враппер (libretro.c) + движок vendored в h3_bare/cores/pce_fast/.
+# Host-слой (pce_host.c) — наш thin libretro-frontend (видео/ввод, без звука).
+# CD не поддерживается (pce_stubs.c глушит CD/libretro-common символы).
+# Коллизия log_cb с MSX снята objcopy-переименованием в pce_log_cb.
+PCE      := $(TOP)h3_bare/cores/pce_fast
+PCE_INC  := -I$(PCE) -I$(PCE)/libretro_inc \
+	-I$(PCE)/mednafen -I$(PCE)/mednafen/include -I$(PCE)/mednafen/hw_sound \
+	-I$(PCE)/mednafen/hw_cpu -I$(PCE)/mednafen/hw_misc -I$(PCE)/mednafen/pce_fast
+PCE_CFLAGS := $(CFLAGS) -DINLINE=inline -DMEDNAFEN_VERSION_NUMERIC=931 -DSTDC_HEADERS \
+	-D__STDC_LIMIT_MACROS -D__LIBRETRO__ -D_LOW_ACCURACY_ -DFRONTEND_SUPPORTS_RGB565 \
+	'-DPRId64="lld"' '-DPRIu64="llu"' '-DPRIx64="llx"' '-DPRIX64="llX"'
+PCE_TOP  := general file settings state mempatcher okiadpcm cdstream mednafen-endian
+PCE_PF   := huc6280 input psg vdc
+PCE_OBJ  := $(addprefix $(BUILD)/pce_m_,$(addsuffix .o,$(PCE_TOP)))
+PCE_OBJ  += $(addprefix $(BUILD)/pce_pf_,$(addsuffix .o,$(PCE_PF)))
+PCE_OBJ  += $(BUILD)/pce_ac.o $(BUILD)/pce_blip.o $(BUILD)/pce_wrap.o $(BUILD)/pce_host.o $(BUILD)/pce_stubs.o
+OBJ      += $(PCE_OBJ)
+$(BUILD)/pce_m_%.o: $(PCE)/mednafen/%.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pce_pf_%.o: $(PCE)/mednafen/pce_fast/%.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pce_ac.o: $(PCE)/mednafen/hw_misc/arcade_card/arcade_card.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pce_blip.o: $(PCE)/mednafen/sound/Blip_Buffer.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pce_wrap.o: $(PCE)/libretro.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@.tmp $<
+	$(OBJCOPY) --redefine-sym log_cb=pce_log_cb $@.tmp $@; rm -f $@.tmp
+$(BUILD)/pce_host.o: $(TOP)h3_bare/cores/pce_host.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pce_stubs.o: $(TOP)h3_bare/cores/pce_stubs.c | $(BUILD)
+	$(CC) $(PCE_CFLAGS) $(PCE_INC) $(INCLUDES) -c -o $@ $<
+.PHONY: pce-obj
+pce-obj: $(PCE_OBJ)
 
 # Vectrex (vecx)
 VECX := $(TOP)h3_bare/cores/vecx
@@ -528,3 +566,6 @@ help:
 	@echo "make clean      — удалить build/"
 	@echo "make sd         — SD-образ (нужен U-Boot SPL)"
 	@echo "make fel        — заливка через sunxi-fel"
+# Coleco OS-7 BIOS (вшитый, сборка из bios_data.S)
+$(BUILD)/coleco_bios.o: $(TOP)h3_bare/cores/gearcoleco/bios_data.S | $(BUILD)
+	$(AS) $(CFLAGS) -I$(TOP)h3_bare/cores/gearcoleco -x assembler-with-cpp -c -o $@ $<

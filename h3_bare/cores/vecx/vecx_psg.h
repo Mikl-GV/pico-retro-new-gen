@@ -25,6 +25,13 @@ SOFTWARE.
 #ifndef VECX_PSG_H
 #define VECX_PSG_H
 
+/* Размер буферов сэмплов (DAC/PSG): host выделяет vx_dacbuf/vx_psgbuf в
+ * vecx_host.c (SIZE_ABUF=4096, коммент «переполнение затаптывало BSS»).
+ * Единая константа для vecx.c и vecx_psg.c: кадр 30000 циклов даёт
+ * максимум 3750 сэмплов, но при изменении числа циклов/подключении звука
+ * писать ЗА границу нельзя. */
+#define VECX_ABUF_SIZE 4096
+
 typedef struct _psg_t {
     uint8_t reg[16]; // 16 Read/Write 8-bit registers
     uint8_t rlatch; // Register that is currently selected

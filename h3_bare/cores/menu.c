@@ -363,6 +363,7 @@ static int input_wait(void) {
         if (*(volatile int32_t*)0x64u) {
             int r = *(volatile int32_t*)0x64u;
             *(volatile int32_t*)0x64u = 0;
+            __asm volatile("dsb st" ::: "memory");   // r0.198: сброс виден CPU1
             if (r == -2) { printf("BTN: -2 Settings\n", r);
                 // r135: настройки открываем НА TFT (кнопки-строки)
                 extern void touch_settings_run(void);
@@ -445,6 +446,7 @@ int menu_run(void) {
             extern void tft_help_show(const char* sys_id);
             a2600_diff_expert = !a2600_diff_expert;
             *(volatile int32_t*)0x70u = a2600_diff_expert;
+            __asm volatile("dsb st" ::: "memory");   // r0.198: значение видно CPU1 до перерисовки
             tft_help_show(NULL);   // эпоха++ → TFT перерисует меню с новым значением
             continue;
         } else if (k == 40) {

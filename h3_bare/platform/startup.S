@@ -22,25 +22,53 @@ _vectors:
     ldr pc, =_hang            /* 0x18 IRQ */
     ldr pc, =_hang            /* 0x1C FIQ */
 
-/* ===== Вспомогательная функция: вывод буквы в UART0 THR (без ожидания) ===== */
-/* Вход: r0 = char. Портим r1. */
+/* ===== Вспомогательная функция: вывод буквы в UART0 THR =====
+ * r0 = char. Портим r1, r2, r3.
+ * r0.184: ждём готовности TX FIFO (USR.bit1), но НЕ дольше ~100K итераций:
+ * если передатчик почему-то встал, не вешаем обработчик исключения —
+ * строка D: должна дойти до конца (DFSR/LR/SCTLR).
+ */
 .section .text
 .global uart_dbg
 uart_dbg:
-    ldr r1, =0x01C28000
+    ldr r1, =0x01C2807C      /* UART0_USR */
+    movw r2, #0xFFFF         /* таймаут ~65K итераций */
+0:  ldr r3, [r1]
+    tst r3, #2               /* TX FIFO not full */
+    bne 2f
+    subs r2, r2, #1
+    bne 0b
+2:  ldr r1, =0x01C28000
     strb r0, [r1]
     bx lr
+
+/* one-shot-гейт диагностики исключений (r0.185):
+ * печатаем D:/P:/U-строку ТОЛЬКО для ПЕРВОГО входа в каждый обработчик.
+ * Флаг — SRAM A1 0x18 (вне кэшей, переживает сбой DRAM). Если исключение
+ * рекурсивное (повторные аборты на одном сломанном состоянии), повторные
+ * входы молча висят — иначе UART заливается мегабайтами «нулей». */
+.macro exc_once bail
+    ldr r1, =0x18
+    ldr r2, [r1]
+    cmp r2, #0
+    bne \bail
+    mov r2, #1
+    str r2, [r1]
+    dsb
+.endm
 
 /* Обработчик Undefined: 'U' + hang */
 .global _undef
 _undef:
+    exc_once 9f
     mov r0, #'U'
     bl uart_dbg
-1:  b 1b
+9:  b 9b
 
 /* Обработчик Prefetch Abort: 'P:' + IFAR + ':' + IFSR + hang */
 .global _prefetch
 _prefetch:
+    exc_once 9f
     push {r0-r3, lr}
     mov r0, #'P'
     bl uart_dbg
@@ -55,38 +83,89 @@ _prefetch:
     mov r0, #'\n'
     bl uart_dbg
     pop {r0-r3, lr}
-1:  b 1b
+9:  b 9b
 
-/* Обработчик Data Abort: 'D:' + DFAR + ':' + DFSR + ' ' + 'I:' + IFAR + '\n' + hang */
+/* Обработчик Data Abort (r0.189): каждое поле ОТДЕЛЬНОЙ строкой — в потоке
+ * «нулей» строки F1..F6 находятся и не теряются:
+ *   F1 <DFAR>   08 hex  адрес сбойного доступа
+ *   F2 <DFSR>   02 hex  статус (01=выравнивание, 04/0E=таблица, 08/0B=доступ)
+ *   F3 <IFAR>   08 hex
+ *   F4 <IFSR>   02 hex
+ *   F5 <LR>     08 hex  ← адрес возврата; фолтящая инструкция ≈ LR-8
+ *   F6 <SCTLR>  08 hex
+ * Затем hang (exc_once печатает только первый вход). */
 .global _dataabort
 _dataabort:
+    exc_once 9f
     push {r0-r3, lr}
-    mov r0, #'D'
+    /* F1 = DFAR */
+    mov r0, #'F'
     bl uart_dbg
-    mov r0, #':'
+    mov r0, #'1'
     bl uart_dbg
-    mrc p15, 0, r0, c6, c0, 0    /* DFAR */
-    bl hex32_uart
-    mov r0, #':'
-    bl uart_dbg
-    mrc p15, 0, r0, c5, c0, 0    /* DFSR */
-    bl hex8_uart
     mov r0, #' '
     bl uart_dbg
-    mov r0, #'I'
-    bl uart_dbg
-    mov r0, #':'
-    bl uart_dbg
-    mrc p15, 0, r0, c6, c0, 2    /* IFAR */
+    mrc p15, 0, r0, c6, c0, 0
     bl hex32_uart
-    mov r0, #':'
+    mov r0, #'\n'
     bl uart_dbg
-    mrc p15, 0, r0, c5, c0, 1    /* IFSR */
+    /* F2 = DFSR */
+    mov r0, #'F'
+    bl uart_dbg
+    mov r0, #'2'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c5, c0, 0
     bl hex8_uart
     mov r0, #'\n'
     bl uart_dbg
+    /* F3 = IFAR */
+    mov r0, #'F'
+    bl uart_dbg
+    mov r0, #'3'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c6, c0, 2
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    /* F4 = IFSR */
+    mov r0, #'F'
+    bl uart_dbg
+    mov r0, #'4'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c5, c0, 1
+    bl hex8_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    /* F5 = LR_abt */
+    mov r0, #'F'
+    bl uart_dbg
+    mov r0, #'5'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    ldr r0, [sp, #16]
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    /* F6 = SCTLR */
+    mov r0, #'F'
+    bl uart_dbg
+    mov r0, #'6'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c1, c0, 0
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
     pop {r0-r3, lr}
-1:  b 1b
+9:  b 9b
 
 /* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F) */
 .global hex8_uart

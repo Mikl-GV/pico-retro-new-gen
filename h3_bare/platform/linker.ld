@@ -44,7 +44,7 @@ SECTIONS
   . = ALIGN(4);
   .bss : {
     _bstart1 = . ;
-    *(.bss); *(COMMON);
+    *(.bss); *(.bss.*); *(COMMON);
     . = ALIGN(4);
     _bend1 = . ;
   }

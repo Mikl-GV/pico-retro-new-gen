@@ -188,8 +188,11 @@ void* _sbrk(int incr) {
 }
 
 int _gettimeofday(void* tv, void* tz) {
-    (void)tv; (void)tz;
-    return -1;
+    // r180: newlib time() читает tv.tv_sec при успешном возврате 0; оставлять
+    // стековый мусор нельзя — иначе rand-seed'ы эмуляторов получают мусор.
+    (void)tz;
+    if (tv) { volatile char* p = (volatile char*)tv; for (size_t i = 0; i < 16; i++) p[i] = 0; }
+    return -1;   // время недоступно — time() вернёт (time_t)-1
 }
 
 int _unlink(const char* path) {

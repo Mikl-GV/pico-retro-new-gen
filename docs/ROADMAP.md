@@ -21,9 +21,9 @@
 | 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты) | fMSX 6.0 |
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | 🔲 план | — |
-| 16 | PC Engine | HuC6280 | 🔲 план | — |
+| 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |
-| 18 | GCE Vectrex | 6809 | ✅ работает | libretro-vecx (h3_bare/cores/vecx/) |
+| 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
 | 20 | Радио-86РК, БК-0010, MS 1504 | 8080 | 🔲 план | — |
 | 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
@@ -54,7 +54,7 @@
 1. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
 2. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
 3. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
-4. **PC Engine** — HuC6280, лёгкие ядра (mednafen_pce_fast?)
+4. **PC Engine / TurboGrafx** — **готово (r0.202)**: Beetle PCE Fast (mednafen_pce_fast) vendored в `h3_bare/cores/pce_fast/`, host `pce_host.c` (libretro-shell без libretro-common), HuCard only, звук отключён, CD заглушен (`pce_stubs.c`). Проверено на железе. Осталось (необязательно): звук (PSG/Blip → I2S), CD, TFT-справка.
 5. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
 
 ## Перспективы (идеи, не начаты)
@@ -86,3 +86,10 @@
    - Объединение `gba_render_frame`+`emu_scale_int` (host, ядро нетронуто, ~0.5–1 мс).
    - Frameskip (снижает нагрузку рендера, не ускоряет эмуляцию).
    - Разгон CPUX H3 (1.3–1.4 ГГц, риск стабильности).
+
+2. **GCE Vectrex — ОТЛОЖЕНО (r0.200).** Симптом на стенде: «изображение не собирается в адекватное, пропадают строки». Диагностика r0.197/r0.198 показала:
+   - рендер-математика `vx_render_hdmi`/`vx_draw_line` корректна и эквивалентна эталону `libretro.c` (SCALEX/SHIFTX=1/0, биты A/B/X/Y=1/2/4/8 совпадают);
+   - `rendered=36/60` — норма (FCYCLES_INIT=50000);
+   - аудио-буферы не переполнялись (3750<4096, добавлены guard'ы);
+   - ввод только P1, без аналога.
+   Нерешённое: причины «пропадания строк» (наиболее вероятно — tearing без vsync + фазовое скольжение 50↔60 Гц, либо игра стоит на экране BIOS «PRESS BUTTON» из-за ввода). **Возвращаться после стабилизации тача/джойстика и проверки ввода с клавиатуры; пункт заморожен до отдельного решения.**

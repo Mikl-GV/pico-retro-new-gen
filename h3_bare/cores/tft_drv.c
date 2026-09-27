@@ -249,17 +249,10 @@ volatile int32_t g_touch_xmax __attribute__((section(".coherent"), aligned(4)));
 volatile int32_t g_touch_ymin __attribute__((section(".coherent"), aligned(4)));
 volatile int32_t g_touch_ymax __attribute__((section(".coherent"), aligned(4)));
 
-static void cs_low(void)  {
-    PC_DAT &= ~(1u << PIN_CS);
-    PA_DAT &= ~(1u << PIN_CS2);
-}
-static void cs_high(void) {
-    PC_DAT |=  (1u << PIN_CS);
-    PA_DAT |=  (1u << PIN_CS2);
-}
 // r126: подъём ТОЛЬКО CS дисплея (PC3) — не дёргает PA21 (тач).
 // Используется в xfer*/tft_flush* вместо cs_high(); спайки на CS тача
 // исключены (см. P5: cs_low/cs_high трогали оба CS).
+// r0.198: неиспользуемые cs_low()/cs_high() удалены (мёртвый код, P5-остаток).
 static void cs_disp_high(void) {
     PC_DAT |=  (1u << PIN_CS);
 }
@@ -555,7 +548,8 @@ void tft_flush_rect(int x, int y, int w, int h) {
 }
 
 void tft_fill_rect(int x, int y, int w, int h, uint16_t color) {
-    if (x < 0) x = 0;  if (y < 0) y = 0;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
     if (x >= TFT_W || y >= TFT_H) return;
     if (x + w > TFT_W) w = TFT_W - x;
     if (y + h > TFT_H) h = TFT_H - y;
@@ -701,13 +695,14 @@ static const struct {
 // Ставит справку для системы sys_id (NULL = меню). Вызывается с core0.
 // r120: пишем в SRAM-почту (не .coherent) — между ядрами видно сразу.
 void tft_help_show(const char* sys_id) {
-    if (!sys_id) { TFT_HELP_ID = 0; TFT_HELP_EPOCH++; return; }   // меню
+    if (!sys_id) { TFT_HELP_ID = 0; TFT_HELP_EPOCH++; __asm volatile("dsb st" ::: "memory"); return; }   // меню
     int id = 0;
     for (int i = 1; i < (int)TFT_HELP_COUNT; i++) {
         if (g_help_list[i].id && strcmp(g_help_list[i].id, sys_id) == 0) { id = i; break; }
     }
     TFT_HELP_ID = id;
     TFT_HELP_EPOCH++;
+    __asm volatile("dsb st" ::: "memory");   // r0.198: id/эпоха видны CPU1 до его чтения
 }
 
 // Сборка строки вручную (нет snprintf в bare-metal): число 0..999 + текст.
@@ -832,10 +827,17 @@ int rx4 = (int)(rx >> 4), ry4 = (int)(ry >> 4), rz4 = (int)(rz >> 4);
     //   ry4 3664(верх)..2496(низ)    — вертикаль инвертирована: sy = 319 - ...
     // Диапазоны узкие: X 2350..3950, Y 2450..3700. Z1-порог 2140.
     if (rz4 < 2140) { g_ts_pressed = 0; return 0; }
-    int sx = (rx4 - (int)g_touch_xmin) * TFT_W / ((int)g_touch_xmax - (int)g_touch_xmin);
-    int sy = 319 - (ry4 - (int)g_touch_ymin) * TFT_H / ((int)g_touch_ymax - (int)g_touch_ymin);
-    if (sx < 0) sx = 0; if (sx >= TFT_W) sx = TFT_W - 1;
-    if (sy < 0) sy = 0; if (sy >= TFT_H) sy = TFT_H - 1;
+    // r180: guard деления — испорченная калибровка (xmax==xmin) не должна
+    // давать div-by-0 (UNDEF) в тач-цикле CPU1.
+    int xr = (int)g_touch_xmax - (int)g_touch_xmin; if (xr <= 0) xr = 1;
+    int yr = (int)g_touch_ymax - (int)g_touch_ymin; if (yr <= 0) yr = 1;
+    int sx = (rx4 - (int)g_touch_xmin) * TFT_W / xr;
+    int sy = 319 - (ry4 - (int)g_touch_ymin) * TFT_H / yr;
+    // r0.198: разнесены if-ы (были на одной строке — misleading-indentation)
+    if (sx < 0) sx = 0;
+    if (sx >= TFT_W) sx = TFT_W - 1;
+    if (sy < 0) sy = 0;
+    if (sy >= TFT_H) sy = TFT_H - 1;
     *px = sx; *py = sy;
     g_ts_pressed = 1;
     return 1;
@@ -943,9 +945,11 @@ static void tft_calib_mode(void) {
         TFT_CALRY[i] = (uint32_t)(int32_t)g_cal_ry[i];
     }
     TFT_CALOK = (uint32_t)calok;
+    __asm volatile("dsb st" ::: "memory");   // r0.198: результат виден core0
     TFT_CMD = 0;       // r118: снять команду — core0 выйдет из ожидания
     TFT_HELP_ID = 0;   // r120: на TFT снова меню-справка
     TFT_HELP_EPOCH++;
+    __asm volatile("dsb st" ::: "memory");   // r0.198
     for (int i = 0; i < 5; i++) printf("CAL %d rx=%d ry=%d\n",
         i, (int)g_cal_rx[i], (int)g_cal_ry[i]);
 }
@@ -1078,6 +1082,7 @@ static void tft_settings_mode(void) {
             } else {
                 if (py >= TFT_H - 28) TFT_SET_EV = 8;              // Back
             }
+            __asm volatile("dsb st" ::: "memory");   // r0.198: событие видно core0
             // ждём ОТЖАТИЯ пальца: чтобы переход в следующий подрежим не
             // «дожимался» тем же нажатием (r137). Ограничено таймаутом 3 с —
             // если тач залип/дребезжит, CPU1 не зависнет навсегда.

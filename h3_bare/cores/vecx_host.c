@@ -124,7 +124,7 @@ static void vx_rasterize(void) {
 
 static void vx_render_hdmi(uint32_t border) {
     uint32_t* dst = (uint32_t*)VX_FB_ADDR;
-    int dst_w = (VX_W * VX_FB_H) / VX_H;   // 330*600/410 = 483
+    int dst_w = (VX_W * VX_FB_H) / VX_H;   // 330*600/410 = 482 (центр dst_x=271)
     if (dst_w > VX_FB_W) dst_w = VX_FB_W;
     int dst_x = (VX_FB_W - dst_w) / 2;
 

@@ -190,6 +190,12 @@ static const uint16_t def_coleco[BTN_MAX] = {
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
 };
+// PC Engine / TurboGrafx (HuCard): D-Pad + I/II + Run/Select
+static const uint16_t def_pce[BTN_MAX] = {
+    [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
+    [BTN_A]=KBD_Z, [BTN_B]=KBD_X,          // I, II
+    [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,   // Run, Select
+};
 
 // Метки кнопок для меню (показываем только уместные для платформы)
 static const char* btn_labels[BTN_MAX] = {
@@ -221,6 +227,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_A7800] = { "Atari 7800",            "a7800",  def_a7800 },
     [REMAP_PLAT_VECTREX] = { "GCE Vectrex",         "vectrex", def_vectrex },
     [REMAP_PLAT_COLECO]  = { "ColecoVision",         "coleco",  def_coleco },
+    [REMAP_PLAT_PCE]     = { "PC Engine / TurboGrafx","pce",    def_pce   },
 };
 
 static const char* btn_keys[BTN_MAX] = {

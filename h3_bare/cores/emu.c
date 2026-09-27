@@ -88,6 +88,7 @@ void emu_scale(int src_w, int src_h) {
 // бокам (снизу/сверху). Множитель — максимальный, влезающий в 1024×600.
 // Формат на выходе — RGB565 → XRGB8888 в FB_ADDR (как emu_scale).
 void emu_scale_int(int src_w, int src_h) {
+    if (src_w <= 0 || src_h <= 0) return;   // r0.198: защита от div-by-0 (как в emu_scale)
     // Выбираем множитель: min(FB_W/src_w, FB_H/src_h), целый
     int mul = FB_W / src_w;
     int mh  = FB_H / src_h;

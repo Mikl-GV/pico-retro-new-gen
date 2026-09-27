@@ -6,9 +6,13 @@ build/
 *.img
 *.img.gz
 *.map
+*.pdf
+*.7z
+*.col
 .DS_Store
 Thumbs.db
 roms/
 emulator-refs/
 host/
 *.tar.gz
+h3_bare/cores/gearcoleco/coleco_bios.bin

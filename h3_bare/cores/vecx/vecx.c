@@ -1042,6 +1042,12 @@ static einline void alg_addline(
          vectors_erse[index].color = VECTREX_COLORS;
       }
 
+      /* r0.198: guard списка векторов — vectors_draw[] (vectors_set[2*VECTOR_CNT])
+       * ограничен; при >VECTOR_CNT векторов за кадр молча дропаем новые,
+       * иначе запись уходит в erase-список и дальше в соседний BSS. */
+      if (vector_draw_cnt >= VECTOR_CNT)
+         return;
+
       vectors_draw[vector_draw_cnt].x0 = x0;
       vectors_draw[vector_draw_cnt].y0 = y0;
       vectors_draw[vector_draw_cnt].x1 = x1;
@@ -1051,7 +1057,6 @@ static einline void alg_addline(
       vector_draw_cnt++;
    }
 }
-
 /* perform a single cycle worth of analog emulation */
 
 static einline void alg_sstep (void)
@@ -1188,8 +1193,10 @@ int vecx_emu (long cycles)
       for (c = 0; c < icycles; c++)
       {
          if (++psgcycs % 8 == 0) {
-            // Output DAC samples
-            dacbuf[dacsamps++] = (dacset ? (int16_t)(via_ora << 8) : 0);
+            // Output DAC samples. r0.198: guard по VECX_ABUF_SIZE — см. vecx_psg.h.
+            if (dacsamps < VECX_ABUF_SIZE)
+               dacbuf[dacsamps] = (dacset ? (int16_t)(via_ora << 8) : 0);
+            dacsamps++;
             dacset = 0;
 
             // Output PSG samples

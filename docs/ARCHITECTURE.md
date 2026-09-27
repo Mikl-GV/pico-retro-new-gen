@@ -55,7 +55,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 | SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw + sega_pad |
 | MSX / MSX2 (YIS-503II) | **fMSX 6.0** | C | 256×212 → V9938 → EMU_FB | usb_kbd_get_raw + sega_pad |
-| GCE Vectrex | **libretro-vecx** | C | 330×410 (векторы → растр) → EMU_FB | usb_kbd_get_raw + sega_pad |
+| GCE Vectrex | **libretro-vecx** | C | 330×410 (векторы → растр) → прямая запись в HDMI FB (не EMU_FB) | usb_kbd_get_raw + sega_pad |
+| ColecoVision | **Gearcoleco** | C++ | 256×192 → g_col_fb → построчно → EMU_FB | usb_kbd_get_raw + sega_pad (full keypad) |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -163,6 +164,30 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - C++ runtime — `cxx_runtime.cpp` (operator new/delete поверх malloc, __cxa_pure_virtual)
 - Рендер: Handy рисует в собственный буфер 160×102 через callback → EMU_FB
 - Ввод: USB-клавиатура → кнопки Lynx (Z=A X=B S=Option1 Enter=Option2)
+
+### coleco_host.cpp (ColecoVision, Gearcoleco)
+
+- Ядро Gearcoleco (Ignacio Sanchez), C++, сборка с `-DGEARCOLECO_DISABLE_DISASSEMBLER`
+  (дизассемблер выделяет record на каждую инструкцию из bump-пула — в играх не нужен).
+- OS-7 BIOS вшит (`coleco_bios_data`, 8 КБ, CRC32 0x3AA93EF3 из bios_data.S, .bin в .gitignore).
+  Порядок загрузки как в эталоне libretro (`load_colecovision_firmware`): **сначала
+  `GetMemory()->LoadBiosFromBuffer()`, затем `LoadAdamFirmware(GC_ADAM_FIRMWARE_OS7)`** —
+  без BIOS в Memory `IsBiosLoaded()=false` и машина никогда «ready».
+- Рендер: ядро рисует 256×192 подряд (pitch 256) в свой буфер `g_col_fb[256×192]`,
+  host построчно (`memcpy` ×192) переносит в EMU_FB (pitch 320) → `emu_scale(256,192)`.
+  (Прямая запись в EMU_FB давала «дубль со сдвигом» из-за разницы pitch.)
+- Ввод: D-Pad + Fire1(левая)/Fire2(правая) + **полный keypad**: цифры 1..9,0, `*`, `#`.
+  Клавиатура: 1..9,0=keypad, Q=`*`, W=`#`, Z=Fire1, X=Fire2, Enter=Start(keypad8), S=`#`.
+  Sega-пад: крестовина=D-Pad, A=Fire1, B=Fire2, Start=keypad8, Mode=`#`.
+  Передача в ядро — `KeyPressed/KeyReleased` по факту (keypad независим от джойстика:
+  `Input::KeyPressed`, key>0x0F → m_Gamepad, key<=0x0F → m_KeypadState).
+- Конфликт blargg с Lynx (r0.193): обе системы делят blip-код; `gc_rename.sh` добавляет
+  суффикс `_gc` всем blargg-символам в gc-объектах по ЖЁСТКОМУ списку токенов
+  (Blip_Buffer/Blip_Synth/Effects_Buffer/Multi_Buffer/Stereo_Buffer/Silent_Blip_Buffer)
+  и читает символы через `$NF` (у U-символов нет колонки адреса). Иначе `gc_Sms_Apu.o`
+  линковался с Lynx-версией Blip_Buffer → рассинхрон → Data Abort в `new Sms_Apu()`.
+- Звук: `RunToVBlank(..., NULL, NULL)` — audio-буфер не выводится (нет DAC), но `Audio::Init`
+  инициализирует blargg-цепочку нормально; `Audio::EndFrame` имеет NULL-guard.
 
 ### ngp_host.cpp + ngp/ (Neo Geo Pocket / Pocket Color, RACE)
 
@@ -277,13 +302,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 ## Читы (cheatdb.c / gp_cheats.c)
 
+> r0.181: **UI-точка входа читов убрана** (меню по S/Mode в `rom_browser.c`
+> удалено). Модули cheatdb/gp_cheats и применение в ядрах остаются в коде
+> (пользователь отказался от функции UI, модули не вычищены).
+
 - `cheatdb.c/h` — менеджер: парсер `.cht` базы libretro (`/cheats/<система>/<ром>.cht`),
   регистронезависимый поиск по имени файла, включение/выключение читов, ручной ввод кода
-- Меню читов — в `rom_browser.c`: клавиша **S** или геймпад **Mode** открывают
-  (при входе — ожидание полного отпускания геймпада `usb_pad_wait_release()`);
-  стрелки = выбор, Enter/A/Mode = вкл/выкл, C = все, X = нет, Start/Mode = запуск,
-  ESC/Backspace = назад. Последней строкой — **Manual code entry** (ручной ввод),
-  экран открывается всегда, даже если `.cht` для игры нет
 - Применение по системам:
   - **GPGX (MD/SMS/GG)** — `gp_cheats.c`: декодеры Game Genie 8/16-бит + Action Replay;
     ROM-патчи через `z80_readmap` (переживают банкинг, `ROMCheatUpdate` вызывается ядром),
@@ -312,27 +336,35 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (DRAM, сверено по r158)
+## Карта памяти (r0.198, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
-| 0x40000000 | Образ: .text → .rodata → .ARM.exidx → .data → .bss (подряд, ALIGN(4)) |
-| 0x41FE7F2C | `_bend1` — конец BSS |
-| 0x41FE93A0 | `_gb_heap_start` — bump-пул кучи **24 МБ** (Snes9x/Handy/binjgb/NGP/…) |
-| 0x437E93A0 | `_gb_heap_end` = `_hend` (старт свободной памяти) |
-| 0x43800000 | `.coherent` (1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, g_ts_* |
-| _hend … 0x4F000000 | свободно; `_sbrk`-арена (libc_min.c, SBRK_LIMIT=0x4F000000) |
-| 0x4F000000 | `_menu_arena` (512 слотов + имена, символ линкера) |
-| 0x50000000 | Буфер загрузки ROM с SD (24 МБ) |
-| 0x5F800000 | EMU_FB — общий кадровый буфер эмуляторов (320×240 RGB565) |
-| 0x5F900000 | HDMI framebuffer (1024×600 XRGB8888, конец ≈ 0x5FB58000) |
+| 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
+| 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` |
+| 0x40000000..0x403797A4 | `.text` + init_array (код 0x3797A4 ≈ 3.63 МБ) |
+| 0x403797C0..0x404B5908 | `.rodata` (0x13C148 ≈ 1.29 МБ) |
+| 0x404B91B0..0x40503654 | `.data` (0x04A4A4 ≈ 304 КБ, копируется из образа) |
+| 0x40503680..0x4200509C | `.bss` (`_bstart1.._bend1`, 0x1B01A1C ≈ 28.3 МБ, обнуляется в `startup.S`) |
+| 0x420050A0..0x438050A0 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (Snes9x/Handy/binjgb/NGP/Gearcoleco; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x438050A0 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
+| 0x43900000..0x4390071E | `.libh3_coherent` (reserved 1 МБ до 0x43A00000, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Начало помечается `mmu_mark_uncached(libh3_coherent_region)` |
+| 0x4F000000 | `_menu_arena` (512 слотов + имена) |
+| 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
+| 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
+| 0x5F900000..0x5FB58000 | HDMI framebuffer (1024×600 XRGB8888); Vectrex пишет сюда напрямую (`vx_render_hdmi`) |
 | 0x5FDFD000..0x5FE01000 | стеки CPU1 (исключения + SVC, TFT-ядро) |
 | 0x5FF00000..0x5FF03000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
 Пересечений нет. `_hend` вычисляется линкером сразу после резерва кучи
 (см. `h3_bare/platform/linker.ld`); `.coherent`, `_menu_arena` и framebuffer'ы —
-фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`.
+фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
+`arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
+
+**Числа-размеры (r0.198, `arm-none-eabi-readelf -SW`):** `.text` 0x3797A4 (3.63 МБ),
+`.rodata` 0x13C148 (1.29 МБ), `.data` 0x04A4A4 (304 КБ), `.bss` 0x1B01A1C (28.3 МБ),
+образ `h3_bare.bin` 5 256 788 Б.
 
 ## Загрузка
 

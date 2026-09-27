@@ -5,6 +5,7 @@
 // деструкторы/исключения не используются (сборка с -fno-exceptions).
 #include <stddef.h>
 #include <stdint.h>
+#include "uart.h"
 
 // abort() — libgcc unwind и libstdc++ ссылаются на него.
 void abort(void) { for (;;) {} }
@@ -40,16 +41,31 @@ int atexit(void (*func)(void)) { (void)func; return 0; }
 // _sbrk определён в libc_min.c, _gettimeofday — тоже. Остальные — заглушки:
 // в bare-metal файлы/консоль/newlib-рантайм не используются, но линкеру
 // нужны символы.
+// r180: _write выводит в UART0. Log_func/Gearcoleco используют newlib puts —
+// раньше newlib stdio молча «глотал» вывод (буфер stdout аллоцировался из
+// bump-пула эмуляторов и затирался gb_heap_reset на следующем запуске).
 void _exit(int code) { (void)code; for (;;) {} }
 
 int _close(int fd) { (void)fd; return -1; }
 int _fstat(int fd, void* st) { (void)fd; (void)st; return -1; }
 int _getentropy(void* buf, unsigned len) { (void)buf; (void)len; return -1; }
-int _isatty(int fd) { (void)fd; return 0; }
+int _isatty(int fd) { (void)fd; return 1; }
 int _lseek(int fd, int off, int whence) { (void)fd; (void)off; (void)whence; return -1; }
 int _open(const char* path, int flags, int mode) { (void)path; (void)flags; (void)mode; return -1; }
 int _read(int fd, void* buf, unsigned len) { (void)fd; (void)buf; (void)len; return -1; }
-int _write(int fd, const void* buf, unsigned len) { (void)fd; (void)buf; (void)len; return -1; }
+int _write(int fd, const void* buf, unsigned len) {
+    (void)fd;
+    const char* s = (const char*)buf;
+    // r0.188: Len из newlib-кода может быть БИТЫМ (память повреждена) —
+    // никогда не лить больше 1024 байт (защита от «страниц нулей» в UART).
+    if (len > 1024) len = 1024;
+    for (unsigned i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\n') uart_putc('\r');
+        uart_putc(c);
+    }
+    return (int)len;
+}
 int _kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
 int _getpid(void) { return 1; }
 

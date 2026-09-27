@@ -270,8 +270,11 @@ size_t vecx_psg_exec(void) {
             vol += psg.emode[i] ? vtable[psg.evol] : vtable[psg.amplitude[i]];
     }
 
-    // Add the mixed sample to the output buffer and increment the position
-    psgbuf[bufpos++] = vol;
+    // Add the mixed sample to the output buffer and increment the position.
+    // r0.198: guard по VECX_ABUF_SIZE — иначе при росте числа циклов запись
+    // уходит за vx_psgbuf[4096] и затаптывает соседний BSS.
+    if (bufpos < VECX_ABUF_SIZE)
+        psgbuf[bufpos++] = vol;
 
     return 1; // Return 1, signifying that a sample has been generated
 }
