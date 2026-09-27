@@ -1,0 +1,11 @@
+SOURCES_C := $(CORE_DIR)/access.c $(CORE_DIR)/boot.c $(CORE_DIR)/branch.c \
+	$(CORE_DIR)/covox.c $(CORE_DIR)/double.c $(CORE_DIR)/ea.c \
+	$(CORE_DIR)/itab.c \
+        $(CORE_DIR)/libretro.c $(CORE_DIR)/service.c $(CORE_DIR)/timer.c \
+	$(CORE_DIR)/tape.c $(CORE_DIR)/disk.c $(CORE_DIR)/mouse.c \
+	$(CORE_DIR)/single.c $(CORE_DIR)/weird.c $(CORE_DIR)/tty.c \
+	$(CORE_DIR)/io.c \
+	$(CORE_DIR)/timing.c $(CORE_DIR)/sound.c \
+	$(CORE_DIR)/terakdisk.c $(CORE_DIR)/synth.c $(CORE_DIR)/emu2149.c \
+	$(CORE_DIR)/main.c $(CORE_DIR)/scr-libretro.c $(CORE_DIR)/scr.c \
+	$(CORE_DIR)/tty-libretro.c $(CORE_DIR)/joystick.c

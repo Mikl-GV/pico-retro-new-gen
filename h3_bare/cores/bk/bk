@@ -1,0 +1,81 @@
+#!/bin/sh
+SOURCE="$1"
+DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+ISGAME=0
+export BK_PATH="$HOME/.bk"
+
+# Better to handle it this way with a "simple" bash script
+# than to type several lines of C, right ?
+
+if [ ! -f "$BK_PATH/MONIT10.ROM" ]; then
+	BK_PATH="$DIR"
+	if [ ! -f "$BK_PATH/MONIT10.ROM" ]; then
+		BK_PATH="$DIR/roms"
+		if [ ! -f "$BK_PATH/MONIT10.ROM" ]; then
+			BK_PATH="$HOME/.bk/roms"
+			if [ ! -f "$BK_PATH/MONIT10.ROM" ]; then
+				BK_PATH="$HOME/.bk"
+				if [ ! -d "$BK_PATH" ]; then
+					mkdir "$BK_PATH"
+				fi
+				if [ ! -d "$BK_PATH/roms" ]; then
+					mkdir "$BK_PATH/roms"
+				fi
+			fi
+		fi
+	fi
+fi
+
+case "$1" in
+*mkdos*|*MKDos*|*andos*|*Andos*|*CSIDOS*|*csidos*) 
+		MAIN_FLOPPY="$1"
+		ISGAME=4
+	;;
+*.img|*.bkd) 
+		# We prefer MKDOS over ANDOS
+		# Maybe check against hashes for known problematic games ?
+		MAIN_FLOPPY="$DIR/mkdos.bkd"
+		if [ ! -f "$MAIN_FLOPPY" ]; then
+			MAIN_FLOPPY="$BK_PATH/mkdos.bkd"
+			if [ -f "$MAIN_FLOPPY" ]; then
+				ISGAME=2
+			fi
+		else
+			ISGAME=2
+		fi
+			
+		if [ "$ISGAME" -eq "0" ]; then
+			MAIN_FLOPPY="$DIR/andos.img"
+			if [ ! -f "$MAIN_FLOPPY" ]; then
+				MAIN_FLOPPY="$BK_PATH/andos.img"
+				if [ -f "$MAIN_FLOPPY" ]; then
+					ISGAME=3
+				fi
+			else
+				ISGAME=3
+			fi
+		fi
+        ;;
+*.bin ) 
+		echo "Binary"
+		ISGAME=1
+		;;
+esac
+
+case "$ISGAME" in
+1) 
+        ./bk.elf -1 -c -y -g"$1"
+        ;;
+#Start with MKDOS on slot D. Using slot D is easier than having the user to switch to slot B. (quite complicated)
+2) 
+		./bk.elf -3 -c -y -A"$MAIN_FLOPPY" -D"$1"
+		;;
+#Start with ANDOS, with disk on slot B.
+3) 
+		./bk.elf -3 -c -y -A"$MAIN_FLOPPY" -B"$1"
+		;;
+# Start OS from floppy
+4) 
+		./bk.elf -3 -c -y -A"$MAIN_FLOPPY"
+		;;
+esac
