@@ -64,6 +64,27 @@
 После стабов — ядро линкуется на x86; затем интеграция в H3 (objcopy-переименования,
 `cps1_host.c`, Makefile).
 
+### Итог этапа (x86): **LINK OK**
+
+Полный набор слинкован (тестовый exe на хосте). Рабочие флаги сборки:
+`-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG`
+(`EMU_M68K` — выбор m68k-бэкенда; `FBNEO_DEBUG` — определения `SekDbgFetch*Dispatcher`,
+на которые ссылается `m68kdasm`), плюс `-fno-strict-aliasing`.
+
+Важно: **`fm.c` компилировать как C** (gcc, не g++) — тогда он даёт реальные
+`YM2203*`/`YM_DELTAT_*`; как C++ получаются C++-имена и всё рассыпается. `ay8910.c`
+в этой конфигурации не отдаёт `AY8910*` (guard) — пока стабы.
+
+Glue-стабы (в основную сборку НЕ подключать): `src/cps1_stubs.cpp`
+(Debug_* флаги, OS-пути `szApp*`, `pRDI/pDataRomDesc`, `Reinitialise`, IPS,
+`AnalogDeadZone`/`ProcessAnalog`, `TCHARToANSI`, `ZipLoadOneFile` (позже — zlib),
+`MovieInfo`, `AY8910*` (звук off), `BurnYM2608/2610/2612UpdateRequest`) и
+`src/cps1_netg.cpp` (`is_netgame_or_recording` для пути без `__LIBRETRO__`).
+
+Дальше: host-слой (`cps1_host.c`: чтение папки/zip, кадр → EMU_FB, ввод, ESC),
+objcopy-переименования (m68k против MD, z80 против GPGX), подключение в Makefile,
+меню `cps1`, стенд.
+
 ## Что ещё нужно для порта
 
 1. **Host-слой `cps1_host.c`** по образцу `bk_host.c`/`pce_host.c`: ROM-загрузка, кадр → EMU_FB, ввод, ESC, frame-loop.
