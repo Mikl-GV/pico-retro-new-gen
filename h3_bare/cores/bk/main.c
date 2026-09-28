@@ -141,6 +141,10 @@ run_cpu_until(register pdp_regs *p, long long max_ticks) {
 		 */
 
 		if ( result != OK ) {
+			extern int printf(const char *, ...);   /* r0.246 TEMP */
+			printf( "BKTRAP res=%x oldpc=%lx psw=%lx ir=%x\n",
+				(unsigned)result, (unsigned long)oldpc,
+				(unsigned long)p->psw, (unsigned)p->ir );
 			switch( result ) {
 			case BUS_ERROR:			/* vector 4 */
 				ticks += 64;
