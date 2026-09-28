@@ -101,8 +101,17 @@ run_cpu_until(register pdp_regs *p, long long max_ticks) {
 #ifndef LIBRETRO
 	static char buf[80];
 #endif
+	/* r0.258: safety-timeout. Если из-за мусорного ROM/непокрытого timing()
+	 * ticks перестаёт расти, цикл `ticks < max_ticks` крутится вечно и
+	 * подвешивает всю прошивку. Ограничиваем число инструкций на кадр —
+	 * кадр всегда возвращается (ESC работает). */
+	long long guard = 0;
 
 	while (ticks < max_ticks) {
+		if (++guard > 4000000LL) {
+			fprintf(stderr, _("run_cpu_until: guard (ticks stall)\n"));
+			break;
+		}
 		d_word oldpc;
 
 		register int result;		/* result of execution */
