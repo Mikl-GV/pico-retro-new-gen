@@ -308,7 +308,6 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_deinit();
         return;
     }
-    printf("FUSE: loaded %s\n", g_model);
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();

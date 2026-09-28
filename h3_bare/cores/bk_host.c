@@ -101,7 +101,6 @@ static uint16_t hid_to_retrok(uint8_t sc)
 
 static void host_update_input(void)
 {
-    { static int once = 0; if (!once) { printf("BK: input_poll\n"); once = 1; } }   // TEMP r0.250 (one-shot)
     memset(g_kbd, 0, sizeof(g_kbd));
 
     uint8_t keys[8];
@@ -131,7 +130,6 @@ static void host_update_input(void)
 
     uint16_t j = 0;
     uint16_t sp = sega_pad_scan();
-    { static int once = 0; if (!once) { printf("BK: in_done\n"); once = 1; } }   // TEMP r0.251
     if (sp & 0x0001) j |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
@@ -150,7 +148,6 @@ static void host_input_poll(void) { host_update_input(); }
 
 static int16_t host_input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-    { static int once = 0; if (!once) { printf("BK: in_state\n"); once = 1; } }   // TEMP r0.251
     (void)index;
     if (device == RETRO_DEVICE_KEYBOARD)
         return (id < RETROK_LAST && g_kbd[id]) ? 1 : 0;
@@ -305,15 +302,10 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_bk_exit_req = 0;
     g_bk_esc_t0 = 0;
 
-    printf("BK: run loop enter\n");   // TEMP r0.250: локализация P: (стенд)
-    unsigned long bkh_n = 0;
     for (;;) {
         bk_retro_run();
         emu_throttle();
         fb_flush();   // r0.255: host_video уже записал HDMI FB напрямую (emu_scale не нужен)
-        // TEMP r0.254: heartbeat раз в ~2 с — при «зависании на вводе» видно,
-        // жива ли host-петля (BKH идёт дальше ⇒ виснет гость/ядро, нет ⇒ хостовый хенг).
-        if ((++bkh_n % 120) == 0) printf("BKH %lu\n", bkh_n);
         if (emu_esc_hold() || g_bk_exit_req) break;
     }
 
