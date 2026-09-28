@@ -22,7 +22,7 @@
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | ✅ работает (r0.242: 48K..TS2068, ввод/печать, меню model→ROM/.z80/.sna или BASIC, ESC-выход) | fuse-libretro (h3_bare/cores/fuse/) |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
-| 17 | Аркады | 68000/Z80 | 🔲 план | — |
+| 17 | Аркады (Capcom CPS-1) | 68000/Z80 | 🚧 CPS-1 — в работе (порт FBNeo); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
 | 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | ✅ БК-0010/0011М работает (r0.243–r0.259: встроено, запуск/рендер/палитра и сброс машины на стенде; осталось Sega-пад, TFT-справка, Terak); Радио-86РК / MS 1504 — план | libretro-bk (BK-Terak-Emu), `h3_bare/cores/bk/` |
@@ -58,6 +58,9 @@
 5. **PC Engine / TurboGrafx** — готово (r0.202): Beetle PCE Fast, host `pce_host.c`, HuCard only, звук отключён, CD заглушен. Осталось: звук (PSG/Blip → I2S), CD, TFT-справка.
 6. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
 7. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
+8. **Capcom CPS-1 (аркада) — ТЕКУЩАЯ ЗАДАЧА (r0.260+).** Ядро — порт **FinalBurn Neo** под CPS-1: `m68k` + `z80` + звук (`ym2151`/`ay8910`/`msm6295`) + устройства (`eeprom`/`timekpr`) + общий код `cps*.cpp` (`cps_mem` карта памяти, `cps_draw`/`cps_pal`/`cps_obj` видео/спрайты, `cps_run`/`cps_scr`) + `d_cps1` + `ps.cpp`/`ps_m.cpp`/`ps_z.cpp` (защита/дешифровка); символические конфликты (m68k с Genesis Plus GX) — через objcopy-переименование (как в Fuse/BK/PCE). Звук на первом этапе — off.
+   **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (zlib уже есть из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
+   **План:** (1) вендор набора в `h3_bare/cores/cps1/` (в `OBJ` подключать только когда соберётся — текущая сборка остаётся зелёной); (2) host-слой: FAT+zlib чтение папки/zip, раскладка чипов по адресам, кадр → EMU_FB, ввод (клава/джой), ESC; (3) меню «CPS-1» → браузер `/roms/cps1/*`; (4) стенд. Игры-мишени (уже на SD): `wof`, `kod`, `unsquad`, `varth`, `willow`, `3wonders`. Sega System 2/16 — отдельно, после CPS-1.
 
 ## Перспективы (идеи, не начаты)
 

@@ -93,7 +93,8 @@ Vectrex: стик = 4 направления (аналог), кнопки 1/2/3/
 |--------|---------|
 | ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, **MSX / MSX2 (Ямаха YIS-503II)**, **ColecoVision**, **PC Engine / TurboGrafx (HuCard)**, **ZX Spectrum (Fuse)**, **БК-0010/0011М**, Atari Portfolio |
 | 🚧 Отложено | GCE Vectrex (статус READY, но картинка не собирается — см. ROADMAP) |
-| 🔲 План | Atari Jaguar, аркады, Радио-86РК, MS 1504 |
+| 🚧 В работе | Capcom CPS-1 (порт FinalBurn Neo; ROM: папка с дампами чипов или `.zip` в `/roms/cps1/`) |
+| 🔲 План | Atari Jaguar, прочие аркады, Радио-86РК, MS 1504 |
 
 ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex), `.col`/`.bin` (ColecoVision), `.pce` (PC Engine), `.z80`/`.sna` (ZX Spectrum), `.bin`/`.img` (БК-0010).
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
