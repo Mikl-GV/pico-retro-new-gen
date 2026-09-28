@@ -62,10 +62,18 @@ extern UINT8 CpsInp018[8];
 static uint16_t g_frame[CPS1_W * CPS1_H];
 
 // ---- ROM-источники (выбранная игра) ----
+// zip-буферы: основной — ROM_BUF (0x50000000), родителя — 0x52000000
+// (выше ROM_BUF+24М, до EMU_FB/HDMI FB).
+#define ZIP_BUF1 ((uint8_t*)0x50000000u)
+#define ZIP_BUF2 ((uint8_t*)0x52000000u)
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
 static char g_zip[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>.zip"
 static const uint8_t* g_zip_data = NULL;
 static uint32_t g_zip_size = 0;
+static char g_parent_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<parent>" (клоны)
+static char g_parent_zip[FAT_NAME_LEN + 16];
+static const uint8_t* g_zip_parent_data = NULL;
+static uint32_t g_zip_parent_size = 0;
 
 // ---- Ввод: маски Sega-пада ----
 #define SP_UP    0x0001
@@ -152,7 +160,27 @@ static int zip_extract(const uint8_t* z, uint32_t zsize, const char* target,
     return 1;
 }
 
+// чтение ROM-файла из папки (dir — "/roms/cps1/<имя>"). 0=ok, 1=нет/ошибка
+static int load_from_dir(const char* dir, const char* romname, UINT8* dest, INT32 want, INT32* pnWrote)
+{
+    if (!dir || !dir[0]) return 1;
+    fat_entry_t f;
+    if (!fat_find(dir, romname, &f) || f.size <= 0) return 1;
+    if ((uint32_t)f.size < (uint32_t)want) return 1;
+    if (fat_read_file(&f, 0, dest, (uint32_t)want) < 0) return 1;
+    // сливаем dirty-линии D-cache (write-back) в DRAM — как rom_browser
+    uint32_t a = ((uint32_t)dest) & ~0x1Fu;
+    uint32_t end = a + (uint32_t)want + 32;
+    for (; a < end; a += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
+    __asm volatile("dsb" ::: "memory");
+    if (pnWrote) *pnWrote = want;
+    return 0;
+}
+
 // ---- BurnExtLoadRom: чтение i-го ROM драйвера ----
+// Источники по порядку: папка игры, папка родителя (для клонов), zip игры,
+// zip родителя.
 static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
 {
     struct BurnRomInfo ri;
@@ -164,33 +192,18 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
     BurnDrvGetRomName(&name, i, 0);
     if (!name || !name[0]) return 1;
 
-    // 1) папка /roms/cps1/<game>/ — приоритет
-    if (g_dir[0]) {
-        fat_entry_t f;
-        if (fat_find(g_dir, name, &f) && f.size > 0) {
-            if ((uint32_t)f.size < (uint32_t)ri.nLen) {
-                printf("CPS1: %s too small (need %u, have %lu)\n", name, (unsigned)ri.nLen, (unsigned long)f.size);
-                return 1;
-            }
-            if (fat_read_file(&f, 0, Dest, (uint32_t)ri.nLen) < 0) {
-                printf("CPS1: read error %s\n", name);
-                return 1;
-            }
-            // сливаем dirty-линии D-cache (write-back) в DRAM — как rom_browser
-            uint32_t a = ((uint32_t)Dest) & ~0x1Fu;
-            uint32_t end = a + (uint32_t)ri.nLen + 32;
-            for (; a < end; a += 32)
-                __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
-            __asm volatile("dsb" ::: "memory");
-            if (pnWrote) *pnWrote = (INT32)ri.nLen;
-            return 0;
-        }
-    }
-
-    // 2) zip /roms/cps1/<game>.zip
+    if (load_from_dir(g_dir, name, Dest, ri.nLen, pnWrote) == 0) return 0;
+    if (load_from_dir(g_parent_dir, name, Dest, ri.nLen, pnWrote) == 0) return 0;
     if (g_zip_data) {
         uint32_t got = 0;
         if (zip_extract(g_zip_data, g_zip_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
+            if (pnWrote) *pnWrote = (INT32)got;
+            return 0;
+        }
+    }
+    if (g_zip_parent_data) {
+        uint32_t got = 0;
+        if (zip_extract(g_zip_parent_data, g_zip_parent_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
             if (pnWrote) *pnWrote = (INT32)got;
             return 0;
         }
@@ -290,6 +303,11 @@ static void strip_zip_ext(char* s)
 // ---- точка входа из rom_browser (emu.h) ----
 // rom/size НЕ используются: элемент браузера = папка игры или zip-файл,
 // host сам читает ROM-сет по имени (rom_name).
+// BurnLib инициализируем ОДИН раз за сессию прошивки: BurnGameListInit
+// кладёт в malloc копии коротких имён драйверов и переписывает точInto
+// pDriver[i]->szShortName на них; BurnLibExit их освобождает, после чего
+// повторный BurnLibInit копирует имена из освобождённой памяти (мусор) →
+// BurnDrvGetIndex перестаёт находить игры. Поэтому exit не зовём.
 void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     (void)rom; (void)size;
@@ -305,22 +323,29 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     for (const char* s = rom_name; *s && gl < FAT_NAME_LEN - 1; s++) game[gl++] = *s;
     game[gl] = 0;
     strip_zip_ext(game);
+    // FAT отдаёт имена регистром как на диске (KOD/3WONDERS), а BurnDrvGetIndex
+    // сравнивает регистрозависимо — приводим к нижнему.
+    for (char* s = game; *s; s++) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32);
 
     // путь ROM-источников
     g_dir[0] = 0; g_zip[0] = 0; g_zip_data = NULL; g_zip_size = 0;
+    g_parent_dir[0] = 0; g_parent_zip[0] = 0; g_zip_parent_data = NULL; g_zip_parent_size = 0;
     snprintf(g_dir, sizeof(g_dir), "/roms/cps1/%s", game);
     snprintf(g_zip, sizeof(g_zip), "/roms/cps1/%s.zip", game);
 
-    if (BurnLibInit() != 0) {
-        printf("CPS1: BurnLibInit failed\n");
-        return;
+    static int g_lib_inited = 0;
+    if (!g_lib_inited) {
+        if (BurnLibInit() != 0) {
+            printf("CPS1: BurnLibInit failed\n");
+            return;
+        }
+        g_lib_inited = 1;
     }
 
     int idx = BurnDrvGetIndex(game);
     if (idx < 0) {
-        printf("CPS1: no driver for '%s' (have: wof kod unsquad varth willow 3wonders)\n", game);
+        printf("CPS1: no driver for '%s' (%d CPS-1 drivers)\n", game, (int)nBurnDrvCount);
         printf("CPS1: put ROMs into /roms/cps1/%s/ or /roms/cps1/%s.zip\n", game, game);
-        BurnLibExit();
         fb_clear();
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
@@ -329,14 +354,35 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
     nBurnDrvActive = (UINT32)idx;
 
-    // zip: целиком в ROM_BUF (браузер его больше не использует)
+    // Родитель (для клонов): недостающие ROM ищем в папке/zip родителя
+    {
+        char* parent = BurnDrvGetTextA(DRV_PARENT);
+        if (parent && parent[0] && strcmp(parent, game) != 0) {
+            snprintf(g_parent_dir, sizeof(g_parent_dir), "/roms/cps1/%s", parent);
+            snprintf(g_parent_zip, sizeof(g_parent_zip), "/roms/cps1/%s.zip", parent);
+            printf("CPS1: %s is clone of %s\n", game, parent);
+        }
+    }
+
+    // zip игры — целиком в ROM_BUF (браузер его больше не использует)
     char zipname[FAT_NAME_LEN];
     snprintf(zipname, sizeof(zipname), "%s.zip", game);
     fat_entry_t zf;
     if (fat_find("/roms/cps1", zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= 24u * 1024u * 1024u) {
-        if (fat_read_file(&zf, 0, (uint8_t*)0x50000000u, (uint32_t)zf.size) >= 0) {
-            g_zip_data = (const uint8_t*)0x50000000u;
+        if (fat_read_file(&zf, 0, ZIP_BUF1, (uint32_t)zf.size) >= 0) {
+            g_zip_data = ZIP_BUF1;
             g_zip_size = (uint32_t)zf.size;
+        }
+    }
+    // zip родителя — во второй буфер (только если есть и отличается)
+    if (g_parent_zip[0]) {
+        snprintf(zipname, sizeof(zipname), "%s.zip", BurnDrvGetTextA(DRV_PARENT));
+        fat_entry_t pf;
+        if (fat_find("/roms/cps1", zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= 24u * 1024u * 1024u) {
+            if (fat_read_file(&pf, 0, ZIP_BUF2, (uint32_t)pf.size) >= 0) {
+                g_zip_parent_data = ZIP_BUF2;
+                g_zip_parent_size = (uint32_t)pf.size;
+            }
         }
     }
 
@@ -349,14 +395,15 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (BurnDrvInit() != 0) {
         printf("CPS1: %s init failed (check ROM set)\n", game);
-        BurnLibExit();
         fb_clear();
         fb_text_center("CPS-1: load failed", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
         fb_flush();
         return;
     }
-    printf("CPS1: %s started (%s)\n", game, g_zip_data ? "zip" : "folder");
+    printf("CPS1: %s started (%s%s)\n", game,
+           g_zip_data ? "zip" : "folder",
+           g_zip_parent_data ? "+parent" : "");
     printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
 
     emu_set_border_color(0x00000000);
@@ -373,6 +420,5 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 
     BurnDrvExit();
-    BurnLibExit();
     fb_clear(); fb_flush();
 }
