@@ -63,7 +63,7 @@ static const system_entry_t systems[] = {
     // -- Аркадные автоматы --
     SYS("galaxian",   "Galaxian / Frogger / Dig Dug",ARCADE,   PLANNED),
     SYS("cps1",       "CPS-1 (Capcom)",               ARCADE,   READY),
-    SYS("cps2",       "CPS-2 (Capcom)",               ARCADE,   PLANNED),
+    SYS("cps2",       "CPS-2 (Capcom)",               ARCADE,   READY),
     SYS("neogeo",     "Neo Geo MVS",                  ARCADE,   PLANNED),
     SYS("segasys",    "Sega System 1/2/16",           ARCADE,   PLANNED),
     SYS("toaplan",    "Toaplan 1",                    ARCADE,   PLANNED),

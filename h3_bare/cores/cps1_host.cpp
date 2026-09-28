@@ -8,8 +8,9 @@
 // Звук ОТКЛЮЧЁН (nBurnSoundRate = 0, pBurnSoundOut не выделяется —
 // драйверы CPS рендерят звук только при pBurnSoundOut).
 //
-// ROM-сет: /roms/cps1/<игра>/ (папка с сырыми дампами чипов — приоритет)
-//     или /roms/cps1/<игра>.zip (распаковка через zlib из cores/fuse/zlib).
+// ROM-сет: /roms/cps1/<игра>/ или /roms/cps2/<игра>/ (папка с сырыми
+// дампами чипов — приоритет)
+//     или /roms/cps1|/roms/cps2/<игра>.zip (распаковка через zlib из fuse/zlib).
 // Игра идентифицируется по имени выбранного в браузере элемента (папки
 // или zip-файла); в драйвере поддерживаются: wof, kod, unsquad, varth,
 // willow, 3wonders (см. burn/driverlist.h).
@@ -321,8 +322,8 @@ static void strip_zip_ext(char* s)
 // эти копии затирались после пары запусков игр (имена становились пустыми,
 // BurnDrvGetIndex переставал находить драйверы). Вместо этого оставляем
 // pDriver[i]->szShortName константными строками rodata и выставляем
-// nBurnDrvCount = CPS1_DRV_COUNT один раз.
-void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
+// nBurnDrvCount = CPS_DRV_COUNT один раз.
+static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     (void)rom; (void)size;
     emu_prepare();
@@ -341,22 +342,22 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     // сравнивает регистрозависимо — приводим к нижнему.
     for (char* s = game; *s; s++) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32);
 
-    // путь ROM-источников
+    // путь ROM-источников (root = "/roms/cps1" или "/roms/cps2")
     g_dir[0] = 0; g_zip[0] = 0; g_zip_data = NULL; g_zip_size = 0;
     g_parent_dir[0] = 0; g_parent_zip[0] = 0; g_zip_parent_data = NULL; g_zip_parent_size = 0;
-    snprintf(g_dir, sizeof(g_dir), "/roms/cps1/%s", game);
-    snprintf(g_zip, sizeof(g_zip), "/roms/cps1/%s.zip", game);
+    snprintf(g_dir, sizeof(g_dir), "%s/%s", root, game);
+    snprintf(g_zip, sizeof(g_zip), "%s/%s.zip", root, game);
 
     static int g_lib_inited = 0;
     if (!g_lib_inited) {
-        nBurnDrvCount = CPS1_DRV_COUNT;
+        nBurnDrvCount = CPS_DRV_COUNT;
         g_lib_inited = 1;
     }
 
     int idx = BurnDrvGetIndex(game);
     if (idx < 0) {
-        printf("CPS1: no driver for '%s' (%d CPS-1 drivers)\n", game, (int)nBurnDrvCount);
-        printf("CPS1: put ROMs into /roms/cps1/%s/ or /roms/cps1/%s.zip\n", game, game);
+        printf("CPS1: no driver for '%s' (%d CPS drivers)\n", game, (int)nBurnDrvCount);
+        printf("CPS1: put ROMs into %s/%s/ or %s/%s.zip\n", root, game, root, game);
         fb_clear();
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
@@ -369,8 +370,8 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     {
         char* parent = BurnDrvGetTextA(DRV_PARENT);
         if (parent && parent[0] && strcmp(parent, game) != 0) {
-            snprintf(g_parent_dir, sizeof(g_parent_dir), "/roms/cps1/%s", parent);
-            snprintf(g_parent_zip, sizeof(g_parent_zip), "/roms/cps1/%s.zip", parent);
+            snprintf(g_parent_dir, sizeof(g_parent_dir), "%s/%s", root, parent);
+            snprintf(g_parent_zip, sizeof(g_parent_zip), "%s/%s.zip", root, parent);
             printf("CPS1: %s is clone of %s\n", game, parent);
         }
     }
@@ -379,7 +380,7 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     char zipname[FAT_NAME_LEN];
     snprintf(zipname, sizeof(zipname), "%s.zip", game);
     fat_entry_t zf;
-    if (fat_find("/roms/cps1", zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= 24u * 1024u * 1024u) {
+    if (fat_find(root, zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= 24u * 1024u * 1024u) {
         if (fat_read_file(&zf, 0, ZIP_BUF1, (uint32_t)zf.size) >= 0) {
             g_zip_data = ZIP_BUF1;
             g_zip_size = (uint32_t)zf.size;
@@ -389,7 +390,7 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (g_parent_zip[0]) {
         snprintf(zipname, sizeof(zipname), "%s.zip", BurnDrvGetTextA(DRV_PARENT));
         fat_entry_t pf;
-        if (fat_find("/roms/cps1", zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= 24u * 1024u * 1024u) {
+        if (fat_find(root, zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= 24u * 1024u * 1024u) {
             if (fat_read_file(&pf, 0, ZIP_BUF2, (uint32_t)pf.size) >= 0) {
                 g_zip_parent_data = ZIP_BUF2;
                 g_zip_parent_size = (uint32_t)pf.size;
@@ -433,4 +434,15 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     BurnDrvExit();
     fb_clear(); fb_flush();
+}
+
+// ---- обёртки для rom_browser (emu.h) ----
+void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/cps1", rom, size, rom_name);
+}
+
+void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/cps2", rom, size, rom_name);
 }

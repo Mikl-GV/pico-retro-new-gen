@@ -112,6 +112,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_bk(rom, size, sel_name);
     else if (strcmp(sys_id, "cps1") == 0)
         emu_run_cps1(rom, size, sel_name);   // ROM-сет читает сам host (папка/zip)
+    else if (strcmp(sys_id, "cps2") == 0)
+        emu_run_cps2(rom, size, sel_name);
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -271,7 +273,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 // должны протекать в чужую игру).
                 cheats_reset();
 
-                if (strcmp(sys_id, "cps1") == 0) {
+                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0) {
                     // CPS-1: элемент = папка игры или zip-файл; ROM-сет
                     // (много файлов) читает сам host по имени. Единый ROM
                     // не грузим.

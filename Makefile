@@ -401,7 +401,7 @@ CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
 	-fno-exceptions -fno-rtti -fno-threadsafe-statics
 
 CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
-CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
+CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
 CPS1_DEV   := eeprom i2ceeprom timekpr
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
 CPS1_SNDC  := ay8910 fm ym2151
