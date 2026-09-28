@@ -18,11 +18,17 @@
 
 Итого ~4.4 МБ, 105 файлов.
 
-## Статус: порт в работе, СБОРКА НЕ ЗАТРОНУТА
+## Статус: порт подключён к прошивке (r0.260)
 
-**В `Makefile`/`OBJ` НЕ подключено** — текущая прошивка собирается как прежде.
-Подключу к сборке, когда подмножество скомпилируется (правило проекта: сборка
-остаётся зелёной; вендор кладём отдельно).
+**В `Makefile`/`OBJ` подключено** — CPS-1 входит в основную сборку (коммит `9cb1e89`,
+r0.260, бинарь 10 446 156 Б). Host-слой `h3_bare/cores/cps1_host.cpp`:
+выбор драйвера по короткому имени игры, чтение ROM-сета из папки
+`/roms/cps1/<игра>/` или zip, цикл `BurnDrvFrame`, кадр RGB565 384×224 → HDMI FB,
+ввод P1 (ремап `REMAP_PLAT_CPS1`) + Sega-пад + P2 хардкод, ESC-выход, 60 Гц.
+Символьные коллизии с другими ядрами (m68k против GPGX, YM2612 против gpgx sound)
+сняты `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`) — правило
+проверки (undefined нового ядра ∩ определения не-ядер = 0) выполнено.
+`m68kops.c/h` генерируются на сборке нативным `m68kmake` в `build/` (в git не лежат).
 
 ### Промежуточный итог (2026-09-28): ядра CPU компилируются
 
@@ -75,25 +81,28 @@
 `YM2203*`/`YM_DELTAT_*`; как C++ получаются C++-имена и всё рассыпается. `ay8910.c`
 в этой конфигурации не отдаёт `AY8910*` (guard) — пока стабы.
 
-Glue-стабы (в основную сборку НЕ подключать): `src/cps1_stubs.cpp`
+Glue-стабы `src/cps1_stubs.cpp` входят в основную сборку как `c1x_stubs.o`
 (Debug_* флаги, OS-пути `szApp*`, `pRDI/pDataRomDesc`, `Reinitialise`, IPS,
-`AnalogDeadZone`/`ProcessAnalog`, `TCHARToANSI`, `ZipLoadOneFile` (позже — zlib),
-`MovieInfo`, `AY8910*` (звук off), `BurnYM2608/2610/2612UpdateRequest`) и
-`src/cps1_netg.cpp` (`is_netgame_or_recording` для пути без `__LIBRETRO__`).
+`AnalogDeadZone`/`ProcessAnalog`, `TCHARToANSI`, `ZipLoadOneFile`,
+`MovieInfo`, `AY8910*` (звук off), `BurnYM2608/2610/2612UpdateRequest`,
+`DebugSnd_AY8910Initted`, `DebugTrackerExit`, `clock()`) и
+`src/cps1_netg.cpp` (`c1x_netg.o`: `is_netgame_or_recording`).
 
-Дальше: host-слой (`cps1_host.c`: чтение папки/zip, кадр → EMU_FB, ввод, ESC),
-objcopy-переименования (m68k против MD, z80 против GPGX), подключение в Makefile,
-меню `cps1`, стенд.
+Сделано (r0.260): host-слой `cps1_host.cpp` (папка/zip, кадр → HDMI FB, ввод, ESC),
+objcopy-переименования `cps1_rename.sh` (m68k/YM2612), подключение в Makefile,
+меню `cps1` (READY). Осталось: стенд (на железе), по необходимости звук.
 
-## Что ещё нужно для порта
+## Что ещё нужно (актуально)
 
-1. **Host-слой `cps1_host.c`** по образцу `bk_host.c`/`pce_host.c`: ROM-загрузка, кадр → EMU_FB, ввод, ESC, frame-loop.
-2. **Чтение ROM**: папка `/roms/cps1/<игра>/` с сырыми дампами чипов (приоритет) или `/roms/cps1/<игра>.zip` (zlib уже есть в дереве Fuse, `h3_bare/cores/fuse/zlib`).
-3. **Совместимость**: FBNeo тянет libretro-common/OS-stdlib — нужен минимальный шим (как `fuse_stubs.c`/`msx_compat.c`), убрать/заглушить `file_*`, `dynhuff`, CD и пр.
-4. **objcopy-переименования**: символы `m68k` конфликтуют с Genesis Plus GX (MD), Z80 — с GPGX; переименовать по образцу `bk_rename.sh`/`gc_rename.sh`.
-5. **Память**: буферы ROM/RAM платы — из `_gb_heap` (bump), сброс на входе (`emu_prepare`).
-6. **Видео**: FBNeo рисует в `nBurnPitch`-буфер RGB565 → копировать в EMU_FB → `emu_scale`.
-7. **Меню**: пункт `cps1` (systems.h, ARCADE) → браузер `/roms/cps1/*` (папки и zip).
+1. ~~Host-слой~~ — **сделан** (`cps1_host.cpp`).
+2. ~~Чтение ROM~~ — **сделано**: папка или zip (`ZipExtract` + zlib из Fuse).
+3. ~~Совместимость/стабы~~ — **сделано** (`cps1_stubs.cpp`, `cps1_netg.cpp`).
+4. ~~objcopy-переименования~~ — **сделано** (`cps1_rename.sh`: `m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`).
+5. ~~Память~~ — **сделано**: буферы из newlib bake-кучи (`_hend`), сброс `emu_prepare()`.
+6. ~~Видео~~ — **сделано**: `pBurnDraw` → прямой ресайз в HDMI FB (как bk_host).
+7. ~~Меню~~ — **сделано**: `systems.h` READY, браузер папок и zip.
+8. **Звук** (PSG/YM2151/QSound → I2S) — на будущее.
+9. **Стенд** — первая проверка на железе с реальными ROM.
 
 ## ROM-формат для SD
 

@@ -684,6 +684,10 @@ static const struct {
       "Atari Portfolio",
       {"Full keyboard emulation","INS = on-screen kbd","ESC hold = exit to menu","",NULL}
     },
+    { "cps1",
+      "CPS-1 (Capcom)",
+      {"P1: Arrows + Z/X/C attack/jump","1/Enter = Start    5 = Coin","P2: WASD + J/K/L, 2/6","Pad: A/B/C,  X = Coin","ESC hold = exit",NULL}
+    },
     // r122: About по тап-иконке на TFT (не трогает HDMI)
     { "about",
       "MultiTool Retro",

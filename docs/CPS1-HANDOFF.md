@@ -54,6 +54,28 @@ CPS-1 — в работе (вендор+линк на x86 ok, не в сборк
 - CPS-1 вендор лежит в `h3_bare/cores/cps1/` (~4.4 МБ, FBNeo, коммит `d025cfc`),
   **в `OBJ`/Makefile НЕ подключён** — основная прошивка не затронута.
 
+## Продолжение (r0.260, коммит 9cb1e89 — CPS-1 ПОДКЛЮЧЁН к прошивке)
+
+- host-слой `h3_bare/cores/cps1_host.cpp` (не `.c` — burnint.h требует C++):
+  выбор драйвера по короткому имени игры (BurnDrvGetIndex), ROM-сет из папки
+  `/roms/cps1/<игра>/` (приоритет) или `.zip` (свой zip-парсер + inflate через
+  zlib из Fuse); кадр `pBurnDraw` RGB565 384×224 → прямой ресайз в HDMI FB
+  1024×600 (как bk_host — EMU_FB не используется, 384 колонки не влезают);
+  ввод: P1 — ремап-платформа `REMAP_PLAT_CPS1` (стрелки+Z/X/C, Enter/1=Start,
+  5=Coin) + Sega-пад (A/B/C, X=Coin), P2 — хардкод WASD+J/K/L, 2/6;
+  ESC-выход, 60 Гц, `emu_prepare()`.
+- objcopy-переименования `cps1_rename.sh`: `m68k*`/`m68ki*`→`c1m68k*`,
+  `YM2612*`→`c1YM2612*` (конфликты с GPGX; z80/Zet не конфликтуют).
+  Проверено: определения cps1 ∩ определения других ядер = 0.
+- Makefile: группа CPS-1 (флаги, `fm.c`/`ay8910.c`/`ym2151.c` как C; C++ БЕЗ
+  `-ffreestanding` — newlib freestanding ломает tr1/free), генерация
+  `m68kops.c/h` нативным m68kmake в `build/`, `c1m_m68kcpu.o` зависит от
+  `m68kops.h` (иначе берётся gpgx-версия m68kops.h — ошибки компиляции).
+- Меню: `cps1` → `READY` (ARCADE); `rom_browser.c`: для cps1 НЕ грузит единый
+  ROM, а вызывает host по имени выбранного элемента (папка/zip).
+- Стабы дополнены: `DebugSnd_AY8910Initted`, `DebugTrackerExit`, `clock()`.
+- Версия r0.260; бинарь 10 446 156 Б. Стенд ещё НЕ делался.
+
 ## Что сделано по CPS-1 (x86)
 
 - Скопировано подмножество FBNeo: framework `burn/`, `drv/capcom` (`d_cps1`, `cps*`,
@@ -72,20 +94,13 @@ CPS-1 — в работе (вендор+линк на x86 ok, не в сборк
 - Генерация: `m68kmake <out>/ <m68k_in.c>` → `m68kops.c/h`; `ctv_make > ctv.h`.
 
 ## Осталось (порядок)
-1. **host-слой `cps1_host.c`** (по образцу `bk_host.c`/`pce_host.c`):
-   - инициализация драйвера по короткому имени игры (BurnDrvInit), ROM-загрузка из
-     `/roms/cps1/<игра>/` (папка с сырыми дампами чипов — приоритет) или
-     `/roms/cps1/<игра>.zip` (`ZipLoadOneFile` через zlib из `cores/fuse/zlib`);
-   - кадр: `pBurnDraw` (RGB565) → `EMU_FB` → `emu_scale`; ввод (usb_kbd + sega_pad);
-     ESC-выход; 60 Гц (`emu_throttle`); `emu_prepare()` на входе (сброс памяти).
-2. **objcopy-переименования**: m68k против Genesis Plus GX (MD), z80 против GPGX,
-   `d_cps1`-специфичные против прочих ядер — по образцу `cores/bk/bk_rename.sh` /
-   `cores/gc_rename.sh`. ОБЯЗАТЕЛЬНО проверить: undefined нового ядра ∩ defs не-ядра = 0.
-3. **Makefile**: отдельная группа CPS-1 (свои флаги, как `BKFLAGS`/`FUSEFLAGS`),
-   цель генерации `m68kops`/`ctv.h`, `cps1_host.o` — подключать только когда соберётся.
-4. **Меню**: `cps1` в `systems.h` (ARCADE) → браузер `/roms/cps1/*` (папки и zip).
+1. ~~host-слой~~ — **сделано** (`cps1_host.cpp`, r0.260).
+2. ~~objcopy-переименования~~ — **сделано** (`cps1_rename.sh`; проверка undefined ∩ defs = 0 пройдена).
+3. ~~Makefile~~ — **сделано** (группа CPS-1 + генерация m68kops на сборке).
+4. ~~Меню~~ — **сделано** (`cps1` READY; браузер папок и zip).
 5. **Стенд**: первая игра (рекомендуется `wof` — Warriors of Fate; также `kod`,
    `unsquad`, `varth`, `willow`, `3wonders`). ROM пользователь кладёт сам.
+6. TFT-справка по кнопкам `cps1` — по отдельному разрешению (экраны/TFT).
 
 ## Опыт одноимённых переменных (конкретика проекта)
 - **BK-0010 (r0.252):** под `--allow-multiple-definition` глобальные `input_state_cb`/
