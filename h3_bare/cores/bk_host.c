@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #include "libretro.h"
 
@@ -38,9 +39,26 @@ void bk_retro_deinit(void);
 #define EMU_FB_W    320
 #define EMU_FB_H    240
 
+// После де-удвоения X в host_video содержимое BK-0010 — 256 колонок (как на железе).
+#define BK_CONTENT_W 256
+
 // ---- Модель (выбор из меню, опция bk_model ядра) ----
 static const char* g_model = "BK-0010.01";
 void bk_set_model(const char* m) { if (m && m[0]) g_model = m; }
+
+// Какие ROM фактически грузит ядро для выбранной модели (libretro.c:734-756).
+// Печатаем в UART, чтобы не путать BASIC/FOCAL — раньше всегда писало «BASIC».
+static const char* bk_rom_label(const char* m)
+{
+    if (!m) return "?";
+    if (strcmp(m, "BK-0010") == 0)            return "MONIT10+FOCAL10";
+    if (strcmp(m, "BK-0010.01") == 0)         return "MONIT10+BASIC10";
+    if (strcmp(m, "BK-0010.01 + FDD") == 0)   return "MONIT10+DISK_327";
+    if (strcmp(m, "BK-0011M + FDD") == 0)     return "BOS+BAS11M";
+    if (strcmp(m, "Slow BK-0011M") == 0)      return "BOS+BAS11M (slow)";
+    if (strcmp(m, "Terak 8510/a") == 0)       return "TERAK";
+    return "?";
+}
 
 // ---- Ввод ----
 static uint16_t g_joy = 0;                  // RETRO_DEVICE_ID_JOYPAD биты
@@ -83,6 +101,7 @@ static uint16_t hid_to_retrok(uint8_t sc)
 
 static void host_update_input(void)
 {
+    { static int once = 0; if (!once) { printf("BK: input_poll\n"); once = 1; } }   // TEMP r0.250 (one-shot)
     memset(g_kbd, 0, sizeof(g_kbd));
 
     uint8_t keys[8];
@@ -112,6 +131,7 @@ static void host_update_input(void)
 
     uint16_t j = 0;
     uint16_t sp = sega_pad_scan();
+    { static int once = 0; if (!once) { printf("BK: in_done\n"); once = 1; } }   // TEMP r0.251
     if (sp & 0x0001) j |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
@@ -130,6 +150,7 @@ static void host_input_poll(void) { host_update_input(); }
 
 static int16_t host_input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
+    { static int once = 0; if (!once) { printf("BK: in_state\n"); once = 1; } }   // TEMP r0.251
     (void)index;
     if (device == RETRO_DEVICE_KEYBOARD)
         return (id < RETROK_LAST && g_kbd[id]) ? 1 : 0;
@@ -141,22 +162,31 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }
 static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; return f; }
 
-// Кадр RGB565 (канва 512×512, содержимое 512×256) -> EMU_FB 320×240 (nearest).
+// Кадр RGB565 (канва 512×512) -> EMU_FB 320×240.
+// r0.247: ядро отдаёт кадр 512×512, где содержимое BK-0010 (256×256) УДВОЕНО
+// и по X, и по Y (blit_line_double). Прежний ресемплинг 512->320 по X шёл шагом
+// 1.6 по удвоенным колонкам — пиксели брались неравномерно (то обе копии, то одна),
+// что давало «цветную мозаику» и нечитаемый текст. Теперь по X идём ровно шагом 2
+// (снятие удвоения, потерь нет), по Y — 512->240 по удвоенным строкам (почти 1:1).
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
+    static int g_bk_stage_vid = 0;
+    if (!g_bk_stage_vid) { printf("BK: video_refresh\n"); g_bk_stage_vid = 1; }   // TEMP r0.250
     if (!data) return;
     uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
     const uint16_t* src = (const uint16_t*)data;
     size_t sp = pitch >> 1;
     unsigned sw = width  ? width  : 512;
     unsigned sh = height ? height : 512;
+    unsigned cols = sw >> 1;                 // 512 -> 256 (снять удвоение по X)
+    if (cols > EMU_FB_W) cols = EMU_FB_W;
 
     for (unsigned y = 0; y < EMU_FB_H; y++) {
-        unsigned sy = (y * sh) / EMU_FB_H;
+        unsigned sy = (y * sh) / EMU_FB_H;   // удвоенные строки: 512 -> 240 (≈1:1 к содержимому)
         const uint16_t* srow = src + (size_t)sy * sp;
         uint16_t* drow = dst + (size_t)y * EMU_FB_W;
-        for (unsigned x = 0; x < EMU_FB_W; x++)
-            drow[x] = srow[(x * sw) / EMU_FB_W];
+        for (unsigned x = 0; x < cols; x++)
+            drow[x] = srow[x * 2];           // шаг 2 — без выпадения колонок
     }
 }
 
@@ -164,7 +194,14 @@ static void host_log(enum retro_log_level level, const char* fmt, ...)
 {
     (void)level;
     if (!fmt) return;
-    printf("BKLOG: %s", fmt);   // r0.245 TEMP: видно, что делает ядро (загрузка ROM, ошибки)
+    // r0.247: раньше печаталось только fmt -> «%s (%u bytes)» выходило буквально,
+    // имён ROM в UART не было. Форматируем через наш vsnprintf (libc_min.c).
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    printf("BKLOG: %s", buf);
 }
 
 static bool host_environment(unsigned cmd, void* data)
@@ -176,6 +213,13 @@ static bool host_environment(unsigned cmd, void* data)
         if (v && v->key) {
             if (strcmp(v->key, "bk_model") == 0) {
                 v->value = g_model;
+                return true;
+            }
+            // r0.253: FOCAL/монитор BK-0010 — монохромные (1 бит/пиксель). Дефолт
+            // ядра cflag=1 (color) декодирует их как 2-битный цвет → RGB-мозаика
+            // (проверено нативно: colour->красный/зелёный/синий, disabled->белый+чёрный).
+            if (strcmp(v->key, "bk_color") == 0) {
+                v->value = "disabled";
                 return true;
             }
         }
@@ -233,8 +277,8 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
         bk_retro_deinit();
         return;
     }
-    printf("BK: %s: %s (%u bytes)\n", g_model,
-           (rom && size) ? (rom_name ? rom_name : "?") : "BASIC", (unsigned)size);
+    printf("BK: %s [%s]: %s (%u bytes)\n", g_model, bk_rom_label(g_model),
+           (rom && size) ? (rom_name ? rom_name : "?") : "baked ROM", (unsigned)size);
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
@@ -242,10 +286,11 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_bk_exit_req = 0;
     g_bk_esc_t0 = 0;
 
+    printf("BK: run loop enter\n");   // TEMP r0.250: локализация P: (стенд)
     for (;;) {
         bk_retro_run();
         emu_throttle();
-        emu_scale(EMU_FB_W, EMU_FB_H);
+        emu_scale(BK_CONTENT_W, EMU_FB_H);   // r0.247: 256×240 (де-удвоенные X), не 320×240
         fb_flush();
         if (emu_esc_hold() || g_bk_exit_req) break;
     }

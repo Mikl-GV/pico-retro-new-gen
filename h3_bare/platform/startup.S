@@ -82,6 +82,46 @@ _prefetch:
     bl hex8_uart
     mov r0, #'\n'
     bl uart_dbg
+    /* LR_abt: адрес вызывающего кода — откуда перешли на битый PC.
+     * Как F5 в _dataabort: если IFAR=00000000 (переход на NULL), LR укажет
+     * место вызова (реальный фолтящий сайт ≈ LR-8). */
+    mov r0, #'L'
+    bl uart_dbg
+    mov r0, #'R'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    ldr r0, [sp, #16]
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    /* SPSR_abt: CPSR на момент аборта — видно режим и бит Thumb (0x20) */
+    mov r0, #'S'
+    bl uart_dbg
+    mov r0, #'P'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrs r0, spsr
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    /* Адрес возврата из SVC-режима (кто вызвал битый указатель): временно
+     * переключаемся в SVC и читаем banked LR_svc. r0-r7 общие для режимов. */
+    cps #0x13
+    mov r0, lr
+    cps #0x17
+    push {r0}
+    mov r0, #'B'
+    bl uart_dbg
+    mov r0, #'L'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    pop {r0}
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
     pop {r0-r3, lr}
 9:  b 9b
 
@@ -167,30 +207,37 @@ _dataabort:
     pop {r0-r3, lr}
 9:  b 9b
 
-/* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F) */
+/* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F).
+ * r0.249: значение держим в r4, не в r1 — uart_dbg затирает r1, из-за чего
+ * младшая цифра (IFSR/DFSR) всегда печаталась как '0'. */
 .global hex8_uart
 hex8_uart:
-    push {r1, lr}
-    mov r1, r0
-    lsr r0, r1, #4
+    push {r1, r4, lr}
+    mov r4, r0
+    lsr r0, r4, #4
     and r0, r0, #0xF
     cmp r0, #10
     addlo r0, r0, #'0'
     addhs r0, r0, #('A' - 10)
     bl uart_dbg
-    and r0, r1, #0xF
+    and r0, r4, #0xF
     cmp r0, #10
     addlo r0, r0, #'0'
     addhs r0, r0, #('A' - 10)
     bl uart_dbg
-    pop {r1, pc}
+    pop {r1, r4, pc}
 
-/* Вывести число r0 как 8 hex-цифр (32 бита) */
+/* Вывести число r0 как 8 hex-цифр (32 бита).
+ * r0.249: счётчик храним НА СТЕКЕ, не в r1 — uart_dbg затирает r1
+ * (ldr r1,=UART_USR / UART_THR), поэтому прежний цикл (mov r1,#8 …
+ * subs r1,#1; bne) НИКОГДА не заканчивался и заливал UART мегабайтами '0'
+ * после первого же F1/P: — из-за этого не видели ни IFSR, ни LR. */
 .global hex32_uart
 hex32_uart:
     push {r1, r4, lr}
     mov r4, r0
     mov r1, #8
+    str r1, [sp, #-4]!
 1:  mov r0, r4, lsr #28
     and r0, r0, #0xF
     cmp r0, #10
@@ -198,8 +245,11 @@ hex32_uart:
     addhs r0, r0, #('A' - 10)
     bl uart_dbg
     lsl r4, r4, #4
+    ldr r1, [sp]
     subs r1, r1, #1
+    str r1, [sp]
     bne 1b
+    add sp, sp, #4
     pop {r1, r4, pc}
 
 .section .text
