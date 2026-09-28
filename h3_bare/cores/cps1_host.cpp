@@ -36,6 +36,7 @@ extern "C" {
 #include "remap.h"
 #include "fb_text.h"
 #include "fat.h"
+#include "h3_hs_timer.h"
 }
 
 // ---- FBNeo extern (burn.cpp / драйвер) ----
@@ -62,6 +63,12 @@ static UINT32 __cdecl host_high_col(INT32 r, INT32 g, INT32 b, INT32 i)
 extern UINT8 CpsInp001[8];
 extern UINT8 CpsInp000[8];
 extern UINT8 CpsInp018[8];
+// CPS-2 (d_cps2) использует другие регистры: Coin=020+4/+5, Start=020+0/+1,
+// кики=011 (P1 +0..2, P2 +4..6), diag/service=021.
+extern UINT8 CpsInp011[8];
+extern UINT8 CpsInp020[8];
+extern UINT8 CpsInp021[8];
+extern UINT8 CpsInp010[8];
 
 // ---- Видео ----
 // CPS-1 рендерит 384×224 RGB565. Пишем напрямую в HDMI FB 1024×600
@@ -100,6 +107,8 @@ static uint32_t g_zip_parent_size = 0;
 #define SP_C     0x0040
 #define SP_START 0x0080
 #define SP_X     0x0100
+#define SP_Y     0x0200
+#define SP_Z     0x0400
 
 // ---- маленькие LE-хелперы для zip ----
 static uint16_t le16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -375,14 +384,19 @@ static void host_update_input(void)
     memset(CpsInp001, 0, sizeof(CpsInp001));
     memset(CpsInp000, 0, sizeof(CpsInp000));
     memset(CpsInp018, 0, sizeof(CpsInp018));
+    memset(CpsInp011, 0, sizeof(CpsInp011));
+    memset(CpsInp020, 0, sizeof(CpsInp020));
+    memset(CpsInp021, 0, sizeof(CpsInp021));
+    memset(CpsInp010, 0, sizeof(CpsInp010));
 
-    // r0.280: usb_kbd_get_raw вместо get_raw — удержание клавиш не рвётся
-    // на клавиатурах, не шлющих boot-отчёты при удержании (get_raw обнуляет
-    // через ~100 мс тишины).
+    // Клавиатура: штатный usb_kbd_get_raw (внутри себя держит окно 100 мс:
+    // повтор пришёл ≤100 мс — клавиша держится, тишина дольше — отпущена;
+    // новые изменения отчёта — новое нажатие).
     uint8_t keys[8];
     int n = usb_kbd_get_raw(keys, 8);
 
-    // P1 — ремап-платформа CPS-1
+    // P1 — ремап-платформа CPS-1 (регистры CPS-1: Coin=018, Start=018;
+    // CPS-2 ждёт их в 020, поэтому пишем в оба)
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_UP,     keys, n)) CpsInp001[3] = 1;
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_DOWN,   keys, n)) CpsInp001[2] = 1;
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_LEFT,   keys, n)) CpsInp001[1] = 1;
@@ -390,11 +404,14 @@ static void host_update_input(void)
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_A,      keys, n)) CpsInp001[4] = 1;   // Attack
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_B,      keys, n)) CpsInp001[5] = 1;   // Jump
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_C,      keys, n)) CpsInp001[6] = 1;   // Fire3
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_SELECT, keys, n)) CpsInp018[0] = 1;   // Coin
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_START,  keys, n)) CpsInp018[4] = 1;   // Start
+    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_SELECT, keys, n)) { CpsInp018[0] = 1; CpsInp020[4] = 1; }   // Coin
+    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_START,  keys, n)) { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // Start
     for (int i = 0; i < n; i++) {
-        if (keys[i] == 30) CpsInp018[4] = 1;   // 1 = Start (классика MAME)
-        else if (keys[i] == 34 || keys[i] == 91) CpsInp018[0] = 1;  // 5 / Numpad5 = Coin (fallback)
+        if (keys[i] == 30)       { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // 1 = Start (классика MAME)
+        else if (keys[i] == 34 || keys[i] == 91) { CpsInp018[0] = 1; CpsInp020[4] = 1; }  // 5 / Numpad5 = Coin
+        else if (keys[i] == 20) CpsInp011[0] = 1;   // Q = Kick weak (CPS-2)
+        else if (keys[i] == 8)  CpsInp011[1] = 1;   // E = Kick med
+        else if (keys[i] == 21) CpsInp011[2] = 1;   // R = Kick strong
         // P2 — хардкод: WASD, J/K/L, 2=Start, 6=Coin
         else if (keys[i] == 26) CpsInp000[3] = 1;  // W up
         else if (keys[i] == 22) CpsInp000[2] = 1;  // S down
@@ -403,15 +420,17 @@ static void host_update_input(void)
         else if (keys[i] == 13) CpsInp000[4] = 1;  // J Attack
         else if (keys[i] == 14) CpsInp000[5] = 1;  // K Jump
         else if (keys[i] == 15) CpsInp000[6] = 1;  // L Fire3
-        else if (keys[i] == 31) CpsInp018[5] = 1;  // 2 Start
-        else if (keys[i] == 35) CpsInp018[1] = 1;  // 6 Coin
+        else if (keys[i] == 31) { CpsInp018[5] = 1; CpsInp020[1] = 1; }  // 2 Start
+        else if (keys[i] == 35) { CpsInp018[1] = 1; CpsInp020[5] = 1; }  // 6 Coin
     }
 
-    // Sega-пад через стабильный слой (usb_pad_update: кэш 12 мс + антидребезг
-    // 3 одинаковых скана) — сырой sega_pad_scan() по кадрам периодически
-    // «сбоил» и сбрасывал удержание кнопок (~1 с стрельбы, потом обрыв).
-    usb_pad_update();
-    uint16_t sp = usb_pad_get();
+    // Sega-пад: НЕ МЕНЯТЬ прямое чтение — только sega_pad_scan() раз в кадр,
+    // без фильтров/дебаунса на хосте. scan сам НЕ ощущается надёжным и уже
+    // внутренне фильтрует фазы (тайминги эмпирические, sega_pad.c — отдельная
+    // зона). Попытки фильтровать на хосте ломали ввод: usb_pad (3 скана)
+    // глотал короткие X/Y/Z, «пересечение двух сканов» (r0.301) убивало пад
+    // вовсе из-за кадрового интервала 16 мс.
+    uint16_t sp = sega_pad_scan();
     if (sp & SP_UP)     CpsInp001[3] = 1;
     if (sp & SP_DOWN)   CpsInp001[2] = 1;
     if (sp & SP_LEFT)   CpsInp001[1] = 1;
@@ -419,8 +438,10 @@ static void host_update_input(void)
     if (sp & SP_A)      CpsInp001[4] = 1;   // Attack
     if (sp & SP_B)      CpsInp001[5] = 1;   // Jump
     if (sp & SP_C)      CpsInp001[6] = 1;   // Fire3
-    if (sp & SP_START)  CpsInp018[4] = 1;   // Start
-    if (sp & SP_X)      CpsInp018[0] = 1;   // Coin
+    if (sp & SP_START)  { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // Start
+    if (sp & SP_X)      { CpsInp018[0] = 1; CpsInp020[4] = 1; }   // Coin
+    if (sp & SP_Y)      CpsInp011[0] = 1;   // Kick weak (CPS-2)
+    if (sp & SP_Z)      CpsInp011[1] = 1;   // Kick med
 }
 
 // снять суффикс .zip/.ZIP
