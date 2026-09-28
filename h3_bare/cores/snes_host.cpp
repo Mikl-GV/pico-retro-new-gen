@@ -309,7 +309,7 @@ extern "C" void snes_stop(void) {
 extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     printf("Snes9x: starting...\n");
-    fb_clear(); fb_flush();
+    emu_prepare();
     if (snes_init_game(rom, size) != 1) {
         printf("SNES: init failed\n");
         return;

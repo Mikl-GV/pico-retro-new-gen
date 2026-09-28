@@ -141,6 +141,20 @@ void emu_clear_fb(void) {
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
 }
 
+// r0.256: единая подготовка перед запуском ЛЮБОГО эмулятора.
+//  - gb_heap_reset(): bump-пул ядровых malloc — при повторном входе без сброса
+//    память эмулятора остаётся от предыдущего запуска (и растёт);
+//  - EMU_FB + HDMI-кадр: у систем, чей рендер НЕ покрывает весь EMU_FB
+//    (напр. Fuse пишет только 256/320 колонок, а emu_scale читает все 320),
+//    на экране оставались куски «загруженного до этого».
+extern void gb_heap_reset(void);
+void emu_prepare(void) {
+    gb_heap_reset();
+    emu_clear_fb();
+    fb_clear();
+    fb_flush();
+}
+
 // ---- throttle ----
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
@@ -268,7 +282,7 @@ extern void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name)
 extern void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (a7800_init_game(rom, size) != 1) {
         printf("A7800: init failed\n"); return;
     }
@@ -284,7 +298,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (a5200_init_game(rom, size) != 1) {
         printf("A5200: init failed\n"); return;
     }
@@ -303,7 +317,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }
@@ -321,7 +335,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (gg_init_game(rom, size) != 1) {
         printf("GG: init failed\n"); return;
     }
@@ -339,7 +353,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb();
+    emu_prepare();
     atari2600_init(rom, size);
     atari2600_set_difficulty(a2600_diff_expert);
     printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
@@ -355,7 +369,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (portfolio_init_game(rom, size) != 1) {
         printf("Portfolio: init failed\n"); return;
     }
@@ -375,7 +389,7 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
 }
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (gb_init_game(rom, size) != 1) {
         printf("GameBoy: init failed\n"); return;
     }
@@ -395,7 +409,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (gba_init_game(rom, size) != 1) {
         printf("GBA: init failed\n"); return;
     }
@@ -415,7 +429,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (lynx_init_game(rom, size) != 1) {
         printf("Lynx: init failed\n"); return;
     }
@@ -435,7 +449,7 @@ exit: fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    emu_clear_fb(); fb_clear(); fb_flush();
+    emu_prepare();
     if (ngp_init_game(rom, size) != 1) {
         printf("NGP: init failed\n"); return;
     }

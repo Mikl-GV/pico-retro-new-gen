@@ -39,9 +39,6 @@ void bk_retro_deinit(void);
 #define EMU_FB_W    320
 #define EMU_FB_H    240
 
-// После де-удвоения X в host_video содержимое BK-0010 — 256 колонок (как на железе).
-#define BK_CONTENT_W 256
-
 // ---- Модель (выбор из меню, опция bk_model ядра) ----
 static const char* g_model = "BK-0010.01";
 void bk_set_model(const char* m) { if (m && m[0]) g_model = m; }
@@ -162,31 +159,30 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }
 static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; return f; }
 
-// Кадр RGB565 (канва 512×512) -> EMU_FB 320×240.
-// r0.247: ядро отдаёт кадр 512×512, где содержимое BK-0010 (256×256) УДВОЕНО
-// и по X, и по Y (blit_line_double). Прежний ресемплинг 512->320 по X шёл шагом
-// 1.6 по удвоенным колонкам — пиксели брались неравномерно (то обе копии, то одна),
-// что давало «цветную мозаику» и нечитаемый текст. Теперь по X идём ровно шагом 2
-// (снятие удвоения, потерь нет), по Y — 512->240 по удвоенным строкам (почти 1:1).
+// r0.255: прямое рисование в HDMI FB (1024×600), НЕ через EMU_FB/emu_scale.
+// Кадр ядра 512×512 (Ч/Б: 512 уникальных колонок) при промежуточном
+// ресайзе 512→320 терял ~37% колонок → текст «полосами». Здесь X идёт ровно
+// в 2× (512→1024, каждый пиксель дублируется — потерь нет), Y 512→600 (≈1.17).
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
-    static int g_bk_stage_vid = 0;
-    if (!g_bk_stage_vid) { printf("BK: video_refresh\n"); g_bk_stage_vid = 1; }   // TEMP r0.250
     if (!data) return;
-    uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
     const uint16_t* src = (const uint16_t*)data;
     size_t sp = pitch >> 1;
     unsigned sw = width  ? width  : 512;
     unsigned sh = height ? height : 512;
-    unsigned cols = sw >> 1;                 // 512 -> 256 (снять удвоение по X)
-    if (cols > EMU_FB_W) cols = EMU_FB_W;
+    uint32_t* dst = (uint32_t*)0x5F900000u;   // HDMI FB XRGB8888 1024×600
 
-    for (unsigned y = 0; y < EMU_FB_H; y++) {
-        unsigned sy = (y * sh) / EMU_FB_H;   // удвоенные строки: 512 -> 240 (≈1:1 к содержимому)
+    for (unsigned y = 0; y < 600; y++) {
+        unsigned sy = (y * sh) / 600u;
         const uint16_t* srow = src + (size_t)sy * sp;
-        uint16_t* drow = dst + (size_t)y * EMU_FB_W;
-        for (unsigned x = 0; x < cols; x++)
-            drow[x] = srow[x * 2];           // шаг 2 — без выпадения колонок
+        uint32_t* drow = dst + (size_t)y * 1024u;
+        for (unsigned x = 0; x < 1024; x++) {
+            uint16_t p = srow[(x * sw) / 1024u];
+            uint32_t r = ((p >> 11) & 0x1F) << 3;
+            uint32_t g = ((p >> 5) & 0x3F) << 2;
+            uint32_t b = (p & 0x1F) << 3;
+            drow[x] = (r << 16) | (g << 8) | b;
+        }
     }
 }
 
@@ -249,7 +245,7 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    fb_clear(); fb_flush();
+    emu_prepare();
 
     bk_retro_set_environment(host_environment);
     bk_retro_set_video_refresh(host_video);
@@ -287,11 +283,14 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_bk_esc_t0 = 0;
 
     printf("BK: run loop enter\n");   // TEMP r0.250: локализация P: (стенд)
+    unsigned long bkh_n = 0;
     for (;;) {
         bk_retro_run();
         emu_throttle();
-        emu_scale(BK_CONTENT_W, EMU_FB_H);   // r0.247: 256×240 (де-удвоенные X), не 320×240
-        fb_flush();
+        fb_flush();   // r0.255: host_video уже записал HDMI FB напрямую (emu_scale не нужен)
+        // TEMP r0.254: heartbeat раз в ~2 с — при «зависании на вводе» видно,
+        // жива ли host-петля (BKH идёт дальше ⇒ виснет гость/ядро, нет ⇒ хостовый хенг).
+        if ((++bkh_n % 120) == 0) printf("BKH %lu\n", bkh_n);
         if (emu_esc_hold() || g_bk_exit_req) break;
     }
 

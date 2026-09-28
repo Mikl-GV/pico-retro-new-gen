@@ -262,7 +262,7 @@ extern "C" void fceumm_stop(void) {
 // ---- точка входа emu.c (совместима со старым emu_run_nes) ----
 extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
-    fb_clear(); fb_flush();
+    emu_prepare();
     if (fceumm_init_game(rom, size) != 1) {
         printf("NES(FCEUmm): init failed\n");
         return;

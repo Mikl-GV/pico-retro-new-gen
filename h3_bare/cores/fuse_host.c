@@ -270,7 +270,7 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    fb_clear(); fb_flush();
+    emu_prepare();
 
     g_rom = rom; g_rom_size = size;
     if (rom_name && rom_name[0]) {

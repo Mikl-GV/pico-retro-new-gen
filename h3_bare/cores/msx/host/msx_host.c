@@ -355,7 +355,7 @@ void msx_stop(void) {
 // ---- точка входа из emu.c ----
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
-    fb_clear(); fb_flush();
+    emu_prepare();
     if (!msx_init_game(rom, size)) {
         printf("MSX: init failed\n");
         return;
