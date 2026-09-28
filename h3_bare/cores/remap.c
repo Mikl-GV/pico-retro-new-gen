@@ -200,11 +200,12 @@ static const uint16_t def_pce[BTN_MAX] = {
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,   // Run, Select
 };
 // CPS-1 (Capcom Play System 1): D-Pad + Attack/Jump/Fire3 + Start/Coin.
-// Классическая раскладка MAME-стиля: 5=Coin; 1=Start (хардкод-дубль в cps1_host).
+// Coin по умолчанию — S (0x16, как Select у PCE/SMS); host дополнительно
+// принимает 5 и Numpad5 как fallback. 1/Enter = Start.
 static const uint16_t def_cps1[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X, [BTN_C]=KBD_C,   // Attack, Jump, Fire3
-    [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_5,     // Start, Coin
+    [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,     // Start, Coin
 };
 
 // Метки кнопок для меню (показываем только уместные для платформы)

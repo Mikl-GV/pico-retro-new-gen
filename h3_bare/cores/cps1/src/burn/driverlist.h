@@ -860,6 +860,11 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvCpsWonder3,
 };
 
+// Количество драйверов для host-слоя (без BurnLibInit: nBurnDrvCount
+// выставляется отсюда, pDriver[]->szShortName остаются константными
+// строками rodata — их не может затереть повторная инициализация).
+#define CPS1_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))
+
 // Атрибуция исходников (в FBNeo генерируется; нам не нужна — пустая таблица)
 typedef struct { char* game_name; char* sourcefile; } game_sourcefile_entry;
 static game_sourcefile_entry sourcefile_table[] = { { (char*)"", (char*)"" } };

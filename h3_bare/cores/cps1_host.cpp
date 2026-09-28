@@ -15,7 +15,7 @@
 // willow, 3wonders (см. burn/driverlist.h).
 //
 // Ввод: P1 — клавиатура (ремап-платформа REMAP_PLAT_CPS1, дефолт: стрелки +
-// Z=Attack X=Jump C=Fire3, Enter=Start, 5=Coin, дубль классики 1=Start)
+// Z=Attack X=Jump C=Fire3, Enter/1=Start, S=Coin (fallback 5/Numpad5)
 // + Sega-пад (крестовина, A=Attack B=Jump C=Fire3 Start=Start X=Coin).
 // P2 — хардкод: WASD движение, J/K/L = Attack/Jump/Fire3, 2=Start, 6=Coin.
 // Выход: ESC-удержание (emu_esc_hold, ~0.9 с).
@@ -25,6 +25,7 @@
 #include <stdio.h>
 
 #include "burnint.h"
+#include "driverlist.h"
 #include "zlib.h"
 
 extern "C" {
@@ -41,6 +42,17 @@ extern UINT32 nBurnDrvActive;
 extern UINT8* pBurnDraw;
 extern INT32 nBurnPitch;
 extern INT32 nBurnBpp;
+// BurnHighCol — конвертация R/G/B в наш пиксельный формат (RGB565).
+// Вендорный filler возвращает ~0 (белый) — без host-функции экран белый.
+extern UINT32 (__cdecl *BurnHighCol)(INT32 r, INT32 g, INT32 b, INT32 i);
+
+static UINT32 __cdecl host_high_col(INT32 r, INT32 g, INT32 b, INT32 i)
+{
+    (void)i;
+    return (uint32_t)(((r & 0xFF) >> 3) << 11) |
+           (uint32_t)(((g & 0xFF) >> 2) << 5)  |
+           (uint32_t)((b & 0xFF) >> 3);
+}
 
 // входные массивы драйвера CPS (cps_rw.cpp):
 // CpsInp001 = P1 (0=Right 1=Left 2=Down 3=Up 4=Attack 5=Jump 6=Fire3)
@@ -269,6 +281,7 @@ static void host_update_input(void)
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_START,  keys, n)) CpsInp018[4] = 1;   // Start
     for (int i = 0; i < n; i++) {
         if (keys[i] == 30) CpsInp018[4] = 1;   // 1 = Start (классика MAME)
+        else if (keys[i] == 34 || keys[i] == 91) CpsInp018[0] = 1;  // 5 / Numpad5 = Coin (fallback)
         // P2 — хардкод: WASD, J/K/L, 2=Start, 6=Coin
         else if (keys[i] == 26) CpsInp000[3] = 1;  // W up
         else if (keys[i] == 22) CpsInp000[2] = 1;  // S down
@@ -303,11 +316,12 @@ static void strip_zip_ext(char* s)
 // ---- точка входа из rom_browser (emu.h) ----
 // rom/size НЕ используются: элемент браузера = папка игры или zip-файл,
 // host сам читает ROM-сет по имени (rom_name).
-// BurnLib инициализируем ОДИН раз за сессию прошивки: BurnGameListInit
-// кладёт в malloc копии коротких имён драйверов и переписывает точInto
-// pDriver[i]->szShortName на них; BurnLibExit их освобождает, после чего
-// повторный BurnLibInit копирует имена из освобождённой памяти (мусор) →
-// BurnDrvGetIndex перестаёт находить игры. Поэтому exit не зовём.
+// BurnLibInit/BurnGameListInit НЕ вызываются: они копируют короткие имена
+// драйверов в malloc-блоки и переписывают pDriver[i]->szShortName на них;
+// эти копии затирались после пары запусков игр (имена становились пустыми,
+// BurnDrvGetIndex переставал находить драйверы). Вместо этого оставляем
+// pDriver[i]->szShortName константными строками rodata и выставляем
+// nBurnDrvCount = CPS1_DRV_COUNT один раз.
 void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     (void)rom; (void)size;
@@ -335,10 +349,7 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     static int g_lib_inited = 0;
     if (!g_lib_inited) {
-        if (BurnLibInit() != 0) {
-            printf("CPS1: BurnLibInit failed\n");
-            return;
-        }
+        nBurnDrvCount = CPS1_DRV_COUNT;
         g_lib_inited = 1;
     }
 
@@ -392,6 +403,7 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     nBurnBpp = 2;
 
     BurnExtLoadRom = host_ext_load_rom;
+    BurnHighCol = host_high_col;   // иначе вендорный filler даёт белый экран
 
     if (BurnDrvInit() != 0) {
         printf("CPS1: %s init failed (check ROM set)\n", game);
@@ -404,7 +416,7 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
     printf("CPS1: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
-    printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
+    printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
