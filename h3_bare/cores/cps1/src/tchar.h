@@ -31,4 +31,9 @@
 #define _ttoi       atoi
 #define _ttol       atol
 
+// wide-char — только в Windows-путях FBNeo; у нас не используются
+#define wcslen(x)   strlen((const char*)(x))
+#define _tfopen     fopen
+#define wcscpy(d,s) strcpy((char*)(d), (const char*)(s))
+
 #endif

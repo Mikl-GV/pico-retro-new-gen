@@ -36,6 +36,34 @@
 - Адаптации вендора: `src/tchar.h` (шим FBNeo-TCHAR), `burn/devices/joyprocess.*`
   (тянет `burnint.h`).
 
+### Прогресс: весь драйвер CPS-1 + framework компилируются (x86-прогон)
+
+До-вендорено: `cpu/m68000_intf.*`, `cpu/z80_intf.*`, `cpu/m68000_debug.h`,
+`burn/snd/fm.{c,h}` (+ `ymdeltat.h`, `biquad.h`), `burn/drv/capcom/ctv.h`
+(генерируется нативным `ctv_make.cpp` — сгенерированный файл коммитим для
+простоты, как и `m68kops` при сборке можно перегенерировать). Дособрано:
+`cheat.cpp`, `hiscore.cpp`, `z80ctc/z80daisy/z80pio`.
+
+Компилируются (43+ объектов): m68k (Musashi+m68kops), z80, burn framework,
+звук/устройства, весь `drv/capcom` (включая `d_cps1`), `cps_config`.
+Адаптации: `burn/driverlist.h` (только наши игры + пустая `sourcefile_table`).
+
+**Осталось (что должен дать host-слой — список undefined из линковки x86):**
+1. **Звуковое ядро**: `AY8910*`, `YM2203*`, `YM_DELTAT_ADPCM_*` (fm.c/ay8910.c
+   не дают эти символы в текущей конфигурации; нужен либо под-вендор ymfm-ядра,
+   либо включение FM-конфига). Звук на первом этапе — off → допустимы стабы.
+2. **burn_debug/OS glue** (стабы): `Debug_*` ×13, `SekDbg*`/`ZetDbg*`, `szApp*Path`,
+   `MovieInfo`, `Reinitialise`, `is_netgame_or_recording`, `TCHARToANSI`.
+3. **Ввод/аналог** (стабы/реальные): `ProcessAnalog`, `AnalogDeadZone`,
+   `nInputIntfMouseDivider`, `nSocd`.
+4. **IPS-патчи** (стабы): `IpsApplyPatches`, `bDoIpsPatch`, `nIpsMemExpLen`.
+5. **ZIP**: `ZipLoadOneFile` (реальный — zlib из Fuse, чтение `/roms/cps1/*.zip`).
+6. Мелочи: `pDataRomDesc`, `pRDI`, `bDrvOkay`, `BurnYM2203/2608/2610/2612UpdateRequest`,
+   `nDrvOkay` и т.п.
+
+После стабов — ядро линкуется на x86; затем интеграция в H3 (objcopy-переименования,
+`cps1_host.c`, Makefile).
+
 ## Что ещё нужно для порта
 
 1. **Host-слой `cps1_host.c`** по образцу `bk_host.c`/`pce_host.c`: ROM-загрузка, кадр → EMU_FB, ввод, ESC, frame-loop.
