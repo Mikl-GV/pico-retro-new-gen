@@ -374,6 +374,113 @@ $(BUILD)/msx_WrapNukeYKT.o: $(MSX)/NukeYKT/WrapNukeYKT.c | $(BUILD)
 	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 
+# ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
+# Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
+# host сам выбирает драйвер и крутит BurnDrvFrame). Собственные флаги
+# из VENDOR.md: -D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG.
+# fm.c/ay8910.c/ym2151.c компилируются КАК C (gcc) — иначе имена C++
+# и линковка рассыпается. m68kops.c/h генерируются нативным m68kmake.
+# Конфликтующие с другими ядрами символы (m68k*/YM2612*) переименовываются
+# cps1_rename.sh (см. заметки про BK/PCE).
+CPS1 := $(TOP)h3_bare/cores/cps1
+CPS1_ZLIB := $(TOP)h3_bare/cores/fuse/zlib
+CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
+	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
+	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 \
+	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
+CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
+	-Wall -Wextra -O2 -fno-strict-aliasing \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG
+# C++-файлы вендора БЕЗ -ffreestanding (как Gearcoleco): newlib freestanding
+# не даёт <cmath>/tr1/free, на что опирается FBNeo.
+CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
+	-Wall -Wextra -O2 -fno-strict-aliasing \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG \
+	-fno-exceptions -fno-rtti -fno-threadsafe-statics
+
+CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
+CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
+CPS1_DEV   := eeprom i2ceeprom timekpr
+CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
+CPS1_SNDC  := ay8910 fm ym2151
+CPS1_Z80   := z80 z80ctc z80daisy z80pio
+
+OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))
+OBJ += $(addprefix $(BUILD)/c1c_,$(addsuffix .o,$(CPS1_CAP)))
+OBJ += $(addprefix $(BUILD)/c1d_,$(addsuffix .o,$(CPS1_DEV)))
+OBJ += $(addprefix $(BUILD)/c1s_,$(addsuffix .o,$(CPS1_SND)))
+OBJ += $(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC)))
+OBJ += $(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80)))
+OBJ += $(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o
+OBJ += $(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o
+OBJ += $(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/cps1_host.o
+
+# Только объекты CPS-1 (для отладки цели cps1-obj)
+CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
+	$(addprefix $(BUILD)/c1c_,$(addsuffix .o,$(CPS1_CAP))) \
+	$(addprefix $(BUILD)/c1d_,$(addsuffix .o,$(CPS1_DEV))) \
+	$(addprefix $(BUILD)/c1s_,$(addsuffix .o,$(CPS1_SND))) \
+	$(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC))) \
+	$(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80))) \
+	$(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o \
+	$(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o \
+	$(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/cps1_host.o
+
+HOSTCC ?= gcc
+$(BUILD)/m68kmake: $(CPS1)/src/cpu/m68k/m68kmake.c | $(BUILD)
+	$(HOSTCC) -O2 -I$(CPS1)/src/cpu/m68k -o $@ $<
+$(BUILD)/m68kops.c $(BUILD)/m68kops.h: $(BUILD)/m68kmake $(CPS1)/src/cpu/m68k/m68k_in.c
+	$(BUILD)/m68kmake $(BUILD)/ $(CPS1)/src/cpu/m68k/m68k_in.c
+
+# Паттерн-правила: C++ core-файлы -> c1*.o + cps1_rename.sh (objcopy)
+$(BUILD)/c1b_%.o: $(CPS1)/src/burn/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1c_%.o: $(CPS1)/src/burn/drv/capcom/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1d_%.o: $(CPS1)/src/burn/devices/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1s_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# C-файлы звука (fm.c — ОБЯЗАТЕЛЬНО как C, иначе YM* имена C++)
+$(BUILD)/c1sc_%.o: $(CPS1)/src/burn/snd/%.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Musashi CPU (C). m68kcpu/m68kdasm подключm68kops.h — ждём генерации.
+$(BUILD)/c1m_%.o: $(CPS1)/src/cpu/m68k/%.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1m_m68kcpu.o: $(BUILD)/m68kops.h
+$(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
+$(BUILD)/c1m_m68kops.o: $(BUILD)/m68kops.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Z80 (C++)
+$(BUILD)/c1z_%.o: $(CPS1)/src/cpu/z80/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# CPU-интерфейсы (m68000_intf/z80_intf)
+$(BUILD)/c1i_%.o: $(CPS1)/src/cpu/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# glue-стабы
+$(BUILD)/c1x_stubs.o: $(CPS1)/src/cps1_stubs.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1x_netg.o: $(CPS1)/src/cps1_netg.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# host-слой (C++: с burnint.h и joyprocess, как вендор; без переименований)
+$(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@ $<
+.PHONY: cps1-obj
+cps1-obj: $(CPS1_OBJ)
+
 # ---- Правила компиляции ----
 $(BUILD):
 	mkdir -p $(BUILD)

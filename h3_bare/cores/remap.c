@@ -49,6 +49,9 @@
 #define KBD_1 30
 #define KBD_2 31
 #define KBD_3 32
+#define KBD_4 33
+#define KBD_5 34
+#define KBD_6 35
 
 // ================= ИМЕНА КЛАВИШ =================
 // HID-сканкод -> имя для retro.cfg и меню. Имена регистронезависимы.
@@ -196,6 +199,13 @@ static const uint16_t def_pce[BTN_MAX] = {
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,          // I, II
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,   // Run, Select
 };
+// CPS-1 (Capcom Play System 1): D-Pad + Attack/Jump/Fire3 + Start/Coin.
+// Классическая раскладка MAME-стиля: 5=Coin; 1=Start (хардкод-дубль в cps1_host).
+static const uint16_t def_cps1[BTN_MAX] = {
+    [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
+    [BTN_A]=KBD_Z, [BTN_B]=KBD_X, [BTN_C]=KBD_C,   // Attack, Jump, Fire3
+    [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_5,     // Start, Coin
+};
 
 // Метки кнопок для меню (показываем только уместные для платформы)
 static const char* btn_labels[BTN_MAX] = {
@@ -228,6 +238,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_VECTREX] = { "GCE Vectrex",         "vectrex", def_vectrex },
     [REMAP_PLAT_COLECO]  = { "ColecoVision",         "coleco",  def_coleco },
     [REMAP_PLAT_PCE]     = { "PC Engine / TurboGrafx","pce",    def_pce   },
+    [REMAP_PLAT_CPS1]    = { "CPS-1 (Capcom)",         "cps1",   def_cps1  },
 };
 
 static const char* btn_keys[BTN_MAX] = {

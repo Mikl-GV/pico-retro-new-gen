@@ -42,11 +42,16 @@ UINT8 DebugDev_EEPROMInitted = 0;
 UINT8 DebugDev_TimeKprInitted = 0;
 UINT8 Debug_GenericTilesInitted = 0;
 UINT8 Debug_HiscoreInitted = 0;
+UINT8 DebugSnd_AY8910Initted = 0;
 UINT8 DebugSnd_MSM5205Initted = 0;
 UINT8 DebugSnd_MSM6295Initted = 0;
 UINT8 DebugSnd_SamplesInitted = 0;
 UINT8 DebugSnd_YM2151Initted = 0;
 UINT8 DebugSnd_YM2203Initted = 0;
+
+// DebugTrackerExit — из burn_debug, не вендорен; no-op
+void DebugTrackerExit() {}
+clock_t clock() { return 0; }
 
 // ---- OS/приложение ----
 INT32 nInputIntfMouseDivider = 1;

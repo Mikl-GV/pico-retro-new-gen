@@ -26,7 +26,8 @@
 #define REMAP_PLAT_VECTREX 12  // GCE Vectrex
 #define REMAP_PLAT_COLECO 13   // ColecoVision
 #define REMAP_PLAT_PCE    14   // PC Engine / TurboGrafx (HuCard)
-#define REMAP_PLAT_COUNT  15
+#define REMAP_PLAT_CPS1   15   // CPS-1 (Capcom Play System 1, аркадный автомат)
+#define REMAP_PLAT_COUNT  16
 
 // ---- Индексы кнопок в списке каждой платформы ----
 // (общие для всех, где есть; у платформы может не быть некоторых — смотри remap.c)
