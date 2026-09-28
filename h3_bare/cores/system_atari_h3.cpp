@@ -62,7 +62,7 @@ extern "C" unsigned int emu_LoadFile(const char*, void*, int) { return 0; }
 
 extern "C" int emu_GetPad(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_last(keys, 6);
+    int n = usb_kbd_get_raw(keys, 6);
     int k = 0;
 
     // Sega-геймпад: крестовина, A/B=Fire (дубль: у A2600 одна кнопка),

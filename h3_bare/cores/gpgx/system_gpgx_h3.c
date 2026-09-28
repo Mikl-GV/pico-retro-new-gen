@@ -63,7 +63,7 @@ static uint16_t bitmap_data_[720 * 576] __attribute__((aligned(64)));
 //   Поэтому A/B для SMS/GG мапятся в INPUT_BUTTON1/2 (иначе «A сдвигается в B/C»).
 static void gpgx_poll_input(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_last(keys, 6);
+    int n = usb_kbd_get_raw(keys, 6);
     uint16_t pad = 0;
 
     uint16_t sp = sega_pad_scan();
@@ -307,7 +307,7 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
     (void)rom_name;
     emu_prepare();
     if (gpgx_init_game(rom, size) != 1) {
-        printf("MD(GPGX): init failed\n");
+        printf("GPGX: init failed\n");
         return;
     }
     emu_set_border_color(0x000B1618);   // темно-синий (Mega Drive)
@@ -347,7 +347,7 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     gb_heap_reset();
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
-        printf("GG: bad rom\n"); return 0;
+        printf("GPGX: bad rom\n"); return 0;
     }
 
     memset(&cart, 0, sizeof(cart));

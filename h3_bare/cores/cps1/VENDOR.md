@@ -10,7 +10,7 @@
 | Путь здесь | Из FBNeo | Назначение |
 |---|---|---|
 | `src/burn/*.cpp,h` | `src/burn/` | framework burn (burn, burn_memory, burn_sound, burn_bitmap, burn_pal, tiles_generic, tilemap_generic, load, timer, hiscore, cheat, …) |
-| `src/burn/drv/capcom/` | `src/burn/drv/capcom/` | драйверы Capcom: `d_cps1.cpp` (цель), `cps*.cpp` (mem/draw/pal/obj/run/scr/rw), `ps*.cpp` (защита FBNeo), `cpsr/cpsrd/cpst/ctv`, `d_cps2`/`d_mitchell`/`kabuki`/`qs*`/`fcrash_snd`/`sf2mdt_snd` (пока лишние, не подключаются) |
+| `src/burn/drv/capcom/` | `src/burn/drv/capcom/` | драйверы Capcom: `d_cps1.cpp` (цель), `d_cps2.cpp` (CPS-2, подключён r0.272), `cps*.cpp` (mem/draw/pal/obj/run/scr/rw), `ps*.cpp` (защита FBNeo), `cpsr/cpsrd/cpst/ctv`, `kabuki`/`qs*`/`fcrash_snd`/`sf2mdt_snd` (не подключаются) |
 | `src/burn/snd/` | `src/burn/snd/` | звук: `ay8910`, `burn_ym2151`, `ym2151`, `burn_ym2203`, `msm5205`, `msm6295`, `samples` |
 | `src/burn/devices/` | `src/burn/devices/` | `eeprom`, `i2ceeprom`, `timekpr` |
 | `src/cpu/m68k/` | `src/cpu/m68k/` | Motorola 68000 (Musashi) — CPU платы |
@@ -29,6 +29,26 @@ r0.260, бинарь 10 446 156 Б). Host-слой `h3_bare/cores/cps1_host.cpp`
 сняты `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`) — правило
 проверки (undefined нового ядра ∩ определения не-ядер = 0) выполнено.
 `m68kops.c/h` генерируются на сборке нативным `m68kmake` в `build/` (в git не лежат).
+
+### CPS-2 (r0.272+) и стабильность (r0.275–r0.281)
+
+- **CPS-2 подключён** (r0.272): `d_cps2.cpp` в сборке, 377 драйверов CPS-2;
+  `driverlist.h` объединён — 804 драйвера (427 CPS-1 + 377 CPS-2),
+  `nBurnDrvCount = CPS_DRV_COUNT`. Host параметризован корнем ROM:
+  `emu_run_cps1` → `/roms/cps1`, `emu_run_cps2` → `/roms/cps2`.
+  Требование драйверов CPS-2: файл `*.key` (20 Б, `CPS2_ENCRYPTION_KEY`) в сете.
+- **Вшитая проверка полноты ROM-сета** (r0.275): перед запуском сверяются имя
+  и размер каждого активного слота (BRF_OPT/PLD исключены) по папке и zip
+  игры/родителя; при missing/bad — список в UART и `ROM set incomplete`, игра
+  не стартует. При `init failed` печатается список требуемых ROM.
+- **BurnMalloc bump-пул 96 МБ в BSS** (r0.277; был 24) — крупные CPS-2
+  (ddsom: gfx ~28 МБ) помещаются; сбрасывается каждым `BurnDrvInit`.
+- **zip-буферы по 64 МБ** (r0.278): основной 0x50000000, родителя 0x54000000 —
+  большие сеты (ddsom ~33 МБ) запускаются из архива.
+- **Ввод**: Sega-пад через `usb_pad_update()/usb_pad_get()` (кэш 12 мс +
+  антидребезг 3 скана, r0.279); клавиатура — `usb_kbd_get_raw` в host-слоях,
+  удержание не рвётся (кэш не сбрасывается при тишине отчётов, r0.284).
+  Coin — S, Start — Enter/1.
 
 ### Промежуточный итог (2026-09-28): ядра CPU компилируются
 

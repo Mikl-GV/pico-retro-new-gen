@@ -104,7 +104,7 @@ static void host_update_input(void)
     memset(g_kbd, 0, sizeof(g_kbd));
 
     uint8_t keys[8];
-    int n = usb_kbd_get_last(keys, 8);
+    int n = usb_kbd_get_raw(keys, 8);
     for (int i = 0; i < n; i++) {
         uint16_t rk = hid_to_retrok(keys[i]);
         if (rk) g_kbd[rk] = 1;

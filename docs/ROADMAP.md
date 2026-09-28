@@ -22,7 +22,7 @@
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | ✅ работает (r0.242: 48K..TS2068, ввод/печать, меню model→ROM/.z80/.sna или BASIC, ESC-выход) | fuse-libretro (h3_bare/cores/fuse/) |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
-| 17 | Аркады (Capcom CPS-1) | 68000/Z80 | ✅ CPS-1 работает (r0.260; без звука); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
+| 17 | Аркады (Capcom CPS-1/CPS-2) | 68000/Z80 | ✅ CPS-1 и CPS-2 работают (r0.281; без звука); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
 | 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | ✅ БК-0010/0011М работает (r0.243–r0.259: встроено, запуск/рендер/палитра и сброс машины на стенде; осталось Sega-пад, TFT-справка, Terak); Радио-86РК / MS 1504 — план | libretro-bk (BK-Terak-Emu), `h3_bare/cores/bk/` |
@@ -61,7 +61,7 @@
 8. **Capcom CPS-1 (аркада) — СДЕЛАНО (r0.260, стенд — осталось).** Ядро — порт **FinalBurn Neo** под CPS-1: `m68k` + `z80` + звук (`ym2151`/`ay8910`/`msm6295`) + устройства (`eeprom`/`timekpr`) + общий код `cps*.cpp` + `d_cps1` + `ps*` (защита/дешифровка); символические конфликты (m68k против Genesis Plus GX, YM2612 против gpgx sound) — objcopy-переименование `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`). Звук на первом этапе — off (`pBurnSoundOut` не выделяется).
    **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (распаковка через zlib из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
    **Сделано (r0.260):** (1) вендор в `h3_bare/cores/cps1/` (несколько но вне OBJ); (2) host-слой `cps1_host.cpp`: FAT-чтение папки или zip-инфлейт (`ZipExtract`), выбор драйвера по короткому имени (`BurnDrvGetIndex`), цикл `BurnDrvFrame`, кадр RGB565 384×224 → прямой ресайз в HDMI FB 1024×600, ввод: P1 (ремап-платформа `REMAP_PLAT_CPS1` — стрелки+Z/X/C, Enter/1=Start, 5=Coin) + Sega-пад (A/B/C, X=Coin), P2 хардкод (WASD+J/K/L, 2/6); ESC-выход, 60 Гц; (3) меню «CPS-1» (READY) → браузер `/roms/cps1/*` (папки и zip); (4) генерация `m68kops.c/h` нативным m68kmake в `build/` на сборке. `m68kops` не в git.
-   **Осталось:** стенд (ромы: `wof`, `kod`, `unsquad`, `varth`, `willow`, `3wonders`), по необходимости звук/CLR-бэкенд, TFT-справка. Sega System 2/16 — отдельно, после CPS-1. Передача — `docs/CPS1-HANDOFF.md`.
+   **Осталось:** звук (PSG/YM2151/QSound → I2S), поворот вертикальных CPS-1 (1941 и др.), стенд RPG-CPS-2 с `*.key`. Sega System 2/16 — отдельно, после CPS. NEOGEO — в работе. Передача — `docs/CPS1-HANDOFF.md`.
 
 ## Перспективы (идеи, не начаты)
 

@@ -227,12 +227,37 @@ static int zip_lookup(const uint8_t* z, uint32_t zsize, const char* target, uint
     return 1;
 }
 
+// ---- прогресс загрузки CPS на HDMI (не смотреть на чёрный экран) ----
+static int s_prog_total = 0;
+static int s_prog_done  = 0;
+static char g_load_name[32] = "";
+
+static void load_progress(const char* phase)
+{
+    // рисуем в HDMI FB напрямую (EMU_FB в это время не нужен)
+    char buf[64];
+    if (s_prog_total > 0) {
+        int pct = (s_prog_done * 100) / s_prog_total;
+        snprintf(buf, sizeof(buf), "Loading %s: %d/%d (%d%%)",
+                 g_load_name, s_prog_done, s_prog_total, pct);
+    } else {
+        snprintf(buf, sizeof(buf), "Loading %s %s", g_load_name, phase ? phase : "");
+    }
+    fb_clear();
+    fb_text_center(buf, 280, 2, 0x00FFFFFF);
+    if (s_prog_total > 0) {
+        int w = (s_prog_done * 800) / s_prog_total;
+        if (w > 0) fb_fill_rect(112, 316, w, 22, 0x00FFAA00);
+        fb_fill_rect(112, 338, 800, 3, 0x00333333);   // шкала-подложка
+    }
+    fb_flush();
+}
+
 // ---- проверка полноты ROM-сета (имена и размеры вшиты в драйвер) ----
 // Возвращает 1, если есть missing или неверные размеры. Печатает список.
 static int check_romset(const char* game)
 {
     int total = 0, missing = 0, bad = 0;
-    printf("CPS1 ROMSET %s:\n", game);
     for (int i = 0; i < 128; i++) {
         struct BurnRomInfo ri;
         ri.nType = 0; ri.nLen = 0;
@@ -262,6 +287,7 @@ static int check_romset(const char* game)
         }
     }
     if (total == 0) return 1;
+    s_prog_total = total;
     printf("RS %s: %d ok / %d total (%d missing, %d bad size)\n", game, total - missing - bad, total, missing, bad);
     return (missing || bad) ? 1 : 0;
 }
@@ -280,12 +306,19 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
     BurnDrvGetRomName(&name, i, 0);
     if (!name || !name[0]) return 1;
 
-    if (load_from_dir(g_dir, name, Dest, ri.nLen, pnWrote) == 0) return 0;
-    if (load_from_dir(g_parent_dir, name, Dest, ri.nLen, pnWrote) == 0) return 0;
+    if (load_from_dir(g_dir, name, Dest, ri.nLen, pnWrote) == 0) {
+        if (s_prog_total) { s_prog_done++; load_progress(""); }
+        return 0;
+    }
+    if (load_from_dir(g_parent_dir, name, Dest, ri.nLen, pnWrote) == 0) {
+        if (s_prog_total) { s_prog_done++; load_progress(""); }
+        return 0;
+    }
     if (g_zip_data) {
         uint32_t got = 0;
         if (zip_extract(g_zip_data, g_zip_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
             if (pnWrote) *pnWrote = (INT32)got;
+            if (s_prog_total) { s_prog_done++; load_progress(""); }
             return 0;
         }
     }
@@ -293,6 +326,7 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
         uint32_t got = 0;
         if (zip_extract(g_zip_parent_data, g_zip_parent_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
             if (pnWrote) *pnWrote = (INT32)got;
+            if (s_prog_total) { s_prog_done++; load_progress(""); }
             return 0;
         }
     }
@@ -342,11 +376,11 @@ static void host_update_input(void)
     memset(CpsInp000, 0, sizeof(CpsInp000));
     memset(CpsInp018, 0, sizeof(CpsInp018));
 
-    // r0.280: usb_kbd_get_last вместо get_raw — удержание клавиш не рвётся
+    // r0.280: usb_kbd_get_raw вместо get_raw — удержание клавиш не рвётся
     // на клавиатурах, не шлющих boot-отчёты при удержании (get_raw обнуляет
     // через ~100 мс тишины).
     uint8_t keys[8];
-    int n = usb_kbd_get_last(keys, 8);
+    int n = usb_kbd_get_raw(keys, 8);
 
     // P1 — ремап-платформа CPS-1
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_UP,     keys, n)) CpsInp001[3] = 1;
@@ -439,7 +473,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     int idx = BurnDrvGetIndex(game);
     if (idx < 0) {
         printf("CPS1: no driver for '%s' (%d CPS drivers)\n", game, (int)nBurnDrvCount);
-        printf("CPS1: put ROMs into %s/%s/ or %s/%s.zip\n", root, game, root, game);
         fb_clear();
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
@@ -448,13 +481,18 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     }
     nBurnDrvActive = (UINT32)idx;
 
+    // прогресс-бар загрузки
+    strncpy(g_load_name, game, sizeof(g_load_name) - 1);
+    g_load_name[sizeof(g_load_name) - 1] = 0;
+    s_prog_done = 0;
+    s_prog_total = 0;
+
     // Родитель (для клонов): недостающие ROM ищем в папке/zip родителя
     {
         char* parent = BurnDrvGetTextA(DRV_PARENT);
         if (parent && parent[0] && strcmp(parent, game) != 0) {
             snprintf(g_parent_dir, sizeof(g_parent_dir), "%s/%s", root, parent);
             snprintf(g_parent_zip, sizeof(g_parent_zip), "%s/%s.zip", root, parent);
-            printf("CPS1: %s is clone of %s\n", game, parent);
         }
     }
 
@@ -463,6 +501,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     snprintf(zipname, sizeof(zipname), "%s.zip", game);
     fat_entry_t zf;
     if (fat_find(root, zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= ZIP_MAX) {
+        load_progress("(zip)");   // чтение большого архива может идти секунды
         if (fat_read_file(&zf, 0, ZIP_BUF1, (uint32_t)zf.size) >= 0) {
             g_zip_data = ZIP_BUF1;
             g_zip_size = (uint32_t)zf.size;
@@ -490,6 +529,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         return;
     }
 
+    load_progress("");   // старт загрузки ROM (прогресс пойдёт по слотам)
+
     // кадровый буфер FBNeo
     pBurnDraw = (UINT8*)g_frame;
     nBurnPitch = CPS1_W * 2;
@@ -500,7 +541,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     if (BurnDrvInit() != 0) {
         printf("CPS1: %s init failed (check ROM set)\n", game);
-        // помощь: список требуемых драйвером ROM (имена как в FBNeo-наборе)
+        // что пошло не так: список требуемых драйвером ROM (имена FBNeo)
         for (int r = 0; r < 64; r++) {
             struct BurnRomInfo rri;
             rri.nType = 0; rri.nLen = 0;

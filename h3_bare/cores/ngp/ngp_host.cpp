@@ -71,7 +71,7 @@ BOOL mute = TRUE;
 // верить железу, а не им. Отсюда был «Start стреляет, B прыгает» в Metal Slug.
 static int ngp_input_state(void) {
     uint8_t raw[6];
-    int n = usb_kbd_get_last(raw, 6);
+    int n = usb_kbd_get_raw(raw, 6);
     unsigned char state = 0;
 
     // Sega-геймпад: крестовина + A/B + Start + Mode->Option

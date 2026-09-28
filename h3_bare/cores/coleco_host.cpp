@@ -26,6 +26,10 @@ extern "C" {
 #include "fat.h"
 }
 
+// r0.286: глошим логи Gearcoleco — Log/Error (log.h Log_func) в нашей сборке
+// (не libretro, не DEBUG) всегда печатали в UART и заливали лог в работе.
+bool g_mcp_stdio_mode = true;
+
 extern "C" int printf(const char* fmt, ...);
 extern "C" void gb_heap_reset(void);
 
@@ -49,11 +53,11 @@ static uint16_t g_col_fb[COL_W * COL_H] __attribute__((aligned(8)));
 // (правая), Start = кнопка паузы (здесь отдаём в keypad 8 - меню игры),
 // Mode = * (пауза в некоторых играх).
 static void coleco_build_input(GearcolecoCore* core) {
-    // r0.280: usb_kbd_get_last (кэш последнего отчёта) вместо get_raw: get_raw
+    // r0.280: usb_kbd_get_raw (кэш последнего отчёта) вместо get_raw: get_raw
 // обнуляет клавиши через ~100 мс без свежих boot-отчётов, а многие клавиши
 // не шлют отчёты на удержание → удержание «рвалось» (движение по шагу).
 uint8_t keys[6];
-    int n = usb_kbd_get_last(keys, 6);
+    int n = usb_kbd_get_raw(keys, 6);
     uint16_t sp = sega_pad_scan();
 
     // r176: для каждой кнопки зовём KeyPressed ИЛИ KeyReleased по факту —
@@ -94,10 +98,10 @@ uint8_t keys[6];
 }
 
 extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
-    printf("Gearcoleco: init size=%u\n", (unsigned)size);
+    printf("Coleco: init size=%u\n", (unsigned)size);
     g_loaded = 0;
 
-    if (!rom || size == 0) { printf("Gearcoleco: no ROM\n"); return 0; }
+    if (!rom || size == 0) { printf("Coleco: no ROM\n"); return 0; }
 
     gb_heap_reset();
 
@@ -131,10 +135,10 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
         }
     }
     if (!bios_ok)
-        printf("Gearcoleco: WARNING OS-7 BIOS not loaded (builtin+SD)\n");
+        printf("Coleco: WARNING OS-7 BIOS not loaded (builtin+SD)\n");
 
     if (!g_core->LoadROMFromBuffer(rom, (int)size, NULL)) {
-        printf("Gearcoleco: LoadROMFromBuffer failed\n");
+        printf("Coleco: LoadROMFromBuffer failed\n");
         delete g_core; g_core = NULL;
         return 0;
     }
@@ -144,7 +148,7 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
     // LoadROMFromBuffer с path=NULL игнорирует config, поэтому делаем это
     // отдельно. Иначе ядро упадёт с Data Abort (невалидный маппер).
     if (!g_core->IsReady()) {
-        printf("Gearcoleco: not recognized, forcing ColecoVision\n");
+        printf("Coleco: not recognized, forcing ColecoVision\n");
         Cartridge::ForceConfiguration cfg;
         cfg.type = Cartridge::CartridgeColecoVision;
         cfg.region = Cartridge::CartridgeNTSC;
@@ -153,13 +157,13 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     if (!g_core->IsReady()) {
-        printf("Gearcoleco: still not ready\n");
+        printf("Coleco: still not ready\n");
         delete g_core; g_core = NULL;
         return 0;
     }
 
     g_loaded = 1;
-    printf("Gearcoleco: loaded %u bytes\n", (unsigned)size);
+    printf("Coleco: loaded %u bytes\n", (unsigned)size);
     return 1;
 }
 
@@ -181,7 +185,7 @@ extern "C" void coleco_run_frame(void) {
 extern "C" void coleco_stop(void) {
     if (g_core) { delete g_core; g_core = NULL; }
     g_loaded = 0;
-    printf("Gearcoleco: stopped\n");
+    printf("Coleco: stopped\n");
 }
 
 // ---- точка входа из emu.c ----
@@ -189,7 +193,7 @@ extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* ro
     (void)rom_name;
     emu_prepare();
     if (coleco_init_game(rom, size) != 1) {
-        printf("ColecoVision: init failed\n");
+        printf("Coleco: init failed\n");
         return;
     }
     emu_set_border_color(0x00081814);   // тёмно-оливковый (картридж Coleco)

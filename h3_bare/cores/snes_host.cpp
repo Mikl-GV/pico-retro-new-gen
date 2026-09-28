@@ -133,7 +133,7 @@ static void build_input(void) {
     if (sp & 0x0800) g_joydata |= SNES_SELECT_MASK;   // Mode -> Select
 
     uint8_t keys[6];
-    int n = usb_kbd_get_last(keys, 6);
+    int n = usb_kbd_get_raw(keys, 6);
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
     // Дедолт: стрелки=D-Pad, Z=B X=Y A=A S=X Q=L W=R Space=Select Enter=Start.
     if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_UP, keys, n))    g_joydata |= SNES_UP_MASK;
@@ -152,7 +152,7 @@ static void build_input(void) {
 
 // ---- инициализация ----
 extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
-    printf("Snes9x: init size=%u\n", (unsigned)size);
+    printf("SNES: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gb_heap_reset();
 
@@ -178,13 +178,13 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
 
     // Инициализация памяти
     if (!S9xInitMemory()) {
-        printf("Snes9x: S9xInitMemory failed\n");
+        printf("SNES: S9xInitMemory failed\n");
         return 0;
     }
     S9xInitAPU();
     S9xInitDisplay();
     if (!S9xInitGFX()) {
-        printf("Snes9x: S9xInitGFX failed\n");
+        printf("SNES: S9xInitGFX failed\n");
         S9xDeinitMemory();
         return 0;
     }
@@ -202,7 +202,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     game.meta = NULL;
 
     if (!LoadROM(&game)) {
-        printf("Snes9x: LoadROM failed\n");
+        printf("SNES: LoadROM failed\n");
         S9xDeinitGFX();
         S9xDeinitDisplay();
         S9xDeinitAPU();
@@ -235,7 +235,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     g_loaded = 1;
-    printf("Snes9x: ROM loaded, LoROM=%d HiROM=%d\n",
+    printf("SNES: ROM loaded, LoROM=%d HiROM=%d\n",
            (int)Memory.LoROM, (int)Memory.HiROM);
     return 1;
 }
@@ -302,13 +302,13 @@ extern "C" void snes_stop(void) {
     S9xDeinitAPU();
     S9xDeinitMemory();
     g_loaded = 0;
-    printf("Snes9x: stopped\n");
+    printf("SNES: stopped\n");
 }
 
 // ---- точка входа для emu.c ----
 extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
-    printf("Snes9x: starting...\n");
+    printf("SNES: starting...\n");
     emu_prepare();
     if (snes_init_game(rom, size) != 1) {
         printf("SNES: init failed\n");
