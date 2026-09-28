@@ -35,6 +35,9 @@ void bk_retro_run(void);
 void bk_retro_unload_game(void);
 void bk_retro_deinit(void);
 
+// r0.257: сброс память гостя/кадра перед загрузкой (см. libretro.c)
+void bk_reset_machine(void);
+
 #define EMU_FB_ADDR 0x5F800000u
 #define EMU_FB_W    320
 #define EMU_FB_H    240
@@ -255,6 +258,10 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     bk_retro_set_input_state(host_input_state);
 
     bk_retro_init();
+
+    // r0.257: свежая машина на каждый запуск — обнуляем RAM/ticks/кадр/флаги,
+    // иначе при повторном входе (и смене модели) остаётся состояние прошлого прогона.
+    bk_reset_machine();
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));

@@ -60,6 +60,21 @@ void retro_deinit(void)
 {
 }
 
+/* r0.257: полный сброс состояния эмулятора между запусками — память гостя
+ * (current_state: RAM/ROM/ticks/регистры/флаги) и кадр. Без этого при
+ * повторном входе и смене модели BK оставались данные прошлого запуска,
+ * а scr_refresh не пере-выбирался под модель. Вызывается из bk_host.c. */
+void bk_reset_machine(void)
+{
+	extern unsigned char dirty[1024];
+	extern int cur_shift, cur_width;
+	memset(&current_state, 0, sizeof(current_state));
+	memset(framebuf, 0, sizeof(framebuf));
+	memset(dirty, 0, 1024);
+	cur_shift = 0;
+	cur_width = 0;
+}
+
 unsigned retro_api_version(void)
 {
    return RETRO_API_VERSION;

@@ -94,10 +94,9 @@ static void scr_refresh_bk0011_2(unsigned shift, unsigned full);
 void (*scr_refresh)(unsigned, unsigned);
 
 void bk_scr_init() {
-    static char init_done = 0;
+    /* r0.257: без одноразового init_done — при смене модели нужно заново
+     * выбрать scr_refresh (bk0010/bk0011) и пересоздать параметры экрана. */
     int i;
-    if (init_done) return;
-    init_done = 1;
 
     for (i = 0; i < 512; i++) {
 	dirty[i] = 0;
