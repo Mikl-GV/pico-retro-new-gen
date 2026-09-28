@@ -75,10 +75,12 @@ extern UINT8 CpsInp018[8];
 static uint16_t g_frame[CPS1_W * CPS1_H];
 
 // ---- ROM-источники (выбранная игра) ----
-// zip-буферы: основной — ROM_BUF (0x50000000), родителя — 0x52000000
-// (выше ROM_BUF+24М, до EMU_FB/HDMI FB).
+// zip-буферы: основной — 0x50000000 (64 МБ), родителя — 0x54000000 (64 МБ).
+// Между ними запас, выше до EMU_FB/HDMI (~0x5F800000) ещё ~100 МБ свободно;
+// реальные сеты CPS-2 (ddsom — самый большой) ~33 МБ сырых.
 #define ZIP_BUF1 ((uint8_t*)0x50000000u)
-#define ZIP_BUF2 ((uint8_t*)0x52000000u)
+#define ZIP_BUF2 ((uint8_t*)0x54000000u)
+#define ZIP_MAX  (64u * 1024u * 1024u)
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
 static char g_zip[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>.zip"
 static const uint8_t* g_zip_data = NULL;
@@ -191,6 +193,79 @@ static int load_from_dir(const char* dir, const char* romname, UINT8* dest, INT3
     return 0;
 }
 
+// поиск записи в zip по имени (CEN), без распаковки → размер. 0=ok, 1=нет
+static int zip_lookup(const uint8_t* z, uint32_t zsize, const char* target, uint32_t* usize)
+{
+    if (!z || zsize < 22) return 1;
+    uint32_t lo = (zsize > 22 + 65535) ? (zsize - 22 - 65535) : 0;
+    int32_t eocd = -1;
+    for (uint32_t p = zsize - 22; ; p--) {
+        if (z[p] == 0x50 && z[p + 1] == 0x4b && z[p + 2] == 0x05 && z[p + 3] == 0x06) { eocd = (int32_t)p; break; }
+        if (p == lo) break;
+    }
+    if (eocd < 0) return 1;
+    uint32_t count   = le16(z + eocd + 10);
+    uint32_t cd_off  = le32(z + eocd + 16);
+    uint32_t cd_size = le32(z + eocd + 12);
+    if (cd_off > zsize || cd_size > zsize - cd_off) return 1;
+    uint32_t tlen = (uint32_t)strlen(target);
+    for (uint32_t p = cd_off; p + 46 <= cd_off + cd_size && count-- > 0; ) {
+        if (z[p] != 0x50 || z[p + 1] != 0x4b || z[p + 2] != 0x01 || z[p + 3] != 0x02) return 1;
+        uint32_t uv = le32(z + p + 24);
+        uint16_t nlen = le16(z + p + 28);
+        uint16_t elen = le16(z + p + 30);
+        uint16_t clen = le16(z + p + 32);
+        const uint8_t* nm = z + p + 46;
+        p += 46 + nlen + elen + clen;
+        if (nlen < tlen) continue;
+        int match = (nlen == tlen && memcmp(nm, target, tlen) == 0);
+        if (!match && nlen > tlen && nm[nlen - tlen - 1] == '/' &&
+            memcmp(nm + nlen - tlen, target, tlen) == 0)
+            match = 1;
+        if (match) { if (usize) *usize = uv; return 0; }
+    }
+    return 1;
+}
+
+// ---- проверка полноты ROM-сета (имена и размеры вшиты в драйвер) ----
+// Возвращает 1, если есть missing или неверные размеры. Печатает список.
+static int check_romset(const char* game)
+{
+    int total = 0, missing = 0, bad = 0;
+    printf("CPS1 ROMSET %s:\n", game);
+    for (int i = 0; i < 128; i++) {
+        struct BurnRomInfo ri;
+        ri.nType = 0; ri.nLen = 0;
+        BurnDrvGetRomInfo(&ri, (UINT32)i);
+        if (ri.nType == 0 && ri.nLen == 0) break;
+        if (ri.nLen == 0) continue;
+        if (ri.nType & BRF_OPT) continue;   // PLD-микросхемы драйвер не грузит
+        total++;
+        char* name = NULL;
+        BurnDrvGetRomName(&name, (UINT32)i, 0);
+        if (!name || !name[0]) continue;
+
+        uint32_t sz = 0;
+        int found = 0;
+        fat_entry_t f;
+        if (!found && g_dir[0])  { if (fat_find(g_dir, name, &f) && f.size > 0)  { found = 1; sz = (uint32_t)f.size; } }
+        if (!found && g_parent_dir[0]) { if (fat_find(g_parent_dir, name, &f) && f.size > 0) { found = 1; sz = (uint32_t)f.size; } }
+        if (!found && g_zip_data)        { if (zip_lookup(g_zip_data, g_zip_size, name, &sz) == 0) found = 1; }
+        if (!found && g_zip_parent_data) { if (zip_lookup(g_zip_parent_data, g_zip_parent_size, name, &sz) == 0) found = 1; }
+
+        if (!found) {
+            printf("MISSING %s\n", name);
+            missing++;
+        } else if (sz != (uint32_t)ri.nLen) {
+            printf("BAD SIZE %s need 0x%x have 0x%x\n", name, (unsigned)ri.nLen, (unsigned)sz);
+            bad++;
+        }
+    }
+    if (total == 0) return 1;
+    printf("RS %s: %d ok / %d total (%d missing, %d bad size)\n", game, total - missing - bad, total, missing, bad);
+    return (missing || bad) ? 1 : 0;
+}
+
 // ---- BurnExtLoadRom: чтение i-го ROM драйвера ----
 // Источники по порядку: папка игры, папка родителя (для клонов), zip игры,
 // zip родителя.
@@ -267,8 +342,11 @@ static void host_update_input(void)
     memset(CpsInp000, 0, sizeof(CpsInp000));
     memset(CpsInp018, 0, sizeof(CpsInp018));
 
+    // r0.280: usb_kbd_get_last вместо get_raw — удержание клавиш не рвётся
+    // на клавиатурах, не шлющих boot-отчёты при удержании (get_raw обнуляет
+    // через ~100 мс тишины).
     uint8_t keys[8];
-    int n = usb_kbd_get_raw(keys, 8);
+    int n = usb_kbd_get_last(keys, 8);
 
     // P1 — ремап-платформа CPS-1
     if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_UP,     keys, n)) CpsInp001[3] = 1;
@@ -295,7 +373,11 @@ static void host_update_input(void)
         else if (keys[i] == 35) CpsInp018[1] = 1;  // 6 Coin
     }
 
-    uint16_t sp = sega_pad_scan();
+    // Sega-пад через стабильный слой (usb_pad_update: кэш 12 мс + антидребезг
+    // 3 одинаковых скана) — сырой sega_pad_scan() по кадрам периодически
+    // «сбоил» и сбрасывал удержание кнопок (~1 с стрельбы, потом обрыв).
+    usb_pad_update();
+    uint16_t sp = usb_pad_get();
     if (sp & SP_UP)     CpsInp001[3] = 1;
     if (sp & SP_DOWN)   CpsInp001[2] = 1;
     if (sp & SP_LEFT)   CpsInp001[1] = 1;
@@ -380,7 +462,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     char zipname[FAT_NAME_LEN];
     snprintf(zipname, sizeof(zipname), "%s.zip", game);
     fat_entry_t zf;
-    if (fat_find(root, zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= 24u * 1024u * 1024u) {
+    if (fat_find(root, zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= ZIP_MAX) {
         if (fat_read_file(&zf, 0, ZIP_BUF1, (uint32_t)zf.size) >= 0) {
             g_zip_data = ZIP_BUF1;
             g_zip_size = (uint32_t)zf.size;
@@ -390,12 +472,22 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     if (g_parent_zip[0]) {
         snprintf(zipname, sizeof(zipname), "%s.zip", BurnDrvGetTextA(DRV_PARENT));
         fat_entry_t pf;
-        if (fat_find(root, zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= 24u * 1024u * 1024u) {
+        if (fat_find(root, zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= ZIP_MAX) {
             if (fat_read_file(&pf, 0, ZIP_BUF2, (uint32_t)pf.size) >= 0) {
                 g_zip_parent_data = ZIP_BUF2;
                 g_zip_parent_size = (uint32_t)pf.size;
             }
         }
+    }
+
+    // проверка полноты ROM-сета (до init): нет файлов/битые размеры — не запускаем
+    if (check_romset(game)) {
+        printf("CPS1: %s incomplete, not starting\n", game);
+        fb_clear();
+        fb_text_center("CPS: ROM set incomplete", 210, 2, 0x00FF4444);
+        fb_text_center(game, 250, 2, 0x00FFFFFF);
+        fb_flush();
+        return;
     }
 
     // кадровый буфер FBNeo
@@ -408,6 +500,17 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     if (BurnDrvInit() != 0) {
         printf("CPS1: %s init failed (check ROM set)\n", game);
+        // помощь: список требуемых драйвером ROM (имена как в FBNeo-наборе)
+        for (int r = 0; r < 64; r++) {
+            struct BurnRomInfo rri;
+            rri.nType = 0; rri.nLen = 0;
+            BurnDrvGetRomInfo(&rri, (UINT32)r);
+            if (rri.nType == 0 && rri.nLen == 0) break;
+            if (rri.nLen == 0) continue;
+            char* rn = NULL;
+            BurnDrvGetRomName(&rn, (UINT32)r, 0);
+            printf("CPS1 ROM %d: %s 0x%x\n", r, rn ? rn : "?", (unsigned)rri.nLen);
+        }
         fb_clear();
         fb_text_center("CPS-1: load failed", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);

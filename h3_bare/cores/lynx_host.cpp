@@ -40,7 +40,7 @@ static UBYTE* display_callback(ULONG objref) {
 // r155: пауза на Start, а НЕ на Mode (было Mode->Pause, Start не использовался).
 static ULONG lynx_buttons_from_kbd(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     ULONG b = 0;
 
     uint16_t sp = sega_pad_scan();

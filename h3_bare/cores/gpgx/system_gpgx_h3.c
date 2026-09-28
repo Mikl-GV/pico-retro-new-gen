@@ -63,7 +63,7 @@ static uint16_t bitmap_data_[720 * 576] __attribute__((aligned(64)));
 //   Поэтому A/B для SMS/GG мапятся в INPUT_BUTTON1/2 (иначе «A сдвигается в B/C»).
 static void gpgx_poll_input(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     uint16_t pad = 0;
 
     uint16_t sp = sega_pad_scan();

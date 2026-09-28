@@ -114,7 +114,7 @@ extern "C" void gb_run_frame(void) {
 
     // Ввод: USB-клавиатура + Sega-геймпад -> Game Boy кнопки
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     JoypadButtons jp;
     memset(&jp, 0, sizeof(jp));
 

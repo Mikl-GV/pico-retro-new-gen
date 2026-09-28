@@ -117,7 +117,7 @@ static void build_input(void) {
     if (sp & 0x0800) g_joydata |= 0x04;   // Mode -> Select
 
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     for (int i = 0; i < n; i++) {
         uint8_t sc = keys[i];
         if (!has_suborkb) {

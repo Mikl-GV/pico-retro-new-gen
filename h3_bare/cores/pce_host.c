@@ -55,7 +55,7 @@ static uint16_t g_joy = 0;
 static void host_update_input(void)
 {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     uint16_t j = 0;
 
     if (remap_kbd_pressed(REMAP_PLAT_PCE, BTN_UP,     keys, n)) j |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);

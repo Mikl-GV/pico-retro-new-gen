@@ -133,7 +133,7 @@ static void build_input(void) {
     if (sp & 0x0800) g_joydata |= SNES_SELECT_MASK;   // Mode -> Select
 
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
     // Дедолт: стрелки=D-Pad, Z=B X=Y A=A S=X Q=L W=R Space=Select Enter=Start.
     if (remap_kbd_pressed(REMAP_PLAT_SNES, BTN_UP, keys, n))    g_joydata |= SNES_UP_MASK;

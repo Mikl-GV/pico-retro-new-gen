@@ -56,7 +56,7 @@ static int g_loaded = 0;
 // Right=0x10 Left=0x20 Up=0x40 Down=0x80 L=0x100 R=0x200
 static u16 gba_buttons(void) {
     uint8_t keys[8];
-    int n = usb_kbd_get_raw(keys, 8);
+    int n = usb_kbd_get_last(keys, 8);
     u16 b = 0;
 
     uint16_t sp = sega_pad_scan();

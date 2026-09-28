@@ -87,7 +87,7 @@ extern "C" void a5_DrawVsync(void) {}
 
 extern "C" int a5_GetPad(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     int k = 0;
 
     // Sega-геймпад: крестовина, A=Fire, B=Pause,

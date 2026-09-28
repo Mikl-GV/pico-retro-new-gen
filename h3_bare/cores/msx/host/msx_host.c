@@ -67,7 +67,7 @@ extern uint16_t emu_period_us;   // r0.210: для MSX ставим 50 Гц (PAL
 static int g_loaded = 0;
 
 // r0.208: выход по удержанию ESC. Детектим из ТОГО ЖЕ boot-отчёта, что читает
-// и ядро (emu_run_msx больше не полагается на повторный usb_kbd_get_raw внутри
+// и ядро (emu_run_msx больше не полагается на повторный usb_kbd_get_last внутри
 // emu_esc_hold — у Low-Speed донгла второй опрос за кадр мог отдать пусто и
 // «терял» ESC, из-за чего из MSX нельзя было выйти).
 int  msx_exit_req = 0;
@@ -301,7 +301,7 @@ void msx_run_frame(void) {
 
     // 2) Сырые сканкоды USB (обновляет boot-отчёт из USB)
     uint8_t keys[8];
-    int n = usb_kbd_get_raw(keys, 8);
+    int n = usb_kbd_get_last(keys, 8);
 
     // 3) Модификаторы — из первого байта ТОГО ЖЕ свежего отчёта (r0.207:
     //    раньше mods читались ДО get_raw и были на кадр позади)

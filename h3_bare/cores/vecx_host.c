@@ -182,7 +182,7 @@ void vecx_snd_push(unsigned samps) {
 //   (UP=0xff, DOWN=0x00), центр = 128.
 static uint8_t vx_buttons(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     uint8_t b = 0xff;   // активный низ: все кнопки отпущены
     // Стик по умолчанию в центре (128 = покой)
     alg_jch0 = 128;

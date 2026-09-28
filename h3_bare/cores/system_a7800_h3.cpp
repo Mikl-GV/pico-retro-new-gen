@@ -76,7 +76,7 @@ static void a7_build_input(byte* input, uint16_t pad) {
 
 static uint16_t pad_from_kbd(void) {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     uint16_t pad = 0xFF;
     // Бит 0x100 — виртуальная Pause (корпусная кнопка A7800), отдаётся ядру
     // отдельно через prosystem_Pause() в a7800_run_frame.

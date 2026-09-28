@@ -12,10 +12,10 @@
 // исчерпывался за несколько запусков эмулятора) — собственный bump-пул
 // в BSS. BurnInitMemoryManager() вызывается из BurnDrvInit() при КАЖДОМ
 // запуске игры, поэтому пул переиспользуется — повторные запуски чистые.
-// max размер ROM+GFX+времён CPS-1: wof — 8 МБ (rom 1М + gfx 4М + qsam 2М),
-// пиковые времена BurnLoadRom (0x400000 + tiles) — запас 24 МБ.
+// max размер ROM+GFX+времён: wof — 8 МБ (rom 1М + gfx 4М + qsam 2М),
+// CPS-2 — крупные сеты (ddsom: gfx ~28 МБ, PRG/decrypt +), поэтому 96 МБ.
 #define LOG_MEMORY_USAGE    0
-#define CPS1_MEM_POOL_SIZE  (24 * 1024 * 1024)
+#define CPS1_MEM_POOL_SIZE  (96 * 1024 * 1024)
 
 #define MAX_MEM_PTR	2048 // more than 1024 malloc calls should be insane... (fm.c needs a _lot_ for state-ing, increased to 2k)
 

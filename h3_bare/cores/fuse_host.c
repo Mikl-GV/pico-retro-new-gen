@@ -85,7 +85,7 @@ static uint16_t g_joy = 0;                  // RETRO_DEVICE_ID_JOYPAD биты
 static uint8_t  g_kbd[RETROK_LAST];         // RETROK -> нажата
 
 // r0.220: выход по ESC-удержанию — из ТОГО ЖЕ отчёта, что читает ядро
-// (у Low-Speed донгла повторный usb_kbd_get_raw за кадр может отдать пусто,
+// (у Low-Speed донгла повторный usb_kbd_get_last за кадр может отдать пусто,
 // и emu_esc_hold не накапливает 900 мс — паттерн msx_exit_req, r0.208).
 static int      g_fuse_exit_req = 0;
 static uint32_t g_fuse_esc_t0   = 0;
@@ -126,7 +126,7 @@ static void host_update_input(void)
     memset(g_kbd, 0, sizeof(g_kbd));
 
     uint8_t keys[8];
-    int n = usb_kbd_get_raw(keys, 8);
+    int n = usb_kbd_get_last(keys, 8);
     for (int i = 0; i < n; i++) {
         uint16_t rk = hid_to_retrok(keys[i]);
         if (rk) g_kbd[rk] = 1;

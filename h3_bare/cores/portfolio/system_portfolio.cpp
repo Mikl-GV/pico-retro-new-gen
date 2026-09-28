@@ -1048,7 +1048,7 @@ static void vk_select_current(void)
  *   стрелки двигают курсор, Enter выбирает клавишу, Esc/Insert закрывают,
  *   буквы/цифры всё равно печатаются напрямую в DIP DOS.
  *
- * Edge-детект: usb_kbd_get_raw() возвращает СОСТОЯНИЕ (все зажатые клавиши),
+ * Edge-детект: usb_kbd_get_last() возвращает СОСТОЯНИЕ (все зажатые клавиши),
  * а не события. Без трекинга удержание клавиши печатает её каждый кадр
  * (пачки символов). Сравниваем с предыдущим отчётом и обрабатываем
  * только НОВЫЕ нажатия. */
@@ -1058,7 +1058,7 @@ static int pofo_prev_n = 0;
 static void pofo_usbkbd_input(void)
 {
     uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    int n = usb_kbd_get_last(keys, 6);
     if (n <= 0) { pofo_prev_n = 0; return; }
 
     uint8_t mods = usb_kbd_get_mods();

@@ -49,8 +49,11 @@ static uint16_t g_col_fb[COL_W * COL_H] __attribute__((aligned(8)));
 // (правая), Start = кнопка паузы (здесь отдаём в keypad 8 - меню игры),
 // Mode = * (пауза в некоторых играх).
 static void coleco_build_input(GearcolecoCore* core) {
-    uint8_t keys[6];
-    int n = usb_kbd_get_raw(keys, 6);
+    // r0.280: usb_kbd_get_last (кэш последнего отчёта) вместо get_raw: get_raw
+// обнуляет клавиши через ~100 мс без свежих boot-отчётов, а многие клавиши
+// не шлют отчёты на удержание → удержание «рвалось» (движение по шагу).
+uint8_t keys[6];
+    int n = usb_kbd_get_last(keys, 6);
     uint16_t sp = sega_pad_scan();
 
     // r176: для каждой кнопки зовём KeyPressed ИЛИ KeyReleased по факту —
