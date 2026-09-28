@@ -25,7 +25,7 @@
 | 17 | Аркады | 68000/Z80 | 🔲 план | — |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
 | 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
-| 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | 🚧 БК-0010 — в работе (следующий); остальные — план | — |
+| 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | ✅ БК-0010/0011М работает (r0.243–r0.253: встроено, запуск на стенде — ядро крутится, текст читается; осталась палитра/докрутка ввода); Радио-86РК / MS 1504 — план | libretro-bk (BK-Terak-Emu), `h3_bare/cores/bk/` |
 | 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
@@ -51,11 +51,11 @@
 
 ## Очередь работ
 
-1. **БК-0010 / БК-0011М** (К1801ВМ1, 16-бит PDP-11-подобный) — **текущая задача**. Референсы: `pico-bk` (Мурмулятор, RP2040), emu80 (исходники), libretro. Ядро — CPU К1801ВМ1 (аналог PDP-11), видео 512×256 моно, ROM БК-0010.01 (встроенный Бейсик/Монитор; ROM вшивать/класть на SD). План: vendor ядра → host по образцу PCE/Fuse (EMU_FB 320×240 → emu_scale), меню (система уже в `systems.h` как PLANNED), ввод (клавиатура USB + Sega-пад как джойстик), TFT-справка.
-2. **Atari Jaguar** — референс: virtualjaguar-libretro (нужен отбор только ядра, ~2MB, 68000+JRISC, тяжеловат)
+1. **БК-0010 / БК-0011М** (К1801ВМ1, PDP-11-подобный) — **ядро встроено и запускается на стенде (r0.243–r0.253)**. `h3_bare/cores/bk/` (libretro-bk/BK-Terak-Emu), host `bk_host.c` (модель→ROM(.bin/.img)/BASIC как у Спектрума), ROM вшиты (`bk_roms.c`: MONIT10/BASIC10/FOCAL10/DISK_327/B11M_BOS/EXT/BAS11M_0/1/TERAK), звук off, ESC-выход, линейный ввод. Модель→ядро: «BK-0010» → MONIT10+FOCAL10, «BK-0010.01» → MONIT10+BASIC10, «+FDD» → MONIT10+DISK_327, «BK-0011M»/«Terak» → B11M_*. **Осталось (стенд):** палитра (FOCAL монохромный — с r0.253 BW по умолчанию, нужен повторный прогон), ввод с Sega-пада, докрутка видео 512×256→кадр, TFT-справка. Временная диагностика `BKLOG:`/`BKTRAP` и метки стадий `BK:` пока остаются (см. AUDIT, раздел И).
+2. **Atari Jaguar** — референс: virtualjaguar-libretro (нужно отобрать только ядро, ~2MB, 68000+JRISC, тяжеловат)
 3. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
-4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — ядро Genesis Plus GX (общий Z80+рендер)
-5. **PC Engine / TurboGrafx** — **готово (r0.202)**: Beetle PCE Fast (mednafen_pce_fast) vendored в `h3_bare/cores/pce_fast/`, host `pce_host.c` (libretro-shell без libretro-common), HuCard only, звук отключён, CD заглушен (`pce_stubs.c`). Проверено на железе. Осталось (необязательно): звук (PSG/Blip → I2S), CD, TFT-справка.
+4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — готовы: ZX (Fuse), Coleco (Gearcoleco), MSX (fMSX)
+5. **PC Engine / TurboGrafx** — готово (r0.202): Beetle PCE Fast, host `pce_host.c`, HuCard only, звук отключён, CD заглушен. Осталось: звук (PSG/Blip → I2S), CD, TFT-справка.
 6. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
 7. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
 
@@ -78,7 +78,7 @@
 - Sega-геймпад 6-button через PCF8574@0x20 (меню + игры)
 - HDMI 1024×600 @ 60 Гц
 - UART-отладка 115200 8N1
-- 17 эмуляторов в одном бинаре (~8.35 МБ, r0.242; +ZX Spectrum/Fuse)
+- 19 эмуляторов со статусом READY в одном бинаре (~8.54 МБ, r0.253; +ZX Spectrum/Fuse, PC Engine, BK-0010)
 - GPT/поддержка нескольких FAT-разделов, авто-поиск /roms
 ## Отложено на последний этап отладки
 

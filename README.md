@@ -7,13 +7,15 @@
 USB-клавиатура, ROM — с SD-карты (FAT32). Ввод также с Sega-геймпада
 6-button (PCF8574@0x20), читы — из базы libretro (`/cheats/`).
 
-**Работает сейчас:** Atari 2600 (MCUME), Atari 5200, Atari 7800,
-Atari Lynx (Handy), NES / Famicom (FCEUmm, 432 маппера, SuborKB-клавиатура),
-Sega Master System / Game Gear / Mega Drive (Genesis Plus GX),
+**Работает сейчас (19 систем со статусом READY в `systems.h`):** Atari 2600 (MCUME),
+Atari 5200, Atari 7800, Atari Lynx (Handy), NES / Famicom (FCEUmm, 432 маппера,
+SuborKB-клавиатура), Sega Master System / Game Gear / Mega Drive (Genesis Plus GX),
 Game Boy / Game Boy Color (binjgb), Game Boy Advance (gpSP),
-Neo Geo Pocket / Pocket Color (RACE),
-SNES / Super Famicom (Snes9x 2005),
-Atari Portfolio (8088, BIOS вшит — без ROM на SD).
+Neo Geo Pocket / Pocket Color (RACE), SNES / Super Famicom (Snes9x 2005),
+MSX / MSX2 (fMSX, BIOS+BASIC вшиты), ColecoVision (Gearcoleco),
+PC Engine / TurboGrafx (Beetle PCE Fast, HuCard), ZX Spectrum (Fuse, 48K..TS2068),
+БК-0010/0011М (libretro-bk, ROM вшиты), Atari Portfolio (8088, BIOS вшит — без ROM на SD).
+GCE Vectrex числится READY, но **отложен** (изображение не собирается — см. ROADMAP).
 
 ## Сборка и запись
 
@@ -89,12 +91,15 @@ Vectrex: стик = 4 направления (аналог), кнопки 1/2/3/
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, Atari Portfolio, **MSX / MSX2 (Ямаха YIS-503II)**, **GCE Vectrex**, **ColecoVision** |
-| 🔲 План | PC Engine, Jaguar, аркады, ZX Spectrum, Радио-86РК, БК-0010, MS 1504 |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, **MSX / MSX2 (Ямаха YIS-503II)**, **ColecoVision**, **PC Engine / TurboGrafx (HuCard)**, **ZX Spectrum (Fuse)**, **БК-0010/0011М**, Atari Portfolio |
+| 🚧 Отложено | GCE Vectrex (статус READY, но картинка не собирается — см. ROADMAP) |
+| 🔲 План | Atari Jaguar, аркады, Радио-86РК, MS 1504 |
 
-ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex), `.col`/`.bin` (ColecoVision).
+ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex), `.col`/`.bin` (ColecoVision), `.pce` (PC Engine), `.z80`/`.sna` (ZX Spectrum), `.bin`/`.img` (БК-0010).
 Atari Portfolio — **builtin**, запускается из меню без ROM на SD.
 MSX / MSX2 (Ямаха YIS-503II) — **builtin** (BIOS + BASIC вшиты): из меню выбор «Start BASIC» или «Load cartridge from SD» (`/roms/msx/`). MSX-DOS — через `MSXDOS2.ROM` в `/roms/msx/bios/`.
+ZX Spectrum (Fuse) — **BIOS вшит**: из меню выбор модели (12) → ROM-снапшот (`.z80`/`.sna` из `/roms/zxspectrum/`) или `BASIC`.
+БК-0010/0011М — **ROM вшиты** (MONIT10/BASIC10/FOCAL10/DISK_327/B11M_*): из меню выбор модели (6) → ROM (`.bin`/`.img` из `/roms/bk0010/`) или `BASIC`. Модель «BK-0010» грузит **FOCAL**, «BK-0010.01» — **BASIC**. FOCAL/монитор — чёрно-белые.
 
 ## Ввод
 

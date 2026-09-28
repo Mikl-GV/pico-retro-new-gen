@@ -9,17 +9,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ┌───────────────────────────────────────────────────────────────┐
 │                         main.c                                │
 │          меню → браузер ROM → диспетчер эмуляторов            │
-│   (a2600/a5200/a7800/nes/sms/gameboy/lynx/ngp/portfolio/md)    │
+│   (a2600/…/sms/gameboy/…/zxspectrum/bk0010/model-диалоги)      │
 ├───────────────────────────────────────────────────────────────┤
 │  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
 │  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
 │  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)      │
-│  ngp/ (RACE — TLCS900H+Z80, NGP/NGPC)  vecx/ (Vectrex, 6809)  │
+│  ngp/ (RACE)  vecx/ (Vectrex, отложен)  gearcoleco/ (Coleco)  │
+│  msx/ (fMSX)  fuse/ (ZX Spectrum)  pce_fast/ (PC Engine)      │
+│  bk/ (BK-0010/0011M)                                          │
 ├───────────────────────────────────────────────────────────────┤
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
 │  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp  ngp_host.cpp │
 │  vecx_host.c (Vectrex)  gba_host.c (GBA)  msx_host.c (MSX)    │
+│  coleco_host.cpp  fuse_host.c  pce_host.c  bk_host.c          │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
 │  emu.c (циклы + emu_scale)  menu.c  rom_browser.c  settings.c │
@@ -57,6 +60,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | MSX / MSX2 (YIS-503II) | **fMSX 6.0** | C | 256×212 → V9938 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | GCE Vectrex | **libretro-vecx** | C | 330×410 (векторы → растр) → прямая запись в HDMI FB (не EMU_FB) | usb_kbd_get_raw + sega_pad |
 | ColecoVision | **Gearcoleco** | C++ | 256×192 → g_col_fb → построчно → EMU_FB | usb_kbd_get_raw + sega_pad (full keypad) |
+| ZX Spectrum | **Fuse (libretro)** | C | 320×240 → EMU_FB (fuse_host.c) | usb_kbd + sega_pad (порт 2 клавиатуры) |
+| PC Engine / TG | **Beetle PCE Fast** | C | 256×240 → EMU_FB (pce_host.c) | usb_kbd + sega_pad |
+| БК-0010/0011М | **BK-Terak-Emu (libretro)** | C | 512×512 (кадр 256×256 content) → EMU_FB (bk_host.c) | usb_kbd (полная клава) + sega_pad |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -336,18 +342,18 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (r0.246, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (r0.253, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` |
-| 0x40000000..0x4043BEA8 | `.text` + init_array (код 0x43BEA8 ≈ 4.26 МБ) |
-| 0x4043BEC0..0x406579E8 | `.rodata` (0x218288 ≈ 2.10 МБ) |
-| 0x406579F0..0x4082543C | `.data` (0x1CDA1C ≈ 1.81 МБ, копируется из образа) |
-| 0x40825440..0x4293D940 | `.bss` (`_bstart1.._bend1`, 0x2118500 ≈ 33.8 МБ, обнуляется в `startup.S`) |
-| 0x4293D940..0x4413D940 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра + Fuse + BK; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x4413D940 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
+| 0x40000000..0x4043C078 | `.text` + init_array (код 0x43C078 ≈ 4.26 МБ); векторы `_vectors`=0x40000000, `_prefetch`=0x40000084, `_dataabort`=0x40000164, `_start`=0x400002F8 |
+| 0x4043C080..0x406543C8 | `.rodata` (0x218348 ≈ 2.10 МБ) |
+| 0x40657C70..0x4082568C | `.data` (0x1CDA1C ≈ 1.81 МБ, копируется из образа) |
+| 0x408256C0..0x4293DBD0 | `.bss` (`_bstart1.._bend1`, 0x2118510 ≈ 33.8 МБ, обнуляется в `startup.S`) |
+| 0x4293DBE0..0x4413DBE0 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра + Fuse + BK; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x4413DBE0 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
 | 0x44200000..0x44200720 | `.libh3_coherent` (резерв 1 МБ до 0x44300000, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Начало помечается `mmu_mark_uncached(libh3_coherent_region)` — **символ линкера, а не хардкод**: адрес уезжает при росте образа (r0.180 → 0x43900000, r0.201+PCE → 0x43C00000, r0.212+Fuse → 0x44100000, r0.246+BK → 0x44200000) |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
@@ -362,11 +368,11 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r0.246, `arm-none-eabi-readelf -SW`):** `.text` 0x43BEA8 (4.26 МБ),
-`.rodata` 0x218288 (2.10 МБ), `.data` 0x1CDA1C (1.81 МБ), `.bss` 0x2118500 (33.8 МБ),
-образ `h3_bare.bin` 8 541 196 Б.
+**Числа-размеры (r0.253, `arm-none-eabi-readelf -SW`):** `.text` 0x43C078 (4.26 МБ),
+`.rodata` 0x218348 (2.10 МБ), `.data` 0x1CDA1C (1.81 МБ), `.bss` 0x2118510 (33.8 МБ),
+образ `h3_bare.bin` 8 541 836 Б.
 
-## Загрузочная карта памяти (r0.246)
+## Загрузочная карта памяти (r0.253)
 
 ### Последовательность запуска
 
