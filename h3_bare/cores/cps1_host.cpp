@@ -475,19 +475,15 @@ static void host_render_frame(void)
         return;
     }
 
-    // обычный кадр: x2.5
+    // обычный кадр (родной масштаб уже посчитан в vw/vh)
     for (int dy = 0; dy < vh; dy++) {
         int sy = (int)(((int64_t)dy * rows) / vh);
         if (sy < 0) sy = 0; else if (sy > rows - 1) sy = rows - 1;
         const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
-        int sxo = -1, last_x = -1;
         for (int dx = 0; dx < vw; dx++) {
             int sx = (int)(((int64_t)dx * cols) / vw);
-            if (sx == last_x) { uint32_t* pr=drow+dx; uint16_t p=srow[sx];
-                pr[0] = (((p >> 11) & 0x1F) << 3) << 16 | (((p >> 5) & 0x3F) << 2) << 8 | ((p & 0x1F) << 3);
-                continue; }
-            last_x = sx;
+            if (sx < 0) sx = 0; else if (sx > cols - 1) sx = cols - 1;
             uint16_t p = srow[sx];
             uint32_t r = ((p >> 11) & 0x1F) << 3;
             uint32_t g = ((p >> 5) & 0x3F) << 2;
@@ -849,12 +845,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_rot = 0;
 } else if (g_toa) {
         // Toaplan, ширины:
-        //  - GP9001 (raizing/toaplan2/toaplan3): буфер 320-й. Горизонтальные
-        //    показываем 304 (правые 16 px — служебный overscan, из-за него
-        //    была «полоса из одной строки» и съедало буквы HUD); вертикальные
-        //    — нативные 240×320.
-        //  - Прочие платы (Slap Fight/M6805, generic tilemap через
-        //    BurnTransferCopy): stride/кадр = размеры драйвера (GetFullSize).
+        //  - GP9001: буфер 320; горизонт показываем 304 (16 px правый overscan),
+        //    вертикали — нативные 240×320;
+        //  - Прочие платы (Slap Fight и др., generic tilemap): stride/кадр из
+        //    размеров драйвера.
         INT32 fw = 0, fh = 0, vw = 0, vh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         BurnDrvGetVisibleSize(&vw, &vh);
