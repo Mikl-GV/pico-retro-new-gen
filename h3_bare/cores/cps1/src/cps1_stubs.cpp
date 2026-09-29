@@ -1,4 +1,4 @@
-// cps1_stubs.cpp — host/OS glue для вендора CPS-1 (в основную сборку НЕ подключать).
+// cps1_stubs.cpp — host/OS glue для вендора CPS (входит в основную сборку как c1x_stubs.o).
 // Звук на первом этапе off: чипы — no-op стабы (реальные ядра подключатся позже).
 #include "burnint.h"
 #include "ay8910.h"

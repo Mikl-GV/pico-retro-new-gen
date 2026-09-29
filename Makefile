@@ -7,8 +7,9 @@
 #   make fel        — залить через sunxi-fel
 #   make help       — справка
 #
-# Поведение идентично старому build.sh, но объекты считаются один раз:
-# файл перекомпилируется только если изменился исходник/заголовки/флаги.
+# Поведение идентично старому build.sh. Зависимости от заголовков НЕ
+# отслеживаются (нет -MMD/-include *.d): после правки ЛЮБОГО .h нужен
+# make clean && make, иначе объекты останутся со старыми константами.
 
 TOP      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD    := $(TOP)/build
@@ -463,19 +464,12 @@ $(BUILD)/c1sc_fmopl.o: $(CPS1)/src/burn/snd/fmopl.c | $(BUILD)
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 
 # добор звука из FBNeo (r0.305): ym3812 (Toaplan), upd7759 (NeoGeo), msm5232
-CPS1_SND2 := burn_ym3812 upd7759 msm5232
-# c1sd (upd7759/ym3812/msm5232) — не в текущем линке: msm5232 требует C++ tr1
-$(BUILD)/c1sd_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
-	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
-	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
-	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
-	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
-# Musashi CPU (C). m68kcpu/m68kdasm подключm68kops.h — ждём генерации.
+# не в текущем линке (msm5232 требует C++ tr1); правило c1sd_ не нужно.
+# Musashi CPU (C): m68kcpu/m68kdasm включают m68kops.h, ждём генерации.
 $(BUILD)/c1m_%.o: $(CPS1)/src/cpu/m68k/%.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1m_m68kcpu.o: $(BUILD)/m68kops.h
-$(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
 $(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
 $(BUILD)/c1m_m68kops.o: $(BUILD)/m68kops.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<

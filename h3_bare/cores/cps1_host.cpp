@@ -8,12 +8,13 @@
 // Звук ОТКЛЮЧЁН (nBurnSoundRate = 0, pBurnSoundOut не выделяется —
 // драйверы CPS рендерят звук только при pBurnSoundOut).
 //
-// ROM-сет: /roms/cps1/<игра>/ или /roms/cps2/<игра>/ (папка с сырыми
-// дампами чипов — приоритет)
-//     или /roms/cps1|/roms/cps2/<игра>.zip (распаковка через zlib из fuse/zlib).
+// ROM-сет: /roms/cps1/<игра>/, /roms/cps2/<игра>/ или /roms/neogeo/<игра>/
+// (папка с сырыми дампами чипов — приоритет)
+//     или /roms/<cps1|cps2|neogeo>/<игра>.zip (распаковка через zlib из fuse/zlib).
+// BIOS NEOGEO: /roms/neogeo/neogeo/ (папка) или /roms/neogeo/neogeo.zip.
 // Игра идентифицируется по имени выбранного в браузере элемента (папки
-// или zip-файла); в драйвере поддерживаются: wof, kod, unsquad, varth,
-// willow, 3wonders (см. burn/driverlist.h).
+// или zip-файла). В driverlist.h — 1491 драйвер (427 CPS-1 + 377 CPS-2 +
+// 687 NEOGEO).
 //
 // Ввод: P1 — клавиатура (ремап-платформа REMAP_PLAT_CPS1, дефолт: стрелки +
 // Z=Attack X=Jump C=Fire3, Enter/1=Start, S=Coin (fallback 5/Numpad5)
@@ -70,6 +71,16 @@ extern UINT8 CpsInp020[8];
 extern UINT8 CpsInp021[8];
 extern UINT8 CpsInp010[8];
 
+// NEOGEO/MVS: СВОИ регистры ввода (CpsInp* NEO не читает!):
+//   NeoJoy1[0..3]=P1 Up/Down/Left/Right, [4..7]=P1 A/B/C/D; NeoJoy2 — P2.
+//   NeoButton1[0/1]=P1 Start/Select, [2/3]=P2 Start/Select.
+//   NeoButton2[0/1]=P1/P2 Coin, [2]=Service. NeoDiag[0]=Test.
+extern UINT8 NeoJoy1[8];
+extern UINT8 NeoJoy2[8];
+extern UINT8 NeoButton1[32];
+extern UINT8 NeoButton2[8];
+extern UINT8 NeoDiag[2];
+
 // ---- Видео ----
 // CPS-1 рендерит 384×224 RGB565. Пишем напрямую в HDMI FB 1024×600
 // (аспект 384/224 ≈ 1024/600) ближайшим соседом — без промежуточного
@@ -82,15 +93,14 @@ extern UINT8 CpsInp010[8];
 static uint16_t g_frame[CPS1_W * CPS1_H];
 
 // ---- ROM-источники (выбранная игра) ----
-// zip-буферы: основной — 0x50000000 (64 МБ), родителя — 0x54000000 (64 МБ).
-// Между ними запас, выше до EMU_FB/HDMI (~0x5F800000) ещё ~100 МБ свободно;
-// реальные сеты CPS-2 (ddsom — самый большой) ~33 МБ сырых.
+// zip-буферы: основной 0x50000000 (92 МБ, крупнейшие сеты NEOGEO ~84 МБ),
+// BIOS/родителя 0x5C000000 (48 МБ). Между ними запас; выше до HDMI FB
+// (~0x5F900000) ещё свободно.
 #define ZIP_BUF1 ((uint8_t*)0x50000000u)
 #define ZIP_BUF2 ((uint8_t*)0x5C000000u)
 #define ZIP_MAX  (92u * 1024u * 1024u)   // крупнейшие сеты ~84 МБ (NEOGEO)
-#define ZIP_MAX2 (48u * 1024u * 1024u)   // буфер родителя ниже EMU_FB
+#define ZIP_MAX2 (48u * 1024u * 1024u)   // буфер родителя/BIOS ниже EMU_FB
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
-static char g_zip[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>.zip"
 static const uint8_t* g_zip_data = NULL;
 static uint32_t g_zip_size = 0;
 static char g_parent_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<parent>" (клоны)
@@ -370,25 +380,30 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
     return 1;
 }
 
-// ---- рендер кадра pBurnDraw (RGB565 384×224) в HDMI FB 1024×600 ----
+// ---- рендер кадра pBurnDraw (RGB565, активная ширина nBurnPitch/2) в HDMI FB ----
 static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
+    // Активная ширина кадра: NEOGEO-ядро само адресует строки как
+    // nNeoScreenWidth (304/320), CPS — 384. Берём из nBurnPitch, который
+    // host выставляет по реальной ширине драйвера (см. run_cps).
+    int cols = nBurnPitch >> 1;
+    if (cols <= 0 || cols > CPS1_W) cols = CPS1_W;
     uint32_t* dst = FB_ADDR;
-    uint32_t step_x = ((uint32_t)CPS1_W << 16) / (uint32_t)FB_W;
+    uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)FB_W;
     uint32_t acc_x = step_x >> 1;
     static uint16_t sx[FB_W];
     for (int dx = 0; dx < FB_W; dx++) {
         sx[dx] = (uint16_t)(acc_x >> 16);
         acc_x += step_x;
-        if (acc_x >= ((uint32_t)CPS1_W << 16)) acc_x -= (uint32_t)CPS1_W << 16;
+        if (acc_x >= ((uint32_t)cols << 16)) acc_x -= ((uint32_t)cols << 16);
     }
     uint32_t step_y = ((uint32_t)CPS1_H << 16) / (uint32_t)FB_H;
     uint32_t y_acc = step_y >> 1;
     int sy = 0;
     for (int dy = 0; dy < FB_H; dy++) {
-        const uint16_t* srow = src + (size_t)sy * (nBurnPitch >> 1);
+        const uint16_t* srow = src + (size_t)sy * cols;
         uint32_t* drow = dst + (size_t)dy * FB_W;
         for (int dx = 0; dx < FB_W; dx++) {
             uint16_t p = srow[sx[dx]];
@@ -404,6 +419,14 @@ static void host_render_frame(void)
 }
 
 // ---- ввод ----
+// Логические кнопки P1/P2 — единый источник и для CPS-регистров (CpsInp*),
+// и для NEOGEO-массивов (NeoJoy*/NeoButton*). Раскладка клавиш/пада общая.
+static int g_neo_input = 0;   // активен NEOGEO-драйвер (см. run_cps)
+
+struct HostPad {
+    unsigned up, down, left, right, a, b, c, d, start, select, kick1, kick2, kick3;
+};
+
 static void host_update_input(void)
 {
     memset(CpsInp001, 0, sizeof(CpsInp001));
@@ -413,40 +436,48 @@ static void host_update_input(void)
     memset(CpsInp020, 0, sizeof(CpsInp020));
     memset(CpsInp021, 0, sizeof(CpsInp021));
     memset(CpsInp010, 0, sizeof(CpsInp010));
+    if (g_neo_input) {
+        memset(NeoJoy1, 0, 8); memset(NeoJoy2, 0, 8);
+        memset(NeoButton1, 0, 32); memset(NeoButton2, 0, 8);
+        NeoDiag[0] = 0;
+    }
 
-    // Клавиатура: штатный usb_kbd_get_raw (внутри себя держит окно 100 мс:
-    // повтор пришёл ≤100 мс — клавиша держится, тишина дольше — отпущена;
-    // новые изменения отчёта — новое нажатие).
+    // Клавиатура: usb_kbd_get_raw возвращает текущее УДЕРЖИВАЕМОЕ состояние.
     uint8_t keys[8];
     int n = usb_kbd_get_raw(keys, 8);
 
-    // P1 — ремап-платформа CPS-1 (регистры CPS-1: Coin=018, Start=018;
-    // CPS-2 ждёт их в 020, поэтому пишем в оба)
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_UP,     keys, n)) CpsInp001[3] = 1;
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_DOWN,   keys, n)) CpsInp001[2] = 1;
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_LEFT,   keys, n)) CpsInp001[1] = 1;
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_RIGHT,  keys, n)) CpsInp001[0] = 1;
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_A,      keys, n)) CpsInp001[4] = 1;   // Attack
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_B,      keys, n)) CpsInp001[5] = 1;   // Jump
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_C,      keys, n)) CpsInp001[6] = 1;   // Fire3
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_SELECT, keys, n)) { CpsInp018[0] = 1; CpsInp020[4] = 1; }   // Coin
-    if (remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_START,  keys, n)) { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // Start
+    HostPad p1 = {}, p2 = {};
+
+    // P1 — ремап-платформа CPS-1
+    p1.up     = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_UP,     keys, n);
+    p1.down   = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_DOWN,   keys, n);
+    p1.left   = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_LEFT,   keys, n);
+    p1.right  = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_RIGHT,  keys, n);
+    p1.a      = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_A,      keys, n);
+    p1.b      = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_B,      keys, n);
+    p1.c      = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_C,      keys, n);
+    p1.select = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_SELECT, keys, n);   // Coin
+    p1.start  = remap_kbd_pressed(REMAP_PLAT_CPS1, BTN_START,  keys, n);
+
+    // Хардкод-клавиши (классика MAME) + P2 на WASD/JKL
     for (int i = 0; i < n; i++) {
-        if (keys[i] == 30)       { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // 1 = Start (классика MAME)
-        else if (keys[i] == 34 || keys[i] == 91) { CpsInp018[0] = 1; CpsInp020[4] = 1; }  // 5 / Numpad5 = Coin
-        else if (keys[i] == 20) CpsInp011[0] = 1;   // Q = Kick weak (CPS-2)
-        else if (keys[i] == 8)  CpsInp011[1] = 1;   // E = Kick med
-        else if (keys[i] == 21) CpsInp011[2] = 1;   // R = Kick strong
-        // P2 — хардкод: WASD, J/K/L, 2=Start, 6=Coin
-        else if (keys[i] == 26) CpsInp000[3] = 1;  // W up
-        else if (keys[i] == 22) CpsInp000[2] = 1;  // S down
-        else if (keys[i] == 4)  CpsInp000[1] = 1;  // A left
-        else if (keys[i] == 7)  CpsInp000[0] = 1;  // D right
-        else if (keys[i] == 13) CpsInp000[4] = 1;  // J Attack
-        else if (keys[i] == 14) CpsInp000[5] = 1;  // K Jump
-        else if (keys[i] == 15) CpsInp000[6] = 1;  // L Fire3
-        else if (keys[i] == 31) { CpsInp018[5] = 1; CpsInp020[1] = 1; }  // 2 Start
-        else if (keys[i] == 35) { CpsInp018[1] = 1; CpsInp020[5] = 1; }  // 6 Coin
+        switch (keys[i]) {
+            case 30:          p1.start  = 1; break;   // 1 = Start
+            case 34: case 91: p1.select = 1; break;   // 5 / Numpad5 = Coin
+            case 20:          p1.kick1  = 1; break;   // Q = Kick weak (CPS-2)
+            case 8:           p1.kick2  = 1; break;   // E = Kick med
+            case 21:          p1.kick3  = 1; break;   // R = Kick strong
+            case 25:          p1.d      = 1; break;   // V = NEO Button D
+            case 26: p2.up    = 1; break;             // W
+            case 22: p2.down  = 1; break;             // S
+            case 4:  p2.left  = 1; break;             // A
+            case 7:  p2.right = 1; break;             // D
+            case 13: p2.a     = 1; break;             // J
+            case 14: p2.b     = 1; break;             // K
+            case 15: p2.c     = 1; break;             // L
+            case 31: p2.start = 1; break;             // 2 = Start
+            case 35: p2.select = 1; break;            // 6 = Coin
+        }
     }
 
     // Sega-пад: НЕ МЕНЯТЬ прямое чтение — только sega_pad_scan() раз в кадр,
@@ -456,17 +487,64 @@ static void host_update_input(void)
     // глотал короткие X/Y/Z, «пересечение двух сканов» (r0.301) убивало пад
     // вовсе из-за кадрового интервала 16 мс.
     uint16_t sp = sega_pad_scan();
-    if (sp & SP_UP)     CpsInp001[3] = 1;
-    if (sp & SP_DOWN)   CpsInp001[2] = 1;
-    if (sp & SP_LEFT)   CpsInp001[1] = 1;
-    if (sp & SP_RIGHT)  CpsInp001[0] = 1;
-    if (sp & SP_A)      CpsInp001[4] = 1;   // Attack
-    if (sp & SP_B)      CpsInp001[5] = 1;   // Jump
-    if (sp & SP_C)      CpsInp001[6] = 1;   // Fire3
-    if (sp & SP_START)  { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // Start
-    if (sp & SP_X)      { CpsInp018[0] = 1; CpsInp020[4] = 1; }   // Coin
-    if (sp & SP_Y)      CpsInp011[0] = 1;   // Kick weak (CPS-2)
-    if (sp & SP_Z)      CpsInp011[1] = 1;   // Kick med
+    if (sp & SP_UP)    p1.up     = 1;
+    if (sp & SP_DOWN)  p1.down   = 1;
+    if (sp & SP_LEFT)  p1.left   = 1;
+    if (sp & SP_RIGHT) p1.right  = 1;
+    if (sp & SP_A)     p1.a      = 1;
+    if (sp & SP_B)     p1.b      = 1;
+    if (sp & SP_C)     p1.c      = 1;
+    if (sp & SP_START) p1.start  = 1;
+    if (sp & SP_X)     p1.select = 1;   // Coin
+    if (sp & SP_Y)     p1.kick1  = 1;
+    if (sp & SP_Z)     p1.kick2  = 1;
+
+    // --- CPS-1/2 регистры ---
+    if (p1.up)     CpsInp001[3] = 1;
+    if (p1.down)   CpsInp001[2] = 1;
+    if (p1.left)   CpsInp001[1] = 1;
+    if (p1.right)  CpsInp001[0] = 1;
+    if (p1.a)      CpsInp001[4] = 1;
+    if (p1.b)      CpsInp001[5] = 1;
+    if (p1.c)      CpsInp001[6] = 1;
+    if (p1.select) { CpsInp018[0] = 1; CpsInp020[4] = 1; }   // Coin
+    if (p1.start)  { CpsInp018[4] = 1; CpsInp020[0] = 1; }   // Start
+    if (p1.kick1)  CpsInp011[0] = 1;
+    if (p1.kick2)  CpsInp011[1] = 1;
+    if (p1.kick3)  CpsInp011[2] = 1;
+    if (p2.up)     CpsInp000[3] = 1;
+    if (p2.down)   CpsInp000[2] = 1;
+    if (p2.left)   CpsInp000[1] = 1;
+    if (p2.right)  CpsInp000[0] = 1;
+    if (p2.a)      CpsInp000[4] = 1;
+    if (p2.b)      CpsInp000[5] = 1;
+    if (p2.c)      CpsInp000[6] = 1;
+    if (p2.start)  { CpsInp018[5] = 1; CpsInp020[1] = 1; }
+    if (p2.select) { CpsInp018[1] = 1; CpsInp020[5] = 1; }
+
+    // --- NEOGEO/MVS ---
+    if (g_neo_input) {
+        if (p1.up)     NeoJoy1[0] = 1;
+        if (p1.down)   NeoJoy1[1] = 1;
+        if (p1.left)   NeoJoy1[2] = 1;
+        if (p1.right)  NeoJoy1[3] = 1;
+        if (p1.a)      NeoJoy1[4] = 1;
+        if (p1.b)      NeoJoy1[5] = 1;
+        if (p1.c)      NeoJoy1[6] = 1;
+        if (p1.d)      NeoJoy1[7] = 1;
+        if (p1.start)  NeoButton1[0] = 1;
+        if (p1.kick1)  NeoButton2[2] = 1;   // Service
+        if (p1.select) NeoButton2[0] = 1;   // P1 Coin
+        if (p2.up)     NeoJoy2[0] = 1;
+        if (p2.down)   NeoJoy2[1] = 1;
+        if (p2.left)   NeoJoy2[2] = 1;
+        if (p2.right)  NeoJoy2[3] = 1;
+        if (p2.a)      NeoJoy2[4] = 1;
+        if (p2.b)      NeoJoy2[5] = 1;
+        if (p2.c)      NeoJoy2[6] = 1;
+        if (p2.start)  NeoButton1[2] = 1;
+        if (p2.select) NeoButton2[1] = 1;   // P2 Coin
+    }
 }
 
 // снять суффикс .zip/.ZIP
@@ -504,11 +582,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // сравнивает регистрозависимо — приводим к нижнему.
     for (char* s = game; *s; s++) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32);
 
-    // путь ROM-источников (root = "/roms/cps1" или "/roms/cps2")
-    g_dir[0] = 0; g_zip[0] = 0; g_zip_data = NULL; g_zip_size = 0;
+    // путь ROM-источников (root = "/roms/cps1", "/roms/cps2" или "/roms/neogeo")
+    g_dir[0] = 0; g_zip_data = NULL; g_zip_size = 0;
     g_parent_dir[0] = 0; g_parent_zip[0] = 0; g_zip_parent_data = NULL; g_zip_parent_size = 0;
     snprintf(g_dir, sizeof(g_dir), "%s/%s", root, game);
-    snprintf(g_zip, sizeof(g_zip), "%s/%s.zip", root, game);
     snprintf(g_bios_dir, sizeof(g_bios_dir), "%s/neogeo", root);
     snprintf(g_bios_zip, sizeof(g_bios_zip), "%s/neogeo.zip", root);
 
@@ -618,10 +695,28 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_flush();
         return;
     }
+    // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
+    // 384), поэтому nBurnPitch обязан совпасть с реальной шириной драйвера —
+    // иначе строки съезжают по диагонали. CPS-драйверы как раз 384.
+    g_neo_input = (BurnDrvGetHardwareCode() & HARDWARE_SNK_NEOGEO) ? 1 : 0;
+    if (g_neo_input) {
+        extern INT32 nNeoScreenWidth;
+        nBurnPitch = nNeoScreenWidth * 2;
+        memset(g_frame, 0, sizeof(g_frame));   // хвост старого кадра не должен мелькать
+    } else {
+        nBurnPitch = CPS1_W * 2;
+    }
+    printf("CPS: %s frame %dx%d pitch %d\n", game,
+           (int)(nBurnPitch >> 1), CPS1_H, (int)nBurnPitch);
+
     printf("CPS: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
-    printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
+    if (g_neo_input) {
+        printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
+    } else {
+        printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
+    }
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
@@ -629,8 +724,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     for (;;) {
         host_update_input();
-        // DBG-TEMP r0.312: маркер кадра — если печатается, цикл жив
-        { static unsigned fr = 0; if ((fr % 60) == 0) printf("FR %u\n", fr); fr++; }
         BurnDrvFrame();
         host_render_frame();
         fb_flush();

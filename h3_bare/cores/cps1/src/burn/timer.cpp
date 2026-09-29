@@ -333,6 +333,12 @@ void BurnTimerPreInit()
 	BurnTimerExit();
 
 	nIndex = 0;
+
+	// Все таймеры — в «остановлено», пока звуковое ядро не запустит свои
+	// (BurnTimerInit→BurnTimerReset). Без этого при звуке-off (напр. NEOGEO,
+	// где BurnYM2610* — стабы) nTimerCount[] = 0 и BurnTimerUpdate() не
+	// завершается.
+	BurnTimerReset();
 }
 
 // initted by soundcore[s], (or anything)

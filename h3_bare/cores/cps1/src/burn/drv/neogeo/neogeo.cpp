@@ -315,27 +315,6 @@ void NeoDecodeSprites(UINT8* pDest, INT32 nSize)
 	}
 }
 
-/*
-void NeoDecodeText(UINT8* pDest, INT32 nSize)
-{
-	// Pre-process the text layer graphics
-	for (UINT8* pTile = pDest; pTile < (pDest + nSize); pTile += 32) {
-		UINT8 data[32];
-		for (INT32 n = 0; n < 8; n++) {
-			data[0 + n * 4] = pTile[16 + n];
-			data[1 + n * 4] = pTile[24 + n];
-			data[2 + n * 4] = pTile[ 0 + n];
-			data[3 + n * 4] = pTile[ 8 + n];
-		}
-
-		for (INT32 n = 0; n < 32; n++) {
-			pTile[n]  = data[n] << 4;
-			pTile[n] |= data[n] >> 4;
-		}
-	}
-}
-*/
-
 // ----------------------------------------------------------------------------
 // Graphics decoding for Neo CD
 

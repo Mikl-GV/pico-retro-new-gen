@@ -3,6 +3,7 @@
 #include "burnint.h"
 #include "burn_ym2610.h"
 #include "cd_interface.h"
+#include "timer.h"
 
 // ---- YM2610: no-op ----
 static void neo_ym_update(INT16* pBuf, INT32 nLen) { (void)pBuf; (void)nLen; }
@@ -10,16 +11,29 @@ void (*BurnYM2610Update)(INT16* pSoundBuf, INT32 nSegmentEnd) = neo_ym_update;
 
 INT32 BurnYM2610Init(INT32 nClock, UINT8* ROMA, INT32* nASize, UINT8* ROMB,
                      INT32* nBSize, FM_IRQHANDLER irq, INT32 add)
-{ (void)nClock; (void)ROMA; (void)nASize; (void)ROMB; (void)nBSize; (void)irq; (void)add; return 0; }
+{ (void)nClock; (void)ROMA; (void)nASize; (void)ROMB; (void)nBSize; (void)irq; (void)add;
+  // звук off, но таймеры BurnTimer обязаны быть в валидном состоянии:
+  // иначе nTimerCount[] остаётся 0 и BurnTimerUpdate() крутится вечно
+  // (NEOGEO виснет на первом кадре в BurnTimerEndFrame).
+  BurnTimerReset();
+  return 0; }
 
 INT32 BurnYM2610Init(INT32 nClock, UINT8* ROMA, INT32* nASize, UINT8* ROMB,
                      INT32* nBSize, FM_IRQHANDLER irq,
                      INT32 (*Stream)(INT32), double (*GetTime)(), INT32 add)
 { (void)nClock; (void)ROMA; (void)nASize; (void)ROMB; (void)nBSize; (void)irq;
-  (void)Stream; (void)GetTime; (void)add; return 0; }
+  (void)Stream; (void)GetTime; (void)add;
+  BurnTimerReset();
+  return 0; }
 
-void BurnYM2610Reset(void) {}
+void BurnYM2610Reset(void) { BurnTimerReset(); }
 void BurnYM2610Exit(void) {}
+
+// Звук off: чтения/записи портов YM2610 (Z80 NEO) — no-op. НЕЛЬЗЯ пускать
+// в реальный YM2610Read/Write из fm.c: BurnYM2610Init у нас стаб, чип
+// (FM2610) не инициализирован — OPNWriteMode падает data abort'ом.
+UINT8 BurnYM2610Read(INT32 nRegister) { (void)nRegister; return 0; }
+void  BurnYM2610Write(INT32 nRegister, UINT8 nValue) { (void)nRegister; (void)nValue; }
 void BurnYM2610Scan(INT32 nAction, INT32* pnMin) { (void)nAction; (void)pnMin; }
 void BurnYM2610SetRoute(INT32 nIndex, double nVolume, INT32 nRouteDir)
 { (void)nIndex; (void)nVolume; (void)nRouteDir; }
@@ -48,14 +62,6 @@ void NeoCDInfo_Exit(void) {}
 // ---- прочие символы, на которые ссылается neo-код ----
 UINT8 DebugSnd_YM2610Initted = 0;
 
-double compute_resistor_weights(INT32 minval, INT32 maxval, double scaler,
-    INT32 count_1, const INT32* resistances_1, double* weights_1, INT32 pulldown_1, INT32 pullup_1,
-    INT32 count_2, const INT32* resistances_2, double* weights_2, INT32 pulldown_2, INT32 pullup_2,
-    INT32 count_3, const INT32* resistances_3, double* weights_3, INT32 pulldown_3, INT32 pullup_3)
-{
-    (void)minval; (void)maxval; (void)scaler;
-    (void)count_1; (void)resistances_1; (void)weights_1; (void)pulldown_1; (void)pullup_1;
-    (void)count_2; (void)resistances_2; (void)weights_2; (void)pulldown_2; (void)pullup_2;
-    (void)count_3; (void)resistances_3; (void)weights_3; (void)pulldown_3; (void)pullup_3;
-    return 0.0;
-}
+// compute_resistor_weights НЕ стабим: реальная реализация в
+// src/burn/devices/resnet.cpp (c1d_resnet.o) — дубль здесь давал бы
+// зависимость от порядка линковки (см. --allow-multiple-definition).

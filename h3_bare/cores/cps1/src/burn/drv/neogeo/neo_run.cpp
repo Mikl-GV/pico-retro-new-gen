@@ -75,7 +75,6 @@
 #include "bitswap.h"
 #include "neocdlist.h"
 
-// #undef USE_SPEEDHACKS
 static INT32 NEO_RASTER_IRQ_TWEAK = 0; // spinmast prefers offset of 3 here.
 // #define LOG_IRQ
 // #define LOG_DRAW
@@ -274,7 +273,6 @@ UINT8* YM2610ADPCMBROM[MAX_SLOT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, N
 static INT32 nYM2610ADPCMASize[MAX_SLOT] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 static INT32 nYM2610ADPCMBSize[MAX_SLOT] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
-static bool bIRQEnabled;
 static INT32 nVBLankIRQ; // init setting
 static INT32 nScanlineIRQ; // init setting
 
@@ -3758,7 +3756,6 @@ static INT32 neogeoReset()
 	nNeoSpriteFrame = 0;
 
 	nIRQAcknowledge = ~0;
-	bIRQEnabled = false;
 	nIRQOffset = 0;
 	nIRQControl = 0;
 	nIRQCycles = NO_IRQ_PENDING;
@@ -4094,11 +4091,7 @@ static INT32 NeoInitCommon()
 	ZetClose();
 	SekClose();
 
-#if defined USE_SPEEDHACKS
 	bRenderLineByLine = false;
-#else
-	bRenderLineByLine = false;
-#endif
 
 	NEO_RASTER_IRQ_TWEAK = 0;
 
@@ -4624,12 +4617,9 @@ static INT32 NeoSekRun(const INT32 nCycles)
 }
 
 static INT32 in_cd_ffwd = 0;
-static INT32 dbg_neo_it = 0;   // DBG-TEMP r0.315
 
 INT32 NeoFrame()
 {
-	// DBG-TEMP r0.313: локализация зависания первого кадра
-	printf("NF-ST\n");
 	//bprintf(0, _T("%X,"), SekReadWord(0x108)); // show game-id
 
 	if (NeoReset) {							   						// Reset machine
@@ -4840,7 +4830,6 @@ INT32 NeoFrame()
 
 	bRenderImage = false;
 	bForceUpdateOnStatusRead = false;
-	printf("NF-B\n");   // DBG-TEMP r0.314
 	SekNewFrame();
 	ZetNewFrame();
 
@@ -4856,12 +4845,9 @@ INT32 NeoFrame()
 	// Run 68000
 	// Do scanlines: [248, 263] == [248, 264)
 	nCyclesSegment = nSekCyclesScanline * 16;
-	printf("NF-C\n");   // DBG-TEMP r0.314
 	while (SekTotalCycles() < nCyclesSegment) {
-		if ((dbg_neo_it++ % 100) == 0) printf("NF-X %d\n", dbg_neo_it);   // DBG-TEMP r0.317
 
 		if ((nIRQControl & 0x10) && (nIRQCycles < NO_IRQ_PENDING) && (SekTotalCycles() >= nIRQCycles)) {
-			printf("NF-I\n");   // DBG-TEMP r0.317
 			nIRQAcknowledge &= ~2;
 			SekSetIRQLine(nScanlineIRQ, CPU_IRQSTATUS_ACK);
 
@@ -4884,7 +4870,6 @@ INT32 NeoFrame()
 		} else {
 			NeoSekRun(nIRQCycles - SekTotalCycles());
 		}
-		printf("NF-E\n");   // DBG-TEMP r0.316
 	}
 
 	if ((nIRQControl & 8) == 0) {
