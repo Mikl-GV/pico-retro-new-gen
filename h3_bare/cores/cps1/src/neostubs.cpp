@@ -64,6 +64,8 @@ UINT8 DebugSnd_YM2610Initted = 0;
 // Toaplan (r0.330): отладочные флаги звука из burn_ym3812.cpp / ymz280b.cpp.
 UINT8 DebugSnd_YM3812Initted = 0;
 UINT8 DebugSnd_YMZ280BInitted = 0;
+// NEC V25/V30 (r0.337): флаг инициализации из nec_intf.cpp (FBNEO_DEBUG).
+UINT8 DebugCPU_VezInitted = 0;
 
 // compute_resistor_weights НЕ стабим: реальная реализация в
 // src/burn/devices/resnet.cpp (c1d_resnet.o) — дубль здесь давал бы

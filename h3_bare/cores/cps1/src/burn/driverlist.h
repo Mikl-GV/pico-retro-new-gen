@@ -1536,6 +1536,37 @@ extern struct BurnDriver BurnDrvTekiPakit;
 extern struct BurnDriver BurnDrvTruxton2;
 extern struct BurnDriver BurnDrvWhoopee;
 
+// ---- Toaplan (NEC V25/V30, r0.337) ----
+extern struct BurnDriver BurnDrvBatsugna;
+extern struct BurnDriver BurnDrvBatsugnc;
+extern struct BurnDriver BurnDrvBatsugun;
+extern struct BurnDriver BurnDrvBatsugunb;
+extern struct BurnDriver BurnDrvBatsugunSP;
+extern struct BurnDriver BurnDrvDogyuun;
+extern struct BurnDriver BurnDrvDogyuunb;
+extern struct BurnDriver BurnDrvDogyuunk;
+extern struct BurnDriver BurnDrvDogyuunt;
+extern struct BurnDriver BurnDrvFixeight;
+extern struct BurnDriver BurnDrvFixeighta;
+extern struct BurnDriver BurnDrvFixeightat;
+extern struct BurnDriver BurnDrvFixeighth;
+extern struct BurnDriver BurnDrvFixeightht;
+extern struct BurnDriver BurnDrvFixeightj;
+extern struct BurnDriver BurnDrvFixeightjt;
+extern struct BurnDriver BurnDrvFixeightk;
+extern struct BurnDriver BurnDrvFixeightkt;
+extern struct BurnDriver BurnDrvFixeightt;
+extern struct BurnDriver BurnDrvFixeighttw;
+extern struct BurnDriver BurnDrvFixeighttwt;
+extern struct BurnDriver BurnDrvFixeightu;
+extern struct BurnDriver BurnDrvFixeightut;
+extern struct BurnDriver BurnDrvGrindStormer;
+extern struct BurnDriver BurnDrvGrindStormerA;
+extern struct BurnDriver BurnDrvKBash;
+extern struct BurnDriver BurnDrvKBashk;
+extern struct BurnDriver BurnDrvKBashp;
+extern struct BurnDriver BurnDrvVFive;
+
 static struct BurnDriver* pDriver[] = {
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
@@ -3070,6 +3101,36 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvTekiPakit,
     &BurnDrvTruxton2,
     &BurnDrvWhoopee,
+// Toaplan (NEC V25/V30, r0.337)
+    &BurnDrvBatsugna,
+    &BurnDrvBatsugnc,
+    &BurnDrvBatsugun,
+    &BurnDrvBatsugunb,
+    &BurnDrvBatsugunSP,
+    &BurnDrvDogyuun,
+    &BurnDrvDogyuunb,
+    &BurnDrvDogyuunk,
+    &BurnDrvDogyuunt,
+    &BurnDrvFixeight,
+    &BurnDrvFixeighta,
+    &BurnDrvFixeightat,
+    &BurnDrvFixeighth,
+    &BurnDrvFixeightht,
+    &BurnDrvFixeightj,
+    &BurnDrvFixeightjt,
+    &BurnDrvFixeightk,
+    &BurnDrvFixeightkt,
+    &BurnDrvFixeightt,
+    &BurnDrvFixeighttw,
+    &BurnDrvFixeighttwt,
+    &BurnDrvFixeightu,
+    &BurnDrvFixeightut,
+    &BurnDrvGrindStormer,
+    &BurnDrvGrindStormerA,
+    &BurnDrvKBash,
+    &BurnDrvKBashk,
+    &BurnDrvKBashp,
+    &BurnDrvVFive,
     &BurnDrvsbp,
 };
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))
