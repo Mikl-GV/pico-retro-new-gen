@@ -428,14 +428,13 @@ static void host_render_frame(void)
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
 
-    // РЕАЛЬНЫЙ кадр (из драйвера): NEO 304x224, CPS 384x224, Toaplan-гор 304x240,
+    // Реальный кадр (из драйвера): NEO 304x224, CPS 384x224, Toaplan-гор 304x240,
     // truxton2 — 240x320 портрет (после разворота g_rot кадр трактуем 320x240).
     int W = cols, H = rows;
     if (g_rot) { W = rows; H = cols; }
 
-    // «Вписать ПО РОДНОМУ разрешению»: один равномерный коэффициент для обеих
-    // осей по тому краю, который упирается в экран; второй край меньше —
-    // свободное место остаётся чёрными полями (центрируем).
+    // «Вписать по родному разрешению»: один равномерный коэффициент для обеих
+    // осей по краю, упирающемуся в экран; остальное — чёрные поля.
     int vw, vh;
     if ((int64_t)W * FB_H > (int64_t)H * FB_W) {   // ширину лимитирует экран
         vw = FB_W; vh = (int)(((int64_t)H * FB_W) / W);
@@ -447,7 +446,7 @@ static void host_render_frame(void)
     int x0 = (FB_W - vw) / 2;
     int y0 = (FB_H - vh) / 2;
 
-    // чёрные поля
+    // Чёрные поля
     for (int dy = 0; dy < FB_H; dy++) {
         uint32_t* drow = dst + (size_t)dy * FB_W;
         if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
@@ -455,41 +454,60 @@ static void host_render_frame(void)
                for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
     }
 
+    // ВАЖНО: масштабирование по таблицам шага (16.16 аккумуляторы), БЕЗ
+    // деления в пиксельном цикле — div64 на Cortex-A7 крайне медленный,
+    // он и давал «тормоза по отрисовке» у всех аркад.
+
+    // Готовим таблицу X (по ширине картинки vw): источник = rows (куdка для
+    // поворота) или cols (обычный кадр).
+    int xs_w = g_rot ? rows : cols;          // сколько исходных столбцов/строк по X
+    static uint16_t sx[1024];
+    uint32_t step_x = ((uint32_t)xs_w << 16) / (uint32_t)vw;
+    uint32_t acc_x = step_x >> 1;
+    for (int dx = 0; dx < vw; dx++) {
+        uint32_t t = acc_x >> 16;
+        if (t >= (uint32_t)xs_w) t = xs_w - 1;
+        sx[dx] = (uint16_t)t;
+        acc_x += step_x;
+    }
+
     if (g_rot) {
-        // Вертикаль: после разворота длинная ось (rows=320) -> ширина кадра W,
-        // короткая (cols=240) -> высота H. Без инверсий.
+        // Вертикаль: длинная ось (rows) — по X (таблица sx), короткая (cols) — по Y.
+        uint32_t step_y = ((uint32_t)cols << 16) / (uint32_t)vh;
+        uint32_t y_acc = step_y >> 1;
         for (int dy = 0; dy < vh; dy++) {
-            int gy = (int)(((int64_t)dy * cols) / vh);
-            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
+            uint32_t gy = y_acc >> 16;
+            if (gy >= (uint32_t)cols) gy = cols - 1;
             uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
+            uint16_t const* srow = src + (size_t)gy;
             for (int dx = 0; dx < vw; dx++) {
-                int gx = (int)(((int64_t)dx * rows) / vw);
-                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
-                uint16_t p = src[(size_t)gx * sstride + gy];
+                uint16_t p = srow[(size_t)sx[dx] * sstride];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
                 uint32_t b = (p & 0x1F) << 3;
                 drow[dx] = (r << 16) | (g << 8) | b;
             }
+            y_acc += step_y;
         }
         return;
     }
 
-    // обычный кадр (родной масштаб уже посчитан в vw/vh)
+    // Обычный кадр
+    uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)vh;
+    uint32_t y_acc = step_y >> 1;
     for (int dy = 0; dy < vh; dy++) {
-        int sy = (int)(((int64_t)dy * rows) / vh);
-        if (sy < 0) sy = 0; else if (sy > rows - 1) sy = rows - 1;
+        uint32_t sy = y_acc >> 16;
+        if (sy >= (uint32_t)rows) sy = rows - 1;
         const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
         for (int dx = 0; dx < vw; dx++) {
-            int sx = (int)(((int64_t)dx * cols) / vw);
-            if (sx < 0) sx = 0; else if (sx > cols - 1) sx = cols - 1;
-            uint16_t p = srow[sx];
+            uint16_t p = srow[sx[dx]];
             uint32_t r = ((p >> 11) & 0x1F) << 3;
             uint32_t g = ((p >> 5) & 0x3F) << 2;
             uint32_t b = (p & 0x1F) << 3;
             drow[dx] = (r << 16) | (g << 8) | b;
         }
+        y_acc += step_y;
     }
 }
 
