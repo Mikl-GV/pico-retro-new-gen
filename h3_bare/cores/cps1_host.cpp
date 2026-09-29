@@ -111,6 +111,7 @@ extern UINT8 NeoDiag[2];
 static uint16_t g_frame[CPS1_W * 320];
 static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
+static int g_rot = 0;            // 1 = вертикалку разворачиваем на 90° при выводе
 
 // ---- ROM-источники (выбранная игра) ----
 // zip-буферы: основной 0x50000000 (92 МБ, крупнейшие сеты NEOGEO ~84 МБ),
@@ -441,6 +442,27 @@ static void host_render_frame(void)
     int x0 = (FB_W - view_w) / 2;
     int y0 = (FB_H - view_h) / 2;
     const uint32_t BLACK = 0;
+
+    // Вертикалка (TATE): разворачиваем на 90° и тянем длинную ось (rows,
+    // 320) на всю ширину экрана 1024; короткая (cols, 240) — по высоте 600.
+    // Направление выбрано по r0.347; если зеркально — поменять знаки gx/gy.
+    if (g_rot) {
+        for (int dy = 0; dy < FB_H; dy++) {
+            int gy = cols - 1 - (int)((dy * (int64_t)(cols)) / FB_H);
+            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
+            uint32_t* drow = dst + (size_t)dy * FB_W;
+            for (int dx = 0; dx < FB_W; dx++) {
+                int gx = rows - 1 - (int)((dx * (int64_t)(rows)) / FB_W);
+                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+                uint16_t p = src[(size_t)gx * sstride + gy];
+                uint32_t r = ((p >> 11) & 0x1F) << 3;
+                uint32_t g = ((p >> 5) & 0x3F) << 2;
+                uint32_t b = (p & 0x1F) << 3;
+                drow[dx] = (r << 16) | (g << 8) | b;
+            }
+        }
+        return;
+    }
 
     // Чёрные поля (весь экран, кроме картинки)
     for (int dy = 0; dy < FB_H; dy++) {
@@ -831,6 +853,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         nBurnPitch = nNeoScreenWidth * 2;
         g_frame_h = CPS1_H;
         g_frame_w = nBurnPitch >> 1;
+        g_rot = 0;
 } else if (g_toa) {
         // Toaplan, ширины:
         //  - GP9001 (raizing/toaplan2/toaplan3): буфер 320-й. Горизонтальные
@@ -857,13 +880,15 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             g_frame_w = nw;
             g_frame_h = nh;
         }
-        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d\n",
+        g_rot = (gp9001 && vert) ? 1 : 0;
+        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d rot=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
-               g_frame_w, g_frame_h, (int)nBurnPitch);
+               g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
         g_frame_w = CPS1_W;
+        g_rot = 0;
     }
     // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
     // без очистки при повторном входе виден мусор предыдущей игры.
