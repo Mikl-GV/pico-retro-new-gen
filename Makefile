@@ -406,7 +406,7 @@ CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
 CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
-CPS1_SNDC  := ay8910 fm ym2151 fmopl
+CPS1_SNDC  := fm ym2151 fmopl
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
 
 OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))

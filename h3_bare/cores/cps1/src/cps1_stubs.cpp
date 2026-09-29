@@ -18,27 +18,60 @@ void YM_DELTAT_savestate(const char* statename, int num, YM_DELTAT* DELTAT) { (v
 }
 
 // AY8910 (ay8910.h уже открыл extern "C")
+// r0.370: Slap Fight и MISC-платы читают ВВОД через AY8910 port A/B
+// (AY8910SetPorts(0, read_input0, read_input1, ...) — звуковой Z80 опрашивает
+// кнопки и кладёт их в ShareRAM для main'а). Без этого main получает мусор и
+// игра идёт «по пустому» (нет ввода/старта/врагов). Звук остаётся off
+// (nBurnSoundRate=0): настоящий core при нулевой частоте даёт деление на 0,
+// поэтому только эмуляция портов.
+#define AY_STUBS_MAX 5
+static read8_handler s_ay_pa[AY_STUBS_MAX] = { 0, 0, 0, 0, 0 };
+static read8_handler s_ay_pb[AY_STUBS_MAX] = { 0, 0, 0, 0, 0 };
+static UINT8 s_ay_reg[AY_STUBS_MAX] = { 0, 0, 0, 0, 0 };
+// глобалы настоящего ay8910.c (fm.c на них ссылается в YM2203-совместимости)
+INT32 ay8910_index_ym = 0;
+INT32 ay8910burgertime_mode = 0;
+INT16* pAY8910Buffer[(MAX_8910 + 1) * 3] = { 0 };
+
 void AY8910Exit(INT32 chip) { (void)chip; }
 INT32 AY8910InitYM(INT32 chip, INT32 clock, INT32 sample_rate,
 	read8_handler portAread, read8_handler portBread,
 	write8_handler portAwrite, write8_handler portBwrite,
 	void (*update_callback)(void))
-{ (void)chip; (void)clock; (void)sample_rate; (void)portAread; (void)portBread; (void)portAwrite; (void)portBwrite; (void)update_callback; return 0; }
+{ (void)chip; (void)clock; (void)sample_rate; (void)portAwrite; (void)portBwrite; (void)update_callback; return 0; }
 void AY8910Reset(INT32 chip) { (void)chip; }
 void AY8910Scan(INT32 nAction, INT32* pnMin) { (void)nAction; (void)pnMin; }
 void AY8910_set_clock(INT32 chip, INT32 clock) { (void)chip; (void)clock; }
-void AY8910Write(INT32 chip, INT32 a, INT32 data) { (void)chip; (void)a; (void)data; }
-INT32 AY8910Read(INT32 chip) { (void)chip; return 0; }
 void AY8910Update(INT32 chip, INT16** buffer, INT32 length) { (void)chip; (void)buffer; (void)length; }
+void AY8910Render(INT16* dest, INT32 length) { (void)dest; (void)length; }
+void AY8910SetBuffered(INT32 (*pCPUCyclesCB)(), INT32 nCpuMHZ) { (void)pCPUCyclesCB; (void)nCpuMHZ; }
 // slapfght (Toaplan, r0.338): 3-арг AY8910Init + сеттер портов/маршрутов.
 // AY8910SetAllRoutes — МАКРОС (вызывает AY8910SetRoute по маршрутам).
 extern "C" {
 INT32 AY8910Init(INT32 chip, INT32 clock, INT32 add_signal) { (void)chip; (void)clock; (void)add_signal; return 0; }
 INT32 AY8910SetPorts(INT32 chip, read8_handler portAread, read8_handler portBread,
 	write8_handler portAwrite, write8_handler portBwrite)
-{ (void)chip; (void)portAread; (void)portBread; (void)portAwrite; (void)portBwrite; return 0; }
+{
+	(void)portAwrite; (void)portBwrite;
+	if (chip >= 0 && chip < AY_STUBS_MAX) { s_ay_pa[chip] = portAread; s_ay_pb[chip] = portBread; }
+	return 0;
+}
 void AY8910SetRoute(INT32 chip, INT32 nIndex, double nVolume, INT32 nRouteDir)
 { (void)chip; (void)nIndex; (void)nVolume; (void)nRouteDir; }
+// Чтение PSG: select-запись (a&1==0) выбирает регистр; читаются port A=B
+// регистры 14/15 через колбэки драйвера (ввод/DIP). Иначе 0xFF (ничего).
+void AY8910Write(INT32 chip, INT32 a, INT32 data)
+{
+	if (chip >= 0 && chip < AY_STUBS_MAX && (a & 1) == 0) s_ay_reg[chip] = (UINT8)(data & 0x0F);
+}
+INT32 AY8910Read(INT32 chip)
+{
+	// read8_handler в FBNeo: UINT8 (*)(UINT32 offset) — аргумент обязателен
+	if (chip < 0 || chip >= AY_STUBS_MAX) return 0xFF;
+	if (s_ay_reg[chip] == 14 && s_ay_pa[chip]) return s_ay_pa[chip](0);
+	if (s_ay_reg[chip] == 15 && s_ay_pb[chip]) return s_ay_pb[chip](0);
+	return 0xFF;
+}
 }
 
 // ---- Debug-флаги (burn_debug/misc_debug в FBNeo; здесь UINT8) ----

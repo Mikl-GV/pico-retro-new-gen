@@ -22,9 +22,9 @@
 | 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
 | 15 | ZX Spectrum | Z80 | ✅ работает (r0.242: 48K..TS2068, ввод/печать, меню model→ROM/.z80/.sna или BASIC, ESC-выход) | fuse-libretro (h3_bare/cores/fuse/) |
 | 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
-| 17 | Аркады (Capcom CPS-1/CPS-2) | 68000/Z80 | ✅ CPS-1 и CPS-2 работают (r0.281; без звука); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
+| 17 | Аркады (CPS-1/CPS-2, NEOGEO/MVS, Toaplan) | 68000/Z80/NEC/Z180/M6805/TMS32010 | ✅ CPS-1/2, NEOGEO, Toaplan работают (r0.37x; без звука); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
 | 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
-| 19 | Atari Jaguar | 68000/JRISC | 🔲 план | — |
+| 19 | Atari Jaguar | 68000/JRISC | ❌ **отклонено** (слишком тяжело для Cortex-A7) | — |
 | 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | ✅ БК-0010/0011М работает (r0.243–r0.259: встроено, запуск/рендер/палитра и сброс машины на стенде; осталось Sega-пад, TFT-справка, Terak); Радио-86РК / MS 1504 — план | libretro-bk (BK-Terak-Emu), `h3_bare/cores/bk/` |
 | 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
 
@@ -52,7 +52,7 @@
 ## Очередь работ
 
 1. **БК-0010 / БК-0011М** (К1801ВМ1, PDP-11-подобный) — **ядро встроено и запускается на стенде (r0.243–r0.253)**. `h3_bare/cores/bk/` (libretro-bk/BK-Terak-Emu), host `bk_host.c` (модель→ROM(.bin/.img)/BASIC как у Спектрума), ROM вшиты (`bk_roms.c`: MONIT10/BASIC10/FOCAL10/DISK_327/B11M_BOS/EXT/BAS11M_0/1/TERAK), звук off, ESC-выход, линейный ввод. Модель→ядро: «BK-0010» → MONIT10+FOCAL10, «BK-0010.01» → MONIT10+BASIC10, «+FDD» → MONIT10+DISK_327, «BK-0011M»/«Terak» → B11M_*. **Осталось (стенд):** ввод с Sega-пада, TFT-справка. Палитра/текст подтверждены (r0.255: BW + прямой рендер в HDMI; r0.257: сброс машины и выбор рендера под модель — 11М без «мусора»). r0.256 — вход любого эмулятора сбрасывает память (`emu_prepare`); r0.258 — safety-timeout от зависания на мусорных ROM; r0.259 — валидация файла-программы БК (`[addr][len]`, чётный addr). Многогастовые игры (`.OVL`) и Terak — в перспективе (п.7–8). Временная диагностика `BKLOG:`/`BKTRAP` и метки стадий `BK:` пока остаются (см. AUDIT, раздел И).
-2. **Atari Jaguar** — референс: virtualjaguar-libretro (нужно отобрать только ядро, ~2MB, 68000+JRISC, тяжеловат)
+2. **Atari Jaguar** — ~~ref: virtualjaguar-libretro~~ **ОТКЛОНЕНО** (68000+JRISC для Cortex-A7 слишком тяжело; исходники изучены, ядро не вносилось)
 3. **Тач-экран** (USB HID, VID 0EEF/PID 0005 — промежуточный MCU как мышь, не «чистый GT911») — interrupt-IN в OHCI, управление меню и эмулятором
 4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — готовы: ZX (Fuse), Coleco (Gearcoleco), MSX (fMSX)
 5. **PC Engine / TurboGrafx** — готово (r0.202): Beetle PCE Fast, host `pce_host.c`, HuCard only, звук отключён, CD заглушен. Осталось: звук (PSG/Blip → I2S), CD, TFT-справка.
@@ -61,7 +61,7 @@
 8. **Capcom CPS-1 (аркада) — СДЕЛАНО (r0.260, стенд — осталось).** Ядро — порт **FinalBurn Neo** под CPS-1: `m68k` + `z80` + звук (`ym2151`/`ay8910`/`msm6295`) + устройства (`eeprom`/`timekpr`) + общий код `cps*.cpp` + `d_cps1` + `ps*` (защита/дешифровка); символические конфликты (m68k против Genesis Plus GX, YM2612 против gpgx sound) — objcopy-переименование `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`). Звук на первом этапе — off (`pBurnSoundOut` не выделяется).
    **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (распаковка через zlib из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
    **Сделано (r0.260):** (1) вендор в `h3_bare/cores/cps1/` (несколько но вне OBJ); (2) host-слой `cps1_host.cpp`: FAT-чтение папки или zip-инфлейт (`ZipExtract`), выбор драйвера по короткому имени (`BurnDrvGetIndex`), цикл `BurnDrvFrame`, кадр RGB565 384×224 → прямой ресайз в HDMI FB 1024×600, ввод: P1 (ремап-платформа `REMAP_PLAT_CPS1` — стрелки+Z/X/C, Enter/1=Start, 5=Coin) + Sega-пад (A/B/C, X=Coin), P2 хардкод (WASD+J/K/L, 2/6); ESC-выход, 60 Гц; (3) меню «CPS-1» (READY) → браузер `/roms/cps1/*` (папки и zip); (4) генерация `m68kops.c/h` нативным m68kmake в `build/` на сборке. `m68kops` не в git.
-   **Осталось:** звук (PSG/YM2151/QSound → I2S), поворот вертикальных CPS-1 (1941 и др.), стенд RPG-CPS-2 с `*.key`. Sega System 2/16 — отдельно, после CPS. NEOGEO — в работе (r0.318: подключён, первый кадр висит — см. `docs/NEOGEO-HANDOFF.md`). Передача — `docs/CPS1-HANDOFF.md`.
+   **Осталось:** звук (PSG/YM2151/QSound → I2S), Sega System 2/16 — отдельно. NEOGEO — сделано (r0.32x), Toaplan — сделано (r0.36x), см. `docs/NEOGEO-HANDOFF.md` и `docs/TOAPLAN-HANDOFF.md`. Передача — `docs/CPS1-HANDOFF.md`.
 
 ## Перспективы (идеи, не начаты)
 

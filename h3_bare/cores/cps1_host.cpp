@@ -283,8 +283,12 @@ static void load_progress(const char* phase)
         if (w > 0) fb_fill_rect(112, 316, w, 22, 0x00FFAA00);
         fb_fill_rect(112, 338, 800, 3, 0x00333333);   // шкала-подложка
     }
-    fb_flush();
+fb_flush();
 }
+
+// DBG-TEMP (r0.344-373) снят в r0.374 — диагностика Slap Fight велась только
+// по UART; ROM-сет alcon по CRC совпадал. Вопрос отрисовки тайлмапа Slap Fight
+// остаётся открытым отдельно.
 
 // ---- проверка полноты ROM-сета (имена и размеры вшиты в драйвер) ----
 // Возвращает 1, если есть missing или неверные размеры. Печатает список.
@@ -915,7 +919,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     emu_throttle_reset();
     emu_esc_hold_reset();
 
-    for (;;) {
+for (;;) {
         host_update_input();
         BurnDrvFrame();
         host_render_frame();
