@@ -196,9 +196,15 @@ void emu_esc_hold_reset(void) {
     g_esc_armed   = 0;
     g_no_esc_since = 0;
     g_esc_arm_t   = 0;
+    usb_kbd_esc3_reset();   // ESC x3 (Low-Speed донгл) не должен «доехать»
 }
 
 int emu_esc_hold(void) {
+    // Выход по ESC x3 — для Low-Speed донгла (I8 Pro), где длинное удержание
+    // ненадёжно. Срабатывает от фронтов, «доезд» залипшей ESC не сгенерирует
+    // (повторов не бывает), поэтому арм-предохранитель обходим сознательно.
+    if (usb_kbd_esc3_pressed()) return 1;
+
     uint8_t raw_keys[6];
     // r0.221: НИ ОДНОГО нового USB-чтения здесь! Два usb_kbd_get_raw за кадр
     // (ядро + этот полл) пере-армят interrupt-IN TD, пока HC ещё обрабатывает

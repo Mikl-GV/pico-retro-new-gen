@@ -698,7 +698,14 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
     // 384), поэтому nBurnPitch обязан совпасть с реальной шириной драйвера —
     // иначе строки съезжают по диагонали. CPS-драйверы как раз 384.
-    g_neo_input = (BurnDrvGetHardwareCode() & HARDWARE_SNK_NEOGEO) ? 1 : 0;
+    // ВАЖНО: проверять по ТОЧНОМУ публичному коду, а не по `& HARDWARE_SNK_NEOGEO`:
+    // HARDWARE_SNK_NEOGEO (0x05010000) пересекается по битам с
+    // HARDWARE_CAPCOM_CPS2 (0x07010000) и CPS1 (0x01010000) — из-за этого
+    // CPS-игры определялись как NEOGEO и брали чужой pitch/ширину
+    // (dimahoo: 384-кадр читался как 304 → верх внизу, полосы).
+    INT32 hw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
+    g_neo_input = (hw == HARDWARE_SNK_NEOGEO || hw == HARDWARE_SNK_MVS ||
+                   hw == HARDWARE_SNK_NEOCD  || hw == HARDWARE_SNK_DEDICATED_PCB) ? 1 : 0;
     if (g_neo_input) {
         extern INT32 nNeoScreenWidth;
         nBurnPitch = nNeoScreenWidth * 2;

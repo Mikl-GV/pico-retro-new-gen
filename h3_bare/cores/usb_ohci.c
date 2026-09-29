@@ -170,6 +170,13 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
     return 0;
 }
 
+// Опрос периодического interrupt-IN.
+// Возврат: 1 = снят свежий пакет (данные в buf), 0 = пакета нет (TD ждёт,
+//          ED/TD НЕ трогаем), -1 = TD завершился с ошибкой (CRC/timeout) —
+//          вызывающий может перезапустить цепочку.
+// ВАЖНО: переарм делаем ТОЛЬКО после снятия пакета. Прежний вариант
+// переармливал TD на каждом опросе — при частых поллах это гонка с HC
+// (HC пишет HEAD в DRAM, мы затирали из кэша) и «замирание» клавиатуры.
 int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
     int idx = ohci_idx(base);
     ohci_td_t* td = &g_int_td[idx][slot][0];
@@ -177,13 +184,11 @@ int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
 
     cache_invalidate((uint32_t)td, sizeof(td[0]));
     uint32_t cc = td->cfg >> TD_CC_SHIFT;
-    int fresh = (cc == TD_CC_NOERR);
 
-    if (fresh)
-        cache_invalidate((uint32_t)buf, 64);
+    if (cc == TD_CC_NOTACC)
+        return 0;                       // передача ещё идёт / пакета нет
 
-    // re-arm: оба слота одинаково — T=00 (toggle from ED), HC сам ведёт
-    // DATA0/DATA1 через ED toggle carry (как рабочая клавиатура slot 0).
+    // Переарм (общий для «пакет» и «ошибка»): вернуть TD в цепочку.
     uint32_t cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
     td->cfg = cfg;
     td->cbp = (uint32_t)buf;
@@ -197,7 +202,12 @@ int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
     g_int_ed[idx][slot].head = (uint32_t)td;
     g_int_ed[idx][slot].tail = (uint32_t)&g_int_td[idx][slot][1];
     cache_clean((uint32_t)&g_int_ed[idx][slot], sizeof(g_int_ed[idx][slot]));
-    return fresh ? 1 : 0;
+
+    if (cc != TD_CC_NOERR)
+        return -1;                      // ошибка завершения
+
+    cache_invalidate((uint32_t)buf, 64);
+    return 1;
 }
 
 void usb_ohci_set_mps(uint16_t mps) {

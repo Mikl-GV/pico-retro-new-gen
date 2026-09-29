@@ -13,9 +13,19 @@
 //   «Sega 6-button test + движение в меню + крестовина в NES/MD».
 //
 //   КЛАВИАТУРА И ГЕЙМПАД РАВНОПРАВНЫ: в usb_input_poll джой-фронт имеет
-//   приоритет, но клавиатурное событие не теряется (g_kbd_saved —
-//   отлагается на следующий вызов). Обратно: удержание клавиши НЕ глушит
-//   джой. Это сознательное поведение (r155), не регресс.
+//   приоритет, но клавиатурное событие не теряется (откладывается на
+//   следующий вызов). Обратно: удержание клавиши НЕ глушит джой.
+//
+//   КЛАВИАТУРА — НЕ «СЫРОЙ ОТЧЁТ», А СЛОЙ СОСТОЯНИЯ (r0.32x):
+//   prev/cur-дифф boot-отчётов даёт фронты PRESS/RELEASE, удержание хранится
+//   в слое и отдаётся в игры непрерывно (распознавание удержания кнопки).
+//   Отпускание: код исчез из отчёта ЛИБО поток отчётов замолчал >40 мс
+//   (Low-Speed донгл при отпускании не шлёт пустой отчёт — проверено на
+//   железе; при удержании отчёты идут, поэтому удержание не рвётся).
+//   Автоповтор — только для навигации в меню (по своим порогам); в играх
+//   НЕ повторяем и НЕ автофаертим.
+//   Наружу: usb_kbd_poll() (меню), usb_kbd_get_raw()/get_last() (состояние),
+//   get_mods().
 //
 //   «ДОЕЗД» ВВОДА: wait-release (usb_pad_wait_release/usb_kbd_wait_release)
 //   + armed-предохранитель в emu.c защищают вход/выход эмулятора от
@@ -37,6 +47,7 @@
 #include "uart.h"
 #include "usb_ohci.h"
 #include "sega_pad.h"
+#include "usb_kbd.h"   // KBD_EV_* и прототипы слоя
 
 #define TOUCH_BUF   16
 
@@ -107,23 +118,55 @@ static int g_pad_x = 512;
 static int g_pad_y = 300;
 
 static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), aligned(8)));
-static int g_repeat_sc = 0;    // последний сканкод
-static int g_was_repeat = 0;   // флаг удержания (сброс в wait_release)
-static uint32_t g_repeat_start = 0;
-static int g_kbd_pending = 0;  // сканкод, прочитанный wait_release и не отданный
-// r155: отложенный клавиатурный сканкод. Если в одном проходе пришли и
-// клавиша, и фронт джоя — возвращаем джой (оба источника равноправны),
-// а клавишу выдаём в следующем вызове, чтобы событие не терялось.
-static uint8_t g_kbd_saved = 0;
+
+// ============================================================================
+//  КЛАВИАТУРА: событийный слой (r0.32x)
+//  Физика (avatto-i8-pro-hid.md): новый boot-отчёт приходит только при
+//  ИЗМЕНЕНИИ (нажатие/отпускание/комбо), при удержании повторов НЕТ,
+//  отпускание — отчёт с обнулёнными кодами. Поэтому prev/cur-дифф даёт
+//  точные фронты, а таймаут-сброса состояния НЕ нужно (и он вреден:
+//  «дёргал» бы удержание на медленных кадрах).
+// ============================================================================
+#define KBD_Q_LEN 24
+static uint8_t  g_q_sc[KBD_Q_LEN], g_q_ev[KBD_Q_LEN];
+static int      g_q_r = 0, g_q_w = 0;
+
+static uint8_t  g_held[6];          // текущие нажатые коды (как в отчёте)
+static int      g_held_n = 0;
+static uint32_t g_down_t[256];      // мкс нажатия (0 = не нажата)
+static uint32_t g_rep_t[256];       // мкс последнего REPEAT-события
+static uint8_t  g_mods = 0;         // модификаторы последнего отчёта
+
+// Клавиатурный сканкод, отложенный usb_input_poll (в тот же проход сработал
+// фронт геймпада). Общий для меню: чистится в wait_release, чтобы «не доехал»
+// в подменю/эмулятор.
+static int g_kbd_stash = 0;
+
+// Выход по ESC x3 — только для Low-Speed донгла (у него не работает длинное
+// удержание, см. usb_kbd.h). Детект в kbd_process_report().
+#define ESC3_WINDOW_US 700000
+#define ESC3_NEED      3
+static int      g_esc_cnt = 0;
+static uint32_t g_esc_last_t = 0;
+static int      g_esc3_fired = 0;
+
+// Автоповтор клавиатуры (меню/браузер): удержали стрелку — курсор бежит.
+// В играх повтор/автофайр НЕ применяется (игра сама обрабатывает удержание).
+#define KBD_REPEAT_DELAY_US 350000
+#define KBD_REPEAT_RATE_US   90000
+
+// Распознавание отпускания (r0.32x, Low-Speed донгл I8 Pro):
+// донгл при ОТПУСКАНИИ не шлёт пустой отчёт — просто замолкает (проверено на
+// железе; «пустой отчёт» из avatto-i8-pro-hid.md на этой связке не приходит).
+// При удержании отчёты продолжают идти, поэтому: тишина > KBD_IDLE_RELEASE_US
+// при зажатых клавишах = их отпустили (или связь потеряна — тоже безопасно
+// «отпустить»). Так же делают простые эмуляторы/драйверы, чей стек не видит
+// ключевого апдейта устройства; тайминг согласован с прежним рабочим r172 (25 мс).
+#define KBD_IDLE_RELEASE_US 40000
 
 // Автоповтор Sega-геймпада — ЗАМЕДЛЕННЫЙ (в меню D-Pad не должен летать)
-#define PAD_REPEAT_DELAY_US 400000   // ~0,4 с до первого повтора
-#define PAD_REPEAT_RATE_US  200000   // ~5 шагов/с при удержании
-
-// Автоповтор клавиатуры (меню/браузер): GET_REPORT отдаёт удержанную
-// клавишу на каждый опрос — без гейта курсор летел бы неконтролируемо.
-#define KBD_REPEAT_DELAY_US 350000
-#define KBD_REPEAT_RATE_US  90000
+#define PAD_REPEAT_DELAY_US 400000
+#define PAD_REPEAT_RATE_US  200000
 
 // Антидребезг геймпада: состояние принимается только после PAD_DEBOUNCE_HITS
 // ОДИНАКОВЫХ сканов подряд. PCF8574 обновляет выходы на STOP корректно, но
@@ -181,7 +224,6 @@ uint16_t usb_pad_edge(void) {
 uint16_t usb_pad_get(void) { return g_pad_cur; }
 
 // forward
-static int usb_touch_poll(int* x, int* y, int* pressed);
 static int kbd_low_speed;
 static void kbd_intr_start(void);
 static int kbd_read_report(void);
@@ -435,28 +477,35 @@ static void kbd_intr_start(void) {
     kbd_intr_started = 1;
 }
 
-// r172: время последнего СВЕЖЕГО отчёта клавиатуры. Low-Speed донгл при
-// отжатии не шлёт пустой отчёт — просто замолкает; по тишине >25 мс считаем
-// ВСЕ клавиши отпущенными (иначе в играх get_raw «залипали» нажатия).
+// Время последнего свежего отчёта (диагностика) и лимит частоты поллов.
+// r0.32x: переарм TD/ED в usb_ohci_intr_in_poll делается ТОЛЬКО при снятии
+// пакета (см. usb_ohci.c), поэтому частые поллы больше не рассинхронизируют
+// цепочку. Здесь — не чаще одного аппаратного опроса за 1000 мкс.
 static uint32_t g_raw_fresh_t = 0;
-
-// r0.222: лимит частоты аппаратных поллов interrupt-IN. Каждый
-// usb_ohci_intr_in_poll пере-армит TD/ED «на лету»; пакетные поллы (зажатый
-// wait_release на выходе, быстрые кадры) рассинхронизируют ED-цепочку OHCI,
-// и клавиатура «замирает» во всех последующих чтениях (и в меню после
-// выхода). Не чаще одного полла за 1000 мкс, остальное отдаём кэшем.
 static uint32_t g_ls_poll_t = 0;
-static int     g_ls_poll_res = -1;
+static int      g_ls_poll_res = -1;
+static int      g_ls_err = 0;      // подряд ошибок завершения TD → перезапуск
 
+// 0 = есть свежий отчёт в g_kbd.report; -1 = нет/ошибка.
+// Таймаут-сброса состояния НЕТ: «тишина» при удержании нормальна (донгл не
+// шлёт повторов) — отпускание приходит отдельным отчётом и обрабатывается
+// prev/cur-диффом в kbd_process_report().
 static int kbd_read_report(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return -1;
     if (kbd_low_speed) {
         uint32_t now = h3_hs_timer_lo_us();
         if (now - g_ls_poll_t >= 1000u) {
             g_ls_poll_t = now;
-            g_ls_poll_res = (usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0) > 0) ? 0 : -1;
+            int r = usb_ohci_intr_in_poll(g_kbd.base, g_kbd.report, 8, 0);
+            if (r > 0) {
+                g_ls_poll_res = 0; g_raw_fresh_t = now; g_ls_err = 0;
+            } else if (r == 0) {
+                g_ls_poll_res = -1;               // пакета нет (норма при удержании)
+            } else {
+                g_ls_poll_res = -1;               // ошибка TD (CRC/timeout)
+                if (++g_ls_err >= 8) { usb_kbd_restart_intr(); g_ls_err = 0; }
+            }
         }
-        if (g_ls_poll_res == 0) g_raw_fresh_t = now;
         return g_ls_poll_res;
     } else {
         if (get_report_dev(&g_kbd, g_kbd.report, 8) < 0) return -1;
@@ -466,89 +515,146 @@ static int kbd_read_report(void) {
     }
 }
 
-// r0.222: перезапуск interrupt-IN цепочки ED/TD с нуля. Быстрые пакетные
-// поллы (wait_release/эмулятор) могут рассинхронизировать ED — клавиатура
-// «замирает». Зовём после выхода из эмулятора, чтобы меню снова получало
-// отчёты. Само устройство не перечисливается (g_kbd/report целы).
+// ---- очередь событий ----
+static void q_push(uint8_t sc, uint8_t ev) {
+    int nxt = (g_q_w + 1) % KBD_Q_LEN;
+    if (nxt == g_q_r) g_q_r = (g_q_r + 1) % KBD_Q_LEN;   // переполнение: теряем старое
+    g_q_sc[g_q_w] = sc; g_q_ev[g_q_w] = ev;
+    g_q_w = nxt;
+}
+static int q_pop(uint8_t* sc, uint8_t* ev) {
+    if (g_q_r == g_q_w) return 0;
+    *sc = g_q_sc[g_q_r]; *ev = g_q_ev[g_q_r];
+    g_q_r = (g_q_r + 1) % KBD_Q_LEN;
+    return 1;
+}
+
+// prev/cur-дифф нового отчёта → фронты (PRESS/RELEASE) + состояние удержания.
+static void kbd_process_report(const uint8_t* rep) {
+    uint32_t now = h3_hs_timer_lo_us();
+    uint8_t codes[6]; int cn = 0;
+    for (int i = 2; i < 8; i++) if (rep[i]) codes[cn++] = rep[i];
+
+    // отпускания: были нажаты, в новом отчёте их нет (в т.ч. пустой отчёт)
+    for (int i = 0; i < g_held_n; i++) {
+        uint8_t sc = g_held[i]; int still = 0;
+        for (int j = 0; j < cn; j++) if (codes[j] == sc) { still = 1; break; }
+        if (!still) { g_down_t[sc] = 0; g_rep_t[sc] = 0; q_push(sc, KBD_EV_RELEASE); }
+    }
+    // нажатия: есть в новом отчёте, не было в прошлом
+    for (int j = 0; j < cn; j++) {
+        uint8_t sc = codes[j]; int had = 0;
+        for (int i = 0; i < g_held_n; i++) if (g_held[i] == sc) { had = 1; break; }
+        if (!had) {
+            uint32_t t = now ? now : 1;
+            g_down_t[sc] = t; g_rep_t[sc] = t;
+            q_push(sc, KBD_EV_PRESS);
+            // Выход: ESC x3 подряд в окне (только Low-Speed донгл).
+            if (kbd_low_speed && sc == 41) {
+                if (now - g_esc_last_t <= ESC3_WINDOW_US) g_esc_cnt++;
+                else g_esc_cnt = 1;
+                g_esc_last_t = now;
+                if (g_esc_cnt >= ESC3_NEED) { g_esc3_fired = 1; g_esc_cnt = 0; }
+            }
+        }
+    }
+    g_held_n = cn;
+    for (int i = 0; i < cn; i++) g_held[i] = codes[i];
+    g_mods = rep[0];
+}
+
+// Отпускание по «тишине потока отчётов» (Low-Speed донгл молчит при
+// отпускании, см. KBD_IDLE_RELEASE_US).
+static void kbd_release_all(void) {
+    for (int i = 0; i < g_held_n; i++) {
+        uint8_t sc = g_held[i];
+        g_down_t[sc] = 0; g_rep_t[sc] = 0;
+        q_push(sc, KBD_EV_RELEASE);
+    }
+    g_held_n = 0;
+}
+
+// Опросить HW и обновить состояние (очередь фронтов PRESS/RELEASE).
+// Автоповтор НЕ кладём в очередь (иначе она растёт во время игры) —
+// его выдаёт usb_kbd_poll() по удержанию.
+static void kbd_scan(void) {
+    if (!g_kbd.found || !g_kbd.in_ep) return;
+    if (kbd_read_report() == 0)
+        kbd_process_report(g_kbd.report);
+
+    // Распознавание отпускания: пока клавиши удерживаются, отчёты идут;
+    // тишина дольше порога = отпущено (или потеря связи) — отпускаем.
+    if (g_held_n > 0 && g_raw_fresh_t != 0 &&
+        (h3_hs_timer_lo_us() - g_raw_fresh_t > KBD_IDLE_RELEASE_US))
+        kbd_release_all();
+}
+
+// r0.32x: перезапуск interrupt-IN цепочки ED/TD с нуля (после ошибок TD или
+// выхода из эмулятора). Устройство НЕ перечисляется, состояние клавиш НЕ
+// сбрасывается — только перевешивается TD.
 void usb_kbd_restart_intr(void) {
     kbd_intr_started = 0;
     g_ls_poll_res = -1;
+    g_ls_err = 0;
     kbd_intr_start();
 }
 
+// ---- публичный API ----
+// Меню: сканкод PRESS (из очереди фронтов); если свежих нажатий нет —
+// автоповтор удержанной клавиши (свои пороги, без сброса состояния).
 int usb_kbd_poll(void) {
     if (!g_kbd.found || !g_kbd.in_ep) return 0;
-
-    if (g_kbd_pending) {
-        int p = g_kbd_pending;
-        g_kbd_pending = 0;
-        return p;
-    }
-
-    int r = kbd_read_report();
-    if (r < 0)
-        return 0;
-
-    int sc = 0;
-    for (int i = 2; i < 8; i++) {
-        if (g_kbd.report[i]) { sc = g_kbd.report[i]; break; }
-    }
+    kbd_scan();
+    uint8_t sc, ev;
+    while (q_pop(&sc, &ev))
+        if (ev == KBD_EV_PRESS) return sc;   // RELEASE меню не нужно
 
     uint32_t now = h3_hs_timer_lo_us();
-    if (sc == 0) { g_repeat_sc = 0; g_was_repeat = 0; return 0; }
-    if (sc != g_repeat_sc) {
-        g_repeat_sc = sc;
-        g_repeat_start = now;
-        g_was_repeat = 0;
-        return sc;
-    }
-    if (g_was_repeat) {
-        if (now - g_repeat_start >= KBD_REPEAT_RATE_US) {
-            g_repeat_start = now;
-            return sc;
+    for (int i = 0; i < g_held_n; i++) {
+        uint8_t c = g_held[i]; uint32_t t = g_down_t[c];
+        if (!t) continue;
+        if (now - t >= KBD_REPEAT_DELAY_US && now - g_rep_t[c] >= KBD_REPEAT_RATE_US) {
+            g_rep_t[c] = now;
+            return c;
         }
-        return 0;
-    }
-    if (now - g_repeat_start >= KBD_REPEAT_DELAY_US) {
-        g_repeat_start = now;
-        g_was_repeat = 1;
-        return sc;
     }
     return 0;
 }
 
+// Игры: текущее УДЕРЖИВАЕМОЕ состояние (по слою, а не «сырой» DMA-буфер).
 int usb_kbd_get_raw(uint8_t* buf, int max_buf) {
     if (!g_kbd.found || !g_kbd.in_ep) return 0;
-    uint8_t cur[8];
-    memcpy(cur, g_kbd.report, 8);
-int r = kbd_read_report();
-    if (r < 0) {
-        // r0.308 (по avatto-i8-pro-hid.md): донгл НЕ шлёт повторов при
-        // удержании — код просто остаётся в отчёте; отпускание приходит
-        // отчётом с обнулённым кодом. Поэтому таймаута-сброса НЕТ: держим
-        // последний отчёт до реального изменения.
-        memcpy(cur, g_kbd.report, 8);
-    }
+    kbd_scan();
     int cnt = 0;
-    for (int i = 2; i < 8 && cnt < max_buf; i++)
-        if (cur[i]) buf[cnt++] = cur[i];
+    for (int i = 0; i < g_held_n && cnt < max_buf; i++) buf[cnt++] = g_held[i];
     return cnt;
 }
 
 uint8_t usb_kbd_get_mods(void) {
     if (!g_kbd.found) return 0;
-    return g_kbd.report[0]; // modifiers: bit0=LCtrl bit1=LShift bit2=LAlt bit3=LGui bit4=RCtrl bit5=RShift
+    return g_mods;   // модификаторы последнего обработанного отчёта
 }
 
+// Состояние без нового опроса USB (emu_esc_hold: не «воровать» отчёт за кадр).
 int usb_kbd_get_last(uint8_t* buf, int max_buf) {
-    // r0.220: кэш последнего отчёта без нового IN — второй usb_kbd_get_raw
-    // за кадр у Low-Speed донгла «ворует» отчёт и может вернуть пусто,
-    // из-за чего ESC-удержание (emu_esc_hold) не накапливает 900 мс.
     if (!g_kbd.found) return 0;
     int cnt = 0;
-    for (int i = 2; i < 8 && cnt < max_buf; i++)
-        if (g_kbd.report[i]) buf[cnt++] = g_kbd.report[i];
+    for (int i = 0; i < g_held_n && cnt < max_buf; i++) buf[cnt++] = g_held[i];
     return cnt;
+}
+
+// Выход по ESC x3 (Low-Speed донгл). Флаг потребляется одним вызовом.
+int usb_kbd_esc3_pressed(void) {
+    if (!kbd_low_speed) return 0;
+    int f = g_esc3_fired;
+    g_esc3_fired = 0;
+    return f;
+}
+
+void usb_kbd_esc3_reset(void) {
+    g_esc_cnt = 0;
+    g_esc_last_t = 0;
+    g_esc3_fired = 0;
 }
 
 // ---- Тач (Waveshare GT911, 0eef:0005) через GET_REPORT ----
@@ -616,43 +722,27 @@ void usb_pad_wait_release(void) {
     g_pad_cache_t = 0;
     g_pad_cur = 0;
     g_pad_edge = 0;
-    g_kbd_saved = 0;   // r155: отложенный сканкод не должен «доехать» в подменю
+    g_kbd_stash = 0;   // отложенный клавиатурный сканкод не должен «доехать»
 }
 
-// Дождаться отпускания КЛАВИАТУРЫ (всех клавиш, кроме модификаторов):
-// чтобы зажатый Enter не «доехал» в новое подменю и не активировал первый пункт.
+// Дождаться отпускания КЛАВИАТУРЫ: чтобы зажатый Enter/ESC не «доехал» в
+// новое подменю и не активировал первый пункт.
+// r0.32x: дожидаемся, пока СЛОЙ не покажет ноль удержанных клавиш (или 800 мс
+// защитного лимита). Работает и «явный 00», и случай «донгл замолчал, но
+// отчёт так и не пришёл» (проверяем состояние, а не тишину по времени).
 void usb_kbd_wait_release(void) {
-    // Донгл не шлёт 00 при отжатии — просто замолкает.
-    // 20 мс тишины без нового сканкода = отжатие (r126: было 5 мс — Enter/ESC
-    // терялись: донгл молчит 2-10 мс между отчётами). Пришёл сканкод — сброс.
-    // Любой сканкод, прочитанный здесь (кроме Enter/ESC), сохраняем в
-    // g_kbd_pending — он не должен теряться для следующего usb_kbd_poll.
-    g_kbd_pending = 0;
-    g_kbd_saved = 0;   // r155: отложенный сканкод не должен «доехать» в подменю
     uint32_t t0 = h3_hs_timer_lo_us();
     for (;;) {
-        if (kbd_read_report() == 0) {
-            int any = 0;
-            int sc = 0;
-            for (int i = 2; i < 8; i++) {
-                if (g_kbd.report[i]) { sc = g_kbd.report[i]; any = 1; break; }
-            }
-            if (any) {
-                // Другой сканкод (не Enter 28/40 и не ESC 41) — новое нажатие,
-                // сохраняем в pending, чтобы не потерялось при выходе.
-                if (sc != 28 && sc != 40 && sc != 41) {
-                    g_kbd_pending = sc;
-                }
-                t0 = h3_hs_timer_lo_us();   // перезапуск таймера (ещё не отжато)
-            } else {
-                break;                       // явный 00 — отжато сразу
-            }
-        }
-        if (h3_hs_timer_lo_us() - t0 > 20000) break;   // 20 мс тишины = отжато
+        kbd_scan();
+        if (g_held_n == 0) break;
+        if (h3_hs_timer_lo_us() - t0 > 800000u) break;
         udelay(1000);
     }
-    g_repeat_sc = 0;
-    g_was_repeat = 0;
+    // Кнопка выхода не должна «доехать»: чистим состояние, очередь и стэш.
+    g_q_r = g_q_w = 0;
+    g_kbd_stash = 0;
+    g_held_n = 0;
+    for (int i = 0; i < 256; i++) { g_down_t[i] = 0; g_rep_t[i] = 0; }
 }
 
 // Дождаться отпускания ВСЕХ кнопок (клавиатура + Sega-геймпад) при ВЫХОДЕ из
@@ -685,11 +775,11 @@ static int pad_pressed_to_key(uint16_t pressed) {
 // r155: раньше клавиатура стояла первой и «перебивала» джой (if (k) return k —
 // при нажатой клавише или её автоповторе джой не опрашивался вовсе).
 // Теперь джой-фронт обрабатывается всегда; клавиатурное событие, пришедшее
-// в тот же проход, откладывается в g_kbd_saved и не теряется.
+// в тот же проход, откладывается и не теряется.
 int usb_input_poll(void) {
-    if (g_kbd_saved) {
-        int p = g_kbd_saved;
-        g_kbd_saved = 0;
+    if (g_kbd_stash) {
+        int p = g_kbd_stash;
+        g_kbd_stash = 0;
         return p;
     }
 
@@ -706,7 +796,7 @@ int usb_input_poll(void) {
         int j = pad_pressed_to_key(pressed);
         if (j) {
             // клавиатурное событие не теряем — выдадим следующим вызовом
-            if (k) g_kbd_saved = (uint8_t)k;
+            if (k) g_kbd_stash = k;
             return j;
         }
         // неизвестный бит фронта — не теряем клавиатуру, идём дальше
