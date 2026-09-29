@@ -30,6 +30,16 @@ void AY8910_set_clock(INT32 chip, INT32 clock) { (void)chip; (void)clock; }
 void AY8910Write(INT32 chip, INT32 a, INT32 data) { (void)chip; (void)a; (void)data; }
 INT32 AY8910Read(INT32 chip) { (void)chip; return 0; }
 void AY8910Update(INT32 chip, INT16** buffer, INT32 length) { (void)chip; (void)buffer; (void)length; }
+// slapfght (Toaplan, r0.338): 3-арг AY8910Init + сеттер портов/маршрутов.
+// AY8910SetAllRoutes — МАКРОС (вызывает AY8910SetRoute по маршрутам).
+extern "C" {
+INT32 AY8910Init(INT32 chip, INT32 clock, INT32 add_signal) { (void)chip; (void)clock; (void)add_signal; return 0; }
+INT32 AY8910SetPorts(INT32 chip, read8_handler portAread, read8_handler portBread,
+	write8_handler portAwrite, write8_handler portBwrite)
+{ (void)chip; (void)portAread; (void)portBread; (void)portAwrite; (void)portBwrite; return 0; }
+void AY8910SetRoute(INT32 chip, INT32 nIndex, double nVolume, INT32 nRouteDir)
+{ (void)chip; (void)nIndex; (void)nVolume; (void)nRouteDir; }
+}
 
 // ---- Debug-флаги (burn_debug/misc_debug в FBNeo; здесь UINT8) ----
 UINT8 Debug_BurnGunInitted = 0;

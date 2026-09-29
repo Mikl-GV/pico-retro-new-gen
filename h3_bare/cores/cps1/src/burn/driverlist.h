@@ -1567,6 +1567,81 @@ extern struct BurnDriver BurnDrvKBashk;
 extern struct BurnDriver BurnDrvKBashp;
 extern struct BurnDriver BurnDrvVFive;
 
+// ---- Toaplan (TMS32010/Z180/M6805, r0.338) ----
+extern struct BurnDriver BurnDrvAlcon;
+extern struct BurnDriver BurnDrvDemonwld;
+extern struct BurnDriver BurnDrvDemonwld1;
+extern struct BurnDriver BurnDrvDemonwld2;
+extern struct BurnDriver BurnDrvDemonwld3;
+extern struct BurnDriver BurnDrvDemonwld4;
+extern struct BurnDriver BurnDrvDemonwld5;
+extern struct BurnDriver BurnDrvFireshrk;
+extern struct BurnDriver BurnDrvFireshrka;
+extern struct BurnDriver BurnDrvFireshrkd;
+extern struct BurnDriver BurnDrvFireshrkdh;
+extern struct BurnDriver BurnDrvFnshark;
+extern struct BurnDriver BurnDrvFshark;
+extern struct BurnDriver BurnDrvFsharkb;
+extern struct BurnDriver BurnDrvFsharkbt;
+extern struct BurnDriver BurnDrvGetstarb1;
+extern struct BurnDriver BurnDrvGetstarb2;
+extern struct BurnDriver BurnDrvGetstarj;
+extern struct BurnDriver BurnDrvGhox;
+extern struct BurnDriver BurnDrvGhoxj;
+extern struct BurnDriver BurnDrvGhoxjo;
+extern struct BurnDriver BurnDrvGrdian;
+extern struct BurnDriver BurnDrvGulfwar2;
+extern struct BurnDriver BurnDrvGulfwar2a;
+extern struct BurnDriver BurnDrvHellfire;
+extern struct BurnDriver BurnDrvHellfire1;
+extern struct BurnDriver BurnDrvHellfire1a;
+extern struct BurnDriver BurnDrvHellfire2a;
+extern struct BurnDriver BurnDrvHishouza;
+extern struct BurnDriver BurnDrvHishouzab;
+extern struct BurnDriver BurnDrvKtiger;
+extern struct BurnDriver BurnDrvKtigera;
+extern struct BurnDriver BurnDrvOutzone;
+extern struct BurnDriver BurnDrvOutzonea;
+extern struct BurnDriver BurnDrvOutzoneb;
+extern struct BurnDriver BurnDrvOutzonec;
+extern struct BurnDriver BurnDrvOutzonecv;
+extern struct BurnDriver BurnDrvOutzoneh;
+extern struct BurnDriver BurnDrvPerfrman;
+extern struct BurnDriver BurnDrvPerfrmanu;
+extern struct BurnDriver BurnDrvPyros;
+extern struct BurnDriver BurnDrvRallybik;
+extern struct BurnDriver BurnDrvSamesame;
+extern struct BurnDriver BurnDrvSamesame2;
+extern struct BurnDriver BurnDrvSamesamecn;
+extern struct BurnDriver BurnDrvSamesamenh;
+extern struct BurnDriver BurnDrvSkyshark;
+extern struct BurnDriver BurnDrvSkysharka;
+extern struct BurnDriver BurnDrvSkysharkb;
+extern struct BurnDriver BurnDrvSlapfigh;
+extern struct BurnDriver BurnDrvSlapfigha;
+extern struct BurnDriver BurnDrvSlapfighb1;
+extern struct BurnDriver BurnDrvSlapfighb2;
+extern struct BurnDriver BurnDrvSlapfighb3;
+extern struct BurnDriver BurnDrvTigerh;
+extern struct BurnDriver BurnDrvTigerhb1;
+extern struct BurnDriver BurnDrvTigerhb2;
+extern struct BurnDriver BurnDrvTigerhb3;
+extern struct BurnDriver BurnDrvTigerhbt;
+extern struct BurnDriver BurnDrvTigerhj;
+extern struct BurnDriver BurnDrvTruxton;
+extern struct BurnDriver BurnDrvTwincobr;
+extern struct BurnDriver BurnDrvTwincobru;
+extern struct BurnDriver BurnDrvVimana;
+extern struct BurnDriver BurnDrvVimanaj;
+extern struct BurnDriver BurnDrvVimanan;
+extern struct BurnDriver BurnDrvWardner;
+extern struct BurnDriver BurnDrvWardnerb;
+extern struct BurnDriver BurnDrvWardnerj;
+extern struct BurnDriver BurnDrvWardnerjb;
+extern struct BurnDriver BurnDrvZerowing;
+extern struct BurnDriver BurnDrvZerowing1;
+extern struct BurnDriver BurnDrvZerowingw;
+
 static struct BurnDriver* pDriver[] = {
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
@@ -3131,6 +3206,80 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvKBashk,
     &BurnDrvKBashp,
     &BurnDrvVFive,
+// Toaplan (TMS32010/Z180/M6805, r0.338)
+    &BurnDrvAlcon,
+    &BurnDrvDemonwld,
+    &BurnDrvDemonwld1,
+    &BurnDrvDemonwld2,
+    &BurnDrvDemonwld3,
+    &BurnDrvDemonwld4,
+    &BurnDrvDemonwld5,
+    &BurnDrvFireshrk,
+    &BurnDrvFireshrka,
+    &BurnDrvFireshrkd,
+    &BurnDrvFireshrkdh,
+    &BurnDrvFnshark,
+    &BurnDrvFshark,
+    &BurnDrvFsharkb,
+    &BurnDrvFsharkbt,
+    &BurnDrvGetstarb1,
+    &BurnDrvGetstarb2,
+    &BurnDrvGetstarj,
+    &BurnDrvGhox,
+    &BurnDrvGhoxj,
+    &BurnDrvGhoxjo,
+    &BurnDrvGrdian,
+    &BurnDrvGulfwar2,
+    &BurnDrvGulfwar2a,
+    &BurnDrvHellfire,
+    &BurnDrvHellfire1,
+    &BurnDrvHellfire1a,
+    &BurnDrvHellfire2a,
+    &BurnDrvHishouza,
+    &BurnDrvHishouzab,
+    &BurnDrvKtiger,
+    &BurnDrvKtigera,
+    &BurnDrvOutzone,
+    &BurnDrvOutzonea,
+    &BurnDrvOutzoneb,
+    &BurnDrvOutzonec,
+    &BurnDrvOutzonecv,
+    &BurnDrvOutzoneh,
+    &BurnDrvPerfrman,
+    &BurnDrvPerfrmanu,
+    &BurnDrvPyros,
+    &BurnDrvRallybik,
+    &BurnDrvSamesame,
+    &BurnDrvSamesame2,
+    &BurnDrvSamesamecn,
+    &BurnDrvSamesamenh,
+    &BurnDrvSkyshark,
+    &BurnDrvSkysharka,
+    &BurnDrvSkysharkb,
+    &BurnDrvSlapfigh,
+    &BurnDrvSlapfigha,
+    &BurnDrvSlapfighb1,
+    &BurnDrvSlapfighb2,
+    &BurnDrvSlapfighb3,
+    &BurnDrvTigerh,
+    &BurnDrvTigerhb1,
+    &BurnDrvTigerhb2,
+    &BurnDrvTigerhb3,
+    &BurnDrvTigerhbt,
+    &BurnDrvTigerhj,
+    &BurnDrvTruxton,
+    &BurnDrvTwincobr,
+    &BurnDrvTwincobru,
+    &BurnDrvVimana,
+    &BurnDrvVimanaj,
+    &BurnDrvVimanan,
+    &BurnDrvWardner,
+    &BurnDrvWardnerb,
+    &BurnDrvWardnerj,
+    &BurnDrvWardnerjb,
+    &BurnDrvZerowing,
+    &BurnDrvZerowing1,
+    &BurnDrvZerowingw,
     &BurnDrvsbp,
 };
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))

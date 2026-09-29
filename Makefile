@@ -388,6 +388,7 @@ CPS1_ZLIB := $(TOP)h3_bare/cores/fuse/zlib
 CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
 	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
+	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -403,7 +404,7 @@ CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
 
 CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
-CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog
+CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
 CPS1_SNDC  := ay8910 fm ym2151 fmopl
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
@@ -506,7 +507,8 @@ OBJ += $(addprefix $(BUILD)/c1n_,$(patsubst %.cpp,%.o,$(CPS1_NEO)))
 CPS1_TOA  := toaplan toaplan1 toa_gp9001 toa_palette toa_extratext \
              d_batrider d_battleg d_bbakraid d_enmadaio d_kbash2 \
              d_mahoudai d_pipibibs d_shippumd d_snowbro2 d_tekipaki d_truxton2 \
-             d_batsugun d_dogyuun d_fixeight d_kbash d_vfive
+             d_batsugun d_dogyuun d_fixeight d_kbash d_vfive \
+             d_toaplan1 d_twincobr d_wardner d_ghox d_slapfght
 OBJ += $(addprefix $(BUILD)/c1t_,$(addsuffix .o,$(CPS1_TOA)))
 # NEC CPU (r0.337): ядро + инструкции; API Vez*.
 OBJ += $(BUILD)/c1nec_nec_intf.o $(BUILD)/c1nec_nec.o $(BUILD)/c1nec_v25.o
@@ -537,6 +539,26 @@ $(BUILD)/c1nec_nec.o: $(CPS1)/src/cpu/nec/nec.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1nec_v25.o: $(CPS1)/src/cpu/nec/v25.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Прочие CPU Toaplan (r0.338): TMS32010 (twincobr/wardner/toaplan1-сеты),
+# Z180 (ghox), M6805 (slapfght). z180 — те же op-файлы #include в z180.cpp,
+# m6805 — 6805ops.c #include в m6805.cpp; тайто-протектор — корезис taito_m68705.
+OBJ += $(BUILD)/c1cpu_tms32010.o $(BUILD)/c1cpu_z180_intf.o $(BUILD)/c1cpu_z180.o \
+       $(BUILD)/c1cpu_m6805_intf.o $(BUILD)/c1cpu_m6805.o
+$(BUILD)/c1cpu_tms32010.o: $(CPS1)/src/cpu/tms32010/tms32010.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_z180_intf.o: $(CPS1)/src/cpu/z180_intf.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_z180.o: $(CPS1)/src/cpu/z180/z180.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_m6805_intf.o: $(CPS1)/src/cpu/m6805_intf.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_m6805.o: $(CPS1)/src/cpu/m6805/m6805.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)
