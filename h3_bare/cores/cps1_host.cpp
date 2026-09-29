@@ -443,20 +443,18 @@ static void host_render_frame(void)
     int y0 = (FB_H - view_h) / 2;
     const uint32_t BLACK = 0;
 
-    // Вертикалка (TATE): поворот на 90° ПО ЧАСОВОЙ (по текущему виду).
-    // Длинная ось игры (rows, 320) -> вертикаль экрана (600), короткая
-    // (cols, 240) -> ширина (1024). Экран заполняется целиком.
-    // Короткая ось инвертирована (убираем зеркало); если снова зеркально —
-    // снять "cols - 1 -" (или добавить к gx "rows - 1 -").
+    // Вертикалка (TATE): 90° БЕЗ инверсий — ось Y игры (rows, 320) -> ширина
+    // экрана (1024), ось X игры (cols, 240) -> высота (600). Всё влезает;
+    // на всякий случай пиксели за границей кадра — чёрные.
     if (g_rot) {
         for (int dy = 0; dy < FB_H; dy++) {
-            int gx = (int)(((int64_t)dy * rows) / FB_H);
-            if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+            int gy = (int)(((int64_t)dy * cols) / FB_H);
             uint32_t* drow = dst + (size_t)dy * FB_W;
             for (int dx = 0; dx < FB_W; dx++) {
-                int gy = cols - 1 - (int)(((int64_t)dx * cols) / FB_W);
-                if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
-                uint16_t p = src[(size_t)gx * sstride + gy];
+                int gx = (int)(((int64_t)dx * rows) / FB_W);
+                uint16_t p = 0;
+                if (gx >= 0 && gx < rows && gy >= 0 && gy < cols)
+                    p = src[(size_t)gx * sstride + gy];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
                 uint32_t b = (p & 0x1F) << 3;
