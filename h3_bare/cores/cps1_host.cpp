@@ -702,10 +702,12 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     if (g_neo_input) {
         extern INT32 nNeoScreenWidth;
         nBurnPitch = nNeoScreenWidth * 2;
-        memset(g_frame, 0, sizeof(g_frame));   // хвост старого кадра не должен мелькать
     } else {
         nBurnPitch = CPS1_W * 2;
     }
+    // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
+    // без очистки при повторном входе виден мусор предыдущей игры.
+    memset(g_frame, 0, sizeof(g_frame));
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), CPS1_H, (int)nBurnPitch);
 

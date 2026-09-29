@@ -79,6 +79,7 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
 
     extern void gb_heap_reset(void);
     gb_heap_reset();
+    memset(lynx_fb, 0, sizeof(lynx_fb));   // свой кадр-буфер не чистится emu_prepare
 
     g_lynx = new CSystem(NULL, rom, size, NULL, false, NULL);
     if (!g_lynx) { printf("[lynx] new CSystem failed\n"); return 0; }

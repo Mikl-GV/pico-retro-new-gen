@@ -192,6 +192,7 @@ extern "C" void coleco_stop(void) {
 extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     emu_prepare();
+    memset(g_col_fb, 0, sizeof(g_col_fb));   // свой кадр-буфер не чистится emu_prepare
     if (coleco_init_game(rom, size) != 1) {
         printf("Coleco: init failed\n");
         return;
