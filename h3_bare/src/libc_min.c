@@ -92,14 +92,26 @@ char* strchr(const char* s, int c) {
     return (c == 0) ? (char*)s : 0;
 }
 
-// Атомарные операции (используются spinlock, если понадобятся).
+// Атомарные операции (используются spinlock и guard-переменными libstdc++).
 // Тип возврата должен совпадать с встроенной функцией GCC
 // (unsigned int), иначе -Wbuiltin-declaration-mismatch.
 unsigned int __sync_val_compare_and_swap_4(volatile void* ptr, unsigned int oldval, unsigned int newval) {
-    // fallback: без SMP на старте это некритично; заглушка
+    // r0.365 (H5 аудита): раньше была простая проверка+запись без атомарности —
+    // при SMP (h3_smp) gcc guard-переменные и spinlock могли рассинхрониться.
+    // Теперь честный CAS через LDREX/STREX + dmb (Cortex-A7, ARMv7).
     volatile unsigned int* p = (volatile unsigned int*)ptr;
-    unsigned int cur = *p;
-    if (cur == oldval) *p = newval;
+    unsigned int cur, tmp;
+    __asm__ __volatile__(
+        "1: ldrex %0, [%2]\n"
+        "    cmp   %0, %3\n"
+        "    bne   2f\n"
+        "    strex %1, %4, [%2]\n"
+        "    teq   %1, #0\n"
+        "    bne   1b\n"
+        "2:  dmb   ish\n"
+        : "=&r" (cur), "=&r" (tmp)
+        : "r" (p), "r" (oldval), "r" (newval)
+        : "memory", "cc");
     return cur;
 }
 

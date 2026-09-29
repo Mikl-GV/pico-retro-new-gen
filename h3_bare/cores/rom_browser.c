@@ -32,6 +32,9 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
     printf("load_rom: %s/%s size=%lu cl=%lu\n", path, name, (unsigned long)f.size, (unsigned long)f.first_cluster);
     int r = fat_read_file(&f, 0, buf, f.size);
     printf("load_rom: got %d bytes\n", r);
+    // r0.365 (H4 аудита): недопрочитанный ROM (ошибка SD) — не запускать:
+    // эмулятор стартовал с обрезанной прошивкой и молча падал/глючил.
+    if (r < 0 || (uint32_t)r != f.size) { printf("load_rom: short read\n"); return -1; }
     // sd.c читает PIO: CPU пишет данные через обычные store, поэтому
     // dirty-линии D-cache (write-back) могут не дойти до DRAM. Инвалидация
     // (DCIMVAC) НЕ подходит — она отбросит грязные данные. Используем

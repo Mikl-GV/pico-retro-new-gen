@@ -49,19 +49,6 @@ extern INT32 nBurnBpp;
 // Вендорный filler возвращает ~0 (белый) — без host-функции экран белый.
 extern UINT32 (__cdecl *BurnHighCol)(INT32 r, INT32 g, INT32 b, INT32 i);
 
-// DBG-TEMP r0.344: PC/циклы CPU для отладки Toaplan. Объявляем вручную —
-// intf-хедеры тянут m68k_ICount, переименованный cps1_rename.sh (в host его нет).
-extern UINT32 SekGetPC(INT32 n);
-extern INT32 SekTotalCycles(INT32 nCPU);
-extern INT32 ZetTotalCycles(INT32 nCPU);
-extern INT32 m6805TotalCycles();
-// DBG-TEMP r0.349: рукопожатие тайто-протектора (Slap Fight/alcon) —
-// жив ли обмен main<->mcu.
-extern UINT8 from_main;
-extern UINT8 from_mcu;
-extern INT32 mcu_sent;
-extern INT32 main_sent;
-
 static UINT32 __cdecl host_high_col(INT32 r, INT32 g, INT32 b, INT32 i)
 {
     (void)i;
@@ -428,8 +415,10 @@ static void host_render_frame(void)
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
 
-    // Реальный кадр (из драйвера): NEO 304x224, CPS 384x224, Toaplan-гор 304x240,
-    // truxton2 — 240x320 портрет (после разворота g_rot кадр трактуем 320x240).
+    // Кадр из драйвера всегда «альбомный» W×H: NEO 304×224, CPS 384×224,
+    // Toaplan-гор 304×240. Для вертикальных Toaplan драйвер рисует сцену
+    // «лежащей» (строки кадра = вертикаль сцены, колонки = горизонталь),
+    // а g_rot ниже транспонирует её под портретную панель.
     int W = cols, H = rows;
     // Панель ПОРТРЕТНАЯ (600×1024 после физ. поворота). Вертикальную игру
     // выводим как на портретной панели: длинная ось (rows) идёт по вертикали,
@@ -445,25 +434,35 @@ static void host_render_frame(void)
         int px0 = (FWp - pw) / 2;      // по панельной горизонтали (600)
         int py0 = (FHp - ph) / 2;      // по панельной вертикали (1024)
 
-        // закрашиваем весь буфер чёрным
+        // закрашиваем весь буфер чёрным; поля по бокам остаются от заливки
         for (int y = 0; y < FB_H; y++) {
             uint32_t* drow = dst + (size_t)y * FB_W;
             for (int x = 0; x < FB_W; x++) drow[x] = 0;
         }
 
-        // транспонированная запись: панель (px,py) -> буфер (x=py, y=px)
-        for (int px = 0; px < FWp; px++) {
-            int gy = (int)(((int64_t)(px - px0) * cols) / pw);
-            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
+        // транспонированная запись: панель (px,py) -> буфер (x=py, y=px).
+        // Шаги 16.16 считаются ОДИН раз на кадр (по правилу r0.360: без
+        // делений/умножений int64 в пиксельном цикле). Порядок осей и область
+        // чтения не менялись — только убраны ~480k div64 на кадр у вертикалок.
+        uint32_t step_gy = ((uint32_t)cols << 16) / (uint32_t)pw;
+        uint32_t step_gx = ((uint32_t)rows << 16) / (uint32_t)ph;
+        uint32_t acc_gy = step_gy >> 1;
+        for (int px = px0; px < px0 + pw; px++) {
+            uint32_t gy = acc_gy >> 16;
+            if (gy >= (uint32_t)cols) gy = cols - 1;
+            uint32_t acc_gx = step_gx >> 1;
+            uint32_t* drow = dst + (size_t)px * FB_W;
             for (int py = py0; py < py0 + ph; py++) {
-                int gx = (int)(((int64_t)(py - py0) * rows) / ph);
-                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+                uint32_t gx = acc_gx >> 16;
+                if (gx >= (uint32_t)rows) gx = rows - 1;
                 uint16_t p = src[(size_t)gx * sstride + gy];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
                 uint32_t b = (p & 0x1F) << 3;
-                dst[(size_t)(px) * FB_W + py] = (r << 16) | (g << 8) | b;
+                drow[py] = (r << 16) | (g << 8) | b;
+                acc_gx += step_gx;
             }
+            acc_gy += step_gy;
         }
         return;
     }
@@ -861,33 +860,27 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_w = nBurnPitch >> 1;
         g_rot = 0;
 } else if (g_toa) {
-        // Toaplan, ширины:
-        //  - GP9001: буфер 320; горизонт показываем 304 (16 px правый overscan),
-        //    вертикали — нативные 240×320;
-        //  - Прочие платы (Slap Fight и др., generic tilemap): stride/кадр из
-        //    размеров драйвера.
+        // Toaplan: выводим ТОЧНО то, что рисует ядро — как на родном железе.
+        // Кадр всегда «альбомный» nw×nh: GP9001 и generic-платы рисуют буфер
+        // 320×240/280×240 без программной ротации (bToaRotateScreen=false);
+        // вертикальные игры ядро кладёт «боком» — так же, как в оригинальный
+        // аркадный монитор ДО физического поворота оператором. Наша панель
+        // стоит портретно ФИЗИЧЕСКИ, поэтому программное транспонирование НЕ
+        // нужно: обычный contain-рендер кадра как есть + поворот панели даёт
+        // ровную вертикальную/горизонтальную картинку (масштаб — по меньшей
+        // стороне панели 600, центр, чёрные поля), ничего не режется.
         INT32 fw = 0, fh = 0, vw = 0, vh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         BurnDrvGetVisibleSize(&vw, &vh);
-        INT32 thw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
-        int gp9001 = (thw == HARDWARE_TOAPLAN_RAIZING || thw == HARDWARE_TOAPLAN_68K_Zx80 ||
-                      thw == HARDWARE_TOAPLAN_68K_ONLY);
         int vert = (BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL) != 0;
-        if (gp9001) {
-            nBurnPitch = TOA_W * 2;                 // буфер GP9001 — всегда 320
-            if (vert) { g_frame_w = 240; g_frame_h = 320; }
-            else      { g_frame_w = 304; g_frame_h = 240; }
-        } else {
-            int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-            int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
-            nBurnPitch = nw * 2;
-            g_frame_w = nw;
-            g_frame_h = nh;
-        }
-        g_rot = (gp9001 && vert) ? 1 : 0;   // вертикали GP9001: выводим «как на портретной панели»
-                     // (вписывание в 600×1024, центр панели).
-        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d rot=%d\n",
-               game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
+        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        nBurnPitch = nw * 2;                   // stride копии BurnTransferCopy
+        g_frame_w = nw;                        // полный кадр ядра: без кропа (не 304),
+        g_frame_h = nh;                        // без свопов/транспонирования
+        g_rot = 0;
+        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d -> %dx%d pitch=%d rot=%d\n",
+               game, (int)fw, (int)fh, (int)vw, (int)vh, vert,
                g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
     } else {
         nBurnPitch = CPS1_W * 2;
@@ -925,29 +918,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     for (;;) {
         host_update_input();
         BurnDrvFrame();
-        // DBG-TEMP r0.344: для Toaplan показываем, крутится ли игра — PC 68K и
-        // счётчики циклов (если игра «есть, но ничего не происходит» — видно,
-        // стоит ли основной цикл/не бежит ли MCU).
-        if (g_toa) {
-            static unsigned dbg_toa_fr = 0;
-            if ((dbg_toa_fr++ % 120) == 0)
-                printf("DBG %s pc=%06X sek=%d zet=%d mcu=%d hs=%d/%d,%d/%d\n", game,
-                       (unsigned)SekGetPC(0), SekTotalCycles(0), ZetTotalCycles(0),
-                       m6805TotalCycles(), mcu_sent, main_sent, from_main, from_mcu);
-            // DBG-TEMP r0.359: чёрный экран — проверяем, что ЯДРО реально рисует
-            // в g_frame: % ненулевых пикселей (выборка каждые 97-й) и размеры.
-            static unsigned dbg_rnd_fr = 0;
-            if ((dbg_rnd_fr++ % 600) == 0) {
-                int w = nBurnPitch >> 1; if (w > CPS1_W) w = CPS1_W;
-                int h = g_frame_h;       if (h > 320) h = 320;
-                unsigned nz = 0, tot = 0;
-                for (int i = 0; i < w * h; i += 97)
-                    if (((uint16_t*)g_frame)[i]) nz++;
-                tot = (w * h + 96) / 97;
-                printf("RND %s nz=%u/%u w=%d h=%d rot=%d\n", game, nz, tot,
-                       w, h, g_rot);
-            }
-        }
         host_render_frame();
         fb_flush();
         emu_throttle();

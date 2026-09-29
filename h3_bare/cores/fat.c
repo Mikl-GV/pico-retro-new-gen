@@ -890,5 +890,9 @@ int fat_find(const char* dir, const char* name, fat_entry_t* out) {
 int fat_read_file(const fat_entry_t* f, uint32_t offset, uint8_t* buf, uint32_t len) {
     if (f->size == 0 || offset >= f->size) return 0;
     if (offset + len > f->size) len = f->size - offset;
-    return read_chain(f->first_cluster, offset, buf, len);
+    // r0.365 (H4 аудита): read_chain при ошибке SD возвращает «сколько успели»
+    // без признака обрыва — недопрочитанный файл выглядел как успех. Теперь
+    // неполное чтение — ошибка: -1, вызывающие могут не запускать ROM.
+    int r = read_chain(f->first_cluster, offset, buf, len);
+    return (r == (int)len) ? r : -1;
 }
