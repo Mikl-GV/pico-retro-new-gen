@@ -434,12 +434,14 @@ static void host_render_frame(void)
         if (img_w > FB_W) img_w = FB_W;
         int x0 = (FB_W - img_w) / 2;
         for (int dy = 0; dy < FB_H; dy++) {
-            int gy = (int)((dy * (int64_t)cols) / FB_H);       // колонка игры
-            if (gy > cols - 1) gy = cols - 1;
+            // +180° к прошлому варианту: игра приходила «вверх ногами и на 90°
+            // не в ту сторону», поэтому читаем строки/колонки в обратном порядке.
+            int gy = cols - 1 - (int)((dy * (int64_t)cols) / FB_H);       // колонка игры
+            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
             uint32_t* drow = dst + (size_t)dy * FB_W;
             for (int dx = 0; dx < img_w; dx++) {
-                int gx = (int)((dx * (int64_t)rows) / img_w);  // строка игры
-                if (gx > rows - 1) gx = rows - 1;
+                int gx = rows - 1 - (int)((dx * (int64_t)rows) / img_w);  // строка игры
+                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
                 uint16_t p = src[(size_t)gx * sstride + gy];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
