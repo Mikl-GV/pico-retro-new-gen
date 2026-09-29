@@ -916,6 +916,19 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
                 printf("DBG %s pc=%06X sek=%d zet=%d mcu=%d hs=%d/%d,%d/%d\n", game,
                        (unsigned)SekGetPC(0), SekTotalCycles(0), ZetTotalCycles(0),
                        m6805TotalCycles(), mcu_sent, main_sent, from_main, from_mcu);
+            // DBG-TEMP r0.359: чёрный экран — проверяем, что ЯДРО реально рисует
+            // в g_frame: % ненулевых пикселей (выборка каждые 97-й) и размеры.
+            static unsigned dbg_rnd_fr = 0;
+            if ((dbg_rnd_fr++ % 600) == 0) {
+                int w = nBurnPitch >> 1; if (w > CPS1_W) w = CPS1_W;
+                int h = g_frame_h;       if (h > 320) h = 320;
+                unsigned nz = 0, tot = 0;
+                for (int i = 0; i < w * h; i += 97)
+                    if (((uint16_t*)g_frame)[i]) nz++;
+                tot = (w * h + 96) / 97;
+                printf("RND %s nz=%u/%u w=%d h=%d rot=%d\n", game, nz, tot,
+                       w, h, g_rot);
+            }
         }
         host_render_frame();
         fb_flush();
