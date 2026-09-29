@@ -433,11 +433,15 @@ static void host_render_frame(void)
     int W = cols, H = rows;
     if (g_rot) { W = rows; H = cols; }
 
-    // ЕДИНЫЙ масштаб x2.5 для всех (5/2 в целых), центрирование, поля чёрные.
-    int vw = (W * 5) / 2;
-    int vh = (H * 5) / 2;
-    if (vw > FB_W) { vh = (int)(((int64_t)vh * FB_W) / vw); vw = FB_W; }
-    if (vh > FB_H) { vw = (int)(((int64_t)vw * FB_H) / vh); vh = FB_H; }
+    // «Вписать ПО РОДНОМУ разрешению»: один равномерный коэффициент для обеих
+    // осей по тому краю, который упирается в экран; второй край меньше —
+    // свободное место остаётся чёрными полями (центрируем).
+    int vw, vh;
+    if ((int64_t)W * FB_H > (int64_t)H * FB_W) {   // ширину лимитирует экран
+        vw = FB_W; vh = (int)(((int64_t)H * FB_W) / W);
+    } else {
+        vh = FB_H; vw = (int)(((int64_t)W * FB_H) / H);
+    }
     if (vw < 1) vw = 1;
     if (vh < 1) vh = 1;
     int x0 = (FB_W - vw) / 2;
