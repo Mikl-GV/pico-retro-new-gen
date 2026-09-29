@@ -118,6 +118,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_neogeo(rom, size, sel_name);
     else if (strcmp(sys_id, "toaplan") == 0)
         emu_run_toaplan(rom, size, sel_name);   // ROM-сет читает host (папка/zip)
+    else if (strcmp(sys_id, "fbneo") == 0)
+        emu_run_fbneo(rom, size, sel_name);     // общий FBNeo-корень
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -277,7 +279,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 // должны протекать в чужую игру).
                 cheats_reset();
 
-                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 || strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0) {
+                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 || strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 || strcmp(sys_id, "fbneo") == 0) {
                     // CPS-1: элемент = папка игры или zip-файл; ROM-сет
                     // (много файлов) читает сам host по имени. Единый ROM
                     // не грузим.

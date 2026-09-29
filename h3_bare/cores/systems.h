@@ -61,7 +61,7 @@ static const system_entry_t systems[] = {
     SYS_DIR("jaguar", "Atari Jaguar", "jaguar_roms", CONSOLE, PLANNED),
 
     // -- Аркадные автоматы --
-    SYS("galaxian",   "Galaxian / Frogger / Dig Dug",ARCADE,   PLANNED),
+    SYS("fbneo",      "FB Neo (Arcade)",              ARCADE,   READY),
     SYS("cps1",       "CPS-1 (Capcom)",               ARCADE,   READY),
     SYS("cps2",       "CPS-2 (Capcom)",               ARCADE,   READY),
     SYS("neogeo",     "Neo Geo MVS",                  ARCADE,   READY),

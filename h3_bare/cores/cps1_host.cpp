@@ -801,6 +801,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     printf("CPS: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
+    // Отладочная строка для проверки ядер: платформа (корень) + короткое имя
+    // рома + название системы драйвера из FBNeo.
+    printf("EMU: SYS=%s ROM=%s HW=%s\n", root + 1, game,
+           BurnDrvGetTextA(DRV_SYSTEM));
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
     } else if (g_toa) {
@@ -845,4 +849,11 @@ void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/toaplan", rom, size, rom_name);
+}
+
+void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    // Общий корень FBNeo: для любой игры, чей драйвер есть в driverlist
+    // (CPS-1/2, NEOGEO, Toaplan ныне; другие наборы довиваются позже).
+    run_cps("/roms/fbneo", rom, size, rom_name);
 }

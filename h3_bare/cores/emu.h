@@ -63,5 +63,6 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 #endif
