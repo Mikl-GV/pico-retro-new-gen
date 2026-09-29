@@ -443,24 +443,19 @@ static void host_render_frame(void)
     int y0 = (FB_H - view_h) / 2;
     const uint32_t BLACK = 0;
 
-    // Вертикалка (TATE): разворот на 90°, длинная ось игры (rows, 320) ->
-    // вся ширина экрана (FB_W) с СОХРАНЕНИЕМ пропорции: короткая ось (cols,
-    // 240) -> 240*FB_W/rows = 768, что выше 600 — лишнее режем ПО ЦЕНТРУ
-    // (по (768-600)/2 сверху и снизу). Центрируем по обеим осям.
-    // Направление: одна ось инвертирована (убираем зеркало); если снова
-    // зеркало — поменять местами инверсию gx/gy.
+    // Вертикалка (TATE): поворот на 90° ПО ЧАСОВОЙ (по текущему виду).
+    // Длинная ось игры (rows, 320) -> вертикаль экрана (600), короткая
+    // (cols, 240) -> ширина (1024). Экран заполняется целиком.
+    // Короткая ось инвертирована (убираем зеркало); если снова зеркально —
+    // снять "cols - 1 -" (или добавить к gx "rows - 1 -").
     if (g_rot) {
-        uint32_t inv = ((uint32_t)rows << 16) / (uint32_t)FB_W;     // source/dest
-        int img_h = (int)(((int64_t)cols * FB_W) / rows);           // 768
-        int y_off = (FB_H - img_h) / 2;                             // -84
         for (int dy = 0; dy < FB_H; dy++) {
+            int gx = (int)(((int64_t)dy * rows) / FB_H);
+            if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
             uint32_t* drow = dst + (size_t)dy * FB_W;
-            // короткая ось игры -> экранная Y (инвертирована против зеркала)
-            int gy = cols - 1 - (int)((((int64_t)dy - y_off) * inv) >> 16);
-            if (gy < 0 || gy >= cols) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; continue; }
             for (int dx = 0; dx < FB_W; dx++) {
-                int gx = (int)(((int64_t)dx * inv) >> 16);          // длинная ось -> X
-                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+                int gy = cols - 1 - (int)(((int64_t)dx * cols) / FB_W);
+                if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
                 uint16_t p = src[(size_t)gx * sstride + gy];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
