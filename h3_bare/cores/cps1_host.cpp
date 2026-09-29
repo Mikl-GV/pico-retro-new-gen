@@ -476,8 +476,10 @@ static void host_render_frame(void)
         uint32_t step_y = ((uint32_t)cols << 16) / (uint32_t)vh;
         uint32_t y_acc = step_y >> 1;
         for (int dy = 0; dy < vh; dy++) {
-            uint32_t gy = y_acc >> 16;
-            if (gy >= (uint32_t)cols) gy = cols - 1;
+            // r0.361: 180° + зеркало = вертикальное зеркало текущего — Y инверт.
+            uint32_t t = y_acc >> 16;
+            if (t >= (uint32_t)cols) t = cols - 1;
+            uint32_t gy = cols - 1 - t;
             uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
             uint16_t const* srow = src + (size_t)gy;
             for (int dx = 0; dx < vw; dx++) {
