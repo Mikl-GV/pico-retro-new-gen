@@ -420,9 +420,6 @@ static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
-    // Активная ширина кадра: NEOGEO-ядро само адресует строки как
-    // nNeoScreenWidth (304/320), CPS — 384, Toaplan — 320. Берём из nBurnPitch,
-    // который host выставляет по реальной ширине драйвера (см. run_cps).
     int cols = g_frame_w > 0 && g_frame_w <= CPS1_W ? g_frame_w : (nBurnPitch >> 1);
     if (cols <= 0 || cols > CPS1_W) cols = CPS1_W;
     int rows = g_frame_h;
@@ -431,43 +428,40 @@ static void host_render_frame(void)
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
 
-    // Единый масштаб «по высоте» (как в других эмуляторах): ширина картинки
-    // пропорциональна высоте — ВЕСЬ кадр виден, по бокам чёрные поля.
-    // Если по высоте картинка вышла бы шире экрана — вписываем по ширине.
-    int view_w = (int)(((int64_t)cols * FB_H) / rows);
-    int view_h = FB_H;
-    if (view_w > FB_W) { view_w = FB_W; view_h = (int)(((int64_t)rows * FB_W) / cols); }
-    if (view_w < 1) view_w = 1;
-    if (view_h < 1) view_h = 1;
-    int x0 = (FB_W - view_w) / 2;
-    int y0 = (FB_H - view_h) / 2;
-    const uint32_t BLACK = 0;
+    // РЕАЛЬНЫЙ кадр (из драйвера): NEO 304x224, CPS 384x224, Toaplan-гор 304x240,
+    // truxton2 — 240x320 портрет (после разворота g_rot кадр трактуем 320x240).
+    int W = cols, H = rows;
+    if (g_rot) { W = rows; H = cols; }
 
-    // Вертикалка (TATE): разворот на 90° — кадр становится rows(320) по ширине,
-    // cols(240) по высоте. РАВНОМЕРНЫЙ масштаб (обе оси одним коэффициентом):
-    // по высоте 600/240=2.5 -> 800x600, центрируем, поля тёмные. Если по высоте
-    // не влезает по ширине — вписываем по ширине с полями сверху/снизу.
+    // ЕДИНЫЙ масштаб x2.5 для всех (5/2 в целых), центрирование, поля чёрные.
+    int vw = (W * 5) / 2;
+    int vh = (H * 5) / 2;
+    if (vw > FB_W) { vh = (int)(((int64_t)vh * FB_W) / vw); vw = FB_W; }
+    if (vh > FB_H) { vw = (int)(((int64_t)vw * FB_H) / vh); vh = FB_H; }
+    if (vw < 1) vw = 1;
+    if (vh < 1) vh = 1;
+    int x0 = (FB_W - vw) / 2;
+    int y0 = (FB_H - vh) / 2;
+
+    // чёрные поля
+    for (int dy = 0; dy < FB_H; dy++) {
+        uint32_t* drow = dst + (size_t)dy * FB_W;
+        if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
+        else { for (int dx = 0; dx < x0; dx++) drow[dx] = 0;
+               for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
+    }
+
     if (g_rot) {
-        int vw = (int)(((int64_t)rows * FB_H) / cols);
-        int vh = FB_H;
-        if (vw > FB_W) { vw = FB_W; vh = (int)(((int64_t)cols * FB_W) / rows); }
-        int x0 = (FB_W - vw) / 2;
-        int y0 = (FB_H - vh) / 2;
-        for (int dy = 0; dy < FB_H; dy++) {
-            uint32_t* drow = dst + (size_t)dy * FB_W;
-            int gy;
-            if (dy < y0 || dy >= y0 + vh) {
-                for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0;
-                continue;
-            }
-            gy = (int)(((int64_t)(dy - y0) * cols) / vh);
-            for (int dx = 0; dx < FB_W; dx++) {
-                uint16_t p = 0;
-                if (dx >= x0 && dx < x0 + vw) {
-                    int gx = (int)(((int64_t)(dx - x0) * rows) / vw);
-                    if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
-                    p = src[(size_t)gx * sstride + gy];
-                }
+        // Вертикаль: после разворота длинная ось (rows=320) -> ширина кадра W,
+        // короткая (cols=240) -> высота H. Без инверсий.
+        for (int dy = 0; dy < vh; dy++) {
+            int gy = (int)(((int64_t)dy * cols) / vh);
+            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
+            uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
+            for (int dx = 0; dx < vw; dx++) {
+                int gx = (int)(((int64_t)dx * rows) / vw);
+                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+                uint16_t p = src[(size_t)gx * sstride + gy];
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
                 uint32_t b = (p & 0x1F) << 3;
@@ -477,43 +471,25 @@ static void host_render_frame(void)
         return;
     }
 
-    // Чёрные поля (весь экран, кроме картинки)
-    for (int dy = 0; dy < FB_H; dy++) {
-        uint32_t* drow = dst + (size_t)dy * FB_W;
-        if (dy < y0 || dy >= y0 + view_h) {
-            for (int dx = 0; dx < FB_W; dx++) drow[dx] = BLACK;
-        } else {
-            for (int dx = 0; dx < x0; dx++) drow[dx] = BLACK;
-            for (int dx = x0 + view_w; dx < FB_W; dx++) drow[dx] = BLACK;
-        }
-    }
-
-    // таблица X по ширине картинки
-    static uint16_t sx[1024];
-    uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)view_w;
-    uint32_t acc_x = step_x >> 1;
-    for (int dx = 0; dx < view_w; dx++) {
-        uint32_t cur = acc_x >> 16;
-        if (cur >= (uint32_t)cols) cur = (uint32_t)cols - 1;
-        sx[dx] = (uint16_t)cur;
-        acc_x += step_x;
-    }
-
-    uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)view_h;
-    uint32_t y_acc = step_y >> 1;
-    for (int dy = 0; dy < view_h; dy++) {
-        int syi = (int)(y_acc >> 16);
-        if (syi >= rows) syi = rows - 1;
-        const uint16_t* srow = src + (size_t)syi * sstride;
+    // обычный кадр: x2.5
+    for (int dy = 0; dy < vh; dy++) {
+        int sy = (int)(((int64_t)dy * rows) / vh);
+        if (sy < 0) sy = 0; else if (sy > rows - 1) sy = rows - 1;
+        const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
-        for (int dx = 0; dx < view_w; dx++) {
-            uint16_t p = srow[sx[dx]];
+        int sxo = -1, last_x = -1;
+        for (int dx = 0; dx < vw; dx++) {
+            int sx = (int)(((int64_t)dx * cols) / vw);
+            if (sx == last_x) { uint32_t* pr=drow+dx; uint16_t p=srow[sx];
+                pr[0] = (((p >> 11) & 0x1F) << 3) << 16 | (((p >> 5) & 0x3F) << 2) << 8 | ((p & 0x1F) << 3);
+                continue; }
+            last_x = sx;
+            uint16_t p = srow[sx];
             uint32_t r = ((p >> 11) & 0x1F) << 3;
             uint32_t g = ((p >> 5) & 0x3F) << 2;
             uint32_t b = (p & 0x1F) << 3;
             drow[dx] = (r << 16) | (g << 8) | b;
         }
-        y_acc += step_y;
     }
 }
 
@@ -893,8 +869,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             g_frame_w = nw;
             g_frame_h = nh;
         }
-        g_rot = 0;   // r0.355: поворот вертикалей отключён (был чёрный экран),
-                     // все игры идут обычным путём «вписать по высоте».
+        g_rot = (gp9001 && vert) ? 1 : 0;   // вертикали GP9001: разворот при выводе
         printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d rot=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
                g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
