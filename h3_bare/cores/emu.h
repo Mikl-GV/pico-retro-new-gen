@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 void emu_clear_fb(void);
+void snd_manifest(const char* sys, const char* cores);   // r0.385: звуковой манифест (лог)
 
 // Единая подготовка ПЕРЕД запуском любого эмулятора: сброс bump-пула ядровых
 // malloc + очистка EMU_FB и HDMI-кадра. Вызывать в начале каждого emu_run_*,
@@ -63,6 +64,8 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_cave(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_segasys(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 #endif

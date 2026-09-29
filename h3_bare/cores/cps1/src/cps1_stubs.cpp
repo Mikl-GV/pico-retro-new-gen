@@ -127,6 +127,18 @@ void TCHARToANSI(const char* in, char* out, int len) { (void)in; (void)len; if (
 INT32 ZipLoadOneFile(char* zipname, const char* filename, void** dest, int* bufsize)
 { (void)zipname; (void)filename; (void)dest; (void)bufsize; return 0; }
 
+// YM2413/YM2612 — настоящие ядра (snd/ym2413.c, ym2612.c + burn_*.cpp,
+// r0.383): стабов НЕТ, звук делается послойно.
+UINT8 DebugSnd_YM2413Initted = 0;
+UINT8 DebugSnd_YM2612Initted = 0;
+UINT8 DebugSnd_DACInitted = 0;
+UINT8 DebugSnd_SegaPCMInitted = 0;
+UINT8 DebugSnd_UPD7759Initted = 0;
+UINT8 DebugSnd_RF5C68Initted = 0;
+UINT8 DebugDev_8255PPIInitted = 0;
+UINT8 DebugCPU_I8039Initted = 0;
+extern "C" void BurnMD2612UpdateRequest() {}
+
 // ---- прочие запросы обновления (C++ linkage, как ожидают burn_sound.h) ----
 void BurnYM2608UpdateRequest() {}
 void BurnYM2610UpdateRequest() {}

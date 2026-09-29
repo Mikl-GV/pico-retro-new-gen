@@ -178,6 +178,38 @@ int fb_puts_s(int x, int y, const char* s, int scale, uint32_t color) {
     return x;
 }
 
+// --- Масштаб 1.5x (12px) — «немного крупнее» без целого 2x ----
+// Глиф 8x8 масштабируется чередованием 2/1 пиксель по обеим осям:
+// суммарно 12x12, шаг строки 15px ((8+2)*1.5).
+static const int s15_off[8] = { 0, 2, 3, 5, 6, 8, 9, 11 };
+static const int s15_len[8] = { 2, 1, 2, 1, 2, 1, 2, 1 };
+static void fb_putchar_s15(int x, int y, char c, uint32_t color) {
+    if (c < 0x20 || c > 0x7F) c = '.';
+    const uint8_t* glyph = font8x8[c - 0x20];
+    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
+        for (int col = 0; col < 8; col++) {
+            if (!(bits & (0x80 >> col))) continue;
+            for (int yy = 0; yy < s15_len[row]; yy++)
+                for (int xx = 0; xx < s15_len[col]; xx++) {
+                    int px = x + s15_off[col] + xx;
+                    int py = y + s15_off[row] + yy;
+                    if (px >= 0 && px < FB_W && py >= 0 && py < FB_H)
+                        fb[py * FB_W + px] = color;
+                }
+        }
+    }
+}
+int fb_puts_s15(int x, int y, const char* s, uint32_t color) {
+    while (*s) {
+        fb_putchar_s15(x, y, *s, color);
+        x += 15;
+        s++;
+    }
+    return x;
+}
+
 void fb_pixel(int x, int y, uint32_t color) {
     if (x < 0 || x >= FB_W || y < 0 || y >= FB_H) return;
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;

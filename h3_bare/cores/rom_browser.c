@@ -121,6 +121,10 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_neogeo(rom, size, sel_name);
     else if (strcmp(sys_id, "toaplan") == 0)
         emu_run_toaplan(rom, size, sel_name);   // ROM-сет читает host (папка/zip)
+    else if (strcmp(sys_id, "cave") == 0)
+        emu_run_cave(rom, size, sel_name);      // Cave 68K — /roms/cave (r0.383)
+    else if (strcmp(sys_id, "segasys") == 0)
+        emu_run_segasys(rom, size, sel_name);   // Sega System 16 — /roms/segasys (r0.383)
     else if (strcmp(sys_id, "fbneo") == 0)
         emu_run_fbneo(rom, size, sel_name);     // общий FBNeo-корень
     else {
@@ -282,10 +286,9 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 // должны протекать в чужую игру).
                 cheats_reset();
 
-                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 || strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 || strcmp(sys_id, "fbneo") == 0) {
-                    // CPS-1: элемент = папка игры или zip-файл; ROM-сет
-                    // (много файлов) читает сам host по имени. Единый ROM
-                    // не грузим.
+                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 || strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 || strcmp(sys_id, "fbneo") == 0 || strcmp(sys_id, "cave") == 0 || strcmp(sys_id, "segasys") == 0) {
+                    // Аркада (multi-file): элемент = папка игры или zip-файл;
+                    // ROM-сет читает сам host по имени. Единый ROM не грузим.
                     emu_clear_fb();
                     run_emulator(sys_id, NULL, 0, sel_name);
                     return;

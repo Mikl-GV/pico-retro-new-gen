@@ -13,6 +13,7 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t color);
 void fb_pixel(int x, int y, uint32_t color);
 void fb_draw_stars(void);
 int  fb_puts_s(int x, int y, const char* s, int scale, uint32_t color);
+int  fb_puts_s15(int x, int y, const char* s, uint32_t color);   // 12px (1.5x)
 void fb_text_center(const char* s, int y, int scale, uint32_t color);
 void fb_clear(void);
 void fb_flush(void);

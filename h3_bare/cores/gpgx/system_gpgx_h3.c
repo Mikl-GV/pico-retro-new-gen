@@ -306,6 +306,7 @@ void gpgx_stop(void) {
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     emu_prepare();
+    snd_manifest("megadrive", "ym2612 sn76496");
     if (gpgx_init_game(rom, size) != 1) {
         printf("GPGX: init failed\n");
         return;

@@ -688,6 +688,30 @@ static const struct {
       "CPS-1 (Capcom)",
       {"P1: Arrows + Z/X/C attack/jump","1/Enter = Start    5 = Coin","P2: WASD + J/K/L, 2/6","Pad: A/B/C,  X = Coin","ESC hold = exit",NULL}
     },
+    { "cps2",
+      "CPS-2 (Capcom)",
+      {"P1: Arrows + Z/X/C attack/jump","Q/E/R = weak/med/strong kick","1/Enter = Start    5 = Coin","P2: WASD + J/K/L, 2/6","Pad: A/B/C,  X = Coin","ESC hold = exit",NULL}
+    },
+    { "neogeo",
+      "Neo Geo MVS",
+      {"P1: Arrows + Z/X/C (A/B/C)","V = D-button    1/Enter = Start","5/S = Coin    P2: WASD + J/K/L","Pad: A/B/C,  X = Coin","ESC hold = exit",NULL}
+    },
+    { "toaplan",
+      "Toaplan + Cave (68K)",
+      {"P1: Arrows + Z/X/C   1 = Start","5 = Coin    P2: WASD + J/K/L","Played on portrait panel (600x1024)","Cave: donpachi/esprade/guwange...","ESC x3 = exit",NULL}
+    },
+    { "pce",
+      "PC Engine / TurboGrafx",
+      {"Z = Button I    X = Button II","S = Select    Enter = Run","ESC hold = exit",NULL}
+    },
+    { "zxspectrum",
+      "ZX Spectrum",
+      {"Keyboard emulation","Enter = Start BASIC / ROM","ESC hold = exit",NULL}
+    },
+    { "bk0010",
+      "BK-0010/0011M",
+      {"Keyboard emulation","Enter = Start machine / BASIC","ESC hold = exit",NULL}
+    },
     // r122: About по тап-иконке на TFT (не трогает HDMI)
     { "about",
       "MultiTool Retro",

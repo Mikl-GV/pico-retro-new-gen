@@ -10,7 +10,7 @@
 #define PHYS_W 1024
 #define PHYS_H 600
 
-#define ROW_H    18
+#define ROW_H    22
 #define TITLE_Y  30
 #define SEP_Y    62
 #define LIST_TOP 74
@@ -214,6 +214,9 @@ static void build_rows(void) {
     rows[row_count].item = -4;   // About
     rows[row_count].group = -1;
     row_count++;
+    rows[row_count].item = -5;   // Arcade ROMs (справочник)
+    rows[row_count].group = -1;
+    row_count++;
 }
 
 static int sel_row = 0;
@@ -253,22 +256,29 @@ static void render_menu(void) {
             // Settings
             int sel = (r == sel_row);
             uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
-            if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
-            fb_puts_s(60 + INDENT, y, "== Settings ==", 1, clr);
+            if (sel) fb_fill_rect(50, y - 3, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s15(60 + INDENT, y, "== Settings ==", clr);
             y += ROW_H;
         } else if (rows[r].item == -3) {
             // Help
             int sel = (r == sel_row);
             uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
-            if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
-            fb_puts_s(60 + INDENT, y, "== Help ==", 1, clr);
+            if (sel) fb_fill_rect(50, y - 3, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s15(60 + INDENT, y, "== Help ==", clr);
             y += ROW_H;
         } else if (rows[r].item == -4) {
             // About
             int sel = (r == sel_row);
             uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
-            if (sel) fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
-            fb_puts_s(60 + INDENT, y, "== About ==", 1, clr);
+            if (sel) fb_fill_rect(50, y - 3, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s15(60 + INDENT, y, "== About ==", clr);
+            y += ROW_H;
+        } else if (rows[r].item == -5) {
+            // Arcade ROM guide
+            int sel = (r == sel_row);
+            uint32_t clr = sel ? 0x00FFFF00 : 0x00AAAAAA;
+            if (sel) fb_fill_rect(50, y - 3, PHYS_W - 100, ROW_H, 0x00181818);
+            fb_puts_s15(60 + INDENT, y, "== Arcade ROMs (guide) ==", clr);
             y += ROW_H;
         } else if (rows[r].item < 0) {
             // заголовок группы
@@ -289,7 +299,7 @@ static void render_menu(void) {
             else
                 clr = sel ? 0x00888800 : 0x00666666;
             if (sel)
-                fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
+                fb_fill_rect(50, y - 3, PHYS_W - 100, ROW_H, 0x00181818);
             char buf[64];
             int n = strlen(g_items[i].name);
             if (n > 52) n = 52;
@@ -299,7 +309,7 @@ static void render_menu(void) {
                 strcat(buf, " [OK]");
             else if (g_items[i].status == STATUS_IN_PROGRESS)
                 strcat(buf, " [WIP]");
-            fb_puts_s(60 + INDENT, y, buf, 1, clr);
+            fb_puts_s15(60 + INDENT, y, buf, clr);
             y += ROW_H;
         }
     }
@@ -460,7 +470,7 @@ int menu_run(void) {
                     continue;
                 }
             }
-            if (item == -2 || item == -3 || item == -4 || item >= 0) {
+            if (item == -2 || item == -3 || item == -4 || item == -5 || item >= 0) {
                 // вход в подменю (Settings/Help/About/браузер ROM):
                 // ждём отпускания Enter и геймпада, чтобы зажатая кнопка
                 // не «доехала» и не сработала первым действием внутри.
@@ -647,17 +657,21 @@ void menu_about(void) {
     static const char* lines[] = {
         "MultiTool Retro v9.0",
         "Orange Pi Lite (Allwinner H3)",
-        "512 MB, HDMI 1024x600",
+        "512 MB, HDMI 1024x600 + SPI TFT",
         "Bare-metal, no OS",
         "",
-        "12 emulators ready:",
-        "Atari 2600/5200/7800",
-        "NES/Famicom (FCEUmm, 432 mappers)",
-        "SMS + Game Gear + MD (GPGX)",
-        "Game Boy/GBC, Atari Lynx",
-        "SNES / Super Famicom (Snes9x 2005)",
-        "Neo Geo Pocket / Color (RACE)",
-        "Atari Portfolio (builtin)",
+        "Systems ready:",
+        "Atari 2600 / 5200 / 7800, Lynx",
+        "NES/Famicom, SMS, Game Gear,",
+        "Mega Drive/Genesis, Game Boy/GBC,",
+        "Game Boy Advance, SNES",
+        "Neo Geo Pocket/Color, MSX, Coleco,",
+        "PC Engine/TurboGrafx, ZX Spectrum,",
+        "BK-0010/0011M, Atari Portfolio",
+        "",
+        "Arcade (FinalBurn Neo):",
+        "CPS-1 / CPS-2, NEOGEO/MVS,",
+        "Toaplan + Cave (68K)",
         "",
         "USB keyboard + UART input",
         "ROMs from SD (FAT32)",
@@ -672,7 +686,7 @@ void menu_about(void) {
         fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
 
         int line = 0;
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < 23; i++) {
             if (i == 0) fb_puts_s(80, 65 + line * 20, lines[i], 2, 0x00FFFFFF);
             else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
             line++;
@@ -680,6 +694,61 @@ void menu_about(void) {
         // r140: версия прошивки (g_fw_version из main.c)
         extern const char g_fw_version[];
         fb_puts_s(80, 65 + line * 20 + 6, g_fw_version, 1, 0x0000FFFF);
+
+        fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
+        fb_flush();
+
+        int k = input_wait();
+        if (k == 41 || k == 27) return;
+    }
+}
+
+// ---- Arcade ROM guide: где какие аркады лежат и что «вшито» ----
+void menu_arcade_guide(void) {
+    static const char* lines[] = {
+        "ARCADE ROM GUIDE",
+        "",
+        "/roms/cps1   - CPS-1 (Capcom) driverlist:",
+        "  sf2/kkod/1941/ghouls...+ all MAME sets",
+        "/roms/cps2   - CPS-2:",
+        "  sf2ce/xmvsf/mvc/ssf2t...+ all MAME sets",
+        "/roms/neogeo - NEOGEO/MVS (BIOS neogeo.zip):",
+        "  kof*/mslug*/samsho*/garou...+ 687 sets",
+        "",
+        "/roms/toaplan - Toaplan (68K):",
+        "  truxton zerowing outzone hellfire vimana",
+        "  fireshrk samesame demonwld rallybik",
+        "  batsugun truxton2 dogyuun fixeight grindstm",
+        "  vfive snowbro2 tekipaki pipibibs enmadaio",
+        "  mahoudai shippumd kbash2 bbakraid batrider",
+        "  twincobr fshark wardner ghox slapfigh tigerh",
+        "",
+        "/roms/cave - Cave (68K):",
+        "  donpachi ddonpach esprade guwange feversos",
+        "  uopoko korokoro gaia agallet sailormn",
+        "  pwrinst2 mazinger hotdogst metmqstr",
+        "",
+        "/roms/segasys - Sega System 16:",
+        "  shinobi, golden axe, altered beast,",
+        "  fantasy zone, alien storm, shadow dancer",
+        "",
+        "Folder name = MAME/FBNeo short name;",
+        "ROM = folder or <name>.zip in /roms/<sys>/",
+        "Protection: alcon/tigerh (M6805) no waves",
+    };
+
+    for (;;) {
+        fb_clear();
+        fb_puts_s(60, 15, "Arcade ROMs", 2, 0x00FF0000);
+        fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
+
+        int line = 0;
+        for (int i = 0; i < 28; i++) {
+            fb_puts_s(80, 65 + line * 18, lines[i], 1, 0x00FFFFFF);
+            line++;
+        }
+        extern const char g_fw_version[];
+        fb_puts_s(80, 65 + line * 18 + 4, g_fw_version, 1, 0x0000FFFF);
 
         fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
         fb_flush();

@@ -91,7 +91,7 @@ Vectrex: стик = 4 направления (аналог), кнопки 1/2/3/
 
 | Группа | Системы |
 |--------|---------|
-| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, **MSX / MSX2 (Ямаха YIS-503II)**, **ColecoVision**, **PC Engine / TurboGrafx (HuCard)**, **ZX Spectrum (Fuse)**, **БК-0010/0011М**, Atari Portfolio, **Capcom CPS-1 / CPS-2, NEOGEO / MVS, Toaplan (~145 игр) — порт FinalBurn Neo** |
+| ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, **MSX / MSX2 (Ямаха YIS-503II)**, **ColecoVision**, **PC Engine / TurboGrafx (HuCard)**, **ZX Spectrum (Fuse)**, **БК-0010/0011М**, Atari Portfolio, **Capcom CPS-1 / CPS-2, NEOGEO / MVS, Toaplan, Cave (68K), Sega System 16 — порт FinalBurn Neo** |
 | 🚧 Отложено | GCE Vectrex (статус READY, но картинка не собирается — см. ROADMAP) |
 | 🚧 В работе | Toaplan alcon / Slap Fight — рукопожатие протектора M6805 живо, но волны не спавнятся (оставлено как есть, см. docs/TOAPLAN-HANDOFF.md) |
 | 🔲 План | прочие аркады, Радио-86РК, MS 1504 |

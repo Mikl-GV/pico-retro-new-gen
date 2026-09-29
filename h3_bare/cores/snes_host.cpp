@@ -310,6 +310,7 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
     (void)rom_name;
     printf("SNES: starting...\n");
     emu_prepare();
+    snd_manifest("snes", "spc700 dsp");
     if (snes_init_game(rom, size) != 1) {
         printf("SNES: init failed\n");
         return;

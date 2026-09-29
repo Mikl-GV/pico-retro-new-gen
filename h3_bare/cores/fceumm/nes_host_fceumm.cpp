@@ -263,6 +263,7 @@ extern "C" void fceumm_stop(void) {
 extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     emu_prepare();
+    snd_manifest("nes", "apu 2a03");
     if (fceumm_init_game(rom, size) != 1) {
         printf("NES(FCEUmm): init failed\n");
         return;

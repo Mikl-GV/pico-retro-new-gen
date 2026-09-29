@@ -164,8 +164,8 @@ static bool host_environment(unsigned cmd, void* data)
 // ---- точка входа из rom_browser (emu.h) ----
 void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    (void)rom_name;
     emu_prepare();
+    snd_manifest("pce", "psg");
 
     if (!rom || size == 0 || size > 4096u * 1024u) {
         printf("PCE: no rom\n");

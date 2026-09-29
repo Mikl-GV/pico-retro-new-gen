@@ -58,15 +58,15 @@ static const system_entry_t systems[] = {
     SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),
     SYS("megadrive",  "Sega Mega Drive / Genesis",     CONSOLE,  READY),
     SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, READY),
-    SYS_DIR("jaguar", "Atari Jaguar", "jaguar_roms", CONSOLE, PLANNED),
 
     // -- Аркадные автоматы --
     SYS("fbneo",      "FB Neo (Arcade)",              ARCADE,   READY),
     SYS("cps1",       "CPS-1 (Capcom)",               ARCADE,   READY),
     SYS("cps2",       "CPS-2 (Capcom)",               ARCADE,   READY),
     SYS("neogeo",     "Neo Geo MVS",                  ARCADE,   READY),
-    SYS("segasys",    "Sega System 1/2/16",           ARCADE,   PLANNED),
+    SYS("segasys",    "Sega System 16",                ARCADE,   READY),
     SYS("toaplan",    "Toaplan 1 (68K games)",        ARCADE,   READY),
+    SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
 
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

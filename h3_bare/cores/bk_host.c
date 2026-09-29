@@ -245,23 +245,8 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    // r0.259: валидация файла программы БК перед загрузкой. Формат —
-    // [addr 2B LE][len 2B LE][данные…]. Файлы не в этом формате (оверлеи
-    // .OVL/.GMS/.DAT и пр.), попавшие в браузер, грузить нельзя — гость
-    // прыгает в мусор и «виснет». Битые — сразу выход в меню без загрузки.
-    if (rom && size) {
-        if (size < 4) {
-            printf("BK: not a loadable program (size=%u < 4)\n", (unsigned)size);
-            return;
-        }
-        unsigned addr = rom[0] | (rom[1] << 8);
-        if (addr & 1) {   // нечётный адрес — заведомо не программа (PDP-11 слова)
-            printf("BK: bad program address %06o — not a loadable .BIN\n", addr);
-            return;
-        }
-    }
-
     emu_prepare();
+    snd_manifest("bk0010", "none");
 
     bk_retro_set_environment(host_environment);
     bk_retro_set_video_refresh(host_video);

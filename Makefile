@@ -389,6 +389,8 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
 	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
 	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
+	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 \
+	-I$(CPS1)/src/burn/drv/sega \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -404,9 +406,9 @@ CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
 
 CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
-CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705
-CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
-CPS1_SNDC  := fm ym2151 fmopl
+CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705 mc8123 8255ppi
+CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples dac segapcm upd7759 burn_ym2413 burn_ym2612 rf5c68
+CPS1_SNDC  := fm ym2151 fmopl ym2413 ym2612
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
 
 OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))
@@ -463,6 +465,12 @@ $(BUILD)/c1sc_ym2151.o: $(CPS1)/src/burn/snd/ym2151.c | $(BUILD)
 $(BUILD)/c1sc_fmopl.o: $(CPS1)/src/burn/snd/fmopl.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1sc_ym2413.o: $(CPS1)/src/burn/snd/ym2413.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1sc_ym2612.o: $(CPS1)/src/burn/snd/ym2612.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 
 # добор звука из FBNeo (r0.305): ym3812 (Toaplan), upd7759 (NeoGeo), msm5232
 # не в текущем линке (msm5232 требует C++ tr1); правило c1sd_ не нужно.
@@ -498,9 +506,14 @@ $(BUILD)/c1x_neostubs.o: $(CPS1)/src/neostubs.cpp | $(BUILD)
 # NEOGEO / Cave / Toaplan (добор из FBNeo, r0.305): те же флаги CPS, свои
 # каталоги и префиксы объектов (c1n_/c1v_/c1t_).
 CPS1_NEO := $(notdir $(wildcard $(CPS1)/src/burn/drv/neogeo/*.cpp))
-CPS1_CAV := $(notdir $(wildcard $(CPS1)/src/burn/drv/cave/*.cpp))
 OBJ += $(addprefix $(BUILD)/c1n_,$(patsubst %.cpp,%.o,$(CPS1_NEO)))
-# Cave отключён (требует sh4/NEC CPU) — add later.
+# Cave (r0.377): ранняя эра на 68K (Donpachi/DoDonPachi/Esp.Ra.De/Guwange/Feveron).
+# SH-4 (d_cv1k и CV-1000) и поздно-Cave НЕ включаем.
+CPS1_CAV := cave cave_palette cave_sprite cave_tile \
+            d_donpachi d_dodonpachi d_esprade d_guwange d_feversos \
+            d_uopoko d_korokoro d_gaia d_sailormn d_pwrinst2 d_mazinger \
+            d_hotdogst d_metmqstr
+OBJ += $(addprefix $(BUILD)/c1v_,$(addsuffix .o,$(CPS1_CAV)))
 # Toaplan (r0.330): подключены 68K/Z80-игры (truxton2, batrider, bgaregga,
 # snowbro2, tekipaki, pipibibs, enmadaio, mahoudai, shippumd, kbash2, bbakraid,
 # sstriker и клоны). NEC V25/V30-игры (batsugun, twincobr, wardner…) — позже.
@@ -519,6 +532,12 @@ $(BUILD)/c1v_%.o: $(CPS1)/src/burn/drv/cave/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1t_%.o: $(CPS1)/src/burn/drv/toaplan/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Sega System 16 (r0.383, V2 семейств): 16A/16B драйвер + график/ран/FD1094.
+CPS1_SEG  := d_sys16a d_sys16b d_sys18 sys16_gfx sys16_run sys16_fd1094 genesis_vid fd1094 fd1094_intf sega_315_5195 fd1089 sega_stubs
+OBJ += $(addprefix $(BUILD)/c1sg_,$(addsuffix .o,$(CPS1_SEG)))
+$(BUILD)/c1sg_%.o: $(CPS1)/src/burn/drv/sega/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).
@@ -545,7 +564,8 @@ $(BUILD)/c1nec_v25.o: $(CPS1)/src/cpu/nec/v25.cpp | $(BUILD)
 # Z180 (ghox), M6805 (slapfght). z180 — те же op-файлы #include в z180.cpp,
 # m6805 — 6805ops.c #include в m6805.cpp; тайто-протектор — корезис taito_m68705.
 OBJ += $(BUILD)/c1cpu_tms32010.o $(BUILD)/c1cpu_z180_intf.o $(BUILD)/c1cpu_z180.o \
-       $(BUILD)/c1cpu_m6805_intf.o $(BUILD)/c1cpu_m6805.o
+       $(BUILD)/c1cpu_m6805_intf.o $(BUILD)/c1cpu_m6805.o $(BUILD)/c1cpu_mcs51.o \
+       $(BUILD)/c1cpu_i8039.o
 $(BUILD)/c1cpu_tms32010.o: $(CPS1)/src/cpu/tms32010/tms32010.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
@@ -559,6 +579,12 @@ $(BUILD)/c1cpu_m6805_intf.o: $(CPS1)/src/cpu/m6805_intf.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1cpu_m6805.o: $(CPS1)/src/cpu/m6805/m6805.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_mcs51.o: $(CPS1)/src/cpu/i8051/mcs51.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_i8039.o: $(CPS1)/src/cpu/i8039/i8039.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)

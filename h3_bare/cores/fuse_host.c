@@ -225,6 +225,10 @@ static bool host_environment(unsigned cmd, void* data)
         if (v && v->key) {
             if (strcmp(v->key, "fuse_machine") == 0) {
                 v->value = g_model;
+            } else if (strcmp(v->key, "fuse_auto_machine") == 0) {
+                // r0.382: дефолт ядра — disabled; из-за него 128K-снапшоты
+                // (.z80 v3/.sna 128K) не грузились на выбранной 48K-модели.
+                v->value = "enabled";
             } else {
                 // r0.226: дефолт из списка ядра (не ""), см. core_default_for
                 v->value = core_default_for(v->key);
@@ -271,6 +275,7 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    snd_manifest("zxspectrum", "ay8912");
 
     g_rom = rom; g_rom_size = size;
     if (rom_name && rom_name[0]) {

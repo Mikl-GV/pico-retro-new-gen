@@ -155,6 +155,14 @@ void emu_prepare(void) {
     fb_flush();
 }
 
+// r0.385: манифест звуковых ядер системы — только лог для послойного
+// подключения звука. Сами ядра линкуются, звук НЕ задействован.
+void snd_manifest(const char* sys, const char* cores) {
+    if (!sys) sys = "?";
+    if (!cores || !cores[0]) cores = "(none)";
+    printf("SND %s cores: %s (sound OFF)\n", sys, cores);
+}
+
 // ---- throttle ----
 #include "settings.h"
 static uint32_t emu_ts0 = 0;
@@ -289,6 +297,7 @@ extern void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_na
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("a7800", "psg pokey");
     if (a7800_init_game(rom, size) != 1) {
         printf("A7800: init failed\n"); return;
     }
@@ -305,6 +314,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("a5200", "pokey");
     if (a5200_init_game(rom, size) != 1) {
         printf("A5200: init failed\n"); return;
     }
@@ -324,6 +334,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("sms", "psg sn76496");
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }
@@ -360,6 +371,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("a2600", "tia");
     atari2600_init(rom, size);
     atari2600_set_difficulty(a2600_diff_expert);
     printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
@@ -376,6 +388,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("portfolio", "none");
     if (portfolio_init_game(rom, size) != 1) {
         printf("Portfolio: init failed\n"); return;
     }
@@ -396,6 +409,7 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("gameboy", "apu");
     if (gb_init_game(rom, size) != 1) {
         printf("GameBoy: init failed\n"); return;
     }
@@ -416,6 +430,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("gba", "psg");
     if (gba_init_game(rom, size) != 1) {
         printf("GBA: init failed\n"); return;
     }
@@ -436,6 +451,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("lynx", "none");
     if (lynx_init_game(rom, size) != 1) {
         printf("Lynx: init failed\n"); return;
     }
@@ -456,6 +472,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    snd_manifest("ngp", "none");
     if (ngp_init_game(rom, size) != 1) {
         printf("NGP: init failed\n"); return;
     }

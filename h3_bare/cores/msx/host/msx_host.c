@@ -356,6 +356,7 @@ void msx_stop(void) {
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     emu_prepare();
+    snd_manifest("msx", "psg ay8910 scc");
     memset(image_buffer, 0, sizeof(image_buffer));   // свой кадр-буфер не чистится emu_prepare
     if (!msx_init_game(rom, size)) {
         printf("MSX: init failed\n");

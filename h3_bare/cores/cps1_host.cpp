@@ -519,6 +519,8 @@ static void host_render_frame(void)
 // из BurnDrvGetInputInfo: у toaplan-драйверов входные массивы static в файлах).
 static int g_neo_input = 0;   // активен NEOGEO-драйвер (см. run_cps)
 static int g_toa      = 0;    // активен Toaplan-драйвер
+static int g_cave     = 0;    // активен Cave-драйвер (ранняя 68K-эра, r0.377)
+static int g_sega     = 0;    // активен Sega System 16 (r0.383)
 
 struct HostPad {
     unsigned up, down, left, right, a, b, c, d, start, select, kick1, kick2, kick3;
@@ -691,8 +693,8 @@ static void host_update_input(void)
         if (p2.select) NeoButton2[1] = 1;   // P2 Coin
     }
 
-    // --- Toaplan: пишем по указателям входа драйвера ---
-    if (g_toa)
+    // --- Toaplan/Cave/Sega: пишем по указателям входа драйвера ---
+    if (g_toa || g_cave || g_sega)
         toa_write_input(&p1, &p2);
 }
 
@@ -856,6 +858,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     g_neo_input = (hw == HARDWARE_SNK_NEOGEO || hw == HARDWARE_SNK_MVS ||
                    hw == HARDWARE_SNK_NEOCD  || hw == HARDWARE_SNK_DEDICATED_PCB) ? 1 : 0;
     g_toa = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_TOAPLAN) ? 1 : 0;
+    g_cave = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_CAVE) ? 1 : 0;
+    g_sega = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_SEGA) ? 1 : 0;
     if (g_neo_input) {
         // NEOGEO: ядро адресует строки как nNeoScreenWidth (304/320).
         extern INT32 nNeoScreenWidth;
@@ -886,6 +890,32 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d -> %dx%d pitch=%d rot=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert,
                g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
+    } else if (g_cave) {
+        // Cave (ранняя 68K-эра): как Toaplan — кадр ядра как есть (без кропа/
+        // транспонирования), вертикали ставит физический поворот панели.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
+        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        nBurnPitch = nw * 2;
+        g_frame_w = nw;
+        g_frame_h = nh;
+        g_rot = 0;
+        printf("CAV: game %s full=%dx%d -> %dx%d pitch=%d rot=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
+    } else if (g_sega) {
+        // Sega System 16 (r0.383): 68K+Z80, кадр как есть (rot=0); панель
+        // физически портретная — вертикалки (скроллеры) встают сами.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
+        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        nBurnPitch = nw * 2;
+        g_frame_w = nw;
+        g_frame_h = nh;
+        g_rot = 0;
+        printf("S16: game %s full=%dx%d -> %dx%d pitch=%d rot=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -895,7 +925,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
     // без очистки при повторном входе виден мусор предыдущей игры.
     memset(g_frame, 0, sizeof(g_frame));
-    if (g_toa)
+    if (g_toa || g_cave || g_sega)
         toa_input_cache();   // входные массивы драйвера — static в его файле
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
@@ -903,6 +933,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     printf("CPS: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
+    // r0.385: манифест звуковых ядер сборки (звук НЕ задействован — только
+    // инвентаризация чипов для дальнейшего послойного подключения).
+    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=stub, sound OFF)\n",
+           game);
     // Отладочная строка для проверки ядер: платформа (корень) + короткое имя
     // рома + название системы драйвера из FBNeo.
     printf("EMU: SYS=%s ROM=%s HW=%s\n", root + 1, game,
@@ -911,6 +945,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
     } else if (g_toa) {
         printf("TOA keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
+    } else if (g_cave) {
+        printf("CAV keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
+    } else if (g_sega) {
+        printf("S16 keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -951,6 +989,18 @@ void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/toaplan", rom, size, rom_name);
+}
+
+// Cave (68K, ранняя эра) — отдельный корень /roms/cave (r0.383).
+void emu_run_cave(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/cave", rom, size, rom_name);
+}
+
+// Sega System 16 — корень /roms/segasys (r0.383, V2 семейств).
+void emu_run_segasys(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/segasys", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)
