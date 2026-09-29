@@ -805,17 +805,34 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = CPS1_H;
         g_frame_w = nBurnPitch >> 1;
 } else if (g_toa) {
-        // Toaplan: пока возвращаем прежнее поведение (питч буфера 320 как у
-        // GP9001-плат; вертикалки П_GetFullSize уже свопает ¬— рамка из него).
-        // Slap Fight (M6805/GenericTilemap) требует отдельной настройки — см. V=.
+        // Toaplan, ширины:
+        //  - GP9001 (raizing/toaplan2/toaplan3): буфер 320-й. Горизонтальные
+        //    показываем 304 (правые 16 px — служебный overscan, из-за него
+        //    была «полоса из одной строки» и съедало буквы HUD); вертикальные
+        //    — нативные 240×320.
+        //  - Прочие платы (Slap Fight/M6805, generic tilemap через
+        //    BurnTransferCopy): stride/кадр = размеры драйвера (GetFullSize).
         INT32 fw = 0, fh = 0, vw = 0, vh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         BurnDrvGetVisibleSize(&vw, &vh);
-        nBurnPitch = TOA_W * 2;
-        g_frame_w = (fw > 0 && fw <= TOA_W) ? (int)fw : TOA_W;
-        g_frame_h = (fh > 0 && fh <= 400)   ? (int)fh : TOA_H;
-        printf("TOA: game %s full=%dx%d visible=%dx%d pitch=%d\n", game,
-               (int)fw, (int)fh, (int)vw, (int)vh, (int)nBurnPitch);
+        INT32 thw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
+        int gp9001 = (thw == HARDWARE_TOAPLAN_RAIZING || thw == HARDWARE_TOAPLAN_68K_Zx80 ||
+                      thw == HARDWARE_TOAPLAN_68K_ONLY);
+        int vert = (BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL) != 0;
+        if (gp9001) {
+            nBurnPitch = TOA_W * 2;                 // буфер GP9001 — всегда 320
+            if (vert) { g_frame_w = 240; g_frame_h = 320; }
+            else      { g_frame_w = 304; g_frame_h = 240; }
+        } else {
+            int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
+            int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+            nBurnPitch = nw * 2;
+            g_frame_w = nw;
+            g_frame_h = nh;
+        }
+        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
+               g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
