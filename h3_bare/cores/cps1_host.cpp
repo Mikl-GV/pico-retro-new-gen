@@ -49,6 +49,13 @@ extern INT32 nBurnBpp;
 // Вендорный filler возвращает ~0 (белый) — без host-функции экран белый.
 extern UINT32 (__cdecl *BurnHighCol)(INT32 r, INT32 g, INT32 b, INT32 i);
 
+// DBG-TEMP r0.344: PC/циклы CPU для отладки Toaplan. Объявляем вручную —
+// intf-хедеры тянут m68k_ICount, переименованный cps1_rename.sh (в host его нет).
+extern UINT32 SekGetPC(INT32 n);
+extern INT32 SekTotalCycles(INT32 nCPU);
+extern INT32 ZetTotalCycles(INT32 nCPU);
+extern INT32 m6805TotalCycles();
+
 static UINT32 __cdecl host_high_col(INT32 r, INT32 g, INT32 b, INT32 i)
 {
     (void)i;
@@ -844,6 +851,16 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     for (;;) {
         host_update_input();
         BurnDrvFrame();
+        // DBG-TEMP r0.344: для Toaplan показываем, крутится ли игра — PC 68K и
+        // счётчики циклов (если игра «есть, но ничего не происходит» — видно,
+        // стоит ли основной цикл/не бежит ли MCU).
+        if (g_toa) {
+            static unsigned dbg_toa_fr = 0;
+            if ((dbg_toa_fr++ % 120) == 0)
+                printf("DBG %s pc=%06X sek=%d zet=%d mcu=%d\n", game,
+                       (unsigned)SekGetPC(0), SekTotalCycles(0), ZetTotalCycles(0),
+                       m6805TotalCycles());
+        }
         host_render_frame();
         fb_flush();
         emu_throttle();
