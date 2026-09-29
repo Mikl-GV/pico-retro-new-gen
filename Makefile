@@ -386,7 +386,7 @@ CPS1 := $(TOP)h3_bare/cores/cps1
 CPS1_ZLIB := $(TOP)h3_bare/cores/fuse/zlib
 CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
-	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 \
+	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -402,9 +402,9 @@ CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
 
 CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
-CPS1_DEV   := eeprom i2ceeprom timekpr
+CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples
-CPS1_SNDC  := ay8910 fm ym2151
+CPS1_SNDC  := ay8910 fm ym2151 fmopl
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
 
 OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))
@@ -415,7 +415,7 @@ OBJ += $(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC)))
 OBJ += $(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80)))
 OBJ += $(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o
 OBJ += $(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o
-OBJ += $(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/cps1_host.o
+OBJ += $(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
 
 # Только объекты CPS-1 (для отладки цели cps1-obj)
 CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
@@ -426,7 +426,7 @@ CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
 	$(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80))) \
 	$(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o \
 	$(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o \
-	$(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/cps1_host.o
+	$(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
 
 HOSTCC ?= gcc
 $(BUILD)/m68kmake: $(CPS1)/src/cpu/m68k/m68kmake.c | $(BUILD)
@@ -449,6 +449,25 @@ $(BUILD)/c1s_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # C-файлы звука (fm.c — ОБЯЗАТЕЛЬНО как C, иначе YM* имена C++)
 $(BUILD)/c1sc_%.o: $(CPS1)/src/burn/snd/%.c | $(BUILD)
+$(BUILD)/c1sc_ay8910.o: $(CPS1)/src/burn/snd/ay8910.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1sc_fm.o: $(CPS1)/src/burn/snd/fm.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1sc_ym2151.o: $(CPS1)/src/burn/snd/ym2151.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1sc_fmopl.o: $(CPS1)/src/burn/snd/fmopl.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+
+# добор звука из FBNeo (r0.305): ym3812 (Toaplan), upd7759 (NeoGeo), msm5232
+CPS1_SND2 := burn_ym3812 upd7759 msm5232
+# c1sd (upd7759/ym3812/msm5232) — не в текущем линке: msm5232 требует C++ tr1
+$(BUILD)/c1sd_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Musashi CPU (C). m68kcpu/m68kdasm подключm68kops.h — ждём генерации.
@@ -456,6 +475,7 @@ $(BUILD)/c1m_%.o: $(CPS1)/src/cpu/m68k/%.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1m_m68kcpu.o: $(BUILD)/m68kops.h
+$(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
 $(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
 $(BUILD)/c1m_m68kops.o: $(BUILD)/m68kops.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
@@ -475,7 +495,28 @@ $(BUILD)/c1x_stubs.o: $(CPS1)/src/cps1_stubs.cpp | $(BUILD)
 $(BUILD)/c1x_netg.o: $(CPS1)/src/cps1_netg.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1x_neostubs.o: $(CPS1)/src/neostubs.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # host-слой (C++: с burnint.h и joyprocess, как вендор; без переименований)
+
+# NEOGEO / Cave / Toaplan (добор из FBNeo, r0.305): те же флаги CPS, свои
+# каталоги и префиксы объектов (c1n_/c1v_/c1t_).
+CPS1_NEO := $(notdir $(wildcard $(CPS1)/src/burn/drv/neogeo/*.cpp))
+CPS1_CAV := $(notdir $(wildcard $(CPS1)/src/burn/drv/cave/*.cpp))
+CPS1_TP  := $(notdir $(wildcard $(CPS1)/src/burn/drv/toaplan/*.cpp))
+OBJ += $(addprefix $(BUILD)/c1n_,$(patsubst %.cpp,%.o,$(CPS1_NEO)))
+# OBJ cave отключён (требует sh4/NEC CPU) — CPP: add later
+# OBJ toaplan отключён (требует nec) — add later
+$(BUILD)/c1n_%.o: $(CPS1)/src/burn/drv/neogeo/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1v_%.o: $(CPS1)/src/burn/drv/cave/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1t_%.o: $(CPS1)/src/burn/drv/toaplan/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@ $<
 .PHONY: cps1-obj

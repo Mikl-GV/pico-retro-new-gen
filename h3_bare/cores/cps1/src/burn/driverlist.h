@@ -1,8 +1,6 @@
 #ifndef CPS1_DRIVERLIST_H
 #define CPS1_DRIVERLIST_H
-// Список драйверов CPS (все из drv/capcom/d_cps1.cpp + d_cps2.cpp, родители+клоны).
-// Сгенерирован: grep '^struct BurnDriver BurnDrvCps' d_cps1.cpp d_cps2.cpp | sort -u
-// Секция CPS-1:
+// Драйверы: CPS-1 + CPS-2 + NEOGEO (реальные, из собранных объектов).
 extern struct BurnDriver BurnDrvCps1941;
 extern struct BurnDriver BurnDrvCps1941j;
 extern struct BurnDriver BurnDrvCps1941r1;
@@ -430,7 +428,6 @@ extern struct BurnDriver BurnDrvCpsWofu;
 extern struct BurnDriver BurnDrvCpsWofwp;
 extern struct BurnDriver BurnDrvCpsWofzl;
 extern struct BurnDriver BurnDrvCpsWonder3;
-// Секция CPS-2:
 extern struct BurnDriver BurnDrvCps1944;
 extern struct BurnDriver BurnDrvCps1944ad;
 extern struct BurnDriver BurnDrvCps1944d;
@@ -808,6 +805,693 @@ extern struct BurnDriver BurnDrvCpsXmvsfu;
 extern struct BurnDriver BurnDrvCpsXmvsfu1d;
 extern struct BurnDriver BurnDrvCpsXmvsfur1;
 extern struct BurnDriver BurnDrvCpsXmvsfur2;
+extern struct BurnDriver BurnDrv3Countb;
+extern struct BurnDriver BurnDrv3Countba;
+extern struct BurnDriver BurnDrv4play;
+extern struct BurnDriver BurnDrvAbyssali;
+extern struct BurnDriver BurnDrvAdkw;
+extern struct BurnDriver BurnDrvAlpham2;
+extern struct BurnDriver BurnDrvAlpham2p;
+extern struct BurnDriver BurnDrvAndrodun;
+extern struct BurnDriver BurnDrvAodk;
+extern struct BurnDriver BurnDrvAof;
+extern struct BurnDriver BurnDrvAof2;
+extern struct BurnDriver BurnDrvAof2a;
+extern struct BurnDriver BurnDrvAof2bh;
+extern struct BurnDriver BurnDrvAof2bhs;
+extern struct BurnDriver BurnDrvAof3;
+extern struct BurnDriver BurnDrvAof3bh;
+extern struct BurnDriver BurnDrvAof3k;
+extern struct BurnDriver BurnDrvAofbr;
+extern struct BurnDriver BurnDrvB2b;
+extern struct BurnDriver BurnDrvB2b2;
+extern struct BurnDriver BurnDrvBadapple;
+extern struct BurnDriver BurnDrvBakatono;
+extern struct BurnDriver BurnDrvBangbead;
+extern struct BurnDriver BurnDrvBangbedp;
+extern struct BurnDriver BurnDrvBb2020;
+extern struct BurnDriver BurnDrvBb2020cd;
+extern struct BurnDriver BurnDrvBba2020;
+extern struct BurnDriver BurnDrvBbh2020;
+extern struct BurnDriver BurnDrvBdudes;
+extern struct BurnDriver BurnDrvBeast;
+extern struct BurnDriver BurnDrvBjourney;
+extern struct BurnDriver BurnDrvBjourneyh;
+extern struct BurnDriver BurnDrvBlazstar;
+extern struct BurnDriver BurnDrvBlazstarcm;
+extern struct BurnDriver BurnDrvBonusstage;
+extern struct BurnDriver BurnDrvBpanicdx;
+extern struct BurnDriver BurnDrvBreakers;
+extern struct BurnDriver BurnDrvBreakrev;
+extern struct BurnDriver BurnDrvBreakrevbh;
+extern struct BurnDriver BurnDrvBrkrevext;
+extern struct BurnDriver BurnDrvBrkrevjq;
+extern struct BurnDriver BurnDrvBstars;
+extern struct BurnDriver BurnDrvBstars2;
+extern struct BurnDriver BurnDrvBstarsh;
+extern struct BurnDriver BurnDrvBurningf;
+extern struct BurnDriver BurnDrvBurningfh;
+extern struct BurnDriver BurnDrvBurningfp;
+extern struct BurnDriver BurnDrvBurningfpa;
+extern struct BurnDriver BurnDrvBurningfpb;
+extern struct BurnDriver BurnDrvCabalng;
+extern struct BurnDriver BurnDrvCakefght;
+extern struct BurnDriver BurnDrvCaptainBarrel;
+extern struct BurnDriver BurnDrvCnbe;
+extern struct BurnDriver BurnDrvCnbe2018;
+extern struct BurnDriver BurnDrvCndi;
+extern struct BurnDriver BurnDrvColumnsn;
+extern struct BurnDriver BurnDrvCphd;
+extern struct BurnDriver BurnDrvCrswd2bl;
+extern struct BurnDriver BurnDrvCrswd2blp;
+extern struct BurnDriver BurnDrvCrsword;
+extern struct BurnDriver BurnDrvCt2k3sa;
+extern struct BurnDriver BurnDrvCt2k3sp;
+extern struct BurnDriver BurnDrvCthd2003;
+extern struct BurnDriver BurnDrvCthd2k3a;
+extern struct BurnDriver BurnDrvCtomaday;
+extern struct BurnDriver BurnDrvCyberlip;
+extern struct BurnDriver BurnDrvCyborgForce;
+extern struct BurnDriver BurnDrvDiggerma;
+extern struct BurnDriver BurnDrvDlastbd2e;
+extern struct BurnDriver BurnDrvDlastbd2i;
+extern struct BurnDriver BurnDrvDlastbd2p;
+extern struct BurnDriver BurnDrvDoubldrsp;
+extern struct BurnDriver BurnDrvDoubled1;
+extern struct BurnDriver BurnDrvDoubledp;
+extern struct BurnDriver BurnDrvDoubledr;
+extern struct BurnDriver BurnDrvDoubledrbh;
+extern struct BurnDriver BurnDrvDoubledt;
+extern struct BurnDriver BurnDrvDragonsh;
+extern struct BurnDriver BurnDrvDucki;
+extern struct BurnDriver BurnDrvDwi;
+extern struct BurnDriver BurnDrvDwia;
+extern struct BurnDriver BurnDrvEightman;
+extern struct BurnDriver BurnDrvFatFury1;
+extern struct BurnDriver BurnDrvFatfursp;
+extern struct BurnDriver BurnDrvFatfurspa;
+extern struct BurnDriver BurnDrvFatfury2;
+extern struct BurnDriver BurnDrvFatfury2a;
+extern struct BurnDriver BurnDrvFatfury3;
+extern struct BurnDriver BurnDrvFatfury3a;
+extern struct BurnDriver BurnDrvFbfrenzy;
+extern struct BurnDriver BurnDrvFfurspbs;
+extern struct BurnDriver BurnDrvFfurspbt;
+extern struct BurnDriver BurnDrvFfury1bs;
+extern struct BurnDriver BurnDrvFfury2es;
+extern struct BurnDriver BurnDrvFfury3bs;
+extern struct BurnDriver BurnDrvFfury3eh;
+extern struct BurnDriver BurnDrvFightfev;
+extern struct BurnDriver BurnDrvFightfeva;
+extern struct BurnDriver BurnDrvFlapchck;
+extern struct BurnDriver BurnDrvFlipshot;
+extern struct BurnDriver BurnDrvFoodfight;
+extern struct BurnDriver BurnDrvFroman2b;
+extern struct BurnDriver BurnDrvFroman2bp;
+extern struct BurnDriver BurnDrvFswords;
+extern struct BurnDriver BurnDrvGalaxianng;
+extern struct BurnDriver BurnDrvGalaxyfg;
+extern struct BurnDriver BurnDrvGalaxyfg03;
+extern struct BurnDriver BurnDrvGanryu;
+extern struct BurnDriver BurnDrvGarou;
+extern struct BurnDriver BurnDrvGaroubl;
+extern struct BurnDriver BurnDrvGaroubs;
+extern struct BurnDriver BurnDrvGarouh;
+extern struct BurnDriver BurnDrvGarouha;
+extern struct BurnDriver BurnDrvGaroujq;
+extern struct BurnDriver BurnDrvGaroup;
+extern struct BurnDriver BurnDrvGhostbi;
+extern struct BurnDriver BurnDrvGhostlop;
+extern struct BurnDriver BurnDrvGoalx3;
+extern struct BurnDriver BurnDrvGoldnaxeng;
+extern struct BurnDriver BurnDrvGowcaiet;
+extern struct BurnDriver BurnDrvGowcaizr;
+extern struct BurnDriver BurnDrvGpilots;
+extern struct BurnDriver BurnDrvGpilotsh;
+extern struct BurnDriver BurnDrvGpilotsp;
+extern struct BurnDriver BurnDrvGururin;
+extern struct BurnDriver BurnDrvHalozero;
+extern struct BurnDriver BurnDrvHorekidb3;
+extern struct BurnDriver BurnDrvHypernoid;
+extern struct BurnDriver BurnDrvInthehunt;
+extern struct BurnDriver BurnDrvIronclad;
+extern struct BurnDriver BurnDrvIronclado;
+extern struct BurnDriver BurnDrvIrrmaze;
+extern struct BurnDriver BurnDrvJanshin;
+extern struct BurnDriver BurnDrvJockeygp;
+extern struct BurnDriver BurnDrvJockeygpa;
+extern struct BurnDriver BurnDrvJoyjoy;
+extern struct BurnDriver BurnDrvKabukijq;
+extern struct BurnDriver BurnDrvKabukikl;
+extern struct BurnDriver BurnDrvKabukiklb;
+extern struct BurnDriver BurnDrvKarnovng;
+extern struct BurnDriver BurnDrvKarnovr;
+extern struct BurnDriver BurnDrvKarnovre;
+extern struct BurnDriver BurnDrvKf10thep;
+extern struct BurnDriver BurnDrvKf10thuo;
+extern struct BurnDriver BurnDrvKf10thup;
+extern struct BurnDriver BurnDrvKf2k1bh;
+extern struct BurnDriver BurnDrvKf2k1pkz;
+extern struct BurnDriver BurnDrvKf2k1pla;
+extern struct BurnDriver BurnDrvKf2k1pls;
+extern struct BurnDriver BurnDrvKf2k1ult;
+extern struct BurnDriver BurnDrvKf2k23rd;
+extern struct BurnDriver BurnDrvKf2k2mix;
+extern struct BurnDriver BurnDrvKf2k2mp;
+extern struct BurnDriver BurnDrvKf2k2mp2;
+extern struct BurnDriver BurnDrvKf2k2mp3;
+extern struct BurnDriver BurnDrvKf2k2mpl;
+extern struct BurnDriver BurnDrvKf2k2p17;
+extern struct BurnDriver BurnDrvKf2k2pl;
+extern struct BurnDriver BurnDrvKf2k2pla;
+extern struct BurnDriver BurnDrvKf2k2plb;
+extern struct BurnDriver BurnDrvKf2k2plc;
+extern struct BurnDriver BurnDrvKf2k2plh;
+extern struct BurnDriver BurnDrvKf2k2pls;
+extern struct BurnDriver BurnDrvKf2k2ps2re;
+extern struct BurnDriver BurnDrvKf2k3bl;
+extern struct BurnDriver BurnDrvKf2k3bla;
+extern struct BurnDriver BurnDrvKf2k3p2s;
+extern struct BurnDriver BurnDrvKf2k3pcb;
+extern struct BurnDriver BurnDrvKf2k3pl;
+extern struct BurnDriver BurnDrvKf2k3ps2;
+extern struct BurnDriver BurnDrvKf2k3upl;
+extern struct BurnDriver BurnDrvKf2k4pls;
+extern struct BurnDriver BurnDrvKf2k5uni;
+extern struct BurnDriver BurnDrvKizuna;
+extern struct BurnDriver BurnDrvKnightsch;
+extern struct BurnDriver BurnDrvKof10th;
+extern struct BurnDriver BurnDrvKof10thd;
+extern struct BurnDriver BurnDrvKof2000;
+extern struct BurnDriver BurnDrvKof2000bc;
+extern struct BurnDriver BurnDrvKof2000n;
+extern struct BurnDriver BurnDrvKof2000t;
+extern struct BurnDriver BurnDrvKof2001;
+extern struct BurnDriver BurnDrvKof2001h;
+extern struct BurnDriver BurnDrvKof2002;
+extern struct BurnDriver BurnDrvKof2002b;
+extern struct BurnDriver BurnDrvKof2002m;
+extern struct BurnDriver BurnDrvKof2002t;
+extern struct BurnDriver BurnDrvKof2003;
+extern struct BurnDriver BurnDrvKof2003h;
+extern struct BurnDriver BurnDrvKof2003t;
+extern struct BurnDriver BurnDrvKof2k1bs;
+extern struct BurnDriver BurnDrvKof2k1fd;
+extern struct BurnDriver BurnDrvKof2k1rp;
+extern struct BurnDriver BurnDrvKof2k1ru;
+extern struct BurnDriver BurnDrvKof2k2br;
+extern struct BurnDriver BurnDrvKof2k2fd;
+extern struct BurnDriver BurnDrvKof2k2jq;
+extern struct BurnDriver BurnDrvKof2k2ly;
+extern struct BurnDriver BurnDrvKof2k2omg;
+extern struct BurnDriver BurnDrvKof2k2omg8;
+extern struct BurnDriver BurnDrvKof2k2omg9;
+extern struct BurnDriver BurnDrvKof2k2omg9b;
+extern struct BurnDriver BurnDrvKof2k2ru;
+extern struct BurnDriver BurnDrvKof2k2ts;
+extern struct BurnDriver BurnDrvKof2k3br;
+extern struct BurnDriver BurnDrvKof2k3fd;
+extern struct BurnDriver BurnDrvKof2k4se;
+extern struct BurnDriver BurnDrvKof2kfd;
+extern struct BurnDriver BurnDrvKof2kotc;
+extern struct BurnDriver BurnDrvKof2kpls;
+extern struct BurnDriver BurnDrvKof2kps2;
+extern struct BurnDriver BurnDrvKof2ksp;
+extern struct BurnDriver BurnDrvKof2kxxx;
+extern struct BurnDriver BurnDrvKof94;
+extern struct BurnDriver BurnDrvKof94br;
+extern struct BurnDriver BurnDrvKof94bs;
+extern struct BurnDriver BurnDrvKof94nr2;
+extern struct BurnDriver BurnDrvKof94rz;
+extern struct BurnDriver BurnDrvKof94te;
+extern struct BurnDriver BurnDrvKof95;
+extern struct BurnDriver BurnDrvKof95a;
+extern struct BurnDriver BurnDrvKof95b;
+extern struct BurnDriver BurnDrvKof95bs;
+extern struct BurnDriver BurnDrvKof95h;
+extern struct BurnDriver BurnDrvKof95jq;
+extern struct BurnDriver BurnDrvKof95sp;
+extern struct BurnDriver BurnDrvKof95sr3;
+extern struct BurnDriver BurnDrvKof96;
+extern struct BurnDriver BurnDrvKof96a;
+extern struct BurnDriver BurnDrvKof96ae;
+extern struct BurnDriver BurnDrvKof96cn;
+extern struct BurnDriver BurnDrvKof96ep;
+extern struct BurnDriver BurnDrvKof96h;
+extern struct BurnDriver BurnDrvKof96pls;
+extern struct BurnDriver BurnDrvKof96r;
+extern struct BurnDriver BurnDrvKof96rp;
+extern struct BurnDriver BurnDrvKof96rss;
+extern struct BurnDriver BurnDrvKof97;
+extern struct BurnDriver BurnDrvKof97ae;
+extern struct BurnDriver BurnDrvKof97bs;
+extern struct BurnDriver BurnDrvKof97bt;
+extern struct BurnDriver BurnDrvKof97cb;
+extern struct BurnDriver BurnDrvKof97cbt;
+extern struct BurnDriver BurnDrvKof97ce;
+extern struct BurnDriver BurnDrvKof97cn;
+extern struct BurnDriver BurnDrvKof97eb;
+extern struct BurnDriver BurnDrvKof97evf;
+extern struct BurnDriver BurnDrvKof97evn;
+extern struct BurnDriver BurnDrvKof97h;
+extern struct BurnDriver BurnDrvKof97inv;
+extern struct BurnDriver BurnDrvKof97k;
+extern struct BurnDriver BurnDrvKof97m;
+extern struct BurnDriver BurnDrvKof97oro;
+extern struct BurnDriver BurnDrvKof97pla;
+extern struct BurnDriver BurnDrvKof97plc;
+extern struct BurnDriver BurnDrvKof97plh;
+extern struct BurnDriver BurnDrvKof97pls;
+extern struct BurnDriver BurnDrvKof97pm;
+extern struct BurnDriver BurnDrvKof97ps;
+extern struct BurnDriver BurnDrvKof97rc;
+extern struct BurnDriver BurnDrvKof97rm;
+extern struct BurnDriver BurnDrvKof97sp;
+extern struct BurnDriver BurnDrvKof97st;
+extern struct BurnDriver BurnDrvKof97t;
+extern struct BurnDriver BurnDrvKof97ts;
+extern struct BurnDriver BurnDrvKof97ubp;
+extern struct BurnDriver BurnDrvKof97xt;
+extern struct BurnDriver BurnDrvKof98;
+extern struct BurnDriver BurnDrvKof98a;
+extern struct BurnDriver BurnDrvKof98ae;
+extern struct BurnDriver BurnDrvKof98bc2k2;
+extern struct BurnDriver BurnDrvKof98bc2nd;
+extern struct BurnDriver BurnDrvKof98bsc;
+extern struct BurnDriver BurnDrvKof98cb;
+extern struct BurnDriver BurnDrvKof98cp;
+extern struct BurnDriver BurnDrvKof98eckg;
+extern struct BurnDriver BurnDrvKof98evo;
+extern struct BurnDriver BurnDrvKof98h;
+extern struct BurnDriver BurnDrvKof98k;
+extern struct BurnDriver BurnDrvKof98ka;
+extern struct BurnDriver BurnDrvKof98mix;
+extern struct BurnDriver BurnDrvKof98pfe;
+extern struct BurnDriver BurnDrvKof98plc;
+extern struct BurnDriver BurnDrvKof98rat;
+extern struct BurnDriver BurnDrvKof98ult;
+extern struct BurnDriver BurnDrvKof99;
+extern struct BurnDriver BurnDrvKof99ae;
+extern struct BurnDriver BurnDrvKof99cb;
+extern struct BurnDriver BurnDrvKof99e;
+extern struct BurnDriver BurnDrvKof99eur;
+extern struct BurnDriver BurnDrvKof99fd;
+extern struct BurnDriver BurnDrvKof99h;
+extern struct BurnDriver BurnDrvKof99jh;
+extern struct BurnDriver BurnDrvKof99jq;
+extern struct BurnDriver BurnDrvKof99k;
+extern struct BurnDriver BurnDrvKof99ka;
+extern struct BurnDriver BurnDrvKof99p;
+extern struct BurnDriver BurnDrvKof99pls;
+extern struct BurnDriver BurnDrvKof99rp;
+extern struct BurnDriver BurnDrvKof99sk;
+extern struct BurnDriver BurnDrvKof99sr;
+extern struct BurnDriver BurnDrvKof99t;
+extern struct BurnDriver BurnDrvKog;
+extern struct BurnDriver BurnDrvKogplus;
+extern struct BurnDriver BurnDrvKotm;
+extern struct BurnDriver BurnDrvKotm2;
+extern struct BurnDriver BurnDrvKotm2a;
+extern struct BurnDriver BurnDrvKotm2p;
+extern struct BurnDriver BurnDrvKotmh;
+extern struct BurnDriver BurnDrvLans2004;
+extern struct BurnDriver BurnDrvLastbd2b;
+extern struct BurnDriver BurnDrvLastbd2t;
+extern struct BurnDriver BurnDrvLastblad;
+extern struct BurnDriver BurnDrvLastblada;
+extern struct BurnDriver BurnDrvLastbladh;
+extern struct BurnDriver BurnDrvLastbld2;
+extern struct BurnDriver BurnDrvLastbldi;
+extern struct BurnDriver BurnDrvLastbldp;
+extern struct BurnDriver BurnDrvLastblsp;
+extern struct BurnDriver BurnDrvLasthope;
+extern struct BurnDriver BurnDrvLasthopepb;
+extern struct BurnDriver BurnDrvLastsold;
+extern struct BurnDriver BurnDrvLbowling;
+extern struct BurnDriver BurnDrvLegendos;
+extern struct BurnDriver BurnDrvLhcdb;
+extern struct BurnDriver BurnDrvLooptris;
+extern struct BurnDriver BurnDrvLooptrsp;
+extern struct BurnDriver BurnDrvLresort;
+extern struct BurnDriver BurnDrvLresortp;
+extern struct BurnDriver BurnDrvLtorb;
+extern struct BurnDriver BurnDrvMSlug2;
+extern struct BurnDriver BurnDrvMSlug2t;
+extern struct BurnDriver BurnDrvMSlugx;
+extern struct BurnDriver BurnDrvMagdrop2;
+extern struct BurnDriver BurnDrvMagdrop3;
+extern struct BurnDriver BurnDrvMagdrop3bh;
+extern struct BurnDriver BurnDrvMagdrop3te;
+extern struct BurnDriver BurnDrvMaglord;
+extern struct BurnDriver BurnDrvMaglordacfh;
+extern struct BurnDriver BurnDrvMaglordfacfh;
+extern struct BurnDriver BurnDrvMaglordh;
+extern struct BurnDriver BurnDrvMahretsu;
+extern struct BurnDriver BurnDrvMarukodq;
+extern struct BurnDriver BurnDrvMatrim;
+extern struct BurnDriver BurnDrvMatrimbh;
+extern struct BurnDriver BurnDrvMatrimbl;
+extern struct BurnDriver BurnDrvMiexchng;
+extern struct BurnDriver BurnDrvMinasan;
+extern struct BurnDriver BurnDrvMoshougi;
+extern struct BurnDriver BurnDrvMs21v2;
+extern struct BurnDriver BurnDrvMs31v2;
+extern struct BurnDriver BurnDrvMs3dbpls;
+extern struct BurnDriver BurnDrvMs41v2;
+extern struct BurnDriver BurnDrvMs4plus;
+extern struct BurnDriver BurnDrvMs51v2;
+extern struct BurnDriver BurnDrvMs5esr;
+extern struct BurnDriver BurnDrvMs5pcb;
+extern struct BurnDriver BurnDrvMs5plus;
+extern struct BurnDriver BurnDrvMs5plush;
+extern struct BurnDriver BurnDrvMs5sgf;
+extern struct BurnDriver BurnDrvMslug;
+extern struct BurnDriver BurnDrvMslug1v2;
+extern struct BurnDriver BurnDrvMslug2ct;
+extern struct BurnDriver BurnDrvMslug2dd;
+extern struct BurnDriver BurnDrvMslug2dg;
+extern struct BurnDriver BurnDrvMslug2eg;
+extern struct BurnDriver BurnDrvMslug2fm;
+extern struct BurnDriver BurnDrvMslug2p;
+extern struct BurnDriver BurnDrvMslug2r;
+extern struct BurnDriver BurnDrvMslug2unity;
+extern struct BurnDriver BurnDrvMslug3;
+extern struct BurnDriver BurnDrvMslug3a;
+extern struct BurnDriver BurnDrvMslug3b6;
+extern struct BurnDriver BurnDrvMslug3c;
+extern struct BurnDriver BurnDrvMslug3cq;
+extern struct BurnDriver BurnDrvMslug3cqi;
+extern struct BurnDriver BurnDrvMslug3cqt;
+extern struct BurnDriver BurnDrvMslug3cqz;
+extern struct BurnDriver BurnDrvMslug3dd;
+extern struct BurnDriver BurnDrvMslug3eb;
+extern struct BurnDriver BurnDrvMslug3fd;
+extern struct BurnDriver BurnDrvMslug3g;
+extern struct BurnDriver BurnDrvMslug3gw;
+extern struct BurnDriver BurnDrvMslug3h;
+extern struct BurnDriver BurnDrvMslug3i;
+extern struct BurnDriver BurnDrvMslug3ki;
+extern struct BurnDriver BurnDrvMslug3lw;
+extern struct BurnDriver BurnDrvMslug3ps;
+extern struct BurnDriver BurnDrvMslug3sc;
+extern struct BurnDriver BurnDrvMslug3sd;
+extern struct BurnDriver BurnDrvMslug3se;
+extern struct BurnDriver BurnDrvMslug3unity;
+extern struct BurnDriver BurnDrvMslug3v;
+extern struct BurnDriver BurnDrvMslug3x;
+extern struct BurnDriver BurnDrvMslug3zh;
+extern struct BurnDriver BurnDrvMslug4;
+extern struct BurnDriver BurnDrvMslug4a;
+extern struct BurnDriver BurnDrvMslug4ar;
+extern struct BurnDriver BurnDrvMslug4c;
+extern struct BurnDriver BurnDrvMslug4cqi;
+extern struct BurnDriver BurnDrvMslug4dd;
+extern struct BurnDriver BurnDrvMslug4dg;
+extern struct BurnDriver BurnDrvMslug4fd;
+extern struct BurnDriver BurnDrvMslug4h;
+extern struct BurnDriver BurnDrvMslug4ki;
+extern struct BurnDriver BurnDrvMslug4lq;
+extern struct BurnDriver BurnDrvMslug4lw;
+extern struct BurnDriver BurnDrvMslug4q;
+extern struct BurnDriver BurnDrvMslug4unity;
+extern struct BurnDriver BurnDrvMslug5;
+extern struct BurnDriver BurnDrvMslug5ae;
+extern struct BurnDriver BurnDrvMslug5ar;
+extern struct BurnDriver BurnDrvMslug5b;
+extern struct BurnDriver BurnDrvMslug5b2;
+extern struct BurnDriver BurnDrvMslug5bs;
+extern struct BurnDriver BurnDrvMslug5c;
+extern struct BurnDriver BurnDrvMslug5cqi;
+extern struct BurnDriver BurnDrvMslug5db;
+extern struct BurnDriver BurnDrvMslug5dd;
+extern struct BurnDriver BurnDrvMslug5dg;
+extern struct BurnDriver BurnDrvMslug5es;
+extern struct BurnDriver BurnDrvMslug5ex;
+extern struct BurnDriver BurnDrvMslug5f;
+extern struct BurnDriver BurnDrvMslug5fd;
+extern struct BurnDriver BurnDrvMslug5h;
+extern struct BurnDriver BurnDrvMslug5ki;
+extern struct BurnDriver BurnDrvMslug5mg;
+extern struct BurnDriver BurnDrvMslug5nd;
+extern struct BurnDriver BurnDrvMslug5sc;
+extern struct BurnDriver BurnDrvMslug5sg;
+extern struct BurnDriver BurnDrvMslug5unity;
+extern struct BurnDriver BurnDrvMslug5w;
+extern struct BurnDriver BurnDrvMslug5x;
+extern struct BurnDriver BurnDrvMslug5zh;
+extern struct BurnDriver BurnDrvMslugdg;
+extern struct BurnDriver BurnDrvMslugdyf2;
+extern struct BurnDriver BurnDrvMslugfc1;
+extern struct BurnDriver BurnDrvMslugfc2;
+extern struct BurnDriver BurnDrvMslugfs;
+extern struct BurnDriver BurnDrvMslugqy;
+extern struct BurnDriver BurnDrvMslugunity;
+extern struct BurnDriver BurnDrvMslugx2r;
+extern struct BurnDriver BurnDrvMslugxc1;
+extern struct BurnDriver BurnDrvMslugxc2;
+extern struct BurnDriver BurnDrvMslugxcq;
+extern struct BurnDriver BurnDrvMslugxdd;
+extern struct BurnDriver BurnDrvMslugxdg;
+extern struct BurnDriver BurnDrvMslugxeb;
+extern struct BurnDriver BurnDrvMslugxfs;
+extern struct BurnDriver BurnDrvMslugxif;
+extern struct BurnDriver BurnDrvMslugxlb;
+extern struct BurnDriver BurnDrvMslugxsc;
+extern struct BurnDriver BurnDrvMslugxsv;
+extern struct BurnDriver BurnDrvMslugxunity;
+extern struct BurnDriver BurnDrvMslugxxb;
+extern struct BurnDriver BurnDrvMslugxxr;
+extern struct BurnDriver BurnDrvMsqyfc1;
+extern struct BurnDriver BurnDrvMsx1v2;
+extern struct BurnDriver BurnDrvMsx2r1v2;
+extern struct BurnDriver BurnDrvMsx2reb;
+extern struct BurnDriver BurnDrvMsxsrf;
+extern struct BurnDriver BurnDrvMutnat;
+extern struct BurnDriver BurnDrvNam1975;
+extern struct BurnDriver BurnDrvNblktiger;
+extern struct BurnDriver BurnDrvNcombat;
+extern struct BurnDriver BurnDrvNcombath;
+extern struct BurnDriver BurnDrvNcommand;
+extern struct BurnDriver BurnDrvNeo2048;
+extern struct BurnDriver BurnDrvNeo2500;
+extern struct BurnDriver BurnDrvNeo3ddmo;
+extern struct BurnDriver BurnDrvNeoGeo;
+extern struct BurnDriver BurnDrvNeoGeoMVS;
+extern struct BurnDriver BurnDrvNeobombe;
+extern struct BurnDriver BurnDrvNeocdz;
+extern struct BurnDriver BurnDrvNeocstlv;
+extern struct BurnDriver BurnDrvNeocup98;
+extern struct BurnDriver BurnDrvNeodemo;
+extern struct BurnDriver BurnDrvNeodrift;
+extern struct BurnDriver BurnDrvNeogalag;
+extern struct BurnDriver BurnDrvNeogalaga;
+extern struct BurnDriver BurnDrvNeomrdo;
+extern struct BurnDriver BurnDrvNeonopon;
+extern struct BurnDriver BurnDrvNeopang;
+extern struct BurnDriver BurnDrvNeopong;
+extern struct BurnDriver BurnDrvNeoponga;
+extern struct BurnDriver BurnDrvNeoprimo;
+extern struct BurnDriver BurnDrvNeotet;
+extern struct BurnDriver BurnDrvNeothndr;
+extern struct BurnDriver BurnDrvNeotris;
+extern struct BurnDriver BurnDrvNeoww2;
+extern struct BurnDriver BurnDrvNgcdtdd0;
+extern struct BurnDriver BurnDrvNgem2k;
+extern struct BurnDriver BurnDrvNgfrog;
+extern struct BurnDriver BurnDrvNgftdemo;
+extern struct BurnDriver BurnDrvNgmontst;
+extern struct BurnDriver BurnDrvNinjamas;
+extern struct BurnDriver BurnDrvNinjamasha;
+extern struct BurnDriver BurnDrvNitd;
+extern struct BurnDriver BurnDrvNitdbl;
+extern struct BurnDriver BurnDrvNsmb;
+extern struct BurnDriver BurnDrvOvertop;
+extern struct BurnDriver BurnDrvPanicbom;
+extern struct BurnDriver BurnDrvPbobbl2n;
+extern struct BurnDriver BurnDrvPbobblen;
+extern struct BurnDriver BurnDrvPbobblenb;
+extern struct BurnDriver BurnDrvPgoal;
+extern struct BurnDriver BurnDrvPnyaa;
+extern struct BurnDriver BurnDrvPnyaaa;
+extern struct BurnDriver BurnDrvPoknight;
+extern struct BurnDriver BurnDrvPopbounc;
+extern struct BurnDriver BurnDrvPreisle2;
+extern struct BurnDriver BurnDrvProneon;
+extern struct BurnDriver BurnDrvPspikes2;
+extern struct BurnDriver BurnDrvPulstar;
+extern struct BurnDriver BurnDrvPulstara;
+extern struct BurnDriver BurnDrvPuzzldpr;
+extern struct BurnDriver BurnDrvPuzzledp;
+extern struct BurnDriver BurnDrvQuizdai2;
+extern struct BurnDriver BurnDrvQuizdais;
+extern struct BurnDriver BurnDrvQuizdaisk;
+extern struct BurnDriver BurnDrvQuizkof;
+extern struct BurnDriver BurnDrvQuizkofk;
+extern struct BurnDriver BurnDrvRagnagrd;
+extern struct BurnDriver BurnDrvRallych;
+extern struct BurnDriver BurnDrvRbff1;
+extern struct BurnDriver BurnDrvRbff1a;
+extern struct BurnDriver BurnDrvRbff1k;
+extern struct BurnDriver BurnDrvRbff1ka;
+extern struct BurnDriver BurnDrvRbff2;
+extern struct BurnDriver BurnDrvRbff2bs;
+extern struct BurnDriver BurnDrvRbff2h;
+extern struct BurnDriver BurnDrvRbff2k;
+extern struct BurnDriver BurnDrvRbffspbs;
+extern struct BurnDriver BurnDrvRbffspec;
+extern struct BurnDriver BurnDrvRbffspeck;
+extern struct BurnDriver BurnDrvRickdangdx;
+extern struct BurnDriver BurnDrvRidhero;
+extern struct BurnDriver BurnDrvRidheroh;
+extern struct BurnDriver BurnDrvRoboarmy;
+extern struct BurnDriver BurnDrvRoboarmya;
+extern struct BurnDriver BurnDrvRobocopi;
+extern struct BurnDriver BurnDrvRotd;
+extern struct BurnDriver BurnDrvRotdbr;
+extern struct BurnDriver BurnDrvRotddh;
+extern struct BurnDriver BurnDrvRotdh;
+extern struct BurnDriver BurnDrvS1945p;
+extern struct BurnDriver BurnDrvSamSho3;
+extern struct BurnDriver BurnDrvSamSho3en;
+extern struct BurnDriver BurnDrvSamSho3h;
+extern struct BurnDriver BurnDrvSamSho4;
+extern struct BurnDriver BurnDrvSamSho4k;
+extern struct BurnDriver BurnDrvSamShoa;
+extern struct BurnDriver BurnDrvSamShoh;
+extern struct BurnDriver BurnDrvSamsh2jq;
+extern struct BurnDriver BurnDrvSamsh2sp;
+extern struct BurnDriver BurnDrvSamsh3bs;
+extern struct BurnDriver BurnDrvSamsh4bs;
+extern struct BurnDriver BurnDrvSamsh4sp;
+extern struct BurnDriver BurnDrvSamsh5bs;
+extern struct BurnDriver BurnDrvSamsh5fd;
+extern struct BurnDriver BurnDrvSamsh5fe;
+extern struct BurnDriver BurnDrvSamsh5pf;
+extern struct BurnDriver BurnDrvSamsh5sp;
+extern struct BurnDriver BurnDrvSamsh5sph;
+extern struct BurnDriver BurnDrvSamsh5spho;
+extern struct BurnDriver BurnDrvSamsho;
+extern struct BurnDriver BurnDrvSamsho2;
+extern struct BurnDriver BurnDrvSamsho2k;
+extern struct BurnDriver BurnDrvSamsho2ka;
+extern struct BurnDriver BurnDrvSamsho2pe;
+extern struct BurnDriver BurnDrvSamsho2t;
+extern struct BurnDriver BurnDrvSamsho5;
+extern struct BurnDriver BurnDrvSamsho5a;
+extern struct BurnDriver BurnDrvSamsho5b;
+extern struct BurnDriver BurnDrvSamsho5h;
+extern struct BurnDriver BurnDrvSamsho5x;
+extern struct BurnDriver BurnDrvSamshobs;
+extern struct BurnDriver BurnDrvSantaball;
+extern struct BurnDriver BurnDrvSavagere;
+extern struct BurnDriver BurnDrvSavagereb;
+extern struct BurnDriver BurnDrvSavagerp;
+extern struct BurnDriver BurnDrvSdodgeb;
+extern struct BurnDriver BurnDrvSdodgebh;
+extern struct BurnDriver BurnDrvSengk3eb;
+extern struct BurnDriver BurnDrvSengk3fd;
+extern struct BurnDriver BurnDrvSengk3fs;
+extern struct BurnDriver BurnDrvSengok3i;
+extern struct BurnDriver BurnDrvSengoku;
+extern struct BurnDriver BurnDrvSengoku2;
+extern struct BurnDriver BurnDrvSengoku2rb;
+extern struct BurnDriver BurnDrvSengoku3;
+extern struct BurnDriver BurnDrvSengoku3a;
+extern struct BurnDriver BurnDrvSengoku3s;
+extern struct BurnDriver BurnDrvSengokuh;
+extern struct BurnDriver BurnDrvSgz;
+extern struct BurnDriver BurnDrvShinobing;
+extern struct BurnDriver BurnDrvShocktr2;
+extern struct BurnDriver BurnDrvShocktro;
+extern struct BurnDriver BurnDrvShocktroa;
+extern struct BurnDriver BurnDrvSocbrawl;
+extern struct BurnDriver BurnDrvSocbrawlh;
+extern struct BurnDriver BurnDrvSonicwi2;
+extern struct BurnDriver BurnDrvSonicwi3;
+extern struct BurnDriver BurnDrvSpidermi;
+extern struct BurnDriver BurnDrvSpinmast;
+extern struct BurnDriver BurnDrvSs5spfd;
+extern struct BurnDriver BurnDrvSsho2emb;
+extern struct BurnDriver BurnDrvSsideki;
+extern struct BurnDriver BurnDrvSsideki2;
+extern struct BurnDriver BurnDrvSsideki3;
+extern struct BurnDriver BurnDrvSsideki4;
+extern struct BurnDriver BurnDrvStakwin;
+extern struct BurnDriver BurnDrvStakwin2;
+extern struct BurnDriver BurnDrvStrhoop;
+extern struct BurnDriver BurnDrvSuperspy;
+extern struct BurnDriver BurnDrvSvc;
+extern struct BurnDriver BurnDrvSvcboot;
+extern struct BurnDriver BurnDrvSvcfd;
+extern struct BurnDriver BurnDrvSvcpcb;
+extern struct BurnDriver BurnDrvSvcpcba;
+extern struct BurnDriver BurnDrvSvcplus;
+extern struct BurnDriver BurnDrvSvcplusa;
+extern struct BurnDriver BurnDrvSvcsplse;
+extern struct BurnDriver BurnDrvSvcsplus;
+extern struct BurnDriver BurnDrvSyscheck;
+extern struct BurnDriver BurnDrvTeot;
+extern struct BurnDriver BurnDrvTest240p;
+extern struct BurnDriver BurnDrvTimesup;
+extern struct BurnDriver BurnDrvTimesupd;
+extern struct BurnDriver BurnDrvTmnti;
+extern struct BurnDriver BurnDrvTmntia;
+extern struct BurnDriver BurnDrvTophntr;
+extern struct BurnDriver BurnDrvTophntrh;
+extern struct BurnDriver BurnDrvTotc;
+extern struct BurnDriver BurnDrvTpgolf;
+extern struct BurnDriver BurnDrvTrally;
+extern struct BurnDriver BurnDrvTurfmast;
+extern struct BurnDriver BurnDrvTurfmastsc;
+extern struct BurnDriver BurnDrvTwinspri;
+extern struct BurnDriver BurnDrvTwsoc96;
+extern struct BurnDriver BurnDrvViewpoin;
+extern struct BurnDriver BurnDrvViewpoinp;
+extern struct BurnDriver BurnDrvViolentv;
+extern struct BurnDriver BurnDrvVliner;
+extern struct BurnDriver BurnDrvVliner53;
+extern struct BurnDriver BurnDrvVliner54;
+extern struct BurnDriver BurnDrvVliner6e;
+extern struct BurnDriver BurnDrvVliner7e;
+extern struct BurnDriver BurnDrvWakuw7jq;
+extern struct BurnDriver BurnDrvWakuwak7;
+extern struct BurnDriver BurnDrvWakuwak7bh;
+extern struct BurnDriver BurnDrvWh1;
+extern struct BurnDriver BurnDrvWh1h;
+extern struct BurnDriver BurnDrvWh1ha;
+extern struct BurnDriver BurnDrvWh2;
+extern struct BurnDriver BurnDrvWh2es;
+extern struct BurnDriver BurnDrvWh2h;
+extern struct BurnDriver BurnDrvWh2j;
+extern struct BurnDriver BurnDrvWh2ja;
+extern struct BurnDriver BurnDrvWh2jes;
+extern struct BurnDriver BurnDrvWhp;
+extern struct BurnDriver BurnDrvWhpjq;
+extern struct BurnDriver BurnDrvWjammeb;
+extern struct BurnDriver BurnDrvWjammers;
+extern struct BurnDriver BurnDrvWrldrc32;
+extern struct BurnDriver BurnDrvXenocrisis;
+extern struct BurnDriver BurnDrvXeviousng;
+extern struct BurnDriver BurnDrvYoyoshkn;
+extern struct BurnDriver BurnDrvZedblade;
+extern struct BurnDriver BurnDrvZetsuxeving;
+extern struct BurnDriver BurnDrvZintrckb;
+extern struct BurnDriver BurnDrvZintrckbp;
+extern struct BurnDriver BurnDrvZintrkcd;
+extern struct BurnDriver BurnDrvZupapa;
+extern struct BurnDriver BurnDrv_19yy;
+extern struct BurnDriver BurnDrv_19yyo;
+extern struct BurnDriver BurnDrvamazoneo;
+extern struct BurnDriver BurnDrvblueandr;
+extern struct BurnDriver BurnDrvdoomgeo;
+extern struct BurnDriver BurnDrvfreedoom;
+extern struct BurnDriver BurnDrvgladmort;
+extern struct BurnDriver BurnDrvgladmortcm;
+extern struct BurnDriver BurnDrvjurl;
+extern struct BurnDriver BurnDrvkof94tea;
+extern struct BurnDriver BurnDrvkof95t;
+extern struct BurnDriver BurnDrvkof97ae230625;
+extern struct BurnDriver BurnDrvsbp;
 static struct BurnDriver* pDriver[] = {
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
@@ -1613,14 +2297,695 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvCpsXmvsfu1d,
     &BurnDrvCpsXmvsfur1,
     &BurnDrvCpsXmvsfur2,
+    &BurnDrv3Countb,
+    &BurnDrv3Countba,
+    &BurnDrv4play,
+    &BurnDrvAbyssali,
+    &BurnDrvAdkw,
+    &BurnDrvAlpham2,
+    &BurnDrvAlpham2p,
+    &BurnDrvAndrodun,
+    &BurnDrvAodk,
+    &BurnDrvAof,
+    &BurnDrvAof2,
+    &BurnDrvAof2a,
+    &BurnDrvAof2bh,
+    &BurnDrvAof2bhs,
+    &BurnDrvAof3,
+    &BurnDrvAof3bh,
+    &BurnDrvAof3k,
+    &BurnDrvAofbr,
+    &BurnDrvB2b,
+    &BurnDrvB2b2,
+    &BurnDrvBadapple,
+    &BurnDrvBakatono,
+    &BurnDrvBangbead,
+    &BurnDrvBangbedp,
+    &BurnDrvBb2020,
+    &BurnDrvBb2020cd,
+    &BurnDrvBba2020,
+    &BurnDrvBbh2020,
+    &BurnDrvBdudes,
+    &BurnDrvBeast,
+    &BurnDrvBjourney,
+    &BurnDrvBjourneyh,
+    &BurnDrvBlazstar,
+    &BurnDrvBlazstarcm,
+    &BurnDrvBonusstage,
+    &BurnDrvBpanicdx,
+    &BurnDrvBreakers,
+    &BurnDrvBreakrev,
+    &BurnDrvBreakrevbh,
+    &BurnDrvBrkrevext,
+    &BurnDrvBrkrevjq,
+    &BurnDrvBstars,
+    &BurnDrvBstars2,
+    &BurnDrvBstarsh,
+    &BurnDrvBurningf,
+    &BurnDrvBurningfh,
+    &BurnDrvBurningfp,
+    &BurnDrvBurningfpa,
+    &BurnDrvBurningfpb,
+    &BurnDrvCabalng,
+    &BurnDrvCakefght,
+    &BurnDrvCaptainBarrel,
+    &BurnDrvCnbe,
+    &BurnDrvCnbe2018,
+    &BurnDrvCndi,
+    &BurnDrvColumnsn,
+    &BurnDrvCphd,
+    &BurnDrvCrswd2bl,
+    &BurnDrvCrswd2blp,
+    &BurnDrvCrsword,
+    &BurnDrvCt2k3sa,
+    &BurnDrvCt2k3sp,
+    &BurnDrvCthd2003,
+    &BurnDrvCthd2k3a,
+    &BurnDrvCtomaday,
+    &BurnDrvCyberlip,
+    &BurnDrvCyborgForce,
+    &BurnDrvDiggerma,
+    &BurnDrvDlastbd2e,
+    &BurnDrvDlastbd2i,
+    &BurnDrvDlastbd2p,
+    &BurnDrvDoubldrsp,
+    &BurnDrvDoubled1,
+    &BurnDrvDoubledp,
+    &BurnDrvDoubledr,
+    &BurnDrvDoubledrbh,
+    &BurnDrvDoubledt,
+    &BurnDrvDragonsh,
+    &BurnDrvDucki,
+    &BurnDrvDwi,
+    &BurnDrvDwia,
+    &BurnDrvEightman,
+    &BurnDrvFatFury1,
+    &BurnDrvFatfursp,
+    &BurnDrvFatfurspa,
+    &BurnDrvFatfury2,
+    &BurnDrvFatfury2a,
+    &BurnDrvFatfury3,
+    &BurnDrvFatfury3a,
+    &BurnDrvFbfrenzy,
+    &BurnDrvFfurspbs,
+    &BurnDrvFfurspbt,
+    &BurnDrvFfury1bs,
+    &BurnDrvFfury2es,
+    &BurnDrvFfury3bs,
+    &BurnDrvFfury3eh,
+    &BurnDrvFightfev,
+    &BurnDrvFightfeva,
+    &BurnDrvFlapchck,
+    &BurnDrvFlipshot,
+    &BurnDrvFoodfight,
+    &BurnDrvFroman2b,
+    &BurnDrvFroman2bp,
+    &BurnDrvFswords,
+    &BurnDrvGalaxianng,
+    &BurnDrvGalaxyfg,
+    &BurnDrvGalaxyfg03,
+    &BurnDrvGanryu,
+    &BurnDrvGarou,
+    &BurnDrvGaroubl,
+    &BurnDrvGaroubs,
+    &BurnDrvGarouh,
+    &BurnDrvGarouha,
+    &BurnDrvGaroujq,
+    &BurnDrvGaroup,
+    &BurnDrvGhostbi,
+    &BurnDrvGhostlop,
+    &BurnDrvGoalx3,
+    &BurnDrvGoldnaxeng,
+    &BurnDrvGowcaiet,
+    &BurnDrvGowcaizr,
+    &BurnDrvGpilots,
+    &BurnDrvGpilotsh,
+    &BurnDrvGpilotsp,
+    &BurnDrvGururin,
+    &BurnDrvHalozero,
+    &BurnDrvHorekidb3,
+    &BurnDrvHypernoid,
+    &BurnDrvInthehunt,
+    &BurnDrvIronclad,
+    &BurnDrvIronclado,
+    &BurnDrvIrrmaze,
+    &BurnDrvJanshin,
+    &BurnDrvJockeygp,
+    &BurnDrvJockeygpa,
+    &BurnDrvJoyjoy,
+    &BurnDrvKabukijq,
+    &BurnDrvKabukikl,
+    &BurnDrvKabukiklb,
+    &BurnDrvKarnovng,
+    &BurnDrvKarnovr,
+    &BurnDrvKarnovre,
+    &BurnDrvKf10thep,
+    &BurnDrvKf10thuo,
+    &BurnDrvKf10thup,
+    &BurnDrvKf2k1bh,
+    &BurnDrvKf2k1pkz,
+    &BurnDrvKf2k1pla,
+    &BurnDrvKf2k1pls,
+    &BurnDrvKf2k1ult,
+    &BurnDrvKf2k23rd,
+    &BurnDrvKf2k2mix,
+    &BurnDrvKf2k2mp,
+    &BurnDrvKf2k2mp2,
+    &BurnDrvKf2k2mp3,
+    &BurnDrvKf2k2mpl,
+    &BurnDrvKf2k2p17,
+    &BurnDrvKf2k2pl,
+    &BurnDrvKf2k2pla,
+    &BurnDrvKf2k2plb,
+    &BurnDrvKf2k2plc,
+    &BurnDrvKf2k2plh,
+    &BurnDrvKf2k2pls,
+    &BurnDrvKf2k2ps2re,
+    &BurnDrvKf2k3bl,
+    &BurnDrvKf2k3bla,
+    &BurnDrvKf2k3p2s,
+    &BurnDrvKf2k3pcb,
+    &BurnDrvKf2k3pl,
+    &BurnDrvKf2k3ps2,
+    &BurnDrvKf2k3upl,
+    &BurnDrvKf2k4pls,
+    &BurnDrvKf2k5uni,
+    &BurnDrvKizuna,
+    &BurnDrvKnightsch,
+    &BurnDrvKof10th,
+    &BurnDrvKof10thd,
+    &BurnDrvKof2000,
+    &BurnDrvKof2000bc,
+    &BurnDrvKof2000n,
+    &BurnDrvKof2000t,
+    &BurnDrvKof2001,
+    &BurnDrvKof2001h,
+    &BurnDrvKof2002,
+    &BurnDrvKof2002b,
+    &BurnDrvKof2002m,
+    &BurnDrvKof2002t,
+    &BurnDrvKof2003,
+    &BurnDrvKof2003h,
+    &BurnDrvKof2003t,
+    &BurnDrvKof2k1bs,
+    &BurnDrvKof2k1fd,
+    &BurnDrvKof2k1rp,
+    &BurnDrvKof2k1ru,
+    &BurnDrvKof2k2br,
+    &BurnDrvKof2k2fd,
+    &BurnDrvKof2k2jq,
+    &BurnDrvKof2k2ly,
+    &BurnDrvKof2k2omg,
+    &BurnDrvKof2k2omg8,
+    &BurnDrvKof2k2omg9,
+    &BurnDrvKof2k2omg9b,
+    &BurnDrvKof2k2ru,
+    &BurnDrvKof2k2ts,
+    &BurnDrvKof2k3br,
+    &BurnDrvKof2k3fd,
+    &BurnDrvKof2k4se,
+    &BurnDrvKof2kfd,
+    &BurnDrvKof2kotc,
+    &BurnDrvKof2kpls,
+    &BurnDrvKof2kps2,
+    &BurnDrvKof2ksp,
+    &BurnDrvKof2kxxx,
+    &BurnDrvKof94,
+    &BurnDrvKof94br,
+    &BurnDrvKof94bs,
+    &BurnDrvKof94nr2,
+    &BurnDrvKof94rz,
+    &BurnDrvKof94te,
+    &BurnDrvKof95,
+    &BurnDrvKof95a,
+    &BurnDrvKof95b,
+    &BurnDrvKof95bs,
+    &BurnDrvKof95h,
+    &BurnDrvKof95jq,
+    &BurnDrvKof95sp,
+    &BurnDrvKof95sr3,
+    &BurnDrvKof96,
+    &BurnDrvKof96a,
+    &BurnDrvKof96ae,
+    &BurnDrvKof96cn,
+    &BurnDrvKof96ep,
+    &BurnDrvKof96h,
+    &BurnDrvKof96pls,
+    &BurnDrvKof96r,
+    &BurnDrvKof96rp,
+    &BurnDrvKof96rss,
+    &BurnDrvKof97,
+    &BurnDrvKof97ae,
+    &BurnDrvKof97bs,
+    &BurnDrvKof97bt,
+    &BurnDrvKof97cb,
+    &BurnDrvKof97cbt,
+    &BurnDrvKof97ce,
+    &BurnDrvKof97cn,
+    &BurnDrvKof97eb,
+    &BurnDrvKof97evf,
+    &BurnDrvKof97evn,
+    &BurnDrvKof97h,
+    &BurnDrvKof97inv,
+    &BurnDrvKof97k,
+    &BurnDrvKof97m,
+    &BurnDrvKof97oro,
+    &BurnDrvKof97pla,
+    &BurnDrvKof97plc,
+    &BurnDrvKof97plh,
+    &BurnDrvKof97pls,
+    &BurnDrvKof97pm,
+    &BurnDrvKof97ps,
+    &BurnDrvKof97rc,
+    &BurnDrvKof97rm,
+    &BurnDrvKof97sp,
+    &BurnDrvKof97st,
+    &BurnDrvKof97t,
+    &BurnDrvKof97ts,
+    &BurnDrvKof97ubp,
+    &BurnDrvKof97xt,
+    &BurnDrvKof98,
+    &BurnDrvKof98a,
+    &BurnDrvKof98ae,
+    &BurnDrvKof98bc2k2,
+    &BurnDrvKof98bc2nd,
+    &BurnDrvKof98bsc,
+    &BurnDrvKof98cb,
+    &BurnDrvKof98cp,
+    &BurnDrvKof98eckg,
+    &BurnDrvKof98evo,
+    &BurnDrvKof98h,
+    &BurnDrvKof98k,
+    &BurnDrvKof98ka,
+    &BurnDrvKof98mix,
+    &BurnDrvKof98pfe,
+    &BurnDrvKof98plc,
+    &BurnDrvKof98rat,
+    &BurnDrvKof98ult,
+    &BurnDrvKof99,
+    &BurnDrvKof99ae,
+    &BurnDrvKof99cb,
+    &BurnDrvKof99e,
+    &BurnDrvKof99eur,
+    &BurnDrvKof99fd,
+    &BurnDrvKof99h,
+    &BurnDrvKof99jh,
+    &BurnDrvKof99jq,
+    &BurnDrvKof99k,
+    &BurnDrvKof99ka,
+    &BurnDrvKof99p,
+    &BurnDrvKof99pls,
+    &BurnDrvKof99rp,
+    &BurnDrvKof99sk,
+    &BurnDrvKof99sr,
+    &BurnDrvKof99t,
+    &BurnDrvKog,
+    &BurnDrvKogplus,
+    &BurnDrvKotm,
+    &BurnDrvKotm2,
+    &BurnDrvKotm2a,
+    &BurnDrvKotm2p,
+    &BurnDrvKotmh,
+    &BurnDrvLans2004,
+    &BurnDrvLastbd2b,
+    &BurnDrvLastbd2t,
+    &BurnDrvLastblad,
+    &BurnDrvLastblada,
+    &BurnDrvLastbladh,
+    &BurnDrvLastbld2,
+    &BurnDrvLastbldi,
+    &BurnDrvLastbldp,
+    &BurnDrvLastblsp,
+    &BurnDrvLasthope,
+    &BurnDrvLasthopepb,
+    &BurnDrvLastsold,
+    &BurnDrvLbowling,
+    &BurnDrvLegendos,
+    &BurnDrvLhcdb,
+    &BurnDrvLooptris,
+    &BurnDrvLooptrsp,
+    &BurnDrvLresort,
+    &BurnDrvLresortp,
+    &BurnDrvLtorb,
+    &BurnDrvMSlug2,
+    &BurnDrvMSlug2t,
+    &BurnDrvMSlugx,
+    &BurnDrvMagdrop2,
+    &BurnDrvMagdrop3,
+    &BurnDrvMagdrop3bh,
+    &BurnDrvMagdrop3te,
+    &BurnDrvMaglord,
+    &BurnDrvMaglordacfh,
+    &BurnDrvMaglordfacfh,
+    &BurnDrvMaglordh,
+    &BurnDrvMahretsu,
+    &BurnDrvMarukodq,
+    &BurnDrvMatrim,
+    &BurnDrvMatrimbh,
+    &BurnDrvMatrimbl,
+    &BurnDrvMiexchng,
+    &BurnDrvMinasan,
+    &BurnDrvMoshougi,
+    &BurnDrvMs21v2,
+    &BurnDrvMs31v2,
+    &BurnDrvMs3dbpls,
+    &BurnDrvMs41v2,
+    &BurnDrvMs4plus,
+    &BurnDrvMs51v2,
+    &BurnDrvMs5esr,
+    &BurnDrvMs5pcb,
+    &BurnDrvMs5plus,
+    &BurnDrvMs5plush,
+    &BurnDrvMs5sgf,
+    &BurnDrvMslug,
+    &BurnDrvMslug1v2,
+    &BurnDrvMslug2ct,
+    &BurnDrvMslug2dd,
+    &BurnDrvMslug2dg,
+    &BurnDrvMslug2eg,
+    &BurnDrvMslug2fm,
+    &BurnDrvMslug2p,
+    &BurnDrvMslug2r,
+    &BurnDrvMslug2unity,
+    &BurnDrvMslug3,
+    &BurnDrvMslug3a,
+    &BurnDrvMslug3b6,
+    &BurnDrvMslug3c,
+    &BurnDrvMslug3cq,
+    &BurnDrvMslug3cqi,
+    &BurnDrvMslug3cqt,
+    &BurnDrvMslug3cqz,
+    &BurnDrvMslug3dd,
+    &BurnDrvMslug3eb,
+    &BurnDrvMslug3fd,
+    &BurnDrvMslug3g,
+    &BurnDrvMslug3gw,
+    &BurnDrvMslug3h,
+    &BurnDrvMslug3i,
+    &BurnDrvMslug3ki,
+    &BurnDrvMslug3lw,
+    &BurnDrvMslug3ps,
+    &BurnDrvMslug3sc,
+    &BurnDrvMslug3sd,
+    &BurnDrvMslug3se,
+    &BurnDrvMslug3unity,
+    &BurnDrvMslug3v,
+    &BurnDrvMslug3x,
+    &BurnDrvMslug3zh,
+    &BurnDrvMslug4,
+    &BurnDrvMslug4a,
+    &BurnDrvMslug4ar,
+    &BurnDrvMslug4c,
+    &BurnDrvMslug4cqi,
+    &BurnDrvMslug4dd,
+    &BurnDrvMslug4dg,
+    &BurnDrvMslug4fd,
+    &BurnDrvMslug4h,
+    &BurnDrvMslug4ki,
+    &BurnDrvMslug4lq,
+    &BurnDrvMslug4lw,
+    &BurnDrvMslug4q,
+    &BurnDrvMslug4unity,
+    &BurnDrvMslug5,
+    &BurnDrvMslug5ae,
+    &BurnDrvMslug5ar,
+    &BurnDrvMslug5b,
+    &BurnDrvMslug5b2,
+    &BurnDrvMslug5bs,
+    &BurnDrvMslug5c,
+    &BurnDrvMslug5cqi,
+    &BurnDrvMslug5db,
+    &BurnDrvMslug5dd,
+    &BurnDrvMslug5dg,
+    &BurnDrvMslug5es,
+    &BurnDrvMslug5ex,
+    &BurnDrvMslug5f,
+    &BurnDrvMslug5fd,
+    &BurnDrvMslug5h,
+    &BurnDrvMslug5ki,
+    &BurnDrvMslug5mg,
+    &BurnDrvMslug5nd,
+    &BurnDrvMslug5sc,
+    &BurnDrvMslug5sg,
+    &BurnDrvMslug5unity,
+    &BurnDrvMslug5w,
+    &BurnDrvMslug5x,
+    &BurnDrvMslug5zh,
+    &BurnDrvMslugdg,
+    &BurnDrvMslugdyf2,
+    &BurnDrvMslugfc1,
+    &BurnDrvMslugfc2,
+    &BurnDrvMslugfs,
+    &BurnDrvMslugqy,
+    &BurnDrvMslugunity,
+    &BurnDrvMslugx2r,
+    &BurnDrvMslugxc1,
+    &BurnDrvMslugxc2,
+    &BurnDrvMslugxcq,
+    &BurnDrvMslugxdd,
+    &BurnDrvMslugxdg,
+    &BurnDrvMslugxeb,
+    &BurnDrvMslugxfs,
+    &BurnDrvMslugxif,
+    &BurnDrvMslugxlb,
+    &BurnDrvMslugxsc,
+    &BurnDrvMslugxsv,
+    &BurnDrvMslugxunity,
+    &BurnDrvMslugxxb,
+    &BurnDrvMslugxxr,
+    &BurnDrvMsqyfc1,
+    &BurnDrvMsx1v2,
+    &BurnDrvMsx2r1v2,
+    &BurnDrvMsx2reb,
+    &BurnDrvMsxsrf,
+    &BurnDrvMutnat,
+    &BurnDrvNam1975,
+    &BurnDrvNblktiger,
+    &BurnDrvNcombat,
+    &BurnDrvNcombath,
+    &BurnDrvNcommand,
+    &BurnDrvNeo2048,
+    &BurnDrvNeo2500,
+    &BurnDrvNeo3ddmo,
+    &BurnDrvNeoGeo,
+    &BurnDrvNeoGeoMVS,
+    &BurnDrvNeobombe,
+    &BurnDrvNeocdz,
+    &BurnDrvNeocstlv,
+    &BurnDrvNeocup98,
+    &BurnDrvNeodemo,
+    &BurnDrvNeodrift,
+    &BurnDrvNeogalag,
+    &BurnDrvNeogalaga,
+    &BurnDrvNeomrdo,
+    &BurnDrvNeonopon,
+    &BurnDrvNeopang,
+    &BurnDrvNeopong,
+    &BurnDrvNeoponga,
+    &BurnDrvNeoprimo,
+    &BurnDrvNeotet,
+    &BurnDrvNeothndr,
+    &BurnDrvNeotris,
+    &BurnDrvNeoww2,
+    &BurnDrvNgcdtdd0,
+    &BurnDrvNgem2k,
+    &BurnDrvNgfrog,
+    &BurnDrvNgftdemo,
+    &BurnDrvNgmontst,
+    &BurnDrvNinjamas,
+    &BurnDrvNinjamasha,
+    &BurnDrvNitd,
+    &BurnDrvNitdbl,
+    &BurnDrvNsmb,
+    &BurnDrvOvertop,
+    &BurnDrvPanicbom,
+    &BurnDrvPbobbl2n,
+    &BurnDrvPbobblen,
+    &BurnDrvPbobblenb,
+    &BurnDrvPgoal,
+    &BurnDrvPnyaa,
+    &BurnDrvPnyaaa,
+    &BurnDrvPoknight,
+    &BurnDrvPopbounc,
+    &BurnDrvPreisle2,
+    &BurnDrvProneon,
+    &BurnDrvPspikes2,
+    &BurnDrvPulstar,
+    &BurnDrvPulstara,
+    &BurnDrvPuzzldpr,
+    &BurnDrvPuzzledp,
+    &BurnDrvQuizdai2,
+    &BurnDrvQuizdais,
+    &BurnDrvQuizdaisk,
+    &BurnDrvQuizkof,
+    &BurnDrvQuizkofk,
+    &BurnDrvRagnagrd,
+    &BurnDrvRallych,
+    &BurnDrvRbff1,
+    &BurnDrvRbff1a,
+    &BurnDrvRbff1k,
+    &BurnDrvRbff1ka,
+    &BurnDrvRbff2,
+    &BurnDrvRbff2bs,
+    &BurnDrvRbff2h,
+    &BurnDrvRbff2k,
+    &BurnDrvRbffspbs,
+    &BurnDrvRbffspec,
+    &BurnDrvRbffspeck,
+    &BurnDrvRickdangdx,
+    &BurnDrvRidhero,
+    &BurnDrvRidheroh,
+    &BurnDrvRoboarmy,
+    &BurnDrvRoboarmya,
+    &BurnDrvRobocopi,
+    &BurnDrvRotd,
+    &BurnDrvRotdbr,
+    &BurnDrvRotddh,
+    &BurnDrvRotdh,
+    &BurnDrvS1945p,
+    &BurnDrvSamSho3,
+    &BurnDrvSamSho3en,
+    &BurnDrvSamSho3h,
+    &BurnDrvSamSho4,
+    &BurnDrvSamSho4k,
+    &BurnDrvSamShoa,
+    &BurnDrvSamShoh,
+    &BurnDrvSamsh2jq,
+    &BurnDrvSamsh2sp,
+    &BurnDrvSamsh3bs,
+    &BurnDrvSamsh4bs,
+    &BurnDrvSamsh4sp,
+    &BurnDrvSamsh5bs,
+    &BurnDrvSamsh5fd,
+    &BurnDrvSamsh5fe,
+    &BurnDrvSamsh5pf,
+    &BurnDrvSamsh5sp,
+    &BurnDrvSamsh5sph,
+    &BurnDrvSamsh5spho,
+    &BurnDrvSamsho,
+    &BurnDrvSamsho2,
+    &BurnDrvSamsho2k,
+    &BurnDrvSamsho2ka,
+    &BurnDrvSamsho2pe,
+    &BurnDrvSamsho2t,
+    &BurnDrvSamsho5,
+    &BurnDrvSamsho5a,
+    &BurnDrvSamsho5b,
+    &BurnDrvSamsho5h,
+    &BurnDrvSamsho5x,
+    &BurnDrvSamshobs,
+    &BurnDrvSantaball,
+    &BurnDrvSavagere,
+    &BurnDrvSavagereb,
+    &BurnDrvSavagerp,
+    &BurnDrvSdodgeb,
+    &BurnDrvSdodgebh,
+    &BurnDrvSengk3eb,
+    &BurnDrvSengk3fd,
+    &BurnDrvSengk3fs,
+    &BurnDrvSengok3i,
+    &BurnDrvSengoku,
+    &BurnDrvSengoku2,
+    &BurnDrvSengoku2rb,
+    &BurnDrvSengoku3,
+    &BurnDrvSengoku3a,
+    &BurnDrvSengoku3s,
+    &BurnDrvSengokuh,
+    &BurnDrvSgz,
+    &BurnDrvShinobing,
+    &BurnDrvShocktr2,
+    &BurnDrvShocktro,
+    &BurnDrvShocktroa,
+    &BurnDrvSocbrawl,
+    &BurnDrvSocbrawlh,
+    &BurnDrvSonicwi2,
+    &BurnDrvSonicwi3,
+    &BurnDrvSpidermi,
+    &BurnDrvSpinmast,
+    &BurnDrvSs5spfd,
+    &BurnDrvSsho2emb,
+    &BurnDrvSsideki,
+    &BurnDrvSsideki2,
+    &BurnDrvSsideki3,
+    &BurnDrvSsideki4,
+    &BurnDrvStakwin,
+    &BurnDrvStakwin2,
+    &BurnDrvStrhoop,
+    &BurnDrvSuperspy,
+    &BurnDrvSvc,
+    &BurnDrvSvcboot,
+    &BurnDrvSvcfd,
+    &BurnDrvSvcpcb,
+    &BurnDrvSvcpcba,
+    &BurnDrvSvcplus,
+    &BurnDrvSvcplusa,
+    &BurnDrvSvcsplse,
+    &BurnDrvSvcsplus,
+    &BurnDrvSyscheck,
+    &BurnDrvTeot,
+    &BurnDrvTest240p,
+    &BurnDrvTimesup,
+    &BurnDrvTimesupd,
+    &BurnDrvTmnti,
+    &BurnDrvTmntia,
+    &BurnDrvTophntr,
+    &BurnDrvTophntrh,
+    &BurnDrvTotc,
+    &BurnDrvTpgolf,
+    &BurnDrvTrally,
+    &BurnDrvTurfmast,
+    &BurnDrvTurfmastsc,
+    &BurnDrvTwinspri,
+    &BurnDrvTwsoc96,
+    &BurnDrvViewpoin,
+    &BurnDrvViewpoinp,
+    &BurnDrvViolentv,
+    &BurnDrvVliner,
+    &BurnDrvVliner53,
+    &BurnDrvVliner54,
+    &BurnDrvVliner6e,
+    &BurnDrvVliner7e,
+    &BurnDrvWakuw7jq,
+    &BurnDrvWakuwak7,
+    &BurnDrvWakuwak7bh,
+    &BurnDrvWh1,
+    &BurnDrvWh1h,
+    &BurnDrvWh1ha,
+    &BurnDrvWh2,
+    &BurnDrvWh2es,
+    &BurnDrvWh2h,
+    &BurnDrvWh2j,
+    &BurnDrvWh2ja,
+    &BurnDrvWh2jes,
+    &BurnDrvWhp,
+    &BurnDrvWhpjq,
+    &BurnDrvWjammeb,
+    &BurnDrvWjammers,
+    &BurnDrvWrldrc32,
+    &BurnDrvXenocrisis,
+    &BurnDrvXeviousng,
+    &BurnDrvYoyoshkn,
+    &BurnDrvZedblade,
+    &BurnDrvZetsuxeving,
+    &BurnDrvZintrckb,
+    &BurnDrvZintrckbp,
+    &BurnDrvZintrkcd,
+    &BurnDrvZupapa,
+    &BurnDrv_19yy,
+    &BurnDrv_19yyo,
+    &BurnDrvamazoneo,
+    &BurnDrvblueandr,
+    &BurnDrvdoomgeo,
+    &BurnDrvfreedoom,
+    &BurnDrvgladmort,
+    &BurnDrvgladmortcm,
+    &BurnDrvjurl,
+    &BurnDrvkof94tea,
+    &BurnDrvkof95t,
+    &BurnDrvkof97ae230625,
+    &BurnDrvsbp,
 };
-
-// Количество драйверов для host-слоя (без BurnLibInit: nBurnDrvCount
-// выставляется отсюда, pDriver[]->szShortName остаются константными
-// строками rodata — их не может затереть повторная инициализация).
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))
-
-// Атрибуция исходников (в FBNeo генерируется; нам не нужна — пустая таблица)
 typedef struct { char* game_name; char* sourcefile; } game_sourcefile_entry;
 static game_sourcefile_entry sourcefile_table[] = { { (char*)"", (char*)"" } };
 #endif

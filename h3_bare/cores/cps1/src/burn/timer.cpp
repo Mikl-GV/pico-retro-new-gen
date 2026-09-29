@@ -23,7 +23,8 @@ INT32 BurnTimerCPUClockspeed = 0;
 INT32 (*BurnTimerCPUTotalCycles)() = NULL;
 
 static INT32 (*pCPURun)(INT32) = NULL;
-static void (*pCPURunEnd)() = NULL;
+static void burn_cpu_runend_dummy() {}
+static void (*pCPURunEnd)() = burn_cpu_runend_dummy;
 
 // ---------------------------------------------------------------------------
 // Running time
@@ -88,7 +89,8 @@ INT32 BurnTimerUpdate(INT32 nCycles)
 				//bprintf(PRINT_NORMAL, _T("  - timer %d fired\n"), i);
 
 //				bprintf(0, _T("over_callback[%d](%d, %d)\n"), i>>1,nTimerChips[i>>1], i&1);
-				nIRQStatus |= pTimerOverCallback[i>>1](nTimerChips[i>>1], i&1);
+				if (pTimerOverCallback[i >> 1] != NULL)
+					nIRQStatus |= pTimerOverCallback[i >> 1](nTimerChips[i >> 1], i & 1);
 			}
 		}
 	}

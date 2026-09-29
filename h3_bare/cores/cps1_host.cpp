@@ -86,14 +86,19 @@ static uint16_t g_frame[CPS1_W * CPS1_H];
 // Между ними запас, выше до EMU_FB/HDMI (~0x5F800000) ещё ~100 МБ свободно;
 // реальные сеты CPS-2 (ddsom — самый большой) ~33 МБ сырых.
 #define ZIP_BUF1 ((uint8_t*)0x50000000u)
-#define ZIP_BUF2 ((uint8_t*)0x54000000u)
-#define ZIP_MAX  (64u * 1024u * 1024u)
+#define ZIP_BUF2 ((uint8_t*)0x5C000000u)
+#define ZIP_MAX  (92u * 1024u * 1024u)   // крупнейшие сеты ~84 МБ (NEOGEO)
+#define ZIP_MAX2 (48u * 1024u * 1024u)   // буфер родителя ниже EMU_FB
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
 static char g_zip[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>.zip"
 static const uint8_t* g_zip_data = NULL;
 static uint32_t g_zip_size = 0;
 static char g_parent_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<parent>" (клоны)
 static char g_parent_zip[FAT_NAME_LEN + 16];
+static char g_bios_dir[FAT_NAME_LEN + 16];    // BIOS (NEOGEO): root + "/neogeo"
+static char g_bios_zip[FAT_NAME_LEN + 16];
+static const uint8_t* g_bios_zip_data = NULL;
+static uint32_t g_bios_zip_size = 0;
 static const uint8_t* g_zip_parent_data = NULL;
 static uint32_t g_zip_parent_size = 0;
 
@@ -247,6 +252,7 @@ static void load_progress(const char* phase)
     char buf[64];
     if (s_prog_total > 0) {
         int pct = (s_prog_done * 100) / s_prog_total;
+        if (pct > 100) pct = 100;
         snprintf(buf, sizeof(buf), "Loading %s: %d/%d (%d%%)",
                  g_load_name, s_prog_done, s_prog_total, pct);
     } else {
@@ -267,11 +273,11 @@ static void load_progress(const char* phase)
 static int check_romset(const char* game)
 {
     int total = 0, missing = 0, bad = 0;
-    for (int i = 0; i < 128; i++) {
+    for (int i = 0; i < 256; i++) {
         struct BurnRomInfo ri;
         ri.nType = 0; ri.nLen = 0;
         BurnDrvGetRomInfo(&ri, (UINT32)i);
-        if (ri.nType == 0 && ri.nLen == 0) break;
+        if (ri.nType == 0 && ri.nLen == 0) continue;   // пустые слоты (break ломал NEO: BIOS на 128+)
         if (ri.nLen == 0) continue;
         if (ri.nType & BRF_OPT) continue;   // PLD-микросхемы драйвер не грузит
         total++;
@@ -282,6 +288,10 @@ static int check_romset(const char* game)
         uint32_t sz = 0;
         int found = 0;
         fat_entry_t f;
+        if (!found && (ri.nType & BRF_BIOS)) {
+            if (fat_find(g_bios_dir, name, &f) && f.size > 0) { found = 1; sz = (uint32_t)f.size; }
+            else if (g_bios_zip_data && zip_lookup(g_bios_zip_data, g_bios_zip_size, name, &sz) == 0) found = 1;
+        }
         if (!found && g_dir[0])  { if (fat_find(g_dir, name, &f) && f.size > 0)  { found = 1; sz = (uint32_t)f.size; } }
         if (!found && g_parent_dir[0]) { if (fat_find(g_parent_dir, name, &f) && f.size > 0) { found = 1; sz = (uint32_t)f.size; } }
         if (!found && g_zip_data)        { if (zip_lookup(g_zip_data, g_zip_size, name, &sz) == 0) found = 1; }
@@ -315,6 +325,21 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
     BurnDrvGetRomName(&name, i, 0);
     if (!name || !name[0]) return 1;
 
+    if (ri.nType & BRF_BIOS) {
+        // BIOS (NEOGEO): файлы лежат в /roms/<root>/neogeo/ или neogeo.zip
+        if (load_from_dir(g_bios_dir, name, Dest, ri.nLen, pnWrote) == 0) {
+            if (s_prog_total) { s_prog_done++; load_progress(""); }
+            return 0;
+        }
+        if (g_bios_zip_data) {
+            uint32_t got = 0;
+            if (zip_extract(g_bios_zip_data, g_bios_zip_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
+                if (pnWrote) *pnWrote = (INT32)got;
+                if (s_prog_total) { s_prog_done++; load_progress(""); }
+                return 0;
+            }
+        }
+    }
     if (load_from_dir(g_dir, name, Dest, ri.nLen, pnWrote) == 0) {
         if (s_prog_total) { s_prog_done++; load_progress(""); }
         return 0;
@@ -340,7 +365,7 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
         }
     }
 
-    printf("CPS1: missing rom %s (index %d)\n", name, (int)i);
+    printf("CPS: missing rom %s (index %d)\n", name, (int)i);
     if (pnWrote) *pnWrote = 0;
     return 1;
 }
@@ -466,7 +491,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     emu_prepare();
 
     if (!rom_name || !rom_name[0]) {
-        printf("CPS1: no game name\n");
+        printf("CPS: no game name\n");
         return;
     }
 
@@ -484,6 +509,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     g_parent_dir[0] = 0; g_parent_zip[0] = 0; g_zip_parent_data = NULL; g_zip_parent_size = 0;
     snprintf(g_dir, sizeof(g_dir), "%s/%s", root, game);
     snprintf(g_zip, sizeof(g_zip), "%s/%s.zip", root, game);
+    snprintf(g_bios_dir, sizeof(g_bios_dir), "%s/neogeo", root);
+    snprintf(g_bios_zip, sizeof(g_bios_zip), "%s/neogeo.zip", root);
 
     static int g_lib_inited = 0;
     if (!g_lib_inited) {
@@ -493,7 +520,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     int idx = BurnDrvGetIndex(game);
     if (idx < 0) {
-        printf("CPS1: no driver for '%s' (%d CPS drivers)\n", game, (int)nBurnDrvCount);
+        printf("CPS: no driver for '%s' (%d CPS drivers)\n", game, (int)nBurnDrvCount);
         fb_clear();
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
@@ -532,7 +559,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     if (g_parent_zip[0]) {
         snprintf(zipname, sizeof(zipname), "%s.zip", BurnDrvGetTextA(DRV_PARENT));
         fat_entry_t pf;
-        if (fat_find(root, zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= ZIP_MAX) {
+        if (fat_find(root, zipname, &pf) && pf.size > 0 && (uint32_t)pf.size <= ZIP_MAX2) {
             if (fat_read_file(&pf, 0, ZIP_BUF2, (uint32_t)pf.size) >= 0) {
                 g_zip_parent_data = ZIP_BUF2;
                 g_zip_parent_size = (uint32_t)pf.size;
@@ -540,9 +567,21 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         }
     }
 
-    // проверка полноты ROM-сета (до init): нет файлов/битые размеры — не запускаем
+    // BIOS-zip (NEOGEO): neogeo.zip лежит в корне системы; грузим во второй
+    // буфер, если он не занят родительским zip (у NEOGEO нет родительских клонов).
+    if (!g_zip_parent_data && g_bios_zip[0]) {
+        fat_entry_t bf;
+        if (fat_find(root, "neogeo.zip", &bf) && bf.size > 0 && (uint32_t)bf.size <= ZIP_MAX2) {
+            load_progress("(bios)");
+            if (fat_read_file(&bf, 0, ZIP_BUF2, (uint32_t)bf.size) >= 0) {
+                g_bios_zip_data = ZIP_BUF2;
+                g_bios_zip_size = (uint32_t)bf.size;
+            }
+        }
+    }
+
     if (check_romset(game)) {
-        printf("CPS1: %s incomplete, not starting\n", game);
+        printf("CPS: %s incomplete, not starting\n", game);
         fb_clear();
         fb_text_center("CPS: ROM set incomplete", 210, 2, 0x00FF4444);
         fb_text_center(game, 250, 2, 0x00FFFFFF);
@@ -561,7 +600,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     BurnHighCol = host_high_col;   // иначе вендорный filler даёт белый экран
 
     if (BurnDrvInit() != 0) {
-        printf("CPS1: %s init failed (check ROM set)\n", game);
+        printf("CPS: %s init failed (check ROM set)\n", game);
         // что пошло не так: список требуемых драйвером ROM (имена FBNeo)
         for (int r = 0; r < 64; r++) {
             struct BurnRomInfo rri;
@@ -579,7 +618,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_flush();
         return;
     }
-    printf("CPS1: %s started (%s%s)\n", game,
+    printf("CPS: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
     printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
@@ -590,6 +629,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     for (;;) {
         host_update_input();
+        // DBG-TEMP r0.312: маркер кадра — если печатается, цикл жив
+        { static unsigned fr = 0; if ((fr % 60) == 0) printf("FR %u\n", fr); fr++; }
         BurnDrvFrame();
         host_render_frame();
         fb_flush();
@@ -610,4 +651,9 @@ void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/cps2", rom, size, rom_name);
+}
+
+void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/neogeo", rom, size, rom_name);
 }
