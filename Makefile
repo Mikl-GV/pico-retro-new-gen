@@ -498,10 +498,15 @@ $(BUILD)/c1x_neostubs.o: $(CPS1)/src/neostubs.cpp | $(BUILD)
 # каталоги и префиксы объектов (c1n_/c1v_/c1t_).
 CPS1_NEO := $(notdir $(wildcard $(CPS1)/src/burn/drv/neogeo/*.cpp))
 CPS1_CAV := $(notdir $(wildcard $(CPS1)/src/burn/drv/cave/*.cpp))
-CPS1_TP  := $(notdir $(wildcard $(CPS1)/src/burn/drv/toaplan/*.cpp))
 OBJ += $(addprefix $(BUILD)/c1n_,$(patsubst %.cpp,%.o,$(CPS1_NEO)))
-# OBJ cave отключён (требует sh4/NEC CPU) — CPP: add later
-# OBJ toaplan отключён (требует nec) — add later
+# Cave отключён (требует sh4/NEC CPU) — add later.
+# Toaplan (r0.330): подключены 68K/Z80-игры (truxton2, batrider, bgaregga,
+# snowbro2, tekipaki, pipibibs, enmadaio, mahoudai, shippumd, kbash2, bbakraid,
+# sstriker и клоны). NEC V25/V30-игры (batsugun, twincobr, wardner…) — позже.
+CPS1_TOA  := toaplan toaplan1 toa_gp9001 toa_palette toa_extratext \
+             d_batrider d_battleg d_bbakraid d_enmadaio d_kbash2 \
+             d_mahoudai d_pipibibs d_shippumd d_snowbro2 d_tekipaki d_truxton2
+OBJ += $(addprefix $(BUILD)/c1t_,$(addsuffix .o,$(CPS1_TOA)))
 $(BUILD)/c1n_%.o: $(CPS1)/src/burn/drv/neogeo/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
@@ -509,6 +514,13 @@ $(BUILD)/c1v_%.o: $(CPS1)/src/burn/drv/cave/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1t_%.o: $(CPS1)/src/burn/drv/toaplan/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).
+# Файлы в snd/; c1se_ — отдельный префикс от игровых c1t_.
+CPS1_SND3 := burn_ym3812 ymz280b
+OBJ += $(addprefix $(BUILD)/c1se_,$(addsuffix .o,$(CPS1_SND3)))
+$(BUILD)/c1se_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)

@@ -1492,6 +1492,50 @@ extern struct BurnDriver BurnDrvkof94tea;
 extern struct BurnDriver BurnDrvkof95t;
 extern struct BurnDriver BurnDrvkof97ae230625;
 extern struct BurnDriver BurnDrvsbp;
+// ---- Toaplan (68K/Z80, r0.330) ----
+extern struct BurnDriver BurnDrvBatrid;
+extern struct BurnDriver BurnDrvBatridc;
+extern struct BurnDriver BurnDrvBatridhk;
+extern struct BurnDriver BurnDrvBatridj;
+extern struct BurnDriver BurnDrvBatridja;
+extern struct BurnDriver BurnDrvBatridk;
+extern struct BurnDriver BurnDrvBatridta;
+extern struct BurnDriver BurnDrvBatridu;
+extern struct BurnDriver BurnDrvBattleBkraidc;
+extern struct BurnDriver BurnDrvBattleBkraidj;
+extern struct BurnDriver BurnDrvBattleBkraidu;
+extern struct BurnDriver BurnDrvBattleBkraiduj;
+extern struct BurnDriver BurnDrvBgaregcn;
+extern struct BurnDriver BurnDrvBgaregga;
+extern struct BurnDriver BurnDrvBgareggabl;
+extern struct BurnDriver BurnDrvBgareggabla;
+extern struct BurnDriver BurnDrvBgareggablj;
+extern struct BurnDriver BurnDrvBgareggak;
+extern struct BurnDriver BurnDrvBgareggat;
+extern struct BurnDriver BurnDrvBgareggaz;
+extern struct BurnDriver BurnDrvBgareghk;
+extern struct BurnDriver BurnDrvBgaregnv;
+extern struct BurnDriver BurnDrvBgaregt2;
+extern struct BurnDriver BurnDrvBgaregtw;
+extern struct BurnDriver BurnDrvEnmadaio;
+extern struct BurnDriver BurnDrvKbash2;
+extern struct BurnDriver BurnDrvKingdmGP;
+extern struct BurnDriver BurnDrvMahouDai;
+extern struct BurnDriver BurnDrvPipibibs;
+extern struct BurnDriver BurnDrvPipibibsa;
+extern struct BurnDriver BurnDrvPipibibsp;
+extern struct BurnDriver BurnDrvShippuMD;
+extern struct BurnDriver BurnDrvSnowbro2;
+extern struct BurnDriver BurnDrvSnowbro2b;
+extern struct BurnDriver BurnDrvSnowbro2b2;
+extern struct BurnDriver BurnDrvSnowbro2ny;
+extern struct BurnDriver BurnDrvSStriker;
+extern struct BurnDriver BurnDrvSStrikerk;
+extern struct BurnDriver BurnDrvTekiPaki;
+extern struct BurnDriver BurnDrvTekiPakit;
+extern struct BurnDriver BurnDrvTruxton2;
+extern struct BurnDriver BurnDrvWhoopee;
+
 static struct BurnDriver* pDriver[] = {
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
@@ -2983,6 +3027,49 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvkof94tea,
     &BurnDrvkof95t,
     &BurnDrvkof97ae230625,
+// Toaplan (68K/Z80, r0.330)
+    &BurnDrvBatrid,
+    &BurnDrvBatridc,
+    &BurnDrvBatridhk,
+    &BurnDrvBatridj,
+    &BurnDrvBatridja,
+    &BurnDrvBatridk,
+    &BurnDrvBatridta,
+    &BurnDrvBatridu,
+    &BurnDrvBattleBkraidc,
+    &BurnDrvBattleBkraidj,
+    &BurnDrvBattleBkraidu,
+    &BurnDrvBattleBkraiduj,
+    &BurnDrvBgaregcn,
+    &BurnDrvBgaregga,
+    &BurnDrvBgareggabl,
+    &BurnDrvBgareggabla,
+    &BurnDrvBgareggablj,
+    &BurnDrvBgareggak,
+    &BurnDrvBgareggat,
+    &BurnDrvBgareggaz,
+    &BurnDrvBgareghk,
+    &BurnDrvBgaregnv,
+    &BurnDrvBgaregt2,
+    &BurnDrvBgaregtw,
+    &BurnDrvEnmadaio,
+    &BurnDrvKbash2,
+    &BurnDrvKingdmGP,
+    &BurnDrvMahouDai,
+    &BurnDrvPipibibs,
+    &BurnDrvPipibibsa,
+    &BurnDrvPipibibsp,
+    &BurnDrvShippuMD,
+    &BurnDrvSnowbro2,
+    &BurnDrvSnowbro2b,
+    &BurnDrvSnowbro2b2,
+    &BurnDrvSnowbro2ny,
+    &BurnDrvSStriker,
+    &BurnDrvSStrikerk,
+    &BurnDrvTekiPaki,
+    &BurnDrvTekiPakit,
+    &BurnDrvTruxton2,
+    &BurnDrvWhoopee,
     &BurnDrvsbp,
 };
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))

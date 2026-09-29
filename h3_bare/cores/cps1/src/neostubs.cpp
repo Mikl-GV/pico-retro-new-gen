@@ -61,6 +61,9 @@ void NeoCDInfo_Exit(void) {}
 
 // ---- прочие символы, на которые ссылается neo-код ----
 UINT8 DebugSnd_YM2610Initted = 0;
+// Toaplan (r0.330): отладочные флаги звука из burn_ym3812.cpp / ymz280b.cpp.
+UINT8 DebugSnd_YM3812Initted = 0;
+UINT8 DebugSnd_YMZ280BInitted = 0;
 
 // compute_resistor_weights НЕ стабим: реальная реализация в
 // src/burn/devices/resnet.cpp (c1d_resnet.o) — дубль здесь давал бы

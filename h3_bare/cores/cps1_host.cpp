@@ -87,10 +87,17 @@ extern UINT8 NeoDiag[2];
 // EMU_FB (в него 384 колонки не влезают без потерь).
 #define CPS1_W  384
 #define CPS1_H  224
+// Тоаплан рисует в буфер 320×240 (ToaClearScreen/ToaGetBitmap); вертикальные
+// игры (240×320) при не-ротации могут выйти за 240 строк — буфер берём с
+// запасом 320 строк, чтобы ядро не писал мимо.
+#define TOA_W   320
+#define TOA_H   240
 #define FB_ADDR ((uint32_t*)0x5F900000u)
 #define FB_W    1024
 #define FB_H    600
-static uint16_t g_frame[CPS1_W * CPS1_H];
+static uint16_t g_frame[CPS1_W * 320];
+static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
+static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
 
 // ---- ROM-источники (выбранная игра) ----
 // zip-буферы: основной 0x50000000 (92 МБ, крупнейшие сеты NEOGEO ~84 МБ),
@@ -386,10 +393,12 @@ static void host_render_frame(void)
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
     // Активная ширина кадра: NEOGEO-ядро само адресует строки как
-    // nNeoScreenWidth (304/320), CPS — 384. Берём из nBurnPitch, который
-    // host выставляет по реальной ширине драйвера (см. run_cps).
-    int cols = nBurnPitch >> 1;
+    // nNeoScreenWidth (304/320), CPS — 384, Toaplan — 320. Берём из nBurnPitch,
+    // который host выставляет по реальной ширине драйвера (см. run_cps).
+    int cols = g_frame_w > 0 && g_frame_w <= CPS1_W ? g_frame_w : (nBurnPitch >> 1);
     if (cols <= 0 || cols > CPS1_W) cols = CPS1_W;
+    int rows = g_frame_h;
+    if (rows <= 0 || rows > 320) rows = CPS1_H;
     uint32_t* dst = FB_ADDR;
     uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)FB_W;
     uint32_t acc_x = step_x >> 1;
@@ -399,7 +408,7 @@ static void host_render_frame(void)
         acc_x += step_x;
         if (acc_x >= ((uint32_t)cols << 16)) acc_x -= ((uint32_t)cols << 16);
     }
-    uint32_t step_y = ((uint32_t)CPS1_H << 16) / (uint32_t)FB_H;
+    uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)FB_H;
     uint32_t y_acc = step_y >> 1;
     int sy = 0;
     for (int dy = 0; dy < FB_H; dy++) {
@@ -420,12 +429,62 @@ static void host_render_frame(void)
 
 // ---- ввод ----
 // Логические кнопки P1/P2 — единый источник и для CPS-регистров (CpsInp*),
-// и для NEOGEO-массивов (NeoJoy*/NeoButton*). Раскладка клавиш/пада общая.
+// и для NEOGEO-массивов (NeoJoy*/NeoButton*), и для Toaplan (по указателям
+// из BurnDrvGetInputInfo: у toaplan-драйверов входные массивы static в файлах).
 static int g_neo_input = 0;   // активен NEOGEO-драйвер (см. run_cps)
+static int g_toa      = 0;    // активен Toaplan-драйвер
 
 struct HostPad {
     unsigned up, down, left, right, a, b, c, d, start, select, kick1, kick2, kick3;
 };
+
+// Кэш указателей на входы Toaplan-драйвера (имена стандартные в FBNeo).
+struct ToaPad {
+    UINT8 *coin[2], *start[2];
+    UINT8 *up[2], *down[2], *left[2], *right[2];
+    UINT8 *b1[2], *b2[2], *b3[2];
+};
+static struct ToaPad g_toa_pad;
+static void toa_input_cache(void) {
+    memset(&g_toa_pad, 0, sizeof(g_toa_pad));
+    for (UINT32 i = 0; i < 64; i++) {
+        struct BurnInputInfo ii;
+        memset(&ii, 0, sizeof(ii));
+        BurnDrvGetInputInfo(&ii, i);
+        if (!ii.szName || !ii.szName[0]) break;      // конец списка
+        if ((ii.nType & 0x01) == 0) continue;        // BIT_DIGITAL
+        UINT8* p = ii.pVal;
+        if (!p) continue;
+        UINT8 pl = (ii.szName[1] == '2') ? 1 : 0;    // "P1 "/"P2 "
+        const char* n = ii.szName + 3;
+        if      (!strcmp(n, "Up"))      g_toa_pad.up[pl] = p;
+        else if (!strcmp(n, "Down"))    g_toa_pad.down[pl] = p;
+        else if (!strcmp(n, "Left"))    g_toa_pad.left[pl] = p;
+        else if (!strcmp(n, "Right"))   g_toa_pad.right[pl] = p;
+        else if (!strcmp(n, "Button 1")) g_toa_pad.b1[pl] = p;
+        else if (!strcmp(n, "Button 2")) g_toa_pad.b2[pl] = p;
+        else if (!strcmp(n, "Button 3")) g_toa_pad.b3[pl] = p;
+        else if (!strcmp(n, "Coin"))    g_toa_pad.coin[pl] = p;
+        else if (!strcmp(n, "Start"))   g_toa_pad.start[pl] = p;
+    }
+}
+
+static void toa_write_input(const HostPad* p1, const HostPad* p2)
+{
+    struct ToaPad* t = &g_toa_pad;
+    const HostPad* p[2] = { p1, p2 };
+    for (int pl = 0; pl < 2; pl++) {
+        if (t->up[pl])    *t->up[pl]    = p[pl]->up    ? 1 : 0;
+        if (t->down[pl])  *t->down[pl]  = p[pl]->down  ? 1 : 0;
+        if (t->left[pl])  *t->left[pl]  = p[pl]->left  ? 1 : 0;
+        if (t->right[pl]) *t->right[pl] = p[pl]->right ? 1 : 0;
+        if (t->b1[pl])    *t->b1[pl]    = p[pl]->a     ? 1 : 0;
+        if (t->b2[pl])    *t->b2[pl]    = p[pl]->b     ? 1 : 0;
+        if (t->b3[pl])    *t->b3[pl]    = p[pl]->c     ? 1 : 0;
+        if (t->coin[pl])  *t->coin[pl]  = p[pl]->select ? 1 : 0;
+        if (t->start[pl]) *t->start[pl] = p[pl]->start ? 1 : 0;
+    }
+}
 
 static void host_update_input(void)
 {
@@ -545,6 +604,10 @@ static void host_update_input(void)
         if (p2.start)  NeoButton1[2] = 1;
         if (p2.select) NeoButton2[1] = 1;   // P2 Coin
     }
+
+    // --- Toaplan: пишем по указателям входа драйвера ---
+    if (g_toa)
+        toa_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -706,23 +769,42 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     INT32 hw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
     g_neo_input = (hw == HARDWARE_SNK_NEOGEO || hw == HARDWARE_SNK_MVS ||
                    hw == HARDWARE_SNK_NEOCD  || hw == HARDWARE_SNK_DEDICATED_PCB) ? 1 : 0;
+    g_toa = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_TOAPLAN) ? 1 : 0;
     if (g_neo_input) {
+        // NEOGEO: ядро адресует строки как nNeoScreenWidth (304/320).
         extern INT32 nNeoScreenWidth;
         nBurnPitch = nNeoScreenWidth * 2;
+        g_frame_h = CPS1_H;
+        g_frame_w = nBurnPitch >> 1;
+    } else if (g_toa) {
+        // Toaplan: буфер 320-й pitch (ToaClearScreen/ToaGetBitmap), а ЛОГИЧЕСКИЙ
+        // размер игры — из драйвера: вертикалки 240×320, горизонталки 320×240.
+        // Показываем весь кадр — без наезда и «повтора строки» внизу.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        nBurnPitch = TOA_W * 2;
+        g_frame_w = (fw > 0 && fw <= TOA_W) ? (int)fw : TOA_W;
+        g_frame_h = (fh > 0 && fh <= 320)   ? (int)fh : TOA_H;
     } else {
         nBurnPitch = CPS1_W * 2;
+        g_frame_h = CPS1_H;
+        g_frame_w = CPS1_W;
     }
     // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
     // без очистки при повторном входе виден мусор предыдущей игры.
     memset(g_frame, 0, sizeof(g_frame));
+    if (g_toa)
+        toa_input_cache();   // входные массивы драйвера — static в его файле
     printf("CPS: %s frame %dx%d pitch %d\n", game,
-           (int)(nBurnPitch >> 1), CPS1_H, (int)nBurnPitch);
+           (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
 
     printf("CPS: %s started (%s%s)\n", game,
            g_zip_data ? "zip" : "folder",
            g_zip_parent_data ? "+parent" : "");
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
+    } else if (g_toa) {
+        printf("TOA keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -758,4 +840,9 @@ void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/neogeo", rom, size, rom_name);
+}
+
+void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/toaplan", rom, size, rom_name);
 }
