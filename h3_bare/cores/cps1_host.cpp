@@ -443,18 +443,31 @@ static void host_render_frame(void)
     int y0 = (FB_H - view_h) / 2;
     const uint32_t BLACK = 0;
 
-    // Вертикалка (TATE): 90° БЕЗ инверсий — ось Y игры (rows, 320) -> ширина
-    // экрана (1024), ось X игры (cols, 240) -> высота (600). Всё влезает;
-    // на всякий случай пиксели за границей кадра — чёрные.
+    // Вертикалка (TATE): разворот на 90° — кадр становится rows(320) по ширине,
+    // cols(240) по высоте. РАВНОМЕРНЫЙ масштаб (обе оси одним коэффициентом):
+    // по высоте 600/240=2.5 -> 800x600, центрируем, поля тёмные. Если по высоте
+    // не влезает по ширине — вписываем по ширине с полями сверху/снизу.
     if (g_rot) {
+        int vw = (int)(((int64_t)rows * FB_H) / cols);
+        int vh = FB_H;
+        if (vw > FB_W) { vw = FB_W; vh = (int)(((int64_t)cols * FB_W) / rows); }
+        int x0 = (FB_W - vw) / 2;
+        int y0 = (FB_H - vh) / 2;
         for (int dy = 0; dy < FB_H; dy++) {
-            int gy = (int)(((int64_t)dy * cols) / FB_H);
             uint32_t* drow = dst + (size_t)dy * FB_W;
+            int gy;
+            if (dy < y0 || dy >= y0 + vh) {
+                for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0;
+                continue;
+            }
+            gy = (int)(((int64_t)(dy - y0) * cols) / vh);
             for (int dx = 0; dx < FB_W; dx++) {
-                int gx = (int)(((int64_t)dx * rows) / FB_W);
                 uint16_t p = 0;
-                if (gx >= 0 && gx < rows && gy >= 0 && gy < cols)
+                if (dx >= x0 && dx < x0 + vw) {
+                    int gx = (int)(((int64_t)(dx - x0) * rows) / vw);
+                    if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
                     p = src[(size_t)gx * sstride + gy];
+                }
                 uint32_t r = ((p >> 11) & 0x1F) << 3;
                 uint32_t g = ((p >> 5) & 0x3F) << 2;
                 uint32_t b = (p & 0x1F) << 3;
