@@ -328,6 +328,16 @@ static int check_romset(const char* game)
     return (missing || bad) ? 1 : 0;
 }
 
+// Сверка CRC дампа с драйвером (размеры могут совпасть у другой ревизии).
+// crc32 — из zlib, который и так линкуется.
+static void check_rom_crc(const char* name, const UINT8* buf, INT32 len, UINT32 want)
+{
+    if (!want || len <= 0) return;
+    UINT32 crc = (UINT32)crc32(0, (const Bytef*)buf, (uInt)len);
+    if (crc != want)
+        printf("ROM CRC %s need %08x have %08x\n", name, (unsigned)want, (unsigned)crc);
+}
+
 // ---- BurnExtLoadRom: чтение i-го ROM драйвера ----
 // Источники по порядку: папка игры, папка родителя (для клонов), zip игры,
 // zip родителя.
@@ -346,31 +356,31 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
         // BIOS (NEOGEO): файлы лежат в /roms/<root>/neogeo/ или neogeo.zip
         if (load_from_dir(g_bios_dir, name, Dest, ri.nLen, pnWrote) == 0) {
             if (s_prog_total) { s_prog_done++; load_progress(""); }
-            return 0;
+            goto loaded;
         }
         if (g_bios_zip_data) {
             uint32_t got = 0;
             if (zip_extract(g_bios_zip_data, g_bios_zip_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
                 if (pnWrote) *pnWrote = (INT32)got;
                 if (s_prog_total) { s_prog_done++; load_progress(""); }
-                return 0;
+                goto loaded;
             }
         }
     }
     if (load_from_dir(g_dir, name, Dest, ri.nLen, pnWrote) == 0) {
         if (s_prog_total) { s_prog_done++; load_progress(""); }
-        return 0;
+        goto loaded;
     }
     if (load_from_dir(g_parent_dir, name, Dest, ri.nLen, pnWrote) == 0) {
         if (s_prog_total) { s_prog_done++; load_progress(""); }
-        return 0;
+        goto loaded;
     }
     if (g_zip_data) {
         uint32_t got = 0;
         if (zip_extract(g_zip_data, g_zip_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
             if (pnWrote) *pnWrote = (INT32)got;
             if (s_prog_total) { s_prog_done++; load_progress(""); }
-            return 0;
+            goto loaded;
         }
     }
     if (g_zip_parent_data) {
@@ -378,13 +388,17 @@ static INT32 host_ext_load_rom(UINT8* Dest, INT32* pnWrote, INT32 i)
         if (zip_extract(g_zip_parent_data, g_zip_parent_size, name, Dest, (uint32_t)ri.nLen, &got) == 0 && got > 0) {
             if (pnWrote) *pnWrote = (INT32)got;
             if (s_prog_total) { s_prog_done++; load_progress(""); }
-            return 0;
+            goto loaded;
         }
     }
 
     printf("CPS: missing rom %s (index %d)\n", name, (int)i);
     if (pnWrote) *pnWrote = 0;
     return 1;
+
+loaded:
+    check_rom_crc(name, Dest, ri.nLen, (UINT32)ri.nCrc);
+    return 0;
 }
 
 // ---- рендер кадра pBurnDraw (RGB565, активная ширина nBurnPitch/2) в HDMI FB ----
