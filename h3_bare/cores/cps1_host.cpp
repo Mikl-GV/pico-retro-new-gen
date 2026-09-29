@@ -55,6 +55,12 @@ extern UINT32 SekGetPC(INT32 n);
 extern INT32 SekTotalCycles(INT32 nCPU);
 extern INT32 ZetTotalCycles(INT32 nCPU);
 extern INT32 m6805TotalCycles();
+// DBG-TEMP r0.349: рукопожатие тайто-протектора (Slap Fight/alcon) —
+// жив ли обмен main<->mcu.
+extern UINT8 from_main;
+extern UINT8 from_mcu;
+extern INT32 mcu_sent;
+extern INT32 main_sent;
 
 static UINT32 __cdecl host_high_col(INT32 r, INT32 g, INT32 b, INT32 i)
 {
@@ -424,23 +430,48 @@ static void host_render_frame(void)
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
 
-    uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)FB_W;
-    uint32_t acc_x = step_x >> 1;
-    static uint16_t sx[FB_W];
-    for (int dx = 0; dx < FB_W; dx++) {
-        sx[dx] = (uint16_t)(acc_x >> 16);
-        acc_x += step_x;
-        if (acc_x >= ((uint32_t)cols << 16)) acc_x -= ((uint32_t)cols << 16);
-    }
-    uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)FB_H;
-    uint32_t y_acc = step_y >> 1;
-    // ШАГ СТРОКИ ВСЕГДА = nBurnPitch/2 (см. объявление выше): буфер игры
-    // (особенно Toaplan через BurnTransferCopy / GP9001) идёт с этим шагом.
-    int sy = 0;
+    // Единый масштаб «по высоте» (как в других эмуляторах): ширина картинки
+    // пропорциональна высоте — ВЕСЬ кадр виден, по бокам чёрные поля.
+    // Если по высоте картинка вышла бы шире экрана — вписываем по ширине.
+    int view_w = (int)(((int64_t)cols * FB_H) / rows);
+    int view_h = FB_H;
+    if (view_w > FB_W) { view_w = FB_W; view_h = (int)(((int64_t)rows * FB_W) / cols); }
+    if (view_w < 1) view_w = 1;
+    if (view_h < 1) view_h = 1;
+    int x0 = (FB_W - view_w) / 2;
+    int y0 = (FB_H - view_h) / 2;
+    const uint32_t BLACK = 0;
+
+    // Чёрные поля (весь экран, кроме картинки)
     for (int dy = 0; dy < FB_H; dy++) {
-        const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)dy * FB_W;
-        for (int dx = 0; dx < FB_W; dx++) {
+        if (dy < y0 || dy >= y0 + view_h) {
+            for (int dx = 0; dx < FB_W; dx++) drow[dx] = BLACK;
+        } else {
+            for (int dx = 0; dx < x0; dx++) drow[dx] = BLACK;
+            for (int dx = x0 + view_w; dx < FB_W; dx++) drow[dx] = BLACK;
+        }
+    }
+
+    // таблица X по ширине картинки
+    static uint16_t sx[1024];
+    uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)view_w;
+    uint32_t acc_x = step_x >> 1;
+    for (int dx = 0; dx < view_w; dx++) {
+        uint32_t cur = acc_x >> 16;
+        if (cur >= (uint32_t)cols) cur = (uint32_t)cols - 1;
+        sx[dx] = (uint16_t)cur;
+        acc_x += step_x;
+    }
+
+    uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)view_h;
+    uint32_t y_acc = step_y >> 1;
+    for (int dy = 0; dy < view_h; dy++) {
+        int syi = (int)(y_acc >> 16);
+        if (syi >= rows) syi = rows - 1;
+        const uint16_t* srow = src + (size_t)syi * sstride;
+        uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
+        for (int dx = 0; dx < view_w; dx++) {
             uint16_t p = srow[sx[dx]];
             uint32_t r = ((p >> 11) & 0x1F) << 3;
             uint32_t g = ((p >> 5) & 0x3F) << 2;
@@ -448,8 +479,6 @@ static void host_render_frame(void)
             drow[dx] = (r << 16) | (g << 8) | b;
         }
         y_acc += step_y;
-        int nsy = (int)(y_acc >> 16);
-        if (nsy > sy) { if (nsy >= CPS1_H) nsy = CPS1_H - 1; sy = nsy; }
     }
 }
 
@@ -872,9 +901,9 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         if (g_toa) {
             static unsigned dbg_toa_fr = 0;
             if ((dbg_toa_fr++ % 120) == 0)
-                printf("DBG %s pc=%06X sek=%d zet=%d mcu=%d\n", game,
+                printf("DBG %s pc=%06X sek=%d zet=%d mcu=%d hs=%d/%d,%d/%d\n", game,
                        (unsigned)SekGetPC(0), SekTotalCycles(0), ZetTotalCycles(0),
-                       m6805TotalCycles());
+                       m6805TotalCycles(), mcu_sent, main_sent, from_main, from_mcu);
         }
         host_render_frame();
         fb_flush();
