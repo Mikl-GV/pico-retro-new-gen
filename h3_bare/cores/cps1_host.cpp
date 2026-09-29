@@ -431,70 +431,67 @@ static void host_render_frame(void)
     // Реальный кадр (из драйвера): NEO 304x224, CPS 384x224, Toaplan-гор 304x240,
     // truxton2 — 240x320 портрет (после разворота g_rot кадр трактуем 320x240).
     int W = cols, H = rows;
-    if (g_rot) { W = rows; H = cols; }
+    // Панель ПОРТРЕТНАЯ (600×1024 после физ. поворота). Вертикальную игру
+    // выводим как на портретной панели: длинная ось (rows) идёт по вертикали,
+    // короткая (cols) по горизонтали, равномерный масштаб, центр панели.
+    if (g_rot) {
+        const int FWp = FB_H;   // панельная ширина 600
+        const int FHp = FB_W;   // панельная высота 1024
+        int pw = (int)(((int64_t)cols * FHp) / rows);   // если бы вписывали по вертикали
+        int ph = FHp;
+        if (pw > FWp) { ph = (int)(((int64_t)rows * FWp) / cols); pw = FWp; }
+        if (pw < 1) pw = 1;
+        if (ph < 1) ph = 1;
+        int px0 = (FWp - pw) / 2;      // по панельной горизонтали (600)
+        int py0 = (FHp - ph) / 2;      // по панельной вертикали (1024)
 
-    // «Вписать по родному разрешению»: один равномерный коэффициент для обеих
-    // осей по краю, упирающемуся в экран; остальное — чёрные поля.
-    int vw, vh;
-    if ((int64_t)W * FB_H > (int64_t)H * FB_W) {   // ширину лимитирует экран
-        vw = FB_W; vh = (int)(((int64_t)H * FB_W) / W);
-    } else {
-        vh = FB_H; vw = (int)(((int64_t)W * FB_H) / H);
+        // закрашиваем весь буфер чёрным
+        for (int y = 0; y < FB_H; y++) {
+            uint32_t* drow = dst + (size_t)y * FB_W;
+            for (int x = 0; x < FB_W; x++) drow[x] = 0;
+        }
+
+        // транспонированная запись: панель (px,py) -> буфер (x=py, y=px)
+        for (int px = 0; px < FWp; px++) {
+            int gy = (int)(((int64_t)(px - px0) * cols) / pw);
+            if (gy < 0) gy = 0; else if (gy > cols - 1) gy = cols - 1;
+            for (int py = py0; py < py0 + ph; py++) {
+                int gx = (int)(((int64_t)(py - py0) * rows) / ph);
+                if (gx < 0) gx = 0; else if (gx > rows - 1) gx = rows - 1;
+                uint16_t p = src[(size_t)gx * sstride + gy];
+                uint32_t r = ((p >> 11) & 0x1F) << 3;
+                uint32_t g = ((p >> 5) & 0x3F) << 2;
+                uint32_t b = (p & 0x1F) << 3;
+                dst[(size_t)(px) * FB_W + py] = (r << 16) | (g << 8) | b;
+            }
+        }
+        return;
     }
+
+    // Обычный (не-повёрнутый) кадр: размеры, центрирование, поля, таблица X
+    int vw, vh;
+    if ((int64_t)W * FB_H > (int64_t)H * FB_W) { vw = FB_W; vh = (int)(((int64_t)H * FB_W) / W); }
+    else { vh = FB_H; vw = (int)(((int64_t)W * FB_H) / H); }
     if (vw < 1) vw = 1;
     if (vh < 1) vh = 1;
     int x0 = (FB_W - vw) / 2;
     int y0 = (FB_H - vh) / 2;
-
-    // Чёрные поля
     for (int dy = 0; dy < FB_H; dy++) {
         uint32_t* drow = dst + (size_t)dy * FB_W;
         if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
         else { for (int dx = 0; dx < x0; dx++) drow[dx] = 0;
                for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
     }
-
-    // ВАЖНО: масштабирование по таблицам шага (16.16 аккумуляторы), БЕЗ
-    // деления в пиксельном цикле — div64 на Cortex-A7 крайне медленный,
-    // он и давал «тормоза по отрисовке» у всех аркад.
-
-    // Готовим таблицу X (по ширине картинки vw): источник = rows (куdка для
-    // поворота) или cols (обычный кадр).
-    int xs_w = g_rot ? rows : cols;          // сколько исходных столбцов/строк по X
     static uint16_t sx[1024];
-    uint32_t step_x = ((uint32_t)xs_w << 16) / (uint32_t)vw;
+    uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)vw;
     uint32_t acc_x = step_x >> 1;
     for (int dx = 0; dx < vw; dx++) {
         uint32_t t = acc_x >> 16;
-        if (t >= (uint32_t)xs_w) t = xs_w - 1;
+        if (t >= (uint32_t)cols) t = cols - 1;
         sx[dx] = (uint16_t)t;
         acc_x += step_x;
     }
 
-    if (g_rot) {
-        // Вертикаль: длинная ось (rows) — по X (таблица sx), короткая (cols) — по Y.
-        uint32_t step_y = ((uint32_t)cols << 16) / (uint32_t)vh;
-        uint32_t y_acc = step_y >> 1;
-        for (int dy = 0; dy < vh; dy++) {
-            // r0.361: 180° + зеркало = вертикальное зеркало текущего — Y инверт.
-            uint32_t t = y_acc >> 16;
-            if (t >= (uint32_t)cols) t = cols - 1;
-            uint32_t gy = cols - 1 - t;
-            uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
-            uint16_t const* srow = src + (size_t)gy;
-            for (int dx = 0; dx < vw; dx++) {
-                uint16_t p = srow[(size_t)sx[dx] * sstride];
-                uint32_t r = ((p >> 11) & 0x1F) << 3;
-                uint32_t g = ((p >> 5) & 0x3F) << 2;
-                uint32_t b = (p & 0x1F) << 3;
-                drow[dx] = (r << 16) | (g << 8) | b;
-            }
-            y_acc += step_y;
-        }
-        return;
-    }
-
-    // Обычный кадр
     uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)vh;
     uint32_t y_acc = step_y >> 1;
     for (int dy = 0; dy < vh; dy++) {
@@ -887,8 +884,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             g_frame_w = nw;
             g_frame_h = nh;
         }
-        g_rot = 0;   // поворот в эмуляторе НЕ делаем — панель поворачивается физически (TATE),
-                     // кадр выводится как есть: левый=левый, верх=верх.
+        g_rot = (gp9001 && vert) ? 1 : 0;   // вертикали GP9001: выводим «как на портретной панели»
+                     // (вписывание в 600×1024, центр панели).
         printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d rot=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
                g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
