@@ -893,7 +893,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             g_frame_w = nw;
             g_frame_h = nh;
         }
-        g_rot = (gp9001 && vert) ? 1 : 0;
+        g_rot = 0;   // r0.355: поворот вертикалей отключён (был чёрный экран),
+                     // все игры идут обычным путём «вписать по высоте».
         printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d gp9001=%d -> %dx%d pitch=%d rot=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert, gp9001,
                g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
