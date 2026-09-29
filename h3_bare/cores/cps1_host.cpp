@@ -776,24 +776,18 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         nBurnPitch = nNeoScreenWidth * 2;
         g_frame_h = CPS1_H;
         g_frame_w = nBurnPitch >> 1;
-    } else if (g_toa) {
-        // Toaplan: физический питч буфера зависит от платы:
-        //  - GP9001 (raizing/toaplan2/toaplan3) рисует в 320-й буфер
-        //    (ToaClearScreen/ToaGetBitmap), вертикалки кладут натив 240x320;
-        //  - старые платы (Slap Fight/M6805 и др.) рисуют своей шириной
-        //    (BurnDrvRedraw) — питч равен нативной ширине драйвера.
-        // BurnDrvGetFullSize для вертикальных УЖЕ свопит w/h.
-        INT32 fw = 0, fh = 0;
+} else if (g_toa) {
+        // Toaplan: пока возвращаем прежнее поведение (питч буфера 320 как у
+        // GP9001-плат; вертикалки П_GetFullSize уже свопает ¬— рамка из него).
+        // Slap Fight (M6805/GenericTilemap) требует отдельной настройки — см. V=.
+        INT32 fw = 0, fh = 0, vw = 0, vh = 0;
         BurnDrvGetFullSize(&fw, &fh);
-        INT32 thw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
-        int gp9001 = (thw == HARDWARE_TOAPLAN_RAIZING || thw == HARDWARE_TOAPLAN_68K_Zx80 ||
-                      thw == HARDWARE_TOAPLAN_68K_ONLY);
-        int nw, nh;   // натив (как в драйвере: у вертикалок ширина < высоты)
-        if (BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL) { nw = fh; nh = fw; }
-        else { nw = fw; nh = fh; }
-        nBurnPitch = gp9001 ? (TOA_W * 2) : (nw * 2);
-        g_frame_w = (nw > 0 && nw <= CPS1_W) ? nw : TOA_W;
-        g_frame_h = (nh > 0 && nh <= 400)    ? nh : TOA_H;
+        BurnDrvGetVisibleSize(&vw, &vh);
+        nBurnPitch = TOA_W * 2;
+        g_frame_w = (fw > 0 && fw <= TOA_W) ? (int)fw : TOA_W;
+        g_frame_h = (fh > 0 && fh <= 400)   ? (int)fh : TOA_H;
+        printf("TOA: game %s full=%dx%d visible=%dx%d pitch=%d\n", game,
+               (int)fw, (int)fh, (int)vw, (int)vh, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
