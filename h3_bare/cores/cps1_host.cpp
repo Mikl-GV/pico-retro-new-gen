@@ -410,9 +410,16 @@ static void host_render_frame(void)
     }
     uint32_t step_y = ((uint32_t)rows << 16) / (uint32_t)FB_H;
     uint32_t y_acc = step_y >> 1;
+    // ШАГ СТРОКИ ВСЕГДА = nBurnPitch/2: буфер игры (особенно Toaplan через
+    // BurnTransferCopy / GP9001) идёт с этим шагом, а «cols» — лишь ширина
+    // показываемого кадра. Использование cols как шага давало накопительный
+    // сдвиг строк, когда cols != pitch/2 (Slap Fight/alcon: строка 280 против
+    // питча 320 → каждая строка уезжала на 40 px).
+    int sstride = nBurnPitch >> 1;
+    if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     int sy = 0;
     for (int dy = 0; dy < FB_H; dy++) {
-        const uint16_t* srow = src + (size_t)sy * cols;
+        const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)dy * FB_W;
         for (int dx = 0; dx < FB_W; dx++) {
             uint16_t p = srow[sx[dx]];
