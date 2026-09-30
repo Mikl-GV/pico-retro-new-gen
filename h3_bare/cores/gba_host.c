@@ -19,6 +19,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 
 extern int printf(const char* fmt, ...);
@@ -59,7 +60,7 @@ static u16 gba_buttons(void) {
     int n = usb_kbd_get_raw(keys, 8);
     u16 b = 0;
 
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) b |= 0x40;   // Up
     if (sp & 0x0002) b |= 0x80;   // Down
     if (sp & 0x0004) b |= 0x20;   // Left

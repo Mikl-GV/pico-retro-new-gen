@@ -22,6 +22,7 @@
 
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
@@ -66,7 +67,7 @@ static void gpgx_poll_input(void) {
     int n = usb_kbd_get_raw(keys, 6);
     uint16_t pad = 0;
 
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) pad |= INPUT_UP;
     if (sp & 0x0002) pad |= INPUT_DOWN;
     if (sp & 0x0004) pad |= INPUT_LEFT;

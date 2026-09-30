@@ -51,6 +51,7 @@ unsigned image_buffer_height = HEIGHT;
 
 #include "msx_compat.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "emu.h"
@@ -86,7 +87,7 @@ void SetColor(uint8_t N, uint8_t R, uint8_t G, uint8_t B) {
 
 // ---- Joystick — вызывается ядром на строке 192 каждого кадра ----
 unsigned int Joystick(void) {
-    uint16_t pad = sega_pad_scan();
+    uint16_t pad = pad_scan_combined();
     unsigned int js = 0;
     if (pad & 0x0001) js |= JST_UP;
     if (pad & 0x0002) js |= JST_DOWN;

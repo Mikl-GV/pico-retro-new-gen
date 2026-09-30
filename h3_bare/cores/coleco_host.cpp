@@ -19,6 +19,7 @@
 extern "C" {
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
@@ -58,7 +59,7 @@ static void coleco_build_input(GearcolecoCore* core) {
 // не шлют отчёты на удержание → удержание «рвалось» (движение по шагу).
 uint8_t keys[6];
     int n = usb_kbd_get_raw(keys, 6);
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
 
     // r176: для каждой кнопки зовём KeyPressed ИЛИ KeyReleased по факту —
     // раньше был только KeyPressed, и кнопки в Gearcoleco «залипали».

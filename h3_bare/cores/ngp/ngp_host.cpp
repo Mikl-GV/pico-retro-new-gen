@@ -9,6 +9,7 @@
 extern "C" {
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
 }
@@ -75,7 +76,7 @@ static int ngp_input_state(void) {
     unsigned char state = 0;
 
     // Sega-геймпад: крестовина + A/B + Start + Mode->Option
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) state |= 0x01;   // Up
     if (sp & 0x0002) state |= 0x02;   // Down
     if (sp & 0x0004) state |= 0x04;   // Left

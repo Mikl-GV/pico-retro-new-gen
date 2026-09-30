@@ -8,6 +8,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
 }
@@ -82,7 +83,7 @@ static uint16_t pad_from_kbd(void) {
     // отдельно через prosystem_Pause() в a7800_run_frame.
 
     // Sega-геймпад: крестовина + A/B + Start + Mode->Select/Pause
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) pad &= ~0x10;   // Up
     if (sp & 0x0002) pad &= ~0x20;   // Down
     if (sp & 0x0004) pad &= ~0x40;   // Left

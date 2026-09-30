@@ -8,6 +8,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
 }
@@ -93,7 +94,7 @@ extern "C" int a5_GetPad(void) {
     // Sega-геймпад: крестовина, A=Fire, B=Pause,
     // r173: Start = Start (запуск игры), Mode = keypad '#';
     // keypad '0'/'#': '0' — клавиатура, '#' — Mode-джой/клавиатура.
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) k |= 0x0004;   // Up
     if (sp & 0x0002) k |= 0x0008;   // Down
     if (sp & 0x0004) k |= 0x0002;   // Left

@@ -22,6 +22,7 @@
 
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
@@ -197,7 +198,7 @@ static uint8_t vx_buttons(void) {
     if (remap_kbd_pressed(REMAP_PLAT_VECTREX, BTN_LEFT, keys, n))  alg_jch0 = 0x00;
     if (remap_kbd_pressed(REMAP_PLAT_VECTREX, BTN_RIGHT, keys, n)) alg_jch0 = 0xff;
     // Sega-геймпад: крестовина + A/B/X/Y = 1/2/3/4
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) alg_jch1 = 0xff;   // Up
     if (sp & 0x0002) alg_jch1 = 0x00;   // Down
     if (sp & 0x0004) alg_jch0 = 0x00;   // Left

@@ -34,6 +34,7 @@ extern "C" {
 #include "emu.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
 #include "fat.h"
@@ -627,13 +628,13 @@ static void host_update_input(void)
         }
     }
 
-    // Sega-пад: НЕ МЕНЯТЬ прямое чтение — только sega_pad_scan() раз в кадр,
+    // Sega-пад: НЕ МЕНЯТЬ прямое чтение — только pad_scan_combined() раз в кадр,
     // без фильтров/дебаунса на хосте. scan сам НЕ ощущается надёжным и уже
     // внутренне фильтрует фазы (тайминги эмпирические, sega_pad.c — отдельная
     // зона). Попытки фильтровать на хосте ломали ввод: usb_pad (3 скана)
     // глотал короткие X/Y/Z, «пересечение двух сканов» (r0.301) убивало пад
     // вовсе из-за кадрового интервала 16 мс.
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & SP_UP)    p1.up     = 1;
     if (sp & SP_DOWN)  p1.down   = 1;
     if (sp & SP_LEFT)  p1.left   = 1;

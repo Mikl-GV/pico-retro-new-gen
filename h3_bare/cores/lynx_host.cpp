@@ -6,6 +6,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
 }
@@ -43,7 +44,7 @@ static ULONG lynx_buttons_from_kbd(void) {
     int n = usb_kbd_get_raw(keys, 6);
     ULONG b = 0;
 
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) b |= 0x40;   // Up    = BUTTON_UP
     if (sp & 0x0002) b |= 0x80;   // Down  = BUTTON_DOWN
     if (sp & 0x0004) b |= 0x10;   // Left  = BUTTON_LEFT

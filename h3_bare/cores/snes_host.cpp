@@ -26,6 +26,7 @@ extern "C" {
 #include "remap.h"
 #include "emu.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "cheatdb.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
@@ -118,7 +119,7 @@ static void build_input(void) {
 
     // Sega-геймпад (PCF8574): крестовина + A/B/C/X/Y/Z/Start/Mode
     // Таблица: A->A B->B C->L X->X Y->Y Z->R Start Mode->Select
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) g_joydata |= SNES_UP_MASK;
     if (sp & 0x0002) g_joydata |= SNES_DOWN_MASK;
     if (sp & 0x0004) g_joydata |= SNES_LEFT_MASK;

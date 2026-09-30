@@ -62,7 +62,15 @@
    **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (распаковка через zlib из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
    **Сделано (r0.260):** (1) вендор в `h3_bare/cores/cps1/` (несколько но вне OBJ); (2) host-слой `cps1_host.cpp`: FAT-чтение папки или zip-инфлейт (`ZipExtract`), выбор драйвера по короткому имени (`BurnDrvGetIndex`), цикл `BurnDrvFrame`, кадр RGB565 384×224 → прямой ресайз в HDMI FB 1024×600, ввод: P1 (ремап-платформа `REMAP_PLAT_CPS1` — стрелки+Z/X/C, Enter/1=Start, 5=Coin) + Sega-пад (A/B/C, X=Coin), P2 хардкод (WASD+J/K/L, 2/6); ESC-выход, 60 Гц; (3) меню «CPS-1» (READY) → браузер `/roms/cps1/*` (папки и zip); (4) генерация `m68kops.c/h` нативным m68kmake в `build/` на сборке. `m68kops` не в git.
    **Осталось:** звук (PSG/YM2151/QSound → I2S), Sega System 2/16 — отдельно. NEOGEO — сделано (r0.32x), Toaplan — сделано (r0.36x), Cave-68K — сделано (r0.377-378: donpachi/esprade/guwange и т.д.). См. `docs/NEOGEO-HANDOFF.md`, `docs/TOAPLAN-HANDOFF.md`, `docs/ARCADES-PLAN.md`.
-9. **Аркады: порт семейств плат из FBNeo** — см. отдельный план в `docs/ARCADES-PLAN.md`. Порядок: Sega System 16 → Taito 68K → Data East 68K → Psikyo/Midway; новые CPU (6809/6502) — отдельная веха (откроет Konami/Namco/Capcom-ранние). Текущий статус — см. ARCADES-PLAN (следующий: Sega System 16).
+9. **Аркады: порт семейств плат из FBNeo** — см. отдельный план в `docs/ARCADES-PLAN.md`. Порядок: Sega System 16 → Taito 68K → Data East 68K → Psikyo/Midway; новые CPU (6809/6502) — отдельная веха (откроет Konami/Namco/Capcom-ранние). Текущий статус — см. ARCADES-PLAN (следующий: Taito 68K).
+10. **Компьютеры (II очередь)** — добавить в systems.h/README (запланированы, PLANNED):
+    - **МС 1504** — советский офисный ПК (К580ВМ80А/К1801ВМ1-класс); ядро — по аналогии с бэкапов (поиск libretro-порта при старте)
+    - **Радио-86РК** — К580ВМ80А, монитор-ПЗУ + RAM; ядро-кандидат: libretro `rk86` (порт эмулятора Радио-86РК)
+    - **Amstrad CPC** — Z80 (+CRTC); ядро libretro **cap32** (как Fuse, порт на bare-metal)
+    - **Atari 8-bit (400/800/XL/XE)** — 6502; ядро libretro **atari800** (у нас уже есть референс для A2600/5200/7800)
+    - **Commodore 64** — 6510; ядро libretro **vice_x64** (большое) или облегчённый **frodo** — требует оценки
+    - **Enterprise 64/128** — Z80; ядро libretro **ep128emu** (маленькое, подходит по паттерну)
+    Порядок внедрения: Atari 8-bit → Amstrad CPC → Enterprise → Радио-86РК → МС 1504 → C64
 
 ## Перспективы (идеи, не начаты)
 

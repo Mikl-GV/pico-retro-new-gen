@@ -23,6 +23,7 @@
 #include "emu.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 
@@ -153,7 +154,7 @@ static void host_update_input(void)
     if (mods & 0x40) g_kbd[RETROK_RALT] = 1;
 
     uint16_t j = 0;
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) j |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);

@@ -22,6 +22,7 @@
 #include "emu.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
 
@@ -67,7 +68,7 @@ static void host_update_input(void)
     if (remap_kbd_pressed(REMAP_PLAT_PCE, BTN_START,  keys, n)) j |= (1u << RETRO_DEVICE_ID_JOYPAD_START);   // Run
     if (remap_kbd_pressed(REMAP_PLAT_PCE, BTN_SELECT, keys, n)) j |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT);  // Select
 
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) j |= (1u << RETRO_DEVICE_ID_JOYPAD_UP);
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);

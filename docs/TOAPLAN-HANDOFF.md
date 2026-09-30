@@ -1,7 +1,8 @@
-# Передача: Toaplan + портретная панель — промт для нового чата
+# Передача: Toaplan + портретная панель + аркадные семейства — промт для нового чата
 
-Служебный файл-хендовер после r0.376. Скопируй ПРОМТ целиком в новый чат.
+Служебный файл-хендовер после r0.388. Скопируй ПРОМТ целиком в новый чат.
 Общие правила проекта — см. docs/CPS1-HANDOFF.md и docs/NEOGEO-HANDOFF.md.
+План добавления семейств плат — docs/ARCADES-PLAN.md.
 
 ---
 
@@ -14,12 +15,13 @@
 
 СБОРКА: `bash -lc 'make clean && make -j16'` (login shell; нужен shim ~/bin/cygpath).
 Тулчейн xPack arm-none-eabi-gcc 15.2.1. Бинарь build/h3_bare.bin -> корень h3_bare.bin.
-Версию баннера поднимать при КАЖДОЙ сборке: h3_bare/src/main.c (r0.376 сейчас).
+Версию баннера поднимать при КАЖДОЙ сборке: h3_bare/src/main.c (r0.388 сейчас).
 ВНИМАНИЕ: после правки ЛЮБОГО .h обязателен clean && make (зависимостей на .h нет).
 
-СТАТУС: работают 19 систем + CPS-1/CPS-2 + NEOGEO + Toaplan (~145 игр:
-68K, NEC V25/V30, TMS32010, Z180, M6805 — все CPU в дереве h3_bare/cores/cps1/src/cpu/).
-Cave НЕ делаем (SH-4); Atari Jaguar ОТКЛОНЁН (слишком тяжёл для Cortex-A7).
+СТАТУС: 19 систем + аркадные семейства FBNeo: CPS-1/CPS-2, NEOGEO/MVS, Toaplan,
+Cave (68K-эра) и Sega System 16/18 (см. docs/ARCADES-PLAN.md). CPU в дереве:
+68K, Z80, NEC V25/V30, TMS32010, Z180, M6805, MCS-51(i8051), i8039.
+Cave SH-4/CV-1000 и Atari Jaguar НЕ делаем (тяжёлые для Cortex-A7).
 В меню есть пункт "FB Neo (Arcade)" (общий корень /roms/fbneo), но драйверов в
 прошивке там только 2 (batrider, bgaregga); остальные 373 сета — чужие платы,
 каталог: docs/FBNEO-ROMS.md.

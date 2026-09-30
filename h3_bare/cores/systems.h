@@ -72,9 +72,13 @@ static const system_entry_t systems[] = {
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),
     SYS_BUILTIN("msx",  "MSX / Yamaha YIS-503II",  COMPUTER, READY),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
-    SYS("bk0010",     "BK-0010/0011M",               COMPUTER, READY),
-    SYS_BUILTIN("portfolio", "Atari Portfolio",     COMPUTER, READY),
-    SYS("ms1504",     "MS 1504",                     COMPUTER, PLANNED),
+    SYS_BUILTIN("bk0010", "BK-0010/0011M",       COMPUTER, READY),
+    SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
+    SYS("ms1504",     "MS 1504",                  COMPUTER, PLANNED),
+    SYS("cpc",        "Amstrad CPC",              COMPUTER, PLANNED),
+    SYS("atari800",   "Atari 8-bit (400/800/XL/XE)", COMPUTER, PLANNED),
+    SYS("c64",        "Commodore 64",             COMPUTER, PLANNED),
+    SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };
 
 #define NUM_SYSTEMS (sizeof(systems) / sizeof(systems[0]))

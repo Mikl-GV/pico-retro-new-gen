@@ -29,6 +29,7 @@ extern "C" {
 #include "cheatdb.h"
 #include "cheat.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 }
 
@@ -106,7 +107,7 @@ static void build_input(void) {
 
     // Sega-геймпад (PCF8574) -> геймпад NES ВСЕГДА (и при SuborKB:
     // клавиатура уходит в SuborKB, джойстик остаётся геймпадом — разделение ввода)
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) g_joydata |= 0x10;
     if (sp & 0x0002) g_joydata |= 0x20;
     if (sp & 0x0004) g_joydata |= 0x40;

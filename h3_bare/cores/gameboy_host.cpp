@@ -6,6 +6,7 @@ extern "C" {
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
 }
@@ -119,7 +120,7 @@ extern "C" void gb_run_frame(void) {
     memset(&jp, 0, sizeof(jp));
 
     // Sega-геймпад: A->A B->B Start Mode->Select
-    uint16_t sp = sega_pad_scan();
+    uint16_t sp = pad_scan_combined();
     if (sp & 0x0001) jp.up = TRUE;
     if (sp & 0x0002) jp.down = TRUE;
     if (sp & 0x0004) jp.left = TRUE;

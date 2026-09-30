@@ -93,8 +93,7 @@ Vectrex: стик = 4 направления (аналог), кнопки 1/2/3/
 |--------|---------|
 | ✅ Готово | Atari 2600, Atari 5200, Atari 7800, Atari Lynx, NES / Famicom, Sega Master System, Sega Game Gear, Sega Mega Drive / Genesis, Game Boy / GBC, **Game Boy Advance**, **Neo Geo Pocket / Color**, **SNES / Super Famicom**, **MSX / MSX2 (Ямаха YIS-503II)**, **ColecoVision**, **PC Engine / TurboGrafx (HuCard)**, **ZX Spectrum (Fuse)**, **БК-0010/0011М**, Atari Portfolio, **Capcom CPS-1 / CPS-2, NEOGEO / MVS, Toaplan, Cave (68K), Sega System 16 — порт FinalBurn Neo** |
 | 🚧 Отложено | GCE Vectrex (статус READY, но картинка не собирается — см. ROADMAP) |
-| 🚧 В работе | Toaplan alcon / Slap Fight — рукопожатие протектора M6805 живо, но волны не спавнятся (оставлено как есть, см. docs/TOAPLAN-HANDOFF.md) |
-| 🔲 План | прочие аркады, Радио-86РК, MS 1504 |
+| 🔲 План | Компьютеры: **МС 1504, Радио-86РК, Amstrad CPC, Atari 8-bit (400/800/XL/XE), Commodore 64, Enterprise 64/128** (ядра см. в docs/ROADMAP.md); прочие аркады |
 
 ROM-файлы — в `/roms/<id>/` на SD. Поддержка: `.a26` (4K/8K/16K), `.a52`, `.a78`, `.nes` (iNES 1.0), `.sms`, `.gg`, `.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`/`.npc`, `.gba`, `.rom`/`.mx1`/`.mx2` (MSX), `.vec` (Vectrex), `.col`/`.bin` (ColecoVision), `.pce` (PC Engine), `.z80`/`.sna` (ZX Spectrum), `.bin`/`.img` (БК-0010).
 Аркады (CPS-1/2, NEOGEO, Toaplan, FB Neo): папка с сырыми дампами чипов или `.zip` целого сета в `/roms/<cps1|cps2|neogeo|toaplan|fbneo>/` — список игр см. в docs/FBNEO-ROMS.md.
@@ -107,6 +106,7 @@ ZX Spectrum (Fuse) — **BIOS вшит**: из меню выбор модели 
 
 - **USB-клавиатура** — меню и все эмуляторы (HID boot protocol)
 - **Sega-геймпад 6-button** через PCF8574@0x20 (TWI0: PA11=SCL, PA12=SDA) — меню (D-Pad=A/Start/B/Mode) и все эмуляторы (Atari Portfolio — клавиатурный компьютер, геймпад не подключается)
+- **8-битный кнопочный пад PCF8574@0x20** (r0.389): B0=Вверх B1=Влево B2=Вправо B3=Вниз B4=A B5=B B6=Start B7=Select/Coin(аркады); подключён ко всем эмуляторам и меню; в меню — A=выбор, B=назад, направление с автоповтором; выход из эмулятора — удержание Start ~1 с (карта и детали — docs/CONTROLS.md)
 - Карта кнопок — в [`docs/CONTROLS.md`](docs/CONTROLS.md)
 
 ## Читы

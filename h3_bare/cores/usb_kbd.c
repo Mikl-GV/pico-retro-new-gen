@@ -7,7 +7,7 @@
 //       скана), автоповтор D-Pad 400/200 мс. Кэш 12 мс + паузы циклов меню
 //       16 мс намеренно снижают частоту I2C — иначе RMW-гонка с TFT-ядром
 //       рвала сканы («джой тупит»).
-//     * ИГРЫ (host-слои): прямой sega_pad_scan() раз в кадр в build_input —
+//     * ИГРЫ (host-слои): прямой pad_scan_combined() раз в кадр в build_input —
 //       МИМО кэша/антидребезга. Это нормально; g_pad_cache_t при этом.
 //   НЕ МЕНЯТЬ PAD_CACHE_US/PAD_DEBOUNCE_HITS/порядок опросов без прохода
 //   «Sega 6-button test + движение в меню + крестовина в NES/MD».
@@ -47,6 +47,7 @@
 #include "uart.h"
 #include "usb_ohci.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "usb_kbd.h"   // KBD_EV_* и прототипы слоя
 
 #define TOUCH_BUF   16
@@ -200,7 +201,7 @@ void usb_pad_update(void) {
     if (now - g_pad_cache_t < PAD_CACHE_US) return;   // кэш свежий
     g_pad_cache_t = now;
 
-    uint16_t pad = sega_pad_scan();
+    uint16_t pad = pad_scan_combined();
 
     // антидребезг: состояние принимается после PAD_DEBOUNCE_HITS одинаковых сканов
     if (pad != g_pad_deb) { g_pad_deb = pad; g_pad_deb_cnt = 1; return; }
@@ -709,7 +710,7 @@ uint16_t usb_pad_just_pressed(void) {
 // на тысячи секунд (старый лимит 1 000 000 итераций × 1 мс).
 void usb_pad_wait_release(void) {
     uint32_t guard = 0;
-    while (sega_pad_scan() != 0 && ++guard < 500) udelay(1000);
+    while (pad_scan_combined() != 0 && ++guard < 500) udelay(1000);
     if (guard >= 500) {
         // Залипший пад: сброс PCF8574 (0xFF → TH=1 idle), как в sega_pad_test_run
         sega_pad_init();

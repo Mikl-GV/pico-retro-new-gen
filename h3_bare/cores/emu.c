@@ -6,6 +6,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
+#include "btn_pad.h"
 #include "h3_hs_timer.h"
 #include "led.h"
 
@@ -224,13 +225,13 @@ int emu_esc_hold(void) {
     for (int i = 0; i < n; i++)
         if (raw_keys[i] == 41) { esc = 1; break; }
 
-    // Геймпад: Start (0x0080) + Mode (0x0800) вместе = выход
+// Геймпад: Start удержан ~1 с = выход в меню (r0.389)
     uint32_t now = h3_hs_timer_lo_us();
     if (now - g_pad_esc_t > 50000) {
         g_pad_esc_t = now;
-        g_pad_esc_val = sega_pad_scan();
+        g_pad_esc_val = pad_scan_combined();
     }
-    if ((g_pad_esc_val & 0x0080) && (g_pad_esc_val & 0x0800)) esc = 1;
+    if (g_pad_esc_val & 0x0080) esc = 1;   // Start (hold через esc-арм ниже)
 
     if (esc) {
         g_no_esc_since = 0;
