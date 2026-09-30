@@ -64,18 +64,29 @@ static uint32_t fat_next_cluster(uint32_t cl) {
     return v;
 }
 
+// r0.417 (H1 аудита): верхняя граница итераций цепочки кластеров —
+// защита от бесконечного обхода при цикле в цепочке на битой FAT.
+static uint32_t chain_guard_limit(void) {
+    uint32_t l = g_total_clusters;
+    return (l < 100000) ? 100000 : l;
+}
+
 // ---- чтение по байтам из цепочки кластеров ----
 static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t len) {
     if (g_sec_per_cluster == 0) return 0;
     uint32_t cl_size = g_sec_per_cluster * 512;
     uint32_t skip = offset;
+    uint32_t guard = 0;
+    uint32_t clim = chain_guard_limit();
     while (skip >= cl_size) {
+        if (guard++ >= clim) return 0;
         cl = fat_next_cluster(cl);
         if (cl >= 0x0FFFFFF8) return 0;
         skip -= cl_size;
     }
     uint32_t done = 0;
-    while (done < len) {
+    guard = 0;
+    while (done < len && guard++ < clim) {
         if (cl == 0 || cl >= 0x0FFFFFF8) break;
         uint32_t sec_off = cluster_to_sector(cl) + skip / 512;
         uint32_t in_sec  = skip % 512;
@@ -182,8 +193,10 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
     int count = 0;
     char lfn[FAT_NAME_LEN] = {0};
     int lfn_len = 0;
+    uint32_t guard = 0;
+    uint32_t clim = chain_guard_limit();
 
-    while (cl && cl < 0x0FFFFFF8) {
+    while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t sec = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
             if (sd_read_sector(sec + s, g_sector) < 0) return count;
@@ -258,10 +271,14 @@ int fat_init(void) {
             uint32_t base = tbl_lba;
             for (uint32_t e = 0; e < nentries && part_count < MAX_PART; e++) {
                 uint32_t sec = base + (e * esize) / 512;
-                uint32_t off = (e * esize) % 512;
-                if (off == 0) {
-                    if (sd_read_sector(sec, tbl) < 0) break;
-                }
+uint32_t off = (e * esize) % 512;
+            // r0.417 (M7 аудита): запись читается до en[39] (48-бит LBA на
+            // offset 32). При битом GPT с esize>473 чтение выходит за конец
+            // стекового буфера tbl[512] — обрываем цикл.
+            if ((uint32_t)off + 40 > 512) break;
+            if (off == 0) {
+                if (sd_read_sector(sec, tbl) < 0) break;
+            }
                 // Тип GUID — FAT32 / basic data: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
                 // LBA первое (48 бит) на offset 32 в запись
                 const uint8_t* en = tbl + off;
@@ -478,7 +495,9 @@ static int find_free_entries(uint32_t cl, int count, uint32_t* first_sec, int* f
 
 // найти свободное место в директории (пустая/удалённая запись)
 static int find_free_entry(uint32_t cl, uint32_t* sec_out, int* off_out) {
-    while (cl && cl < 0x0FFFFFF8) {
+    uint32_t guard = 0;
+    uint32_t clim = chain_guard_limit();
+    while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t base = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
             if (sd_read_sector(base + s, g_sector) < 0) return -1;
@@ -612,8 +631,10 @@ int fat_delete_file(const char* dir, const char* name) {
     uint32_t entry_sec = 0;
     int entry_off = 0;
     int found = 0;
+    uint32_t walk_guard = 0;
+    uint32_t clim = chain_guard_limit();
 
-    while (cl && cl < 0x0FFFFFF8 && !found) {
+    while (cl && cl < 0x0FFFFFF8 && !found && walk_guard++ < clim) {
         uint32_t base = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster && !found; s++) {
             if (sd_read_sector(base + s, g_sector) < 0) return -1;

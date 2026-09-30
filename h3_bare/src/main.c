@@ -14,7 +14,6 @@
 #include "emu.h"
 #include "h3_hs_timer.h"
 #include "led.h"
-#include "ths_fan.h"
 #include "sega_pad.h"
 #include "remap.h"
 #include "tft_drv.h"
@@ -234,7 +233,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.416 (15.2.1)";
+const char g_fw_version[] = "r500";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,16 +241,12 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r0.416 (15.2.1)\n");
+    uart_puts("build: r500\n");
 
     led_init();
     led_set(0);
 
     h3_hs_timer_init();
-
-    // r0.411: термодатчик H3 + вентилятор (THS; PA6=управление, PA7=FG).
-    // До первого fb_flush: oверлей будет рисоваться поверх кадров при перегреве.
-    ths_fan_init();
 
     struct display_timing timing;
     memset(&timing, 0, sizeof(timing));

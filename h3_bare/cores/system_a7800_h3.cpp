@@ -102,10 +102,14 @@ static uint16_t pad_from_kbd(void) {
     if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_B, keys, n))     pad &= ~0x01;
     if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_SELECT, keys, n)) pad &= ~0x04;
     if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_START, keys, n)) pad &= ~0x08;
+    // r0.417 (L12): Pause с клавиатуры (дефолт P), как у Sega-пада (Z)
+    if (remap_kbd_pressed(REMAP_PLAT_A7800, BTN_PAUSE, keys, n)) pad &= ~0x100;
     return pad;
 }
 
 extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
+    // r0.417 (L12 аудита): битый элемент — не запускать (как остальные host-слои)
+    if (!rom || size == 0) { printf("[a7800] no ROM\n"); return 0; }
     if (size > sizeof(a7_rom_data)) size = sizeof(a7_rom_data);
     memcpy(a7_rom_data, rom, size);
     a7_rom_size = size;

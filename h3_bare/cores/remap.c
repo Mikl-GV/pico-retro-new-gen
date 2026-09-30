@@ -181,6 +181,7 @@ static const uint16_t def_a7800[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
+    [BTN_PAUSE]=KBD_P,   // r0.417 (L12): Pause с клавиатуры (как A2600/SMS)
 };
 // Vectrex: аналоговый стик (4 напр.) + 4 кнопки (1/2/3/4)
 static const uint16_t def_vectrex[BTN_MAX] = {
@@ -289,6 +290,9 @@ int remap_kbd_pressed(int plat, int btn, const uint8_t* keys, int n) {
 }
 
 // ================= Конфиг /retro.cfg =================
+// r0.417 (M1/M2): лимит буфера конфига. Максимум 16 платформ × 23 кнопки
+// строк ~9 КБ — 16 КБ с запасом; чтение `>=` резервирует место под '\0'.
+#define CFG_MAX 16384
 // Формат: 'платформа.кнопка=сканкод' или '...=SHIFT+сканкод'. Строка на привязку.
 // Поддерживаются:
 //   - пустые строки (пропускаются)
@@ -353,8 +357,10 @@ void remap_load(void) {
     remap_defaults();
     fat_entry_t f;
     if (!fat_find("/", "retro.cfg", &f)) return;
-    if (!f.size || f.size > 4096) return;
-    static char cfg[4096];
+    // r0.417 (M1/M2 аудита): буфер больше (конфиг 16×23 строк ~9 КБ макс) и
+    // `>=` резервирует место под завершающий '\0' (равно CSED не давало OOB).
+    if (!f.size || f.size >= CFG_MAX) return;
+    static char cfg[CFG_MAX];
     int r = fat_read_file(&f, 0, (uint8_t*)cfg, f.size);
     if (r <= 0) return;
     cfg[r] = 0;
@@ -379,26 +385,26 @@ static void write_uint(char* d, int* pos, int v) {
 }
 
 void remap_save(void) {
-    char buf[1024];
+    char buf[CFG_MAX];
     int pl = 0;
     for (int p = 0; p < REMAP_PLAT_COUNT; p++) {
         for (int b = 0; b < BTN_MAX; b++) {
             uint16_t v = g_map[p][b];
             if (v == plat_specs[p].def[b]) continue;
             if (!v && !plat_specs[p].def[b]) continue;   // оба пустые — не пишем
-            if (pl > 900) break;
-            const char* k = plat_specs[p].key; while (*k && pl < 1023) buf[pl++] = *k++;
+            if (pl > CFG_MAX - 64) break;   // страховка от переполнения (недостижима при 16 КБ)
+            const char* k = plat_specs[p].key; while (*k && pl < CFG_MAX - 2) buf[pl++] = *k++;
             buf[pl++] = '.';
-            k = btn_keys[b]; while (*k && pl < 1023) buf[pl++] = *k++;
+            k = btn_keys[b]; while (*k && pl < CFG_MAX - 2) buf[pl++] = *k++;
             buf[pl++] = '=';
             int mod = v >> 8;
             if (mod & REMAP_MOD_SHIFT) {
-                const char* s = "SHIFT+"; while (*s && pl < 1023) buf[pl++] = *s++;
+                const char* s = "SHIFT+"; while (*s && pl < CFG_MAX - 2) buf[pl++] = *s++;
             }
             // значение: имя клавиши (A, ENTER, UP...) вместо числа — понятнее
             const char* nm = key_sc_to_name((uint8_t)(v & 0xFF));
             if (nm) {
-                const char* s = nm; while (*s && pl < 1023) buf[pl++] = *s++;
+                const char* s = nm; while (*s && pl < CFG_MAX - 2) buf[pl++] = *s++;
             } else {
                 write_uint(buf, &pl, (int)(v & 0xFF));
             }
@@ -500,7 +506,10 @@ static void draw_btn_list(int plat, int sel) {
 // Ждать отпускания всех клавиш, затем прочитать нажатие. Возвращает (mod<<8)|sc, 0 = ESC.
 static uint16_t capture_key(void) {
     uint8_t keys[8];
-    for (uint32_t g = 0; g < 500000; g++) {
+    // r0.417 (L10 аудита): раньше ждали отпускания до 500000×5мс ≈ 42 минуты
+    // при залипшей клавише. 2 секунды достаточно, чтобы отпустить нажатую
+    // кнопку; механически залипшая клавиша дальше не блокирует (ESC доступен).
+    for (uint32_t g = 0; g < 400; g++) {
         int n = usb_kbd_get_raw(keys, 8);
         int any = 0;
         for (int i = 0; i < n && i < 8; i++) if (keys[i]) { any = 1; break; }

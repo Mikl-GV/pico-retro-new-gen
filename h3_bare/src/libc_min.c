@@ -145,10 +145,13 @@ int sprintf(char* buf, const char* fmt, ...) {
                     while (*s) *d++ = *s++;
                     break; }
         case 'd': {
+            // r0.417 (L4): INT_MIN через -v = signed overflow (UB); считаем |v|
+            // в unsigned (0u - u ≡ |v| по модулю 2^32) — корректно для INT_MIN.
             int v = va_arg(ap, int);
-            if (v < 0) { *d++ = '-'; v = -v; }
+            unsigned u = (unsigned)v;
+            if (v < 0) { *d++ = '-'; u = 0u - u; }
             char tmp[16]; int i = 0;
-            do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+            do { tmp[i++] = '0' + (u % 10); u /= 10; } while (u);
             while (i) *d++ = tmp[--i];
             break; }
         case 'x': case 'X': {
@@ -173,20 +176,28 @@ void exit(int code) {
 int abs(int x) { return x < 0 ? -x : x; }
 
 // newlib-заглушки (некоторые модули тянут _sbrk / _gettimeofday)
-// Простой bump-аллокатор от _hend (конец образа) вверх. Без free —
-// для эмуляторов это нормально: память освобождается при перезапуске
-// эмулятора (ядро инициализируется заново, куча растёт только вверх).
-extern char _hend[];
+// Простой bump-аллокатор. Без free — для эмуляторов это нормально: память
+// освобождается при перезапуске эмулятора (g_brk сбрасывается в emu_prepare).
 
-/* Верхняя граница bump-кучи: _menu_arena (0x4F000000) — за ней ROM_BUF
- * (0x50000000) и EMU_FB (0x5F800000). Не даём _sbrk наехать на них:
- * при переполнении возвращаем (void*)-1, как стандартный sbrk. */
+// r0.417 (H2 аудита): куча newlib РАЗМЕЩЕНА ПОСЛЕ uncached-области .coherent
+// (USB/OHCI: ED/TD/HCCA, 1 МБ), а не сразу за _hend. Прежний вариант рос от
+// _hend вверх и через ~451 КБ наезжал на .coherent → тихая порча структур
+// OHCI (отвал клавиатуры/тача) при накоплении выделений между запусками игр.
+// Старт = libh3_coherent_region + 1 МБ (после uncached-окна), лимит =
+// _menu_arena (0x4F000000): за ним ROM_BUF (0x50000000) и EMU_FB (0x5F800000).
+// При переполнении возвращаем (void*)-1, как стандартный sbrk.
+extern unsigned char libh3_coherent_region[];
+#define SBRK_START ((char*)libh3_coherent_region + (1 * 1024 * 1024))
 #define SBRK_LIMIT 0x4F000000u
 
 static char* g_brk = 0;
 
+void newlib_heap_reset(void) {
+    g_brk = 0;
+}
+
 void* _sbrk(int incr) {
-    if (!g_brk) g_brk = _hend;
+    if (!g_brk) g_brk = SBRK_START;
     char* cur = g_brk;
     if (incr > 0) {
         uintptr_t a = ((uintptr_t)cur + 7u) & ~(uintptr_t)7u;
@@ -196,6 +207,8 @@ void* _sbrk(int incr) {
         return (void*)a;
     }
     g_brk = cur + incr;
+    // r0.417 (L4): incr<0 (trim) не должен увести кучу ниже старта
+    if ((uintptr_t)g_brk < (uintptr_t)SBRK_START) g_brk = SBRK_START;
     return cur;
 }
 
@@ -231,11 +244,16 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
                     if (!s) s = "(null)";
+                    // r0.417 (L4): width применяется и к %s (паддинг пробелами)
+                    int sl = 0; while (s[sl]) sl++;
+                    while (sl < width && left > 1) { *d++ = ' '; left--; width--; }
                     while (*s && left > 1) { *d++ = *s++; left--; } break; }
         case 'd': { int v = va_arg(ap, int);
-                    if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
+                    // r0.417 (L4): INT_MIN без signed overflow (0u-u ≡ |v|)
+                    unsigned u = (unsigned)v;
+                    if (v < 0) { if (left > 1) { *d++ = '-'; left--; } u = 0u - u; }
                     char tmp[16]; int i = 0;
-                    do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                    do { tmp[i++] = '0' + (u % 10); u /= 10; } while (u);
                     while (i < width && left > 1) { *d++ = '0'; left--; width--; }
                     while (i && left > 1) { *d++ = tmp[--i]; left--; }
                     break; }
@@ -264,9 +282,11 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
                 while (i && left > 1) { *d++ = tmp[--i]; left--; }
             } else if (*fmt == 'd' || *fmt == 'i') {
                 long v = va_arg(ap, long);
-                if (v < 0) { if (left > 1) { *d++ = '-'; left--; } v = -v; }
+                // r0.417 (L4): LONG_MIN без signed overflow
+                unsigned long u = (unsigned long)v;
+                if (v < 0) { if (left > 1) { *d++ = '-'; left--; } u = 0ul - u; }
                 char tmp[24]; int i = 0;
-                do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
+                do { tmp[i++] = '0' + (u % 10); u /= 10; } while (u);
                 while (i && left > 1) { *d++ = tmp[--i]; left--; }
             }
             break; }

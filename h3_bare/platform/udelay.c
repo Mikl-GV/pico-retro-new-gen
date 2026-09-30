@@ -38,7 +38,15 @@ void udelay(uint32_t d) {
 		t1 = H3_TIMER->AVS_CNT1;
 	}while (t2 >= t1);
 #elif defined (_USE_HS_TIMER_UDELAY)
-	h3_hs_timer_delay(HSTMR_MHZ * d);   // HSTMR на ~97 МГц (см. h3_hs_timer.h) → d мкс
+	// r0.417 (L6 аудита): 97u*d переполнялось при d > ~44.3 млн мкс (задержка
+	// мгновенно возвращалась). Короткие паузы — по тикам CURNT_LO (быстро),
+	// длинные — по микросекундам h3_hs_timer_lo_us (корректно до ~71 мин).
+	if (d < 100000u) {
+		h3_hs_timer_delay(HSTMR_MHZ * d);   // HSTMR ~97 МГц → d мкс
+	} else {
+		uint32_t t0 = h3_hs_timer_lo_us();
+		while ((uint32_t)(h3_hs_timer_lo_us() - t0) < d) {}
+	}
 #else
 	uint64_t cval;
 	asm volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (cval));

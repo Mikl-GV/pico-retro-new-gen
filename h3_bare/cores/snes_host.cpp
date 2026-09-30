@@ -154,6 +154,10 @@ static void build_input(void) {
 // ---- инициализация ----
 extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     printf("SNES: init size=%u\n", (unsigned)size);
+    // r0.417 (M5 аудита): битый элемент (NULL/0) и ROM больше внутреннего
+    // буфера ядра 8 МБ (MAX_ROM_SIZE) — не запускаем, как остальные host-слои.
+    if (!rom || size == 0) { printf("SNES: no ROM\n"); return 0; }
+    if (size > 0x800000) { printf("SNES: ROM too big (%u > 8MB)\n", (unsigned)size); return 0; }
     g_loaded = 0;
     gb_heap_reset();
 

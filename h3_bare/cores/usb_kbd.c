@@ -366,10 +366,13 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
     int in_mouse_intf = 0;   // находимся внутри интерфейса мыши
     dev->in_ep = 0;
     dev->in_maxpkt = 0;
-    while (pos < r && pos < 254) {
+    while (pos + 1 < r && pos + 1 < 255) {
         uint8_t len = buf[pos], t = buf[pos + 1];
-        if (len == 0) break;
-        if (t == 4) { // interface
+        // r0.417 (M8 аудита): битый/дефектный дескриптор — длина уходит за
+        // полученные данные — обрываем разбор (раньше pos+=len мог перепрыгнуть
+        // границу и читались мусорные interface/endpoint).
+        if (len == 0 || (int)pos + len > r || (int)pos + len > 256) break;
+        if (t == 4 && len >= 9) { // interface (минимум 9 байт)
             usb_intf_desc_t* intf = (usb_intf_desc_t*)(buf + pos);
             in_mouse_intf = 0;
             if (intf->bInterfaceClass == 3 && intf->bInterfaceSubClass == 1 &&
@@ -391,7 +394,7 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
                 type = 2; // generic HID — кандидат в тач
                 dev->in_ep = 0; dev->in_maxpkt = 0;
             }
-        } else if (t == 5) { // endpoint
+        } else if (t == 5 && len >= 7) { // endpoint (минимум 7 байт)
             usb_ep_desc_t* ep_desc = (usb_ep_desc_t*)(buf + pos);
             if (ep_desc->bEndpointAddress & 0x80) { // IN
                 if (type == 1 && !dev->in_ep) {

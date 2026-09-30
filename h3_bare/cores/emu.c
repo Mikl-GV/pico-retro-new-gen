@@ -32,6 +32,10 @@ void emu_set_border_color(uint32_t rgb888) {
 // тактов, а при 500К+ пикселей это съедало 5-10 мс/кадр.
 void emu_scale(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;
+    // r0.417 (H3 аудита): буфер EMU_FB фиксирован 320×240 — клампим входные
+    // размеры, иначе hi-res режимы (SNES 512 колонок) читают за его конец.
+    if (src_w > EMU_W) src_w = EMU_W;
+    if (src_h > EMU_H) src_h = EMU_H;
     int dst_w = (src_w * FB_H) / src_h;
     if (dst_w > FB_W) dst_w = FB_W;
     if (dst_w <= 0) return;
@@ -90,6 +94,9 @@ void emu_scale(int src_w, int src_h) {
 // Формат на выходе — RGB565 → XRGB8888 в FB_ADDR (как emu_scale).
 void emu_scale_int(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;   // r0.198: защита от div-by-0 (как в emu_scale)
+    // r0.417 (H3): те же клампы, что в emu_scale — buffer EMU_FB 320×240
+    if (src_w > EMU_W) src_w = EMU_W;
+    if (src_h > EMU_H) src_h = EMU_H;
     // Выбираем множитель: min(FB_W/src_w, FB_H/src_h), целый
     int mul = FB_W / src_w;
     int mh  = FB_H / src_h;
@@ -149,8 +156,15 @@ void emu_clear_fb(void) {
 //    (напр. Fuse пишет только 256/320 колонок, а emu_scale читает все 320),
 //    на экране оставались куски «загруженного до этого».
 extern void gb_heap_reset(void);
+extern void newlib_heap_reset(void);
+extern void cheats_reset(void);
 void emu_prepare(void) {
     gb_heap_reset();
+    newlib_heap_reset();   // r0.417 (H2): newlib-куча (_sbrk) не растёт между запусками игр
+    // r0.417 (M14/M15): читы ОТКЛЮЧЕНЫ до послойной доработки — список всегда
+    // пуст на входе в любой эмулятор (включая builtin; rom_browser сбрасывал
+    // только свои пути). Пустой список = применение в host-слоях — no-op.
+    cheats_reset();
     emu_clear_fb();
     fb_clear();
     fb_flush();

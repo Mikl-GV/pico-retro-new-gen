@@ -82,7 +82,10 @@ static void build_menu(void) {
 
     fat_entry_t* dirs = fat_scratch();
     int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
-    if (n <= 0) return;
+    // r0.417 (L8): раньше `if (n <= 0) return;` — при пустом/отсутствующем
+    // /roms ранний выход скрывал весь roadmap (третий цикл ниже). Теперь
+    // цикл папок просто не выполнится (n<=0), roadmap всегда виден.
+    if (n < 0) n = 0;
 
     // Ищем dir-системы (папки на SD)
     for (int i = 0; i < n && g_item_count < MAX_MENU_ITEMS; i++) {
@@ -119,22 +122,12 @@ static void build_menu(void) {
             g_items[g_item_count].status = systems[sys_idx].status;
             g_items[g_item_count].present = 1;
         } else {
-            g_items[g_item_count].id = dn;
-            g_items[g_item_count].name = dn;
-            // копируем в статический буфер
-            if (g_dir_name_used < MAX_MENU_ITEMS) {
-                int k = g_dir_name_used++;
-                int len = strlen(dn);
-                if (len >= FAT_NAME_LEN) len = FAT_NAME_LEN - 1;
-                memcpy(g_dir_names[k], dn, len);
-                g_dir_names[k][len] = 0;
-                g_items[g_item_count].dir = g_dir_names[k];
-            } else {
-                g_items[g_item_count].dir = NULL;
-            }
-            g_items[g_item_count].group = GROUP_OTHER;
-            g_items[g_item_count].status = STATUS_PLANNED;
-            g_items[g_item_count].present = 1;
+            // r0.417 (M10 аудита): папка ВНЕ реестра systems.h в меню НЕ
+            // добавляется. Раньше id/name указывали в fat_scratch, который
+            // rom_browser перезаписывает (мусорный заголовок/диспетчер),
+            // а диспетчер всё равно знает только реестровые id. Скрываем
+            // чужие папки целиком (System Volume Information, lost+found…).
+            continue;
         }
         g_item_count++;
     }
@@ -620,8 +613,13 @@ void menu_help(void) {
         char fbuf[64];
         int fl = 0;
         const char* pre = "  Page: "; while (*pre) fbuf[fl++] = *pre++;
-        fbuf[fl++] = '0' + (char)(page + 1);
-        fbuf[fl++] = '/'; fbuf[fl++] = '0' + (char)total;
+        // r0.417 (L8): страницы 10+ печатались как ':'/';' — пишем две цифры
+        int pg = page + 1;
+        if (pg >= 10) fbuf[fl++] = '0' + (char)(pg / 10);
+        fbuf[fl++] = '0' + (char)(pg % 10);
+        fbuf[fl++] = '/';
+        if (total >= 10) fbuf[fl++] = '0' + (char)(total / 10);
+        fbuf[fl++] = '0' + (char)(total % 10);
         fbuf[fl] = 0;
         fb_puts_s(60, FOOTER_Y - 30, fbuf, 1, 0x00888888);
         fb_puts(60, FOOTER_Y, "  ^v: page    ESC: back", 0x00888888);

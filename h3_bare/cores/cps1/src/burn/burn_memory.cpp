@@ -28,10 +28,14 @@ static INT32 s_pool_used = 0;
 // this should be called early on... BurnDrvInit?
 void BurnInitMemoryManager()
 {
-	static UINT8 pool_mem[CPS1_MEM_POOL_SIZE];   // BSS — не занимает место в bin
+	// r0.417 (O1): пул вынесен в NOLOAD-секцию .noinit_fbn (linker.ld) —
+	// стартовая обнулялка BSS его не трогает (~96 МБ записей при загрузке).
+	// Стартовый memset(pool_mem) УБРАН: в _BurnMalloc каждый выдаваемый
+	// блок обнуляется (memset(memptr[i],0,sz)); невыданные участки никем
+	// не читаются. Слоты (маленькие) обнуляются ниже, как было.
+	static UINT8 pool_mem[CPS1_MEM_POOL_SIZE] __attribute__((section(".noinit_fbn")));
 	s_pool = pool_mem;
 	s_pool_used = 0;
-	memset (pool_mem, 0, sizeof(pool_mem));
 	memset (memptr, 0, sizeof(memptr));
 	memset (memsize, 0, sizeof(memsize));
 	mem_allocated = 0;

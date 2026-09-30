@@ -271,7 +271,8 @@ static char g_load_name[32] = "";
 static void load_progress(const char* phase)
 {
     // рисуем в HDMI FB напрямую (EMU_FB в это время не нужен)
-    char buf[64];
+    // r0.417 (O5): 320 = имя игры (<=FAT_NAME_LEN, 256) + "%d/%d (%d%%)" + '\0'
+    char buf[320];
     if (s_prog_total > 0) {
         int pct = (s_prog_done * 100) / s_prog_total;
         if (pct > 100) pct = 100;
@@ -868,8 +869,20 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         BurnDrvGetFullSize(&fw, &fh);
         BurnDrvGetVisibleSize(&vw, &vh);
         int vert = (BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL) != 0;
+        // r0.417 (H4 аудита): высота кадра драйвера НЕ может превышать буфер
+        // g_frame (384×320) — иначе BurnTransferCopy пишет за BSS-массив.
+        // Текущий набор: fh≤240 (вертикали 240×320 возвращают fh=240).
+        if (fh <= 0 || fh > 320) {
+            printf("TOA: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            return;
+        }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;
+        int nh = fh;
         nBurnPitch = nw * 2;                   // stride копии BurnTransferCopy
         g_frame_w = nw;                        // полный кадр ядра: без кропа (не 304),
         g_frame_h = nh;                        // без свопов/транспонирования
@@ -881,8 +894,18 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // транспонирования), вертикали ставит физический поворот панели.
         INT32 fw = 0, fh = 0;
         BurnDrvGetFullSize(&fw, &fh);
+        // r0.417 (H4): отказ, если кадр не влезает в g_frame (384×320)
+        if (fh <= 0 || fh > 320) {
+            printf("CAV: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            return;
+        }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;   // S4: буфер 384×320
+        int nh = fh;   // S4: буфер 384×320
         nBurnPitch = nw * 2;
         g_frame_w = nw;
         g_frame_h = nh;
@@ -893,8 +916,18 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // физически портретная — вертикалки (скроллеры) встают сами.
         INT32 fw = 0, fh = 0;
         BurnDrvGetFullSize(&fw, &fh);
+        // r0.417 (H4): отказ, если кадр не влезает в g_frame (384×320)
+        if (fh <= 0 || fh > 320) {
+            printf("S16: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            return;
+        }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;   // S4: буфер 384×320
+        int nh = fh;   // S4: буфер 384×320
         nBurnPitch = nw * 2;
         g_frame_w = nw;
         g_frame_h = nh;

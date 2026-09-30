@@ -49,6 +49,15 @@ SECTIONS
     _bend1 = . ;
   }
 
+  /* r0.417 (O1): пул FBNeo 96 МБ (.noinit_fbn, burn_memory.cpp) — NOLOAD,
+   * стартовая обнулялка BSS его не покрывает (экономия ~96 МБ записи при
+   * загрузке; каждый блок обнуляется при выдаче в _BurnMalloc).
+   * Секция стоит сразу после .bss и ДО кучи — адреса кучи/_hend/.coherent
+   * остаются ровно прежними (пул занимает место бывшего хвоста BSS). */
+  .noinit_fbn (NOLOAD) : {
+    *(.noinit_fbn)
+  }
+
   /* Куча (bump-пул Snes9x/Handy/binjgb) — резерв ПОСЛЕ BSS.
    * Размер кучи НЕ влияет на глобалы (.bss).
    * 24 МБ: SNES-ядро при init занимает ~11.1 МБ (RAM/SRAM/VRAM/BSRAM/ROM
@@ -66,11 +75,14 @@ SECTIONS
    * libh3_coherent_region[1MB]). NOLOAD — не занимает место в образе,
    * только резервирует адреса; стартует сразу за кучей (_hend),
    * выровнена по 1 МБ как требует когерентный DMA-буфер.
-   * Символ libh3_coherent_region = начало области (наш extern-символ).
-   * OHCI-структуры (ED/TD/HCCA, буферы) кладём в самое начало области и
-   * помечаем uncached через MMU — см. .coherent секцию и mmu_mark_uncached.
-   * _coherent_start/_coherent_end — для zero-init в startup.S (NOLOAD
-   * секцию BSS-цикл не покрывает). */
+   * Символ libh3_coherent_region = НАЧАЛО области (наш extern-символ).
+   * r0.417 (M13 аудита): раньше брался `. - 1 МБ`, т.е. адрес ПОСЛЕ
+   * .coherent-объектов (0x4AC00720), а не начало — работало только из-за
+   * округления адреса в mmu_mark_uncached; любая прямая арифметика
+   * (буферы ОТ базы области) уезжала. Теперь = _coherent_start.
+   * OHCI-структуры (ED/TD/HCCA, буферы) лежат в начале области и помечаются
+   * uncached через MMU — см. mmu_mark_uncached. _coherent_start/_coherent_end
+   * — для zero-init в startup.S (NOLOAD секцию BSS-цикл не покрывает). */
   . = ALIGN(0x100000);
   .libh3_coherent (NOLOAD) : {
     _coherent_start = .;
@@ -79,7 +91,7 @@ SECTIONS
     . = ALIGN(4);
     . = . + (1 * 1024 * 1024);
   }
-  libh3_coherent_region = . - (1 * 1024 * 1024);
+  libh3_coherent_region = _coherent_start;
 
   /* Арена меню — фиксированный адрес, гарантированно вне BSS/кучи и до ROM_BUF. */
   _menu_arena = 0x4F000000;

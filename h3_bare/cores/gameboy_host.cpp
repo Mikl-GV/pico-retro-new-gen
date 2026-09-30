@@ -89,6 +89,9 @@ static void gb_apply_cheats(uint8_t* rom, uint32_t size) {
 
 extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     gb_heap_reset();
+    // r0.417 (M6 аудита): битый элемент (NULL/0) — не запускаем binjgb
+    // на пустом буфере (это единственный host без guard'а, как у остальных).
+    if (!rom || size == 0) { printf("[GB] no ROM\n"); return 0; }
 
     EmulatorInit init;
     memset(&init, 0, sizeof(init));

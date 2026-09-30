@@ -35,7 +35,12 @@ void uart_init(void) {
 }
 
 void uart_putc(char c) {
-    while (!(uart->USR & 2)) {}      // TX FIFO not full
+    // r0.417 (L3 аудита): таймаут вместо вечного спина — при сбое тактирования
+    // UART байт теряется, но система не зависает.
+    uint32_t t = 0;
+    while (!(uart->USR & 2)) {      // TX FIFO not full
+        if (++t > 100000) return;
+    }
     uart->O00.THR = (uint8_t)c;
 }
 
@@ -47,7 +52,12 @@ void uart_puts(const char* s) {
 }
 
 char uart_getc(void) {
-    while (!(uart->LSR & 1)) {}
+    // r0.417 (L3 аудита): таймаут вместо вечного спина; при отсутствии данных
+    // возвращаем 0. Portfolio вызывает только после uart_rx_ready() — не мешает.
+    uint32_t t = 0;
+    while (!(uart->LSR & 1)) {      // RX FIFO not empty
+        if (++t > 200000) return 0;
+    }
     return (char)(uart->O00.RBR & 0xFF);
 }
 

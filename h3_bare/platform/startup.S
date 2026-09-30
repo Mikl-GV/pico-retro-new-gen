@@ -341,15 +341,25 @@ _start:
     mcr p15, 0, r0, c7, c5, 0
     isb
 
-    /* BSS = 0 (ARM mode) */
+    /* BSS = 0 (ARM mode). r0.417 (O3): NEON-обнуление — до 16-байтной
+     * границы словами, дальше 16 байт за раз (VST1), хвост — словами.
+     * VFP/NEON включён выше, q0 = 0. */
     ldr r0, =_bstart1
     ldr r1, =_bend1
     mov r2, #0
+    vmov.i32 q0, #0
 1:  cmp r0, r1
-    bhs 2f
-    str r2, [r0], #4
+    bhs 5f
+    tst r0, #15
+    bne 2f
+    sub r3, r1, r0
+    cmp r3, #16
+    bhs 3f
+2:  str r2, [r0], #4
     b 1b
-2:
+3:  vst1.8 {q0}, [r0]!
+    b 1b
+5:
 
     /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
      * не покрывает). Идёт ПОСЛЕ кучи, но до main. */

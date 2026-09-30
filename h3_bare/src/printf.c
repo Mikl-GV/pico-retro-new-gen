@@ -21,6 +21,8 @@ static void print_uint(unsigned long v, int base, int upper, int width) {
     int i = 0;
     if (v == 0 && width <= 0) { pputc('0'); return; }
     while (v && i < 32) { buf[i++] = digits[v % base]; v /= base; }
+    // r0.417 (L5 аудита): клампим width — раньше "%09999999d" писал за buf[32]
+    if (width > 31) width = 31;
     while (i < width) buf[i++] = '0';
     if (i == 0) buf[i++] = '0';
     while (i) pputc(buf[--i]);

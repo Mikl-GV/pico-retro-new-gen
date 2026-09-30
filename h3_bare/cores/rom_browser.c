@@ -169,6 +169,9 @@ static int input_wait(void) {
     for (;;) {
         int k = usb_input_poll();
         if (k) return k;
+        // r0.417 (M4 аудита): предыдущая версия крутила poll без паузы —
+        // busy-loop давал RMW-гонку PA_DAT с TFT-ядром (срыв I2C-пада/джоёв).
+        udelay(16000);
     }
 }
 

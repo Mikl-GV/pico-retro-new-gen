@@ -63,8 +63,24 @@ typedef struct {
 #define STATUS_FIFO_FULL        (1u << 3)
 #define STATUS_FIFO_LEVEL(s)    (((s) >> 17) & 0x3FFF)
 
-static int g_sdhc = 1;
+static int g_sdhc = 1;   // 1 = SDHC/SDXC (секторная адресация), 0 = SDSC (байтовая)
 static uint8_t g_sec[512];
+
+static void mmc_clr_rint(void);
+static int mmc_wait_rint(uint32_t want);
+
+// r0.417 (M9 аудита): тип карты определяем по CMD58 (READ_OCR, R3):
+// CCS (bit 30 OCR) = 0 для SDSC (≤2 ГБ, байтовый адрес = lba<<9),
+// = 1 для SDHC/SDXC (секторный адрес = lba). Раньше g_sdhc был захардкожен
+// в 1, и SDSC-карта читала бы неверные секторы. При недоступной CMD58
+// оставляем прежнее поведение (секторная адресация).
+static int sd_detect_type(void) {
+    mmc_clr_rint();
+    MMC->arg = 0;
+    MMC->cmd = 58u | CMD_START | CMD_RESP_EXPIRE;   // R3: без CRC-проверки
+    if (mmc_wait_rint(RINT_CMD_DONE) < 0) return 1;
+    return (int)((MMC->resp0 >> 30) & 1u);
+}
 
 static void mmc_clr_rint(void) { MMC->rint = 0xFFFFFFFF; }
 
@@ -126,7 +142,11 @@ int sd_init(void) {
         return -1;
     }
 
-    uart_puts("sd: ready (from U-Boot)\n");
+    g_sdhc = sd_detect_type();
+    if (g_sdhc)
+        uart_puts("sd: ready (from U-Boot)\n");
+    else
+        uart_puts("sd: ready SDSC (byte addressing)\n");
     return 0;
 }
 

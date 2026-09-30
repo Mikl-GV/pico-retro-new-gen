@@ -127,6 +127,9 @@ extern "C" int a5_GetPad(void) {
 }
 
 extern "C" int a5200_init_game(const uint8_t *rom, uint32_t size) {
+    // r0.417 (L13 аудита): битый элемент / аномально большой ROM — не запускать
+    if (!rom || size == 0) { printf("[a5200] no ROM\n"); return 0; }
+    if (size > 512u * 1024) { printf("[a5200] ROM too big (%u)\n", (unsigned)size); return 0; }
     a5_pool_used = 0;
     for (int i = 0; i < PALETTE_SIZE; i++) a5_pal_rgb565[i] = 0;
 

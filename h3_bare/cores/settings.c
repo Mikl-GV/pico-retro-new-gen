@@ -50,9 +50,11 @@ static void touch_cal_run(void) {
     CAL_OK = 0;    // r119: чистим результат перед запуском (SRAM не zero-инициализируется)
     CAL_CMD = 1;
 
-    // ждём завершения калибровки без таймаута: CPU1 выходит сам по 5 тапам
-    // (снимет CAL_CMD в 0), либо прерываем по ESC с клавиатуры/геймпада.
+    // ждём завершения калибровки: CPU1 выходит сам по 5 тапам (снимет
+    // CAL_CMD в 0), либо прерываем по ESC с клавиатуры/геймпада, либо
+    // r0.417 (L11): таймаут ~30 с — CPU1 не стартовал / тач молчит: не висеть.
     int cancelled = 0;
+    int timeout = 0;
     while (CAL_CMD == 1) {
         int k = usb_input_poll();
         if (k == 41) {              // ESC — прервать калибровку
@@ -61,6 +63,7 @@ static void touch_cal_run(void) {
             break;
         }
         for (int j = 0; j < 1000; j++) udelay(100);   // ~100 мс
+        if (++timeout > 300) { CAL_CMD = 0; break; }  // ~30 с
     }
 
     int calok = (int)CAL_OK;
@@ -614,6 +617,12 @@ void touch_settings_run(void) {
     SET_EPOCH++;                      // перерисовать меню при входе
     SET_CMD = 1;
     while (SET_CMD == 1) {
+        // r0.417 (M3 аудита): основной цикл ждал только тач-события, ESC
+        // опрашивался лишь внутри tft_set_wait_ev — при молчащем таче /
+        // зависшем CPU1 core0 застревал навсегда (выхода не было). Теперь
+        // ESC с HDMI-клавиатуры тоже выходит (Back), как в tft_set_wait_ev.
+        int k = usb_input_poll();
+        if (k == 41) { SET_EV = (uint32_t)0xFFFFFFFFu; SET_CMD = 0; break; }   // ESC = Back
         int ev = (int)SET_EV;
         if (ev < 0 || ev > 8) { for (int j = 0; j < 300; j++) udelay(100); continue; }
         SET_EV = (uint32_t)0xFFFFFFFFu;   // взял событие

@@ -342,19 +342,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (r0.416, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (r500, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
-| 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` |
-| 0x40000000..0x4073F0C0 | `.text` + init_array (код ≈ 7.4 МБ, r0.416); векторы `_vectors`=0x40000000, `_prefetch`=0x40000084, `_dataabort`=0x40000164, `_start`=0x400002F8 |
-| 0x4073F0C0..0x40A37588 | `.rodata` (≈ 2.9 МБ) |
-| 0x40A37588..0x40CE4C00 | `.data` (≈ 2.7 МБ, копируется из образа) |
-| 0x40CE4C00..0x4AC0071E | `.bss` (`_bstart1.._bend1`, ≈ 140 МБ, обнуляется в `startup.S`) |
-| 0x49391DA0..0x4AB91DA0 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **~135 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x4AB91DA0 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх, лимит `SBRK_LIMIT=0x4F000000` |
-| 0x4AC00000..0x4AC00720 | `.libh3_coherent` (резерв 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Начало помечается `mmu_mark_uncached(libh3_coherent_region)` — **символ линкера, а не хардкод** (адрес уезжает при росте образа) |
+| 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → `.noinit_fbn` |
+| 0x40000000..0x4073F040 | `.text` + init_array (код ≈ 7.4 МБ, r500); векторы `_vectors`=0x40000000, `_prefetch`=0x40000084, `_dataabort`=0x40000164, `_start`=0x400002F8 |
+| 0x4073F040..0x40A37608 | `.rodata` (≈ 2.9 МБ) |
+| 0x40A37608..0x40CE4C80 | `.data` (≈ 2.7 МБ, копируется из образа) |
+| 0x40CE4C80..0x42B94E08 | `.bss` (`_bstart1.._bend1`, ≈ 30.7 МБ, обнуляется в `startup.S` NEON-магазинами) |
+| 0x42B94E08..0x48B94E08 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
+| 0x48B94E20..0x4A394E20 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x4A394E20 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх от `libh3_coherent_region + 1 МБ` до лимита `SBRK_LIMIT=0x4F000000` (newlib-куча размещена ПОСЛЕ uncached-окна, не пересекает его) |
+| 0x4A400000..0x4A500000 | `.libh3_coherent` (резерв 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`), выровнен по 1 МБ |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
@@ -368,11 +369,11 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r0.416, `arm-none-eabi-readelf -SW`):** `.text` 0x73F0B0 (≈7.4 МБ),
-`.rodata` 0x2F4C20 (≈2.9 МБ), `.data` 0x2AD65C (≈2.7 МБ), `.bss` 0x86AD188 (≈140 МБ),
-образ `h3_bare.bin` 13 519 844 Б.
+**Числа-размеры (r500, `arm-none-eabi-readelf -SW`):** `.text` 0x73F028 (≈7.4 МБ),
+`.rodata` 0x2F4D20 (≈2.9 МБ), `.data` 0x2AD664 (≈2.7 МБ), `.bss` 0x1EB0188 (≈30.7 МБ),
+`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), образ `h3_bare.bin` 13 519 980 Б.
 
-## Загрузочная карта памяти (r0.416)
+## Загрузочная карта памяти (r500)
 
 ### Последовательность запуска
 
@@ -381,7 +382,8 @@ SD/MMC: U-Boot SPL -> U-Boot (SPL в SRAM, U-Boot в DRAM)
 -> U-Boot: gpio-настройка светодиодов, `fatload mmc 0 0x40000000 h3_bare.bin` -> `go 0x40000000` (ARM state)
    (или FEL: `sunxi-fel write 0x40000000 h3_bare.bin execute 0x40000000`)
 -> startup.S @ 0x40000000: SVC mode; таблица векторов (VBAR=0x40000000);
-   BSS=0 (_bstart1.._bend1, ≈140 МБ); .coherent NOLOAD-зона; MMU + mmu_mark_uncached(libh3_coherent_region);
+   BSS=0 (_bstart1.._bend1, ≈31 МБ, NEON-магазины r500); .noinit_fbn (пул FBNeo) НЕ
+   обнуляется; .coherent NOLOAD-зона; MMU + mmu_mark_uncached(libh3_coherent_region);
    UART0 115200, LED, main()
 -> main(): USB/OHCI/TFT/SD-инициализация -> меню -> эмулятор
 ```
@@ -392,12 +394,13 @@ SD/MMC: U-Boot SPL -> U-Boot (SPL в SRAM, U-Boot в DRAM)
 |---|---|---|
 | U-Boot SPL | SRAM 0x0000xxxx | минимальный загрузчик из MBR SD |
 | U-Boot | DRAM (низкие адреса, вне образа) | fatload/go, потом НЕ трогаем |
-| Образ | 0x40000000..0x40005400(+размер) | h3_bare.bin целиком: .text/.rodata/.data (BSS — NOBITS, не в файле) |
+| Образ | 0x40000000..0x40005400(+размер) | h3_bare.bin целиком: .text/.rodata/.data (BSS/.noinit_fbn — NOBITS, не в файле) |
 | Векторы CPU | 0x40000000 (VBAR) | startup.S, хранится в .text |
 | SRAM A1 | 0x00000000..0x00006000 | межъядерная почта: гейт `0x18`, SMP `0x20/0x24`, пробы `0x28..0x30`, настройки `0x34..0x8C`, diff `0x70`, флаг «игра» `0x74` |
-| Куча эмуляторов | 0x49391DA0..0x4AB91DA0 | bump ≈135 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
-| sbrk-арена | 0x4AB91DA0..0x4F000000 | растёт вверх от `_hend` (системные вызовы smalloc) |
-| coherent (uncached) | 0x4AC00000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты клавиатуры/тача, `g_ts_*`/`g_cal_*` — DMA-буферы, недоступные кэшу |
+| Куча эмуляторов | 0x48B94E20..0x4A394E20 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
+| Пулы FBNeo/gpgx | 0x42B94E08..0x48B94E08 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом) |
+| sbrk-арена (newlib) | 0x4A400000+1МБ..0x4F000000 | растёт вверх ПОСЛЕ uncached-окна (куча не пересекает `.coherent`) |
+| coherent (uncached) | 0x4A400000 (1 МБ, выровнено) | OHCI ED/TD/HCCA, USB-отчёты клавиатуры/тача, `g_ts_*`/`g_cal_*` — DMA-буферы, недоступные кэшу |
 | Меню | 0x4F000000 | `_menu_arena` |
 | SAT ROM | 0x50000000..0x51800000 | `ROM_BUF` — образы ROM с SD (24 МБ) |
 | Видео | 0x5F800000 (EMU_FB 150 КБ), 0x5F900000 (HDMI 2.4 МБ) | кадр эмулятора 320×240 RGB565 -> апскейл 1024×600 XRGB8888 |

@@ -116,6 +116,9 @@ static inline void cache_invalidate(uint32_t addr, uint32_t size);
 
 int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
                            uint8_t* buf, uint16_t len, int slot) {
+    // r0.417 (L2 аудита): API-защита — иначе slot>=2 пишет в соседние
+    // .coherent-структуры, а buf+len-1 при len==0 — UB (указатель за пределы).
+    if (slot < 0 || slot >= 2 || !buf || len == 0) return -1;
     int idx = ohci_idx(base);
     ohci_regs_t* ohci = (ohci_regs_t*)base;
     int low_speed = usb_ohci_port_low_speed(base, 0);
@@ -178,9 +181,10 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
 // переармливал TD на каждом опросе — при частых поллах это гонка с HC
 // (HC пишет HEAD в DRAM, мы затирали из кэша) и «замирание» клавиатуры.
 int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
+    // r0.417 (L2 аудита): API-защита (как в intr_in_start)
+    if (slot < 0 || slot >= 2 || !buf || len == 0) return -1;
     int idx = ohci_idx(base);
     ohci_td_t* td = &g_int_td[idx][slot][0];
-    (void)len;
 
     cache_invalidate((uint32_t)td, sizeof(td[0]));
     uint32_t cc = td->cfg >> TD_CC_SHIFT;
@@ -206,7 +210,9 @@ int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
     if (cc != TD_CC_NOERR)
         return -1;                      // ошибка завершения
 
-    cache_invalidate((uint32_t)buf, 64);
+    // r0.417 (L2): инвалидируем по фактической длине, а не фиксированные
+    // 64 байта (для 8-байтного отчёта убивались чужие dirty-линии).
+    cache_invalidate((uint32_t)buf, len);
     return 1;
 }
 
@@ -380,6 +386,9 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
                            const uint8_t* setup, uint8_t setup_len,
                            uint8_t* data, uint32_t data_len, int dir_in,
                            uint32_t timeout_ms) {
+    // r0.417 (L2 аудита): API-защита (setup+setup_len-1 и data+data_len-1)
+    if (!setup || setup_len == 0) return -1;
+    if (data_len > 0 && !data) return -1;
     (void)ep_in;
     ohci_regs_t* ohci = (ohci_regs_t*)base;
     extern int uart0_printf(const char* fmt, ...);
