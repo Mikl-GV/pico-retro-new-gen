@@ -21,19 +21,19 @@ GCE Vectrex числится READY, но **отложен** (изображен�
 
 ## Сборка и запись
 
-### Windows (проще всего — один файл)
+### Windows
 
-> Нужен только ARM-тулчейн (см. ниже). Всё остальное в Windows уже есть.
+> Официальная сборка — через **Makefile**: нужен ARM-тулчейн и make (MSYS2).
 
 1. Скачай ARM-тулчейн для Windows: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
-   (файл вида `gcc-arm-none-eabi-*-win32-x86_64.zip`)
-2. Распакуй его в `C:\ARM\` — должно получиться `C:\ARM\gcc-arm-none-eabi-...\bin\arm-none-eabi-gcc.exe`
-3. **Двойной клик** по `build_windows.bat` в корне проекта
-4. Готово: прошивка `h3_bare.bin` появится в корне проекта
-
-Если тулчейн установлен иначе — скрипт найдёт его в PATH или попросит добавить.
-
-Ручной запуск: `powershell -ExecutionPolicy Bypass -File .\build.ps1`
+   (файл вида `gcc-arm-none-eabi-*-win32-x86_64.zip`) и распакуй; добавь `...\bin` в PATH.
+2. Поставь make (например, MSYS2: `pacman -S make`).
+3. Собери:
+   ```bat
+   make -j%NUMBER_OF_PROCESSORS%
+   ```
+   или через обёртку: `powershell -ExecutionPolicy Bypass -File .\build.ps1`
+4. Готово: прошивка `h3_bare.bin` в корне проекта (и в `build/`).
 
 ### Linux / macOS
 

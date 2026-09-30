@@ -1,4 +1,4 @@
-# Сборка (Linux, bare-metal H3)
+# Сборка (Linux / Windows, bare-metal H3)
 
 ## Требования
 
@@ -19,19 +19,32 @@ sudo apt install u-boot-tools mtools
 
 ## Сборка бинарника
 
-Быстрая параллельная сборка (использует все ядра):
+**Официальный путь — Makefile** (параллельная сборка, использует все ядра):
 
 ```bash
 make -j$(nproc)
 ```
 
-Результат: `build/h3_bare.bin` + копия `h3_bare.bin` в корень проекта — загрузка через U-Boot или FEL.
-
-Поддерживается и старый скрипт (последовательная сборка, ~5 мин):
+Совместимые обёртки (`build.sh` / `build.ps1`) делегируют make и работают
+с теми же целями (`clean | sd | fel`, без аргумента = `make -j`):
 
 ```bash
-./build.sh
+./build.sh                 # Linux: эквивалент make -j
+powershell -File .\build.ps1   # Windows
 ```
+
+Результат: `build/h3_bare.bin` + копия `h3_bare.bin` в корень проекта — загрузка через U-Boot или FEL.
+
+### Windows
+
+1. ARM-тулчейн: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+   (распаковать, добавить `.../bin` в PATH).
+2. make — через MSYS2 (`pacman -S make`) или любой mingw-make в PATH.
+3. Сборка:
+   ```bat
+   make -j%NUMBER_OF_PROCESSORS%
+   ```
+   или `powershell -ExecutionPolicy Bypass -File .\build.ps1`.
 
 ## Сборка SD-образа
 
@@ -62,6 +75,19 @@ sudo dd if=build/h3_bare.img of=/dev/sdX bs=1M conv=fsync
 ```bash
 sudo sunxi-fel write 0x40000000 h3_bare.bin execute 0x40000000
 ```
+
+## ПРАВИЛО АКТУАЛЬНОСТИ СБОРЩИКОВ (важно)
+
+- **Единый источник истины — `Makefile`**: состав файлов, флаги, rename-скрипты,
+  линковка изменяются только там.
+- `build.sh` / `build.ps1` — **тонкие обёртки** над make (см. их шапки).
+  Им НЕ передаются рецепты сборки, поэтому они не могут устареть.
+- **Запрещено** дублировать в обёртках списки файлов/команды компиляции из
+  Makefile. Если прямая сборка в обёртках всё же понадобится — только после
+  явного решения владельца, с полной синхронизацией и этой памяткой в шапке.
+- Историческая справка: до r500 `build.sh`/`build.ps1` были полными
+  сборщиками и отстали от Makefile на целые системы (Fuse/BK/MS1504/PCE/CPS1)
+  — именно поэтому они переведены на делегирование.
 
 ## Файлы сборки
 
