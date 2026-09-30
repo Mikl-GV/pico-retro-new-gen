@@ -220,13 +220,28 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
 
     // r0.392: YIS-503III — встроенные картриджи «СЕТЬ» (NET.ROM) и «СПМ»
     // = CP/M (CPM.ROM) лежат во внутренних слотах настоящей Ямахи.
-    // Грузим их как картриджи до пользовательского слота и ПОСЛЕ всех
-    // загрузок делаем ResetMSX(): BIOS RESET отсканирует слоты и вызовет
-    // init-вектора (0x4010...) — как при включении железа.
+    // Грузим их как картриджи до пользовательского слота.
+    // r0.400: ПОСЛЕ загрузки ResetMSX() БОЛЬШЕ НЕ делаем — повторный reset
+    // после StartMSX вывешивал машину (BIOS RESET сканирует слоты, init-хок
+    // NET-картриджа «СЕТЬ» уводил в чёрный экран/цикл). В BASIC-режиме
+    // картриджи лежат в слотах «молча»; их инициализация понадобится только
+    // когда сделаем меню «СПМ» по запросу.
+    //
+    // r0.415 (Б1): НЕ грузим CPM/NET — они НЕ нужны для загрузки BIOS/BASIC
+    // (нужны только MSX2.ROM+MSX2EXT.ROM). Проверяем гипотезу «внутренние
+    // картриджи мешают тесту видеопамяти»: если MSX дойдёт до BASIC с
+    // выключенными CPM/NET — виноваты они, если нет — дефект V9938 (Б1).
+    // Вернуть одним переключателем после диагностики.
+#if 1
+    int net_lr = 0, cpm_lr = 0;
+    (void)net_lr; (void)cpm_lr;
+    printf("MSX: builtin carts — CPM/NET отключены (r0.415, диагноз Б1)\n");
+#else
     int net_lr = LoadCart("NET.ROM", 3, 0);
     int cpm_lr = LoadCart("CPM.ROM", 2, 0);
     printf("MSX: builtin carts -> CPM.ROM (СПМ) slot2 lr=%d, NET.ROM (СЕТЬ) slot3 lr=%d\n",
            cpm_lr, net_lr);
+#endif
 
     // Если был передан образ картриджа — загружаем в слот A.
     // LoadCart() в ядре делает rfopen("CARTA.ROM"), поэтому даём стабу
@@ -257,9 +272,9 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
                (unsigned)(size >> 10), (int)ROMType[0], cart_lr ? "" : " — НЕ ЗАГРУЖЕН");
         if (cart_lr <= 0) {
             fb_clear();
-            fb_text_center("MSX: картридж не загружен", 200, 2, 0x00FF4444);
+            fb_text_center("MSX: cart not loaded", 200, 2, 0x00FF4444);
             fb_text_center(g_cart_name, 240, 2, 0x00FFFFFF);
-            fb_text_center("нет 'AB'-заголовка / ZIP (распакуй)", 258, 1, 0x00AAAAAA);
+            fb_text_center("no AB header / ZIP (extract)", 258, 1, 0x00AAAAAA);
             fb_flush();
             udelay(2000000);
             fb_clear(); fb_flush();
@@ -277,11 +292,6 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
            mach, tv, (unsigned)RAMPages * 16, (unsigned)VRAMPages * 16);
     printf("MSX: Mode=%08X — Yamaha YIS-503III (MSX2, Европа, PAL)\n",
            (unsigned)Mode);
-
-    // «Как при включении железа»: слоты сформированы (СЕТЬ slot3, СПМ slot2,
-    // пользовательский slot0) — сброс запускает BIOS RESET и init-вектора
-    // картриджей. СПМ (CP/M) вызывается штатным образом.
-    ResetMSX(Mode, RAMPages, VRAMPages);
 
     // r0.392: «захват сессии» по UART при входе в эмулятор.
     extern unsigned char fMSX_ROMs_MSX2_ROM[];
@@ -302,7 +312,6 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
            cpm_lr, net_lr);
     printf("MSX: user cart %s (%u Б) mapper=%d lr=%d\n",
            g_cart_name, (unsigned)size, (int)ROMType[0], cart_lr);
-    printf("MSX: reset done — init-вектора слотов выполнены, как на железе\n");
     printf("MSX: ==========================================\n");
 
     // Звук: fMSX PSG/AY-3-8910 + YM2413 (NukeYKT) → RenderAndPlayAudio →
@@ -491,7 +500,27 @@ void msx_run_frame(void) {
     // 4) Запускаем Z80 до конца кадра. RunZ80 сам переустанавливает
 //    CPU.ICount через LoopZ80 (IPeriod) и выходит по INT_QUIT,
 //    когда LoopZ80 доходит до строки 192 (ExitNow=1).
-    RunZ80(&CPU);
+    // r0.402: сторож зависания BIOS — если кадр крутится >1 с, печатаем
+    // точку остановки Z80 (PC) и состояние видео, чтобы по UART было видно,
+    // на чём виснет (напр. этап записи видеопамяти у русифицированного BIOS).
+    {
+        uint32_t t0 = h3_hs_timer_lo_us();
+        uint16_t pc_end = RunZ80(&CPU);
+        uint32_t el = h3_hs_timer_lo_us() - t0;
+        static uint8_t s_last_mode = 0xFF;
+        if (el > 990000u) {
+            printf("MSX: HANG pc=%04X sp=%04X ScrMode=%d W=%u H=%u el=%ums\n",
+                   (unsigned)pc_end, (unsigned)CPU.SP.W, (unsigned)ScrMode,
+                   (unsigned)image_buffer_width, (unsigned)image_buffer_height,
+                   (unsigned)(el / 1000));
+            g_ru_hint_until = 0;   // не рисовать OSD поверх диагностики
+        }
+        if (ScrMode != s_last_mode) {
+            s_last_mode = ScrMode;
+            printf("MSX: ScrMode=%d W=%u H=%u\n", (unsigned)ScrMode,
+                   (unsigned)image_buffer_width, (unsigned)image_buffer_height);
+        }
+    }
 
     // PutImage вызывается внутри LoopZ80 на VBlank (когда UCount>=100).
     // После возврата кадр готов к копированию в EMU_FB.
@@ -527,9 +556,16 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_period_us = 20000;
     emu_throttle_reset();
     emu_esc_hold_reset();
+    /* r0.407: «прогрев» — первые ~3 с после входа гоняем НА ПОЛНОЙ скорости
+     * без throttle: BIOS YIS-503III в SCREEN 6 гоняет тест видеопамяти
+     * (в fMSX VRAM-доступ идёт по сканлайнам — на 50 Гц это растягивалось
+     * на десятки секунд с «рваным» экраном; на железе всё проскакивает
+     * за секунды). После прогрева — обычные 50 Гц. */
+    uint32_t msx_start = h3_hs_timer_lo_us();
     for (;;) {
         msx_run_frame();
-        emu_throttle();
+        if ((int32_t)(h3_hs_timer_lo_us() - msx_start) >= 3000000)
+            emu_throttle();
         int vw = (int)image_buffer_width;
         if (vw > EMU_W) vw = EMU_W;
         int vh = (int)image_buffer_height;
@@ -537,9 +573,9 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         // r0.392: OSD-подсказка раскладки после F9 (2.5 с) поверх кадра.
         if ((int32_t)(h3_hs_timer_lo_us() - g_ru_hint_until) < 0 && g_msx_ru) {
-            fb_puts_s(30, 30, "RU: Q=Я W=Ш E=Е R=Р T=Т Y=Ы U=У I=И O=О P=П", 1, 0x00FFAA00);
-            fb_puts_s(30, 50, "   A=А S=С D=Д F=Ф G=Г H=Х J=Й K=К L=Л ;=Ж '=Э /=Б", 1, 0x00FFAA00);
-            fb_puts_s(30, 70, "   Z=З X=Ь C=Ц V=В B=Б N=Н M=М ?=Ю .=Ё", 1, 0x00FFAA00);
+            fb_puts_s(30, 30, "RU: Q=YA W=SH E=E R=R T=T Y=YI U=U I=I O=O P=P", 1, 0x00FFAA00);
+            fb_puts_s(30, 50, "   A=A S=S D=D F=F G=G H=H J=Y K=K L=L :=ZH '=E /=B", 1, 0x00FFAA00);
+            fb_puts_s(30, 70, "   Z=Z X=Y Y=Y C=C V=V B=B N=N M=M ?=YU .=YO", 1, 0x00FFAA00);
             fb_flush();
         }
         if (emu_esc_hold() || msx_exit_req) goto exit;  // r0.208: ESC-hold из отчёта ядра

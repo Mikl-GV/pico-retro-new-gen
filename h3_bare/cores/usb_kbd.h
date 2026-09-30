@@ -40,16 +40,12 @@ void usb_kbd_esc3_reset(void);
 int  usb_touch_poll(int* x, int* y, int* pressed);
 // Объединённый ввод для меню: клавиатура или тач(Enter)
 int  usb_input_poll(void);
-// Тач как джойстик для эмулятора
-void usb_touch_joy(uint8_t* dir, uint8_t* fire);
 
 // ---- Тачпад (boot mouse, напр. I8 Pro/Novatek) ----
 void usb_pad_poll(void);   // накопление курсора из dx/dy
 int  usb_pad_get_pos(int* x, int* y);     // позиция курсора, 0=нет тачпада
 
 // ---- Sega-геймпад: помощь для подменю ----
-// Фронт нажатия (биты, нажатые только что), без автоповтора
-uint16_t usb_pad_just_pressed(void);
 // Ждать полного отпускания геймпада (чтобы зажатая кнопка не «доехала» в подменю)
 void usb_pad_wait_release(void);
 // Ждать отпускания клавиатуры (чтобы зажатый Enter не «доехал» в подменю)

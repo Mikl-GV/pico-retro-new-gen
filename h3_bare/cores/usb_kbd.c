@@ -122,7 +122,7 @@ static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), al
 
 // ============================================================================
 //  КЛАВИАТУРА: событийный слой (r0.32x)
-//  Физика (avatto-i8-pro-hid.md): новый boot-отчёт приходит только при
+//  Физика Avatto I8 Pro (см. HARDWARE.md): новый boot-отчёт приходит только при
 //  ИЗМЕНЕНИИ (нажатие/отпускание/комбо), при удержании повторов НЕТ,
 //  отпускание — отчёт с обнулёнными кодами. Поэтому prev/cur-дифф даёт
 //  точные фронты, а таймаут-сброса состояния НЕ нужно (и он вреден:
@@ -158,7 +158,7 @@ static int      g_esc3_fired = 0;
 
 // Распознавание отпускания (r0.32x, Low-Speed донгл I8 Pro):
 // донгл при ОТПУСКАНИИ не шлёт пустой отчёт — просто замолкает (проверено на
-// железе; «пустой отчёт» из avatto-i8-pro-hid.md на этой связке не приходит).
+// железе; «пустой отчёт» на этой связке не приходит).
 // При удержании отчёты продолжают идти, поэтому: тишина > KBD_IDLE_RELEASE_US
 // при зажатых клавишах = их отпустили (или связь потеряна — тоже безопасно
 // «отпустить»). Так же делают простые эмуляторы/драйверы, чей стек не видит
@@ -176,7 +176,6 @@ static int      g_esc3_fired = 0;
 #define PAD_DEBOUNCE_HITS 3
 
 // ---- состояние геймпада (вынесено из usb_input_poll, чтобы можно было сбросить) ----
-static uint16_t g_pad_prev = 0;
 static uint32_t g_pad_repeat_start = 0;
 static int      g_pad_was_repeat = 0;
 static int      g_t_prev_pressed = 0;
@@ -737,16 +736,9 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
         // Y = LE: byte[4] | byte[5]<<8
         *y = (int)g_touch_report[4] | ((int)g_touch_report[5] << 8);
         // GT911 выдает 0..4095; экран 1024x600 — масштабировать будет
-        // вызывающая сторона (usb_touch_joy).
+        // вызывающая сторона.
     }
     return 1;
-}
-
-// Фронт нажатия Sega-геймпада: возвращает биты, нажатые ТОЛЬКО что (0→1).
-// Через СВОЙ слой (без лишних аппаратных сканов — кэш в usb_pad_update).
-uint16_t usb_pad_just_pressed(void) {
-    usb_pad_update();
-    return usb_pad_edge();
 }
 
 // Дождаться, пока ВСЕ кнопки геймпада будут отпущены (и не было повторного
@@ -761,7 +753,6 @@ void usb_pad_wait_release(void) {
         // Залипший пад: сброс PCF8574 (0xFF → TH=1 idle), как в sega_pad_test_run
         sega_pad_init();
     }
-    g_pad_prev = 0;
     g_pad_repeat_start = 0;
     g_pad_was_repeat = 0;
     g_pad_deb = 0;
@@ -836,7 +827,7 @@ int usb_input_poll(void) {
     uint16_t pad = usb_pad_get();
     uint16_t pressed = usb_pad_edge();
 
-    // фронт/спад: обновляем g_pad_prev ДО обработки
+    // фронт/спад: g_pad_was_repeat и таймер автоповтора обновляются ДО обработки
     if (pressed && pad) {
         g_pad_was_repeat = 0;
         g_pad_repeat_start = h3_hs_timer_lo_us();
@@ -894,22 +885,6 @@ int usb_input_poll(void) {
     return 40;                                     // середина справа — Enter
 }
 
-// ---- Тач как джойстик для эмулятора ----
-// Зоны: верх 30% = up, низ 30% = down, иначе левая/правая половина = left/right.
-// Касание в любом месте = fire.
-void usb_touch_joy(uint8_t* dir, uint8_t* fire) {
-    int x = 0, y = 0, p = 0;
-    if (!usb_touch_poll(&x, &y, &p)) return;
-    if (!p) return;
-    *fire = 1;
-    // диапазон неизвестен (0..1023 или 0..4095) — используем доли
-    uint32_t yfrac = (uint32_t)y * 10u / 4096u;
-    if (yfrac < 3u) { *dir |= 1; return; }          // up
-    if (yfrac > 7u) { *dir |= 2; return; }          // down
-    if ((uint32_t)x * 10u / 4096u < 5u) *dir |= 4;  // left
-    else                               *dir |= 8;  // right
-}
-
 // ---- Тачпад (I8 Pro boot mouse): накопление курсора из dx/dy ----
 // Формат boot-mouse отчёта: byte[0]=кнопки(bit0=ЛКМ), byte[1]=dx, byte[2]=dy
 // (знаковые), byte[3]=wheel. Читается через interrupt-IN слот 1.
@@ -918,8 +893,10 @@ void usb_pad_poll(void) {
 
     // Вычитываем ВСЕ накопленные свежие пакеты (донгл шлёт пустые
     // keepalive каждые ~10 мс, они перезатирают буфер — пакет движения
-    // иначе теряется).
-    while (usb_ohci_intr_in_poll(g_pad.base, g_pad_report, 8, 1) > 0) {
+    // иначе теряется). r0.410 (S11): лимит 64 пакета за вызов — «залипший»
+    // донгл, шлющий бесконечный поток, не должен вешать core0 навсегда.
+    int drained = 0;
+    while (usb_ohci_intr_in_poll(g_pad.base, g_pad_report, 8, 1) > 0 && ++drained < 64) {
         int8_t dx = (int8_t)g_pad_report[1];
         int8_t dy = (int8_t)g_pad_report[2];
 

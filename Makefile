@@ -55,7 +55,7 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv ths_fan))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
@@ -381,6 +381,95 @@ $(BUILD)/msx_WrapNukeYKT.o: $(MSX)/NukeYKT/WrapNukeYKT.c | $(BUILD)
 	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 
+# ---- МС1504 (Fake86: 8086/PC-XT, КР1834ВМ86) ----
+# Vendored fake86_src; SDL-файлы (main/render/input/parsecl/timing/hostfs/…)
+# НЕ собираются. Вместо них: ms1504_host.c (наш host) + ms1504_shim.c
+# (заглушки SDL/OSD/хостфс). SDL-free override-заголовки лежат В fake86_src/
+# (render.h/hostfs.h/mutex.h без SDL): `#include "hostfs.h"` резолвится в
+# каталог включающего файла, поэтому override обязан жить рядом с исходником,
+# отдельный -I не перебивает. video.c пропатчен (rgb/initcga без SDL).
+MS1504 := $(TOP)h3_bare/cores/ms1504
+MS1504_INC := -I$(MS1504)/fake86_src -I$(MS1504)
+MS1504_CFLAGS := $(CFLAGS) $(MS1504_INC)
+MS1504_BONES  := cpu bios i8237 i8253 i8259 video ports disk bindata sermouse shim host bios_data
+OBJ += $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES)))
+
+$(BUILD)/ms1504_%.o: $(MS1504)/fake86_src/%.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ms1504_bios_data.o: $(MS1504)/ms1504_bios_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(BUILD)/ms1504_shim.o: $(MS1504)/ms1504_shim.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ms1504_host.o: $(MS1504)/ms1504_host.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+# После сборки ВСЕХ объектов набора один батч-переименователь добавляет
+# префикс m15_ ко всем глобальным символам (согласованно: определения И
+# ссылки во всех объектах). Снимает коллизии с другими ядрами
+# (--allow-multiple-definition), напр. timing из BK.
+MS1504_OBJS := $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES)))
+$(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
+	$(TOP)h3_bare/cores/ms1504_rename.sh $(MS1504_OBJS)
+	touch $@
+
+# ---- Atari 8-bit (400/800/XL/XE): libretro-core atari800 (вендор) ----
+# Ядро компилируется (итерация 1); host-слой (env/vfs/ввод/рендер) и
+# включение в прошивку — следующая итерация (система atari800 в systems.h —
+# PLANNED, в OBJ набора нет).
+A8 := $(TOP)h3_bare/cores/atari800
+A8_INC := -I$(A8) -I$(A8)/shim -I$(A8)/atari800/src -I$(A8)/libretro \
+	-I$(A8)/libretro/libretro-common/include -I$(A8)/deps/zlib
+A8_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
+	-O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	$(A8_INC) -D__LIBRETRO__ -D__STDC_FORMAT_MACROS \
+	-Wno-unused -Wno-unused-parameter -Wno-parentheses -Wno-sign-compare \
+	-Wno-array-bounds
+# ВАЖНО: БЕЗ -ffreestanding — newlib в freestanding не определяет PRId64,
+# а libretro-common требует его («inttypes.h is being screwy»).
+# Категории (свои префиксы — избегаем дублей имён, напр. crc32 в ядре и zlib)
+A8C := afile antic atari binload cartridge cassette compfile cfg cpu crc32 devices cartridge_info esc gtia img_tape log memory monitor pbi pia pokey pokeysnd mzpokeysnd remez rtime sio sysrom util sound pbi_proto80 af80 input statesav ui_basic ui artifact colours colours_ntsc colours_pal colours_external screen cycle_map pbi_mio pbi_bb pbi_scsi ide xep80 xep80_fonts file_export filter_ntsc atari_ntsc
+A8L := platform carts_hash libretro-core core-mapper graph vkbd retro_strings retro_utils retro_disk_control retro_vfs retro_files
+A8M := memory_stream compat_strl compat_strcasestr fopen_utf8 encoding_utf file_path file_path_io stdstring rtime
+A8R := altirraos_xl altirraos_800 altirra_basic altirra_5200_os altirra_5200_charset
+A8Z := adler32 crc32 inflate inftrees deflate trees zutil inffast gzread gzclose gzlib gzwrite
+A8_OBJS := $(addprefix $(BUILD)/a8c_,$(addsuffix .o,$(A8C))) \
+	$(addprefix $(BUILD)/a8l_,$(addsuffix .o,$(A8L))) \
+	$(addprefix $(BUILD)/a8m_,$(addsuffix .o,$(A8M))) \
+	$(addprefix $(BUILD)/a8r_,$(addsuffix .o,$(A8R))) \
+	$(addprefix $(BUILD)/a8z_,$(addsuffix .o,$(A8Z)))
+
+$(BUILD)/a8c_%.o: $(A8)/atari800/src/%.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8c_atari_ntsc.o: $(A8)/atari800/src/atari_ntsc/atari_ntsc.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8l_%.o: $(A8)/libretro/%.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_%.o: $(A8)/libretro/libretro-common/streams/%.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_compat_strl.o: $(A8)/libretro/libretro-common/compat/compat_strl.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_compat_strcasestr.o: $(A8)/libretro/libretro-common/compat/compat_strcasestr.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_fopen_utf8.o: $(A8)/libretro/libretro-common/compat/fopen_utf8.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_encoding_utf.o: $(A8)/libretro/libretro-common/encodings/encoding_utf.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_file_path.o: $(A8)/libretro/libretro-common/file/file_path.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_file_path_io.o: $(A8)/libretro/libretro-common/file/file_path_io.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_stdstring.o: $(A8)/libretro/libretro-common/string/stdstring.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8m_rtime.o: $(A8)/libretro/libretro-common/time/rtime.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8r_%.o: $(A8)/atari800/src/roms/%.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+$(BUILD)/a8z_%.o: $(A8)/deps/zlib/%.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) -c -o $@ $<
+# Батч-ренейм глобалов в a8_* (как ms1504): после сборки, перед линком.
+$(BUILD)/a8_renamed.stamp: $(A8_OBJS)
+	$(TOP)h3_bare/cores/a8_rename.sh $(A8_OBJS)
+	touch $@
+
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
 # Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
 # host сам выбирает драйвер и крутит BurnDrvFrame). Собственные флаги
@@ -647,6 +736,8 @@ $(BUILD)/remap.o: $(TOP)h3_bare/cores/remap.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/i2s.o: $(TOP)h3_bare/cores/i2s.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ths_fan.o: $(TOP)h3_bare/cores/ths_fan.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/tft_drv.o: $(TOP)h3_bare/cores/tft_drv.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<   # r58: вернул -O2 (r57 -O0 тормозил дисплей)
 
@@ -828,8 +919,15 @@ $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 # На Linux объекты передаются напрямую (cmdline лимит не проблема).
 # Под Windows (MSYS2) команда длиннее лимита (~32K): линкуем через
 # response-файл linker.rsp (cygpath -m даёт Windows-пути для линкера).
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld
-	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(shell cygpath -m $(o)))) > $(BUILD)/linker.rsp
+# r0.416: cygpath больше НЕ обязателен на Linux — если его нет, пути
+# передаются как есть (чистая машина собирается без всяких shim-файлов).
+ifeq ($(shell command -v cygpath 2>/dev/null),)
+WINPATH = $1
+else
+WINPATH = $(shell cygpath -m $1)
+endif
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp
+	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(call WINPATH,$(o)))) > $(BUILD)/linker.rsp
 	printf -- '-lstdc++ -lgcc -lc -lm -lgcc\n' >> $(BUILD)/linker.rsp
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
 	    -Wl,--allow-multiple-definition \

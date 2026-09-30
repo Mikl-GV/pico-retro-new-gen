@@ -2,6 +2,7 @@
 // Шрифт 8x8, только ASCII 0x20-0x7F. Белые символы на чёрном.
 #include <stdint.h>
 #include "fb_text.h"
+#include "ths_fan.h"
 
 #define FB_ADDR  0x5F900000
 #define FB_W     1024
@@ -261,6 +262,11 @@ void fb_clear(void) {
 // (Set/Way-clean-all тут не годится: на этом железе чистил не те линии и
 //  картинка рассыпалась.)
 void fb_flush(void) {
+    // r0.411: термо/вентилятор — дёшево, раз в кадр любой системы и меню.
+    // ОВЕРЛЕЙ рисуется ДО clean D-cache, чтобы попасть в текущий кадр.
+    ths_fan_update();
+    ths_fan_overlay();
+
     uint32_t addr = FB_ADDR & ~0x1Fu;
     uint32_t end = FB_ADDR + FB_W * FB_H * 4;
     for (; addr < end; addr += 32) {

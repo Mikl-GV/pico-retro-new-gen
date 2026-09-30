@@ -57,6 +57,7 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_cps2(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_neogeo(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_toaplan(const uint8_t* rom, uint32_t size, const char* rom_name);

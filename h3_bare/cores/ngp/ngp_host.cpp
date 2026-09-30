@@ -154,6 +154,9 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
 
     memset(cpurom, 0, sizeof(cpurom));
     memset(mainram, 0, sizeof(mainram));
+    // r0.410 (S8): drawBuffer не очищался при повторном входе — 1-2 кадра
+    // хвоста предыдущей игры при быстром перезапуске NGP.
+    memset(drawBuffer, 0, sizeof(drawBuffer));
 
     // Init palette lookup table
     for (int r = 0; r < 32; r++)

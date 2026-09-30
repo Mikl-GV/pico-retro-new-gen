@@ -22,9 +22,11 @@
    a lot of this code is inefficient, and just plain ugly. i plan to rework
    large sections of it soon. */
 
-#include <SDL.h>
+/* MS1504 port: SDL убран — rgb() возвращает чистый RGB888, initcga берёт
+   встроенный шрифт (bindata.c) без файлов/аллокаций. */
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "video.h"
 
@@ -51,20 +53,8 @@ static uint32_t tempRGB;
 uint16_t oldw, oldh; //used when restoring screen mode
 
 static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
-#if 0
-#ifdef __BIG_ENDIAN__
-	return (r<<24) | (g<<16) | (b<<8);
-#else
-	return r | (g<<8) | (b<<16);
-#endif
-#endif
-	//return SDL_MapRGBA(sdl_pixfmt, r, g, b, 0xFF);
-	return
-		(r    << sdl_pixfmt->Rshift) |
-		(g    << sdl_pixfmt->Gshift) |
-		(b    << sdl_pixfmt->Bshift) |
-		(0xFF << sdl_pixfmt->Ashift)
-	;
+	/* MS1504 port: чистый RGB888 (рендер хоста конвертирует в RGB565) */
+	return (r << 16) | (g << 8) | b;
 }
 
 void vidinterrupt(void) {
@@ -262,18 +252,8 @@ void vidinterrupt(void) {
 
 int initcga ( void )
 {
-	uint8_t *fdef = SDL_malloc(sizeof mem_asciivga_dat);
-	printf("Loading fonts (%u bytes)\n", (unsigned int)(sizeof mem_asciivga_dat));
-	if (!fdef) {
-		fprintf(stderr, "Cannot allocate memory.\n");
-		return -1;
-	}
-	if (DEFAULT_FONT_FILE[0] == '\0' || hostfs_load_binary(DEFAULT_FONT_FILE, fdef, sizeof mem_asciivga_dat, sizeof mem_asciivga_dat, NULL) != sizeof(mem_asciivga_dat)) {
-		SDL_free(fdef);
-		puts("Using internal font definition.");
-		fontcga = mem_asciivga_dat;
-	} else
-		fontcga = fdef;
+	/* MS1504 port: без SDL/файлов — встроенный шрифт bindata.c (8x16, 4096) */
+	fontcga = mem_asciivga_dat;
 
 	palettecga[0] = rgb (0, 0, 0);
 	palettecga[1] = rgb (0, 0, 0xAA);

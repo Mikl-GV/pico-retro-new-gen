@@ -8,10 +8,14 @@ build/
 *.map
 *.pdf
 *.7z
+*.rar
+*.imz
+*.djvu
+*.IMA
 *.col
 .DS_Store
 Thumbs.db
-roms/
+/roms/
 emulator-refs/
 /host/
 *.tar.gz

@@ -117,6 +117,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_fuse(rom, size, sel_name);
     else if (strcmp(sys_id, "bk0010") == 0)
         emu_run_bk(rom, size, sel_name);
+    else if (strcmp(sys_id, "ms1504") == 0)
+        emu_run_ms1504(rom, size, sel_name);
     else if (strcmp(sys_id, "cps1") == 0)
         emu_run_cps1(rom, size, sel_name);   // ROM-сет читает сам host (папка/zip)
     else if (strcmp(sys_id, "cps2") == 0)

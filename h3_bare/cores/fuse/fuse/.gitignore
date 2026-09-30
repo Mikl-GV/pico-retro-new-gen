@@ -65,8 +65,10 @@
 /roms/trdos.rom
 /roms/usource.rom
 /settings.c
-/settings.h
-/stamp-h
+ /settings.h
+!/settings.c
+!/settings.h
+ /stamp-h
 /stamp-h1
 /stamp-h.in
 tags

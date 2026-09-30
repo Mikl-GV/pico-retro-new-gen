@@ -6,27 +6,29 @@
 
 | # | Система | CPU | Статус | Ядро |
 |--|---------|-----|--------|------|
-| 1 | Atari 2600 | 6502 | ✅ работает | MCUME (Virtual VCS) |
+| 1 | Atari 2600 | 6502 | ✅ работает | MCUME |
 | 2 | Atari 5200 | 6502 | ✅ работает | pico5200 (Atari800-derived) |
 | 3 | Atari 7800 | 6502 | ✅ работает | ProSystem |
-| 4 | NES / Famicom (Dendy) | 6502 | ✅ работает | FCEUmm (432 маппера, SuborKB) |
+| 4 | NES / Famicom (Dendy) | 6502 | ✅ работает (мапперы FCEUmm) | FCEUmm |
 | 5 | Sega Master System | Z80 | ✅ работает | Genesis Plus GX |
 | 6 | Game Boy / Game Boy Color | Z80 | ✅ работает | binjgb |
-| 7 | Atari Portfolio | 8088 | ✅ работает | Fake86 (builtin, без ROM) |
+| 7 | Atari Portfolio | 8088 | ✅ работает (builtin, без ROM) | Fake86 |
 | 8 | Game Gear | Z80 | ✅ работает | Genesis Plus GX |
 | 9 | Sega Mega Drive / Genesis | 68000 | ✅ работает | Genesis Plus GX |
 | 10 | Atari Lynx | 6502 | ✅ работает | Handy |
 | 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
-| 12 | SNES | 65816 | ✅ работает | Snes9x 2005 (libretro) |
-| 13 | MSX / MSX2 (Yamaha YIS-503II) | Z80 | ✅ работает (BIOS+BASIC вшиты; r0.211: джойстик/50Гц/BPal/ESC) | fMSX 6.0 |
-| 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco (h3_bare/cores/gearcoleco/) |
-| 15 | ZX Spectrum | Z80 | ✅ работает (r0.242: 48K..TS2068, ввод/печать, меню model→ROM/.z80/.sna или BASIC, ESC-выход) | fuse-libretro (h3_bare/cores/fuse/) |
-| 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (mednafen_pce_fast, HuCard) |
-| 17 | Аркады (CPS-1/CPS-2, NEOGEO/MVS, Toaplan) | 68000/Z80/NEC/Z180/M6805/TMS32010 | ✅ CPS-1/2, NEOGEO, Toaplan работают (r0.37x; без звука); остальные аркады — план | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
-| 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx (h3_bare/cores/vecx/) |
-| 19 | Atari Jaguar | 68000/JRISC | ❌ **отклонено** (слишком тяжело для Cortex-A7) | — |
-| 20 | Радио-86РК, **БК-0010** / БК-0011М, MS 1504 | 8080 / К1801ВМ1 | ✅ БК-0010/0011М работает (r0.243–r0.259: встроено, запуск/рендер/палитра и сброс машины на стенде; осталось Sega-пад, TFT-справка, Terak); Радио-86РК / MS 1504 — план | libretro-bk (BK-Terak-Emu), `h3_bare/cores/bk/` |
-| 21 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP (h3_bare/cores/gba_sp/) |
+| 12 | SNES | 65816 | ✅ работает | Snes9x 2005 |
+| 13 | MSX / MSX2 (Yamaha YIS-503III) | Z80 | ✅ работает (BIOS+SubROM вшиты; машина YIS-503III) | fMSX 6.0 |
+| 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco |
+| 15 | ZX Spectrum | Z80 | ✅ работает (48K..TS2068, ввод/печать, model→ROM/BASIC, ESC) | fuse-libretro |
+| 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (HuCard) |
+| 17 | Аркады CPS-1/2, NEOGEO/MVS, Toaplan, Cave, Sega System 16, FB Neo | 68000/Z80/… | ✅ работают (r0.37x–r0.41x; без звука) | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
+| 18 | GCE Vectrex | 6809 | 🚧 **отложено** (изображение не собирается, пропадают строки) | libretro-vecx |
+| 19 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP |
+| 20 | БК-0010 / БК-0011М | К1801ВМ1 | ✅ работает (r0.243–r0.259; вшито; палитра/ввод на стенде) | libretro-bk |
+| 21 | **МС 1504** | 8086 | ✅ работает (r0.398–r0.404; BIOS PK300 вшит; HLT-боль Б2 см. AUDIT) | Fake86 (`h3_bare/cores/ms1504/`) |
+| 22 | **Atari 8-bit (400/800/XL/XE)** | 6502 | 🔲 **этап 1** готов (ядро компилируется), этап 2 (host) — план | libretro-atari800 (`h3_bare/cores/atari800/`) |
+| 23 | Радио-86РК, Amstrad CPC, C64, Enterprise | — | 🔲 план | см. ниже |
 
 **Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
 
@@ -61,7 +63,7 @@
 8. **Capcom CPS-1 (аркада) — СДЕЛАНО (r0.260, стенд — осталось).** Ядро — порт **FinalBurn Neo** под CPS-1: `m68k` + `z80` + звук (`ym2151`/`ay8910`/`msm6295`) + устройства (`eeprom`/`timekpr`) + общий код `cps*.cpp` + `d_cps1` + `ps*` (защита/дешифровка); символические конфликты (m68k против Genesis Plus GX, YM2612 против gpgx sound) — objcopy-переименование `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`). Звук на первом этапе — off (`pBurnSoundOut` не выделяется).
    **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (распаковка через zlib из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
    **Сделано (r0.260):** (1) вендор в `h3_bare/cores/cps1/` (несколько но вне OBJ); (2) host-слой `cps1_host.cpp`: FAT-чтение папки или zip-инфлейт (`ZipExtract`), выбор драйвера по короткому имени (`BurnDrvGetIndex`), цикл `BurnDrvFrame`, кадр RGB565 384×224 → прямой ресайз в HDMI FB 1024×600, ввод: P1 (ремап-платформа `REMAP_PLAT_CPS1` — стрелки+Z/X/C, Enter/1=Start, 5=Coin) + Sega-пад (A/B/C, X=Coin), P2 хардкод (WASD+J/K/L, 2/6); ESC-выход, 60 Гц; (3) меню «CPS-1» (READY) → браузер `/roms/cps1/*` (папки и zip); (4) генерация `m68kops.c/h` нативным m68kmake в `build/` на сборке. `m68kops` не в git.
-   **Осталось:** звук (PSG/YM2151/QSound → I2S), Sega System 2/16 — отдельно. NEOGEO — сделано (r0.32x), Toaplan — сделано (r0.36x), Cave-68K — сделано (r0.377-378: donpachi/esprade/guwange и т.д.). См. `docs/NEOGEO-HANDOFF.md`, `docs/TOAPLAN-HANDOFF.md`, `docs/ARCADES-PLAN.md`.
+   **Осталось:** звук (PSG/YM2151/QSound → I2S), Sega System 2/16 — отдельно. NEOGEO — сделано (r0.32x), Toaplan — сделано (r0.36x), Cave-68K — сделано (r0.377-378: donpachi/esprade/guwange и т.д.). См. `docs/ARCADES-PLAN.md`.
 9. **Аркады: порт семейств плат из FBNeo** — см. отдельный план в `docs/ARCADES-PLAN.md`. Порядок: Sega System 16 → Taito 68K → Data East 68K → Psikyo/Midway; новые CPU (6809/6502) — отдельная веха (откроет Konami/Namco/Capcom-ранние). Текущий статус — см. ARCADES-PLAN (следующий: Taito 68K).
 10. **Компьютеры (II очередь)** — добавить в systems.h/README (запланированы, PLANNED):
     - **МС 1504** — советский офисный ПК (К580ВМ80А/К1801ВМ1-класс); ядро — по аналогии с бэкапов (поиск libretro-порта при старте)

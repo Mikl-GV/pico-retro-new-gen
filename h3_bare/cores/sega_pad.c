@@ -223,6 +223,7 @@ uint32_t sega_pad_get_scan_us(void) { return g_scan_us; }
 uint32_t sega_pad_get_status(void)  { return g_status; }
 
 int sega_pad_init(void) {
+    static int g_init_logged = 0;
     pa_scl_out(1);
     pa_sda_in();
     const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
@@ -230,7 +231,13 @@ int sega_pad_init(void) {
 
     // PCF8574: P0..P6 = 1 (вход), P7 = 1 (TH=1, idle)
     int ok = pcf_select(0xFF);
-    printf("sega_pad: init %s\n", ok ? "OK" : "FAIL");
+    // r0.411: печать в boot-лог (пользователь просит видеть инит джоя при
+    // загрузке «как раньше»). Печатаем ОДИН раз — при старте; повторные
+    // re-init'ы (вход/выход эмулятора) лог не засоряют.
+    if (!g_init_logged) {
+        printf("sega_pad: init %s\n", ok ? "OK" : "FAIL");
+        g_init_logged = 1;
+    }
     return ok;
 }
 

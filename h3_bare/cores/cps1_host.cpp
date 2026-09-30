@@ -411,6 +411,18 @@ loaded:
 }
 
 // ---- рендер кадра pBurnDraw (RGB565, активная ширина nBurnPitch/2) в HDMI FB ----
+// r0.411: оптимизации «точки рендера»:
+//   1) поля (чёрная рамка contain) НЕ перезаливаются, если геометрия кадра
+//      не изменилась с прошлого раза (она стабильна внутри игры) — экономия
+//      ~FB_H×(2·FB_W−vw) записей на кадр;
+//   2) LUT RGB565→XRGB8888 (65536×4 Б) — пиксельный цикл без трёх сдвигов.
+static uint32_t g_rgb565_lut[65536];
+static int      g_lut_ready = 0;
+
+static uint32_t lut_rgb565(uint16_t p) {
+    return g_rgb565_lut[p];
+}
+
 static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
@@ -422,6 +434,17 @@ static void host_render_frame(void)
     int sstride = nBurnPitch >> 1;
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
+
+    if (!g_lut_ready) {
+        for (int i = 0; i < 65536; i++) {
+            uint16_t p = (uint16_t)i;
+            uint32_t r = ((p >> 11) & 0x1F) << 3;
+            uint32_t g = ((p >> 5) & 0x3F) << 2;
+            uint32_t b = (p & 0x1F) << 3;
+            g_rgb565_lut[i] = (r << 16) | (g << 8) | b;
+        }
+        g_lut_ready = 1;
+    }
 
     // Кадр из драйвера всегда «альбомный» W×H: NEO 304×224, CPS 384×224,
     // Toaplan-гор 304×240. Вертикальные Toaplan/Cave/S16 ядро кладёт «боком»
@@ -440,11 +463,17 @@ static void host_render_frame(void)
     if (vh < 1) vh = 1;
     int x0 = (FB_W - vw) / 2;
     int y0 = (FB_H - vh) / 2;
-    for (int dy = 0; dy < FB_H; dy++) {
-        uint32_t* drow = dst + (size_t)dy * FB_W;
-        if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
-        else { for (int dx = 0; dx < x0; dx++) drow[dx] = 0;
-               for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
+
+    // r0.411: чёрные поля кэшируем по геометрии (не меняется внутри игры).
+    static int s_x0 = -1, s_vw = -1, s_vh = -1, s_y0 = -1;
+    if (s_x0 != x0 || s_vw != vw || s_vh != vh || s_y0 != y0) {
+        for (int dy = 0; dy < FB_H; dy++) {
+            uint32_t* drow = dst + (size_t)dy * FB_W;
+            if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
+            else { for (int dx = 0; dx < x0; dx++) drow[dx] = 0;
+                   for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
+        }
+        s_x0 = x0; s_vw = vw; s_vh = vh; s_y0 = y0;
     }
     static uint16_t sx[1024];
     uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)vw;
@@ -464,11 +493,7 @@ static void host_render_frame(void)
         const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
         for (int dx = 0; dx < vw; dx++) {
-            uint16_t p = srow[sx[dx]];
-            uint32_t r = ((p >> 11) & 0x1F) << 3;
-            uint32_t g = ((p >> 5) & 0x3F) << 2;
-            uint32_t b = (p & 0x1F) << 3;
-            drow[dx] = (r << 16) | (g << 8) | b;
+            drow[dx] = lut_rgb565(srow[sx[dx]]);
         }
         y_acc += step_y;
     }

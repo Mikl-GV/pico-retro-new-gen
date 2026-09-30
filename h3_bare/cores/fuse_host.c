@@ -58,9 +58,15 @@ static const struct retro_variable* g_core_vars = 0;
 // Раньше отдавали "" — ядро делает atoi("")=0 для fuse_emulation_speed →
 // эмуляция на 0% → звук вне диапазона → some_audio не ставится → retro_run
 // выжигает 10000 итераций на кадр («застрял на первом экране»).
+// r0.410 (S10): один static buf[64] на все опции был опасен, если ядро
+// задержит чтение v->value — указатель менялся следующей опцией. Теперь
+// кольцо из 24 буферов (список опций Fuse ~20), указатели живут до конца
+// сессии. Если ядро-клиент снова попросит >24 дефолтов — кольцо переживёт
+// только последние 24; держать список большего размера Fuse не требует.
 static const char* core_default_for(const char* key)
 {
-    static char buf[64];
+    static char pool[24][64];
+    static int   pool_i = 0;
     if (!g_core_vars) return "";
     for (const struct retro_variable* v = g_core_vars; v->key; v++) {
         if (strcmp(v->key, key) == 0) {
@@ -68,8 +74,10 @@ static const char* core_default_for(const char* key)
             if (!p) return "";
             p++;
             while (*p == ' ') p++;
+            char* buf = pool[pool_i];
+            pool_i = (pool_i + 1) % 24;
             size_t n = 0;
-            while (p[n] && p[n] != '|' && n < sizeof(buf) - 1) n++;
+            while (p[n] && p[n] != '|' && n < 63) n++;
             memcpy(buf, p, n);
             buf[n] = 0;
             return buf;
@@ -339,7 +347,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (rom && size && !fuse_ext_supported(g_rom_path)) {
         printf("FUSE: unsupported format '%s'\n", g_rom_path);
         fb_clear();
-        fb_text_center("FUSE: не распознан формат", 200, 2, 0x00FF4444);
+        fb_text_center("FUSE: format not recognized", 200, 2, 0x00FF4444);
         fb_text_center(g_rom_path, 240, 2, 0x00FFFFFF);
         fb_text_center(".z80/.sna/.szx/.tap/.tzx/.dsk/.scl/.trd/.dck/.ipf/.zip", 258, 1, 0x00AAAAAA);
         fb_flush();
@@ -367,11 +375,11 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
             printf("FUSE: WARN %s (%u) > RAM модели %s (%u)\n",
                    g_rom_path, (unsigned)size, g_model, (unsigned)ram);
             fb_clear();
-            fb_text_center("FUSE: файл больше памяти модели", 200, 2, 0x00FFAA00);
+            fb_text_center("FUSE: file bigger than model RAM", 200, 2, 0x00FFAA00);
             char buf[96];
             snprintf(buf, sizeof(buf), "%s: %u > %u байт", g_model, (unsigned)size, (unsigned)ram);
             fb_text_center(buf, 240, 1, 0x00FFFFFF);
-            fb_text_center("выбери 128K-модель в меню или другой файл", 258, 1, 0x00AAAAAA);
+            fb_text_center("choose 128K model in menu or another file", 258, 1, 0x00AAAAAA);
             fb_flush();
             udelay(2500000);
         }
@@ -412,9 +420,9 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_unload_game();
         fuse_retro_deinit();
         fb_clear();
-        fb_text_center("FUSE: файл не загрузился", 200, 2, 0x00FF4444);
+        fb_text_center("FUSE: file not loaded", 200, 2, 0x00FF4444);
         fb_text_center(g_rom_path, 240, 2, 0x00FFFFFF);
-        fb_text_center("формат не распознан (или битый заголовок)", 258, 1, 0x00AAAAAA);
+        fb_text_center("format not recognized (bad header)", 258, 1, 0x00AAAAAA);
         fb_flush();
         udelay(2000000);
         fb_clear(); fb_flush();

@@ -14,6 +14,7 @@
 #include "emu.h"
 #include "h3_hs_timer.h"
 #include "led.h"
+#include "ths_fan.h"
 #include "sega_pad.h"
 #include "remap.h"
 #include "tft_drv.h"
@@ -201,9 +202,39 @@ static int bk_source_dialog(void) {
     }
 }
 
+// 1 = программы с SD (/roms/ms1504/), 2 = встроенное ПО (BIOS вшит), 0 = назад
+static int ms1504_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "MS 1504: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. Load programs (SD)",
+                "2. Built-in BIOS (PK300)",
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 600, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return sel + 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r0.396 (15.2.1)";
+const char g_fw_version[] = "r0.416 (15.2.1)";
 
 void main(void) {
     int sd_ok = 0;
@@ -211,12 +242,16 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r0.396 (15.2.1)\n");
+    uart_puts("build: r0.416 (15.2.1)\n");
 
     led_init();
     led_set(0);
 
     h3_hs_timer_init();
+
+    // r0.411: термодатчик H3 + вентилятор (THS; PA6=управление, PA7=FG).
+    // До первого fb_flush: oверлей будет рисоваться поверх кадров при перегреве.
+    ths_fan_init();
 
     struct display_timing timing;
     memset(&timing, 0, sizeof(timing));
@@ -261,10 +296,11 @@ void main(void) {
     // Пользовательский ремап клавиатуры (из /retro.cfg) — после fat_init
     if (sd_ok) { remap_load(); uart_puts("remap: loaded\n"); }
 
-    // I2C (TWI0 PA11/PA12) + Sega-геймпад через PCF8574@0x20
-    if (sega_pad_init()) uart_puts("sega_pad: PCF8574 OK\n");
-    else uart_puts("sega_pad: PCF8574 not found\n");
-    // r0.395: отладка инициализации кнопок по I2C (адрес 0x20 или 0x27).
+    // I2C (TWI0 PA11/PA12): Sega-геймпад@0x20 (если подключён).
+    // r0.411: печать инициализации возвращена в boot-лог (было тихо с r0.397):
+    //  - sega_pad_init() печатает «sega_pad: init OK/FAIL» (см. sega_pad.c);
+    //  - btn_pad_dbg_init() печатает «PAD: i2c scan …» / выбор 0x20/0x27.
+    sega_pad_init();
     { extern int btn_pad_dbg_init(void); btn_pad_dbg_init(); }
 
     // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
@@ -411,6 +447,28 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM через браузер (0x74 ставит run_emulator)
                 rom_browser_run("bk0010", name, "bk0010");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // МС1504: «загрузка программ с SD» или «встроенное ПО» (BIOS вшит)
+        if (strcmp(id, "ms1504") == 0) {
+            extern void emu_run_ms1504(const uint8_t*, uint32_t, const char*);
+            int src = ms1504_source_dialog();
+            if (src == 0) continue;
+            sega_pad_init();                 // чистый пад перед входом
+            tft_help_show("ms1504");
+            if (src == 2) {                  // встроенное ПО
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_ms1504(NULL, 0, "builtin");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // программы с SD (0x74 ставит run_emulator)
+                rom_browser_run("ms1504", name, "ms1504");
             }
             sega_pad_init();
             continue;

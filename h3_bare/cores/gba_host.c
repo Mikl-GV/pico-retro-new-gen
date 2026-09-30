@@ -72,10 +72,6 @@ static u16 gba_buttons(void) {
     if (sp & 0x0080) b |= 0x08;   // Sega Start -> Start
     if (sp & 0x0800) b |= 0x04;   // Sega Mode -> Select
 
-    for (int i = 0; i < n; i++) {
-        uint8_t sc = keys[i];
-        (void)sc;   // проверка скан-кодов идёт через remap_kbd_pressed (см. ниже)
-    }
     // Клавиатура -> кнопки GBA (ремап через Settings → Keyboard remap).
     // Залипания нет: remap_kbd_pressed проверяет массив keys целиком.
     if (remap_kbd_pressed(REMAP_PLAT_GBA, BTN_UP, keys, n))    b |= 0x40;

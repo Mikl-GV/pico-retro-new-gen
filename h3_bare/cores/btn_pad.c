@@ -12,9 +12,9 @@
 //
 // r0.395 (адрес): кнопочная плата может стоять ЛИБО на 0x20 (один PCF8574
 // на шине — Sega-джой и кнопки «или-или»), ЛИБО на 0x27 (второй PCF8574
-// рядом с джойстиком на 0x20). btn_pad_dbg_init() сканирует оба адреса,
-// выбирает рабочий (0x27 приоритетнее — 0x20 обычно занят джойстиком),
-// включает подтяжки и печатает результат в UART.
+// рядом с джойстиком на 0x20). Автоопределение в btn_pad_probe() сканирует
+// оба адреса, выбирает рабочий (0x27 приоритетнее — 0x20 обычно занят
+// джойстиком), включает подтяжки и (в verbose-режиме) печатает в UART.
 //
 // Подтяжки: PCF8574 — quasi-bidirectional порты: «вход» с подтяжкой = выход
 // в 1. Кнопки активны в 0, поэтому один раз пишем 0xFF (все линии в 1).
@@ -43,11 +43,18 @@ static int btn_pad_read(uint8_t* out) {
     return 1;
 }
 
-// r0.395: отладка инициализации кнопок по I2C (зовётся из main.c на старте).
-// Сканирует 0x20 и 0x27; verbose=1 — печать в UART, verbose=0 — тихий
-// ре-опрос (если плату подключили уже после загрузки).
+// r0.395: probe кнопочной платы по I2C (адрес 0x20, затем 0x27).
+// verbose=1 — печать в UART (диагностика), verbose=0 — тихий ре-опрос
+// (если плату подключили уже после загрузки). Зовётся авто-init'ом из
+// btn_pad8_scan (тихо) и из btn_pad_dbg_init() (громко, на старте).
 static int btn_pad_probe(int verbose) {
     int a20, a27;
+
+    // r0.411: PAD:-лог печатается только при ПЕРВОМ probe (бут-лог), чтобы
+    // повторные авто-init'ы (горячее подключение/переходы меню) не спамили.
+    static int g_probe_logged = 0;
+    if (verbose && g_probe_logged) verbose = 0;
+    if (verbose) g_probe_logged = 1;
 
     i2c_start(); a20 = (i2c_write_byte(PCF8574_R) == 0); i2c_stop();
     i2c_start(); a27 = (i2c_write_byte(0x4F) == 0);      i2c_stop();
@@ -57,12 +64,9 @@ static int btn_pad_probe(int verbose) {
 
     if (a27) {
         btn_i2c_w = 0x4E; btn_i2c_r = 0x4F;
-        if (verbose)
-            printf("PAD: buttons -> 0x27 (Sega-джой остаётся на 0x20)\n");
+        // r0.413: вывод «PAD: buttons -> …» убран из бут-лога (шум).
     } else if (a20) {
         btn_i2c_w = PCF8574_W; btn_i2c_r = PCF8574_R;
-        if (verbose)
-            printf("PAD: buttons -> 0x20 (общая шина с джоем: и-или)\n");
     } else {
         btn_i2c_w = 0; btn_i2c_r = 0;
         if (verbose)
@@ -76,15 +80,19 @@ static int btn_pad_probe(int verbose) {
     int ok = i2c_write_byte((uint8_t)btn_i2c_w);
     if (!ok) ok = i2c_write_byte(0xFF);
     i2c_stop();
-    if (verbose)
-        printf("PAD: pull-ups 0xFF -> addr=0x%02X %s\n", (unsigned)btn_i2c_r,
-               ok ? "FAIL(NACK)" : "OK");
+    // r0.413: вывод «PAD: pull-ups …» убран (не нужен в бут-логе).
     if (ok) { btn_i2c_w = 0; btn_i2c_r = 0; }
 
     btn_pad_inited = 1;
     return btn_i2c_r != 0;
 }
 
+// r0.395: отладка инициализации кнопок по I2C (адрес 0x20 или 0x27).
+// r0.411: возвращён в код — нужен НЕ только как отладка, но и как
+// «живой» бут-лог состояния кнопок (пользователь просил видеть как раньше).
+// Внутри — громкий probe (verbose=1); повторный вызов безопасен.
+// Печать только при первом вызове (память о печати держит btn_pad_probe);
+// на старте из main.c печатает PAD:-строки, при повторных вызовах молчит.
 int btn_pad_dbg_init(void) {
     return btn_pad_probe(1);
 }
@@ -92,7 +100,9 @@ int btn_pad_dbg_init(void) {
 uint16_t btn_pad8_scan(void) {
     uint8_t r;
 
-    if (!btn_pad_inited) btn_pad_probe(1);
+    // r0.397: авто-init ТИХИЙ (без PAD:-строк в логе); диагностика при
+    // необходимости — Setting → Sega 6-button test (sega_pad.c).
+    if (!btn_pad_inited) btn_pad_probe(0);
     if (!btn_i2c_r) {
         // r0.395: платы не было — тихо переспрашиваем (раз в ~1000 вызовов),
         // чтобы кнопки в меню ожили после подключения без перезагрузки.

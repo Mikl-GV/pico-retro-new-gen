@@ -1,43 +1,38 @@
-/*
-  Fake86: A portable, open-source 8086 PC emulator.
-  Copyright (C)2020      Gabor Lenart "LGB"
+/* Override hostfs.h для порта МС1504 на bare-metal H3.
+   Убирает SDL_RWops; диски/файлы на старте не открываются (образы — задача
+   следующей итерации); функции сваливаются в fail. */
+#ifndef FAKE86_PORT_HOSTFS_H_INCLUDED
+#define FAKE86_PORT_HOSTFS_H_INCLUDED
 
-  This program is free software; you can redistribute it and/or
-  modify it under the terms of the GNU General Public License
-  as published by the Free Software Foundation; either version 2
-  of the License, or (at your option) any later version.
+#include <stddef.h>
+#include <stdint.h>
 
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-*/
-
-#ifndef FAKE86_HOSTFS_H_INCLUDED
-#define FAKE86_HOSTFS_H_INCLUDED
-
-#include <SDL.h>
-
-#define hostfs_read			SDL_RWread
-#define hostfs_write			SDL_RWwrite
-#define hostfs_close			SDL_RWclose
-#define hostfs_size			SDL_RWsize
-#define hostfs_seek_set(file,ofs)	SDL_RWseek(file, ofs, RW_SEEK_SET)
-#define hostfs_seek_end(file,ofs)	SDL_RWseek(file, ofs, RW_SEEK_END)
-#define hostfs_seek_cur(file,ofs)	SDL_RWseek(file, ofs, RW_SEEK_CUR)
-#define hostfs_tell			SDL_RWtell
+typedef struct hh_file HOSTFS_FILE;
 
 extern int hostfs_was_fallback_mode;
 
-typedef SDL_RWops HOSTFS_FILE;
+/* остаток SDL, который использует disk.c (только сообщения об ошибках) */
+const char *SDL_GetError ( void );
 
-extern int hostfs_init ( void );
+extern int         hostfs_init ( void );
 extern HOSTFS_FILE *hostfs_open ( const char *fn, const char *mode );
 extern HOSTFS_FILE *hostfs_open_with_feedback ( const char *fn, const char *mode, const char *msg );
-extern int hostfs_load_binary ( const char *fn, void *buf, int min_size, int max_size, const char *msg );
+extern int         hostfs_load_binary ( const char *fn, void *buf, int min_size, int max_size, const char *msg );
+
+/* Операции, которые диск.c звал через SDL_RW*: та же сигнатура. */
+#define hostfs_read(a,b,c,d)    ms1504_hfs_read((a),(b),(c),(d))
+#define hostfs_write(a,b,c,d)   ms1504_hfs_write((a),(b),(c),(d))
+#define hostfs_close(a)         ms1504_hfs_close((a))
+#define hostfs_size(a)          ms1504_hfs_size((a))
+#define hostfs_seek_set(a,b)    ms1504_hfs_seek((a),(b),0)
+#define hostfs_seek_end(a,b)    ms1504_hfs_seek((a),(b),2)
+#define hostfs_seek_cur(a,b)    ms1504_hfs_seek((a),(b),1)
+#define hostfs_tell(a)          ms1504_hfs_seek((a),0,1)
+
+size_t ms1504_hfs_read  ( HOSTFS_FILE *f, void *p, size_t size, size_t nmemb );
+size_t ms1504_hfs_write ( HOSTFS_FILE *f, const void *p, size_t size, size_t nmemb );
+int    ms1504_hfs_close ( HOSTFS_FILE *f );
+int64_t ms1504_hfs_size ( HOSTFS_FILE *f );
+int64_t ms1504_hfs_seek ( HOSTFS_FILE *f, int64_t offset, int whence );
 
 #endif

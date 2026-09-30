@@ -1444,8 +1444,11 @@ void exec86(uint32_t execloops) {
 
 	for (uint32_t loopcount = 0; loopcount < execloops; loopcount++) {
 
-		if ((totalexec & TIMING_INTERVAL) == 0)
+		if ((loopcount & TIMING_INTERVAL) == 0)
 			timing();
+		// MS1504: гейт по totalexec (не loopcount) при HLT НЕ работал:
+		// totalexec не растёт в HLT → timing() не вызывался → PIT IRQ0 не
+		// генерировался → CPU вечно спал в HLT. loopcount растёт всегда.
 
 		if (trap_toggle) {
 			intcall86(1);
@@ -1464,7 +1467,14 @@ void exec86(uint32_t execloops) {
 		}
 
 		if (cpu.hltstate) {
-			puts("CPU: HALTED!!!!!");
+			/* MS1504: молчим — печать раз в 1024 итерации; показываем
+			   ПРИЧИНУ невыполнения HLT: IF, маску/заявки PIC и PIT */
+			static uint32_t hlt_spam;
+			hlt_spam++;
+			if ((hlt_spam & 0x3FF) == 1)
+				printf("CPU: HALTED! ifl=%d imr=%02X irr=%02X pit=%d\n",
+				       (int)cpu.ifl, (unsigned)i8259.imr,
+				       (unsigned)i8259.irr, (int)i8253.active[0]);
 			goto skipexecution;
 		}
 

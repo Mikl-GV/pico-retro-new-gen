@@ -188,9 +188,6 @@ extern "C" void atari2600_run_frame(void) {
     }
 }
 
-extern "C" void atari2600_render(void) {}
-extern "C" void atari2600_poll_joy(void) {}
-
 extern "C" void atari2600_set_difficulty(int p1_expert) {
     extern int nOptions_P1Diff;
     nOptions_P1Diff = p1_expert ? 0 : 1;

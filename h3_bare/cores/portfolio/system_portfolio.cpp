@@ -229,10 +229,6 @@ static int vk_dirty = 0;
 static int vk_shift_oneshot = 0;
 static int pofo_ru_mode = 0;   /* 0=ASCII, 1=CP866 Cyrillic */
 
-/* Задел для отложенного break (make+exec86 в одном кадре, break в следующем).
- * Сейчас не используется — VK шлёт key_break сразу после exec86. */
-static int pend_br_row = -1, pend_br_col = -1, pend_br_shift = 0;
-
 static uint32_t pofo_boot_guard = 0;
 
 /* Defined later (built-in apps); declared here for VK routing. */
@@ -1555,7 +1551,6 @@ extern "C" int portfolio_init_game(const uint8_t *cart, uint32_t cart_size)
     pofo_app_current = -1;
     pofo_apps_sel = 0;
     pofo_help_active = 0;
-    pend_br_row = -1; pend_br_col = -1; pend_br_shift = 0;
 
     /* reset all frame-loop state so a second entry starts clean */
     pofo_boot_guard = 0;

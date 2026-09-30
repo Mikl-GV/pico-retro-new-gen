@@ -24,7 +24,7 @@
 #include "config.h"
 #include <stdint.h>
 #include <stdio.h>
-#include <memory.h>
+#include <string.h>   /* MS1504: <memory.h> нет в newlib */
 
 #include "i8237.h"
 
