@@ -52,6 +52,10 @@ int nOptions_SkipFrames = 1;
 }
 
 extern "C" void* emu_Malloc(int size) {
+    // r0.390 (S6): bump-аллокатор без проверки границ тихо портил соседний
+    // BSS при переполнении пула. Как a5_Malloc (a5200) — возвращаем NULL;
+    // ядро, не получившее память, корректно обрабатывает NULL.
+    if (size < 0 || (int)(pool_ptr - pool) + size > (int)sizeof(pool)) return NULL;
     void* r = (void*)pool_ptr;
     pool_ptr += size;
     return r;

@@ -189,16 +189,10 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
 
 static void host_log(enum retro_log_level level, const char* fmt, ...)
 {
-    (void)level;
-    if (!fmt) return;
-    // r0.247: раньше печаталось только fmt -> «%s (%u bytes)» выходило буквально,
-    // имён ROM в UART не было. Форматируем через наш vsnprintf (libc_min.c).
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    printf("BKLOG: %s", buf);
+    (void)level; (void)fmt;
+    // r0.390 (F8): временная диагностика снята — палитра/ввод БК подтверждены
+    // на стенде (r0.253-255). Раньше лог ядра лился в UART с префиксом BKLOG:.
+    // При повторной отладке БК вернуть vsnprintf + uart_puts.
 }
 
 static bool host_environment(unsigned cmd, void* data)

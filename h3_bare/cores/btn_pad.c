@@ -1,85 +1,106 @@
-// btn_pad.c — прямой 8-битовый PCF8574@0x20 (TWI0, bit-bang PA11/PA12).
-// ОТДЕЛЬНЫЙ модуль: NIKAK не лезем в sega_pad.c (его скан трогать нельзя).
-// Карта кнопок (активный низ): B0=Up B1=Left B2=Right B3=Down B4=A B5=B
-// B6=Start B7=Select(Coin). Возвращает маску как sega_pad_scan.
+// btn_pad.c — прямой 8-битовый PCF8574 (TWI0, bit-bang PA11/PA12).
+// ОТДЕЛЬНЫЙ модуль: никак не лезем в протокол скана sega_pad.c.
+// Карта кнопок (активный низ — кнопка замыкает линию на GND):
+//   B0=Up B1=Left B2=Right B3=Down B4=A B5=B B6=Start B7=Select(Coin).
+// Возвращает маску как sega_pad_scan (UP=1 DOWN=2 LEFT=4 RIGHT=8 A=0x10
+// B=0x20 START=0x80 X=0x100 для Select/Coin).
+//
+// r0.390 (S2): низкоуровневый bit-bang ОБЩИЙ с sega_pad.c (pcf8574_bb.h) —
+// одна реализация, «один поток». btn-скан выполняет ТОЛЬКО read-транзакции
+// (start + addr|R + данные + stop): выходы PCF8574 не меняются, поэтому
+// параллельно с Sega 6-btn-протоколом (TH на P7) он не конфликтует.
+//
+// r0.395 (адрес): кнопочная плата может стоять ЛИБО на 0x20 (один PCF8574
+// на шине — Sega-джой и кнопки «или-или»), ЛИБО на 0x27 (второй PCF8574
+// рядом с джойстиком на 0x20). btn_pad_dbg_init() сканирует оба адреса,
+// выбирает рабочий (0x27 приоритетнее — 0x20 обычно занят джойстиком),
+// включает подтяжки и печатает результат в UART.
+//
+// Подтяжки: PCF8574 — quasi-bidirectional порты: «вход» с подтяжкой = выход
+// в 1. Кнопки активны в 0, поэтому один раз пишем 0xFF (все линии в 1).
+// Для Sega-пада на 0x20 это то же состояние TH=HIGH idle, которое оставляет
+// sega_pad_scan() в конце скана, — лишних фронтов TH нет.
 #include <stdint.h>
 #include "btn_pad.h"
 #include "sega_pad.h"
-#include "h3.h"
-#include "h3_hs_timer.h"
+#include "pcf8574_bb.h"
 
-// ---- PA11 = SCL, PA12 = SDA (GPIO на TWI0) ----
-#define SCL_PIN  11
-#define SDA_PIN  12
+extern int printf(const char* fmt, ...);   // UART-отладка (PAD: ...)
 
-#define PA_BASE  0x01C20800u
-#define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
-#define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
+// Рабочий адрес кнопочной платы (0 = не найдена).
+static int btn_i2c_w = 0;   // адрес записи: 0x40 (0x20) / 0x4E (0x27)
+static int btn_i2c_r = 0;   // адрес чтения: 0x41 (0x20) / 0x4F (0x27)
+static int btn_pad_inited = 0;
+static unsigned g_btn_reprobe = 0;   // счётчик неудач → ре-опрос (плата «горячего» подключения)
 
-static inline void bpa_scl_out(int v) {
-    uint32_t cfg = PA_CFG1;
-    int shift = (SCL_PIN % 8) * 4;
-    if (v) { PA_DAT |=  (1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    else   { PA_DAT &= ~(1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    PA_CFG1 = cfg;
-}
-static inline void bpa_sda_out(int v) {
-    uint32_t cfg = PA_CFG1;
-    int shift = (SDA_PIN % 8) * 4;
-    if (v) { PA_DAT |=  (1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    else   { PA_DAT &= ~(1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    PA_CFG1 = cfg;
-}
-static inline void bpa_sda_in(void) {
-    uint32_t cfg = PA_CFG1;
-    cfg &= ~(0xFu << ((SDA_PIN % 8) * 4));
-    PA_CFG1 = cfg;
-}
-static inline int bpa_sda_read(void) { return (PA_DAT & (1u << SDA_PIN)) ? 1 : 0; }
-
-static inline void bpa_half(void) {
-    const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
-    while ((t0 - H3_HS_TIMER->CURNT_LO) < 130) { __asm__ volatile("nop"); }
-}
-static void bpa_start(void) { bpa_sda_out(1); bpa_scl_out(1); bpa_half();
-                              bpa_sda_out(0); bpa_half(); bpa_scl_out(0); bpa_half(); }
-static void bpa_stop(void)  { bpa_sda_out(0); bpa_scl_out(1); bpa_half();
-                              bpa_sda_out(1); bpa_half(); }
-static int bpa_write(uint8_t b) {
-    for (int i = 7; i >= 0; i--) {
-        bpa_sda_out((b >> i) & 1); bpa_half();
-        bpa_scl_out(1); bpa_half(); bpa_scl_out(0); bpa_half();
-    }
-    bpa_sda_in(); bpa_half();
-    bpa_scl_out(1); bpa_half();
-    int ack = bpa_sda_read();
-    bpa_scl_out(0); bpa_half();
-    return ack;
-}
-static uint8_t bpa_read(int last) {
-    uint8_t b = 0;
-    bpa_sda_in();
-    for (int i = 7; i >= 0; i--) {
-        bpa_scl_out(1); bpa_half();
-        if (bpa_sda_read()) b |= (1u << i);
-        bpa_scl_out(0); bpa_half();
-    }
-    bpa_sda_out(last ? 1 : 0); bpa_half();
-    bpa_scl_out(1); bpa_half(); bpa_scl_out(0); bpa_half();
-    bpa_sda_in();
-    return b;
-}
-// Чтение одного байта из PCF8574 (адрес 0x20 read = 0x41).
+// Чтение одного байта из PCF8574 по выбранному адресу.
 static int btn_pad_read(uint8_t* out) {
-    bpa_start();
-    if (bpa_write(0x41)) { bpa_stop(); return 0; }
-    *out = bpa_read(1);
-    bpa_stop();
+    if (!btn_i2c_r) return 0;
+    i2c_start();
+    if (i2c_write_byte((uint8_t)btn_i2c_r)) { i2c_stop(); return 0; }
+    *out = i2c_read_byte(1);
+    i2c_stop();
     return 1;
+}
+
+// r0.395: отладка инициализации кнопок по I2C (зовётся из main.c на старте).
+// Сканирует 0x20 и 0x27; verbose=1 — печать в UART, verbose=0 — тихий
+// ре-опрос (если плату подключили уже после загрузки).
+static int btn_pad_probe(int verbose) {
+    int a20, a27;
+
+    i2c_start(); a20 = (i2c_write_byte(PCF8574_R) == 0); i2c_stop();
+    i2c_start(); a27 = (i2c_write_byte(0x4F) == 0);      i2c_stop();
+
+    if (verbose)
+        printf("PAD: i2c scan: 0x20=%s 0x27=%s\n", a20 ? "YES" : "no", a27 ? "YES" : "no");
+
+    if (a27) {
+        btn_i2c_w = 0x4E; btn_i2c_r = 0x4F;
+        if (verbose)
+            printf("PAD: buttons -> 0x27 (Sega-джой остаётся на 0x20)\n");
+    } else if (a20) {
+        btn_i2c_w = PCF8574_W; btn_i2c_r = PCF8574_R;
+        if (verbose)
+            printf("PAD: buttons -> 0x20 (общая шина с джоем: и-или)\n");
+    } else {
+        btn_i2c_w = 0; btn_i2c_r = 0;
+        if (verbose)
+            printf("PAD: buttons NOT found\n");
+        btn_pad_inited = 1;
+        return 0;
+    }
+
+    // Подтяжки: все линии в 1 (активный-0). Один раз, не в каждом скане.
+    i2c_start();
+    int ok = i2c_write_byte((uint8_t)btn_i2c_w);
+    if (!ok) ok = i2c_write_byte(0xFF);
+    i2c_stop();
+    if (verbose)
+        printf("PAD: pull-ups 0xFF -> addr=0x%02X %s\n", (unsigned)btn_i2c_r,
+               ok ? "FAIL(NACK)" : "OK");
+    if (ok) { btn_i2c_w = 0; btn_i2c_r = 0; }
+
+    btn_pad_inited = 1;
+    return btn_i2c_r != 0;
+}
+
+int btn_pad_dbg_init(void) {
+    return btn_pad_probe(1);
 }
 
 uint16_t btn_pad8_scan(void) {
     uint8_t r;
+
+    if (!btn_pad_inited) btn_pad_probe(1);
+    if (!btn_i2c_r) {
+        // r0.395: платы не было — тихо переспрашиваем (раз в ~1000 вызовов),
+        // чтобы кнопки в меню ожили после подключения без перезагрузки.
+        if (++g_btn_reprobe >= 1000) { g_btn_reprobe = 0; btn_pad_inited = 0; }
+        return 0;
+    }
+    g_btn_reprobe = 0;
+
     if (!btn_pad_read(&r)) return 0;
     uint16_t pad = 0;
     if (!(r & 0x01)) pad |= 0x0001;   // B0 Up

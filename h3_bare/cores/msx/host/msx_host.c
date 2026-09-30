@@ -12,6 +12,9 @@
 #include "../EMULib/Sound.h"
 #include "../EMULib/EMULib.h"
 
+/* fMSX: ROMType[] определён в MSX.c, в заголовках extern НЕ объявлен */
+extern uint8_t ROMType[];
+
 #include "../fMSX/V9938.h"
 
 // ---- макросы для рендера (должны быть до Common.h/Wide.h) ----
@@ -42,6 +45,7 @@ unsigned frame_number = 0;
 static uint16_t image_buffer[2 * WIDTH * MAX_HEIGHT];
 unsigned image_buffer_width  = WIDTH;
 unsigned image_buffer_height = HEIGHT;
+static char g_cart_name[48];   // r0.392: имя ROM для сообщений (экрана/UART)
 
 #define XBuf image_buffer
 #define WBuf image_buffer
@@ -214,19 +218,92 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     SETJOYTYPE(0, JOY_STICK);
     SETJOYTYPE(1, JOY_STICK);
 
+    // r0.392: YIS-503III — встроенные картриджи «СЕТЬ» (NET.ROM) и «СПМ»
+    // = CP/M (CPM.ROM) лежат во внутренних слотах настоящей Ямахи.
+    // Грузим их как картриджи до пользовательского слота и ПОСЛЕ всех
+    // загрузок делаем ResetMSX(): BIOS RESET отсканирует слоты и вызовет
+    // init-вектора (0x4010...) — как при включении железа.
+    int net_lr = LoadCart("NET.ROM", 3, 0);
+    int cpm_lr = LoadCart("CPM.ROM", 2, 0);
+    printf("MSX: builtin carts -> CPM.ROM (СПМ) slot2 lr=%d, NET.ROM (СЕТЬ) slot3 lr=%d\n",
+           cpm_lr, net_lr);
+
     // Если был передан образ картриджа — загружаем в слот A.
     // LoadCart() в ядре делает rfopen("CARTA.ROM"), поэтому даём стабу
     // валидный источник через msx_compat_set_cart() (буфер в памяти).
+    int cart_lr = -1;
     if (rom && size > 0) {
         msx_compat_set_cart(rom, size);
+        // r0.392: диагностика до LoadCart — типичные причины «игра не
+        // запустилась» с большими/чужими ROM:
+        //   * файл на самом деле ZIP (начинается с 'PK') — fMSX грузит
+        //     ТОЛЬКО сырой .rom (zip он не распаковывает);
+        //   * нет «AB»-заголовка — fMSX принципиально откажет в LoadCart.
+        if (size >= 2 && rom[0] == 'P' && rom[1] == 'K') {
+            printf("MSX: WARN картридж похож на ZIP ('PK', %u Б) — распакуйте в .rom\n",
+                   (unsigned)size);
+        } else {
+            int ab = (size >= 2 && rom[0] == 'A' && rom[1] == 'B') ||
+                     (size >= 0x4002 && rom[0x4000] == 'A' && rom[0x4001] == 'B') ||
+                     (size >= 0x2002 && rom[size - 0x2000] == 'A' && rom[size - 0x2000 + 1] == 'B');
+            if (!ab)
+                printf("MSX: WARN нет 'AB'-заголовка (0/0x4000/посл.стр.) — мэппер может не распознаться\n");
+        }
         // StartMSX уже загрузил системные картриджи (MSXDOS2 и т.д.),
         // но пользовательский ROMName[0]="CARTA.ROM" грузится ТОЛЬКО
         // в StartMSX (строка 592). Он уже выполнен. Поэтому повторно:
-        int lr = LoadCart("CARTA.ROM", 0, ROMGUESS(0) | ROMTYPE(0));
-        printf("MSX: LoadCart -> %d (%u КБ)\n", lr, (unsigned)(size >> 10));
+        cart_lr = LoadCart("CARTA.ROM", 0, ROMGUESS(0) | ROMTYPE(0));
+        printf("MSX: LoadCart -> %d (%u КБ, mapper=%d)%s\n", cart_lr,
+               (unsigned)(size >> 10), (int)ROMType[0], cart_lr ? "" : " — НЕ ЗАГРУЖЕН");
+        if (cart_lr <= 0) {
+            fb_clear();
+            fb_text_center("MSX: картридж не загружен", 200, 2, 0x00FF4444);
+            fb_text_center(g_cart_name, 240, 2, 0x00FFFFFF);
+            fb_text_center("нет 'AB'-заголовка / ZIP (распакуй)", 258, 1, 0x00AAAAAA);
+            fb_flush();
+            udelay(2000000);
+            fb_clear(); fb_flush();
+        }
     }
 
-    printf("MSX: Mode=%08X RAM=%d VRAM=%d\n", (unsigned)Mode, RAMPages, VRAMPages);
+    // r0.392: читаемая строка модели вместо голого Mode-битмаски.
+    // Версия VDP по флагам Mode:
+    //   MSX_MSX2P — V9958 (MSX2+), MSX_MSX2 — V9938, иначе V9918 (MSX1).
+    const char* mach = (Mode & MSX_MSX2P) ? "MSX2+ (V9958)"
+                     : (Mode & MSX_MSX2)  ? "MSX2 (V9938)"
+                                          : "MSX1 (TMS9918)";
+    const char* tv   = (Mode & MSX_PAL) ? "PAL 50Hz" : "NTSC 60Hz";
+    printf("MSX: machine=%s %s RAM=%uKB VRAM=%uKB\n",
+           mach, tv, (unsigned)RAMPages * 16, (unsigned)VRAMPages * 16);
+    printf("MSX: Mode=%08X — Yamaha YIS-503III (MSX2, Европа, PAL)\n",
+           (unsigned)Mode);
+
+    // «Как при включении железа»: слоты сформированы (СЕТЬ slot3, СПМ slot2,
+    // пользовательский slot0) — сброс запускает BIOS RESET и init-вектора
+    // картриджей. СПМ (CP/M) вызывается штатным образом.
+    ResetMSX(Mode, RAMPages, VRAMPages);
+
+    // r0.392: «захват сессии» по UART при входе в эмулятор.
+    extern unsigned char fMSX_ROMs_MSX2_ROM[];
+    extern unsigned char fMSX_ROMs_MSX2EXT_ROM[];
+    extern unsigned int  fMSX_ROMs_MSX2_ROM_len;
+    extern unsigned int  fMSX_ROMs_MSX2EXT_ROM_len;
+    printf("MSX: ================= session =================\n");
+    printf("MSX: machine   YIS-503III (%s) %s RAM=%uKB VRAM=%uKB\n",
+           mach, tv, (unsigned)RAMPages * 16, (unsigned)VRAMPages * 16);
+    printf("MSX: bios      basic-bios2 %u B, sub %u B\n",
+           fMSX_ROMs_MSX2_ROM_len, fMSX_ROMs_MSX2EXT_ROM_len);
+    printf("MSX:   head(BIOS) %02X %02X %02X %02X | sub %02X %02X %02X %02X\n",
+           fMSX_ROMs_MSX2_ROM[0], fMSX_ROMs_MSX2_ROM[1],
+           fMSX_ROMs_MSX2_ROM[2], fMSX_ROMs_MSX2_ROM[3],
+           fMSX_ROMs_MSX2EXT_ROM[0], fMSX_ROMs_MSX2EXT_ROM[1],
+           fMSX_ROMs_MSX2EXT_ROM[2], fMSX_ROMs_MSX2EXT_ROM[3]);
+    printf("MSX: carts     slot2=CPM.ROM (СПМ, lr=%d)  slot3=NET.ROM (СЕТЬ, lr=%d)\n",
+           cpm_lr, net_lr);
+    printf("MSX: user cart %s (%u Б) mapper=%d lr=%d\n",
+           g_cart_name, (unsigned)size, (int)ROMType[0], cart_lr);
+    printf("MSX: reset done — init-вектора слотов выполнены, как на железе\n");
+    printf("MSX: ==========================================\n");
 
     // Звук: fMSX PSG/AY-3-8910 + YM2413 (NukeYKT) → RenderAndPlayAudio →
     // WriteAudio → I2S. InitSound обязателен (иначе SndRate=0, тишина).
@@ -238,8 +315,15 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
 
 // ---- маппинг HID-сканкода USB-клавиатуры в fMSX-код (KBD_*) ----
 // USB клавиатура отдаёт сырые HID usage (0x04=a ... 0x1D=z, 0x28=Enter...).
-// fMSX-код = индекс в Keys[][]; для ASCII это сам символ (0x21-0x7F).
-// Возвращает fMSX-код или -1 (не мапится).
+// fMSX-код = индекс в Keys[][]; для ASCII это сам символ (0x21-0x7F),
+// спецклавиши — KBD_* (MSX.h).
+//
+// r0.393: полная USB HID-таблица (Keyboard/Keypad Usage, 0x04..0x65+0xE0..).
+// Было замаплено частично, а цифирный блок сидел СО СДВИГОМ (0x53 — это
+// NumLock, а не Keypad 1; 0x59 — Keypad 1, а не 7): на обычной клавиатуре
+// цифры с Numpad попадали не туда. Ниже — стандарт USB Foundation Spec.
+// Клавиш, которых НЕТ на MSX (F6-F12, PageUp/Down, End, PrintScreen, Win),
+// даём разумные MSX-эквиваленты; F9 занят переключателем RU/LAT.
 static int hid_to_fmsx(uint8_t sc) {
     switch (sc) {
     case 0x04: return 'a';   case 0x05: return 'b';   case 0x06: return 'c';
@@ -262,28 +346,83 @@ static int hid_to_fmsx(uint8_t sc) {
     case 0x2C: return KBD_SPACE;
     case 0x2D: return '-';   case 0x2E: return '=';   case 0x2F: return '[';
     case 0x30: return ']';   case 0x31: return '\\';
+    case 0x32: return KBD_DEAD;   /* ISO Non-US #~ — как клавиша акцентов */
     case 0x33: return ';';   case 0x34: return '\'';  case 0x35: return '`';
     case 0x36: return ',';   case 0x37: return '.';   case 0x38: return '/';
     case 0x39: return KBD_CAPSLOCK;
     case 0x3A: return KBD_F1;  case 0x3B: return KBD_F2;
     case 0x3C: return KBD_F3;  case 0x3D: return KBD_F4;  case 0x3E: return KBD_F5;
-    case 0x49: return KBD_INSERT; case 0x4A: return KBD_HOME;
+    /* F6-F12 — нет на MSX: даём ближайшие MSX-клавиши (F9 — RU/LAT см. ниже);
+       F8=INSERT, F11=CapsLock (как на ПК-клавиатурах), F10/F12=STOP(COPY). */
+    case 0x3F: return KBD_COUNTRY;   /* F6 → COUNTRY */
+    case 0x40: return KBD_SELECT;    /* F7 → SELECT  */
+    case 0x41: return KBD_INSERT;    /* F8 → INSERT  */
+    /* 0x42 = F9 — переключатель RU/LAT (обрабатывается в msx_run_frame) */
+    case 0x43: return KBD_STOP;      /* F10 → STOP  */
+    case 0x44: return KBD_CAPSLOCK;  /* F11 → CapsLock */
+    case 0x45: return KBD_STOP;      /* F12 → STOP  */
+    case 0x46: return KBD_STOP;      /* PrintScreen → COPY(STOP) — печать экрана */
+    case 0x47: return KBD_DEAD;      /* ScrollLock → DEAD (не используется MSX) */
+    case 0x48: return KBD_STOP;      /* Pause/Break → STOP */
+    case 0x49: return KBD_INSERT;
+    case 0x4A: return KBD_HOME;
+    case 0x4B: return KBD_SELECT;    /* PageUp → SELECT */
     case 0x4C: return KBD_DELETE;
+    case 0x4D: return KBD_STOP;      /* End → STOP */
+    case 0x4E: return KBD_INSERT;    /* PageDown → INSERT */
     case 0x4F: return KBD_RIGHT; case 0x50: return KBD_LEFT;
     case 0x51: return KBD_DOWN;  case 0x52: return KBD_UP;
-    case 0x53: return KBD_NUMPAD1; case 0x54: return KBD_NUMPAD2;
-    case 0x55: return KBD_NUMPAD3; case 0x56: return KBD_NUMPAD4;
-    case 0x57: return KBD_NUMPAD5; case 0x58: return KBD_NUMPAD6;
-    case 0x59: return KBD_NUMPAD7; case 0x5A: return KBD_NUMPAD8;
-    case 0x5B: return KBD_NUMPAD9; case 0x5C: return KBD_NUMPAD0;
-    case 0x5D: return KBD_NUMDOT;  case 0x5F: return KBD_NUMMUL;
-    case 0x60: return KBD_NUMMINUS; case 0x61: return KBD_NUMPLUS;
-    case 0x62: return KBD_NUMDIV;
+    /* ---- Keypad (стандарт USB: 0x53 NumLock, 0x54 '/', ... 0x59 '1'...) ---- */
+    case 0x53: return KBD_DEAD;      /* NumLock — на MSX нет */
+    case 0x54: return KBD_NUMDIV;
+    case 0x55: return KBD_NUMMUL;
+    case 0x56: return KBD_NUMMINUS;
+    case 0x57: return KBD_NUMPLUS;
+    case 0x58: return KBD_ENTER;     /* Keypad Enter = Enter */
+    case 0x59: return KBD_NUMPAD1;
+    case 0x5A: return KBD_NUMPAD2;
+    case 0x5B: return KBD_NUMPAD3;
+    case 0x5C: return KBD_NUMPAD4;
+    case 0x5D: return KBD_NUMPAD5;
+    case 0x5E: return KBD_NUMPAD6;
+    case 0x5F: return KBD_NUMPAD7;
+    case 0x60: return KBD_NUMPAD8;
+    case 0x61: return KBD_NUMPAD9;
+    case 0x62: return KBD_NUMPAD0;
+    case 0x63: return KBD_NUMDOT;    /* Keypad . */
+    case 0x64: return '\\';          /* ISO Non-US \| (слева от Shift) */
+    case 0x65: return KBD_INSERT;    /* App/Context menu */
+    case 0x67: return '=';           /* Keypad = */
+    case 0x85: return KBD_NUMCOMMA;  /* Keypad , (бразильские) */
     case 0xE0: return KBD_CONTROL; case 0xE4: return KBD_CONTROL;   /* L/R Ctrl  */
     case 0xE1: return KBD_SHIFT;   case 0xE5: return KBD_SHIFT;     /* L/R Shift */
     case 0xE2: return KBD_GRAPH;   case 0xE6: return KBD_GRAPH;     /* L/R Alt → GRAPH */
+    case 0xE3: return KBD_SELECT;  case 0xE7: return KBD_SELECT;    /* Win → SELECT */
     default: return -1;
     }
+}
+
+// r0.392: RU-индикация для русских MSX-программ.
+// На физической «Ямахе» YIS-503II русские буквы напечатаны прямо на
+// латинских клавишах (фонетическая раскладка), а русские игры читают
+// МАТРИЦУ клавиатуры — отдельного «русского» слоя в эмуляции не требуется:
+// сканкоды и так совпадают с железом. Проблема пользователя обычно в том,
+// что он не знает раскладку, либо программа ждёт кириллицу через CHGET
+// (а западный MSX2.ROM отдаёт латиницу — для полноценного ввода нужна
+// советская BIOS-прошивка, это отдельная задача).
+// F9 переключает индикатор RU/LAT и показывает таблицу раскладки 2.5 с.
+static int g_msx_ru = 0;
+static int g_ru_prev = 0;          // фронт F9
+static uint32_t g_ru_hint_until = 0;
+
+static void msx_ru_hint_print(void)
+{
+    printf("MSX: RU=%s — фонетическая раскладка YIS-503II:\n", g_msx_ru ? "ON" : "OFF");
+    if (!g_msx_ru) return;
+    printf("  Q=`Я' W=`Ш' E=`Е' R=`Р' T=`Т' Y=`Ы' U=`У' I=`И' O=`О' P=`П'\n");
+    printf("  A=`А' S=`С' D=`Д' F=`Ф' G=`Г' H=`Х' J=`Й' K=`К' L=`Л'\n");
+    printf("  Z=`З' X=`Ь' C=`Ц' V=`В' B=`Б' N=`Н' M=`М'\n");
+    printf("  (CHGET-программы вернут ЛАТИНИЦУ: нужна русская BIOS)\n");
 }
 
 void msx_run_frame(void) {
@@ -335,6 +474,20 @@ void msx_run_frame(void) {
         }
     }
 
+    /* r0.393: F9 (сканкод 0x42) — RU/LAT индикатор (матрица не меняется,
+       смена только подсказки: физически русские буквы уже лежат на тех же
+       клавишах, как на YIS-503II/III). Старый код ловил 0x44 = F11. */
+    {
+        int f9 = 0;
+        for (int i = 0; i < n; i++) if (keys[i] == 0x42) f9 = 1;
+        if (f9 && !g_ru_prev) {
+            g_msx_ru = !g_msx_ru;
+            msx_ru_hint_print();
+            g_ru_hint_until = h3_hs_timer_lo_us() + 2500000u;
+        }
+        g_ru_prev = f9;
+    }
+
     // 4) Запускаем Z80 до конца кадра. RunZ80 сам переустанавливает
 //    CPU.ICount через LoopZ80 (IPeriod) и выходит по INT_QUIT,
 //    когда LoopZ80 доходит до строки 192 (ExitNow=1).
@@ -355,7 +508,11 @@ void msx_stop(void) {
 
 // ---- точка входа из emu.c ----
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
+    if (rom_name && rom_name[0]) {
+        snprintf(g_cart_name, sizeof(g_cart_name), "%s", rom_name);
+    } else {
+        snprintf(g_cart_name, sizeof(g_cart_name), "MSX cart");
+    }
     emu_prepare();
     snd_manifest("msx", "psg ay8910 scc");
     memset(image_buffer, 0, sizeof(image_buffer));   // свой кадр-буфер не чистится emu_prepare
@@ -378,6 +535,13 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         int vh = (int)image_buffer_height;
         emu_scale(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
         fb_flush();
+        // r0.392: OSD-подсказка раскладки после F9 (2.5 с) поверх кадра.
+        if ((int32_t)(h3_hs_timer_lo_us() - g_ru_hint_until) < 0 && g_msx_ru) {
+            fb_puts_s(30, 30, "RU: Q=Я W=Ш E=Е R=Р T=Т Y=Ы U=У I=И O=О P=П", 1, 0x00FFAA00);
+            fb_puts_s(30, 50, "   A=А S=С D=Д F=Ф G=Г H=Х J=Й K=К L=Л ;=Ж '=Э /=Б", 1, 0x00FFAA00);
+            fb_puts_s(30, 70, "   Z=З X=Ь C=Ц V=В B=Б N=Н M=М ?=Ю .=Ё", 1, 0x00FFAA00);
+            fb_flush();
+        }
         if (emu_esc_hold() || msx_exit_req) goto exit;  // r0.208: ESC-hold из отчёта ядра
     }
 exit:

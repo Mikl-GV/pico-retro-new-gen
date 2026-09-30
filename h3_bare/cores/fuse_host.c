@@ -39,6 +39,8 @@ bool fuse_retro_load_game(const struct retro_game_info*);
 void fuse_retro_run(void);
 void fuse_retro_unload_game(void);
 void fuse_retro_deinit(void);
+/* r0.392: результат загрузки контента (см. libretro.c) */
+extern int fuse_content_load_ok;
 
 #define EMU_FB_ADDR 0x5F800000u
 #define EMU_FB_W    320
@@ -273,6 +275,51 @@ static bool host_environment(unsigned cmd, void* data)
 
 // ---- выход по ESC-удержанию (как у остальных ядер) ----
 
+// r0.392: регистронезависимое сравнение суффикса (без POSIX strcasecmp)
+static int fuse_ext_eq(const char* dot, const char* ext)
+{
+    const char *a = dot, *b = ext;
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return (*a == 0 && *b == 0);
+}
+
+// r0.392: расширения, которые ядро Fuse умеет распознавать (valid_extensions
+// в libretro.c: tzx|tap|z80|rzx|scl|trd|dsk|dck|sna|szx|ipf|zip|m3u).
+// Сырые .rom/.bin и прочие файлы ядро «не распознаёт» и МОЛЧА остаётся в
+// BASIC — поэтому до загрузки выводим понятное предупреждение.
+static int fuse_ext_supported(const char* path)
+{
+    const char* dot = strrchr(path, '.');
+    if (!dot) return 0;
+    static const char* const exts[] = {
+        ".tzx", ".tap", ".z80", ".rzx", ".scl", ".trd", ".dsk",
+        ".dck", ".sna", ".szx", ".ipf", ".zip", ".m3u"
+    };
+    for (unsigned i = 0; i < sizeof(exts)/sizeof(exts[0]); i++)
+        if (fuse_ext_eq(dot, exts[i])) return 1;
+    return 0;
+}
+
+// r0.392: RAM выбранной модели для предупреждения «файл не влезает в память».
+// 0 = модель с расширенной памятью / неизвестна — проверку пропускаем.
+static uint32_t fuse_model_ram(const char* model)
+{
+    if (!model) return 0;
+    if (strstr(model, "16K")) return 16384;
+    if (strstr(model, "48K")) return 49152;
+    if (strstr(model, "128K") || strstr(model, "+2") || strstr(model, "+3")
+        || strstr(model, "Pentagon") || strstr(model, "Scorpion")) return 0;
+    /* Timex TC2048/TC2068/TS2068 и SE — есть 48K/128K, проверку пропускаем */
+    if (strstr(model, "Timex") || strstr(model, "SE")) return 0;
+    return 0;
+}
+
 void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
@@ -287,6 +334,48 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     printf("FUSE: %s: %s (%u bytes)\n", g_model,
            (rom && size) ? g_rom_path : "BASIC", (unsigned)size);
+
+    // r0.392: понятный отказ до входа в эмулятор, если формат не ZX.
+    if (rom && size && !fuse_ext_supported(g_rom_path)) {
+        printf("FUSE: unsupported format '%s'\n", g_rom_path);
+        fb_clear();
+        fb_text_center("FUSE: не распознан формат", 200, 2, 0x00FF4444);
+        fb_text_center(g_rom_path, 240, 2, 0x00FFFFFF);
+        fb_text_center(".z80/.sna/.szx/.tap/.tzx/.dsk/.scl/.trd/.dck/.ipf/.zip", 258, 1, 0x00AAAAAA);
+        fb_flush();
+        udelay(2500000);
+        fb_clear(); fb_flush();
+        return;
+    }
+
+    // r0.392: «не влезает в память» — для сырых образов (не снапшот/лента)
+    // больше RAM выбранной модели. Снапшоты .z80/.sna несут свою модель
+    // (auto_machine переключает), ленты в RAM не грузятся целиком.
+    if (rom && size) {
+        const char* dot = strrchr(g_rom_path, '.');
+        uint32_t ram = fuse_model_ram(g_model);
+        int is_mem_hungry = 1;
+        if (dot) {
+            static const char* const ext_ok[] = {
+                ".z80", ".sna", ".szx", ".tap", ".tzx", ".dsk",
+                ".scl", ".trd", ".dck", ".rzx", ".m3u"
+            };
+            for (unsigned i = 0; i < sizeof(ext_ok)/sizeof(ext_ok[0]); i++)
+                if (fuse_ext_eq(dot, ext_ok[i])) { is_mem_hungry = 0; break; }
+        }
+        if (ram && is_mem_hungry && size > ram) {
+            printf("FUSE: WARN %s (%u) > RAM модели %s (%u)\n",
+                   g_rom_path, (unsigned)size, g_model, (unsigned)ram);
+            fb_clear();
+            fb_text_center("FUSE: файл больше памяти модели", 200, 2, 0x00FFAA00);
+            char buf[96];
+            snprintf(buf, sizeof(buf), "%s: %u > %u байт", g_model, (unsigned)size, (unsigned)ram);
+            fb_text_center(buf, 240, 1, 0x00FFFFFF);
+            fb_text_center("выбери 128K-модель в меню или другой файл", 258, 1, 0x00AAAAAA);
+            fb_flush();
+            udelay(2500000);
+        }
+    }
 
     fuse_retro_set_environment(host_environment);
     fuse_retro_set_video_refresh(host_video);
@@ -312,6 +401,23 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!fuse_retro_load_game(&info)) {
         printf("FUSE: load failed\n");
         fuse_retro_deinit();
+        return;
+    }
+
+    // r0.392: ядро могло «успешно» стартовать в пустой BASIC, не распознав
+    // контент. Показываем причину и возвращаемся в меню (после короткой
+    // паузы, чтобы сообщение успели увидеть на экране).
+    if (rom && size && !fuse_content_load_ok) {
+        printf("FUSE: content not loaded (%u bytes)\n", (unsigned)size);
+        fuse_retro_unload_game();
+        fuse_retro_deinit();
+        fb_clear();
+        fb_text_center("FUSE: файл не загрузился", 200, 2, 0x00FF4444);
+        fb_text_center(g_rom_path, 240, 2, 0x00FFFFFF);
+        fb_text_center("формат не распознан (или битый заголовок)", 258, 1, 0x00AAAAAA);
+        fb_flush();
+        udelay(2000000);
+        fb_clear(); fb_flush();
         return;
     }
 

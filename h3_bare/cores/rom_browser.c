@@ -52,16 +52,6 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
 // запуск эмулятора по sys_id (общая логика: вход/выход, справка TFT, 0x74)
 static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
                          const char* sel_name) {
-    // Вход в эмулятор: переинициализация PCF8574 (0xFF → TH=1 idle).
-    // Лечит «мёртвый» пад после сбоя I2C (гонка PA_DAT с TFT-ядром на
-    // полном рендере справки) — тот же приём, что в Sega 6-button test.
-    sega_pad_init();
-
-    // r155: ждём ОТПУСКАНИЯ пада (макс 500 мс), чтобы зажатая в браузере
-    // кнопка (Enter/A/Start) не «доехала» в первый кадр игры как ложное
-    // нажатие. См. usb_pad_wait_release — лимит 500 итераций × 1 мс.
-    usb_pad_wait_release();
-
     // Показать справку на TFT по кнопкам этой системы.
     extern void tft_help_show(const char* sys_id);
     tft_help_show(sys_id);
@@ -73,6 +63,20 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
     // из чит-меню-запуска).
     *(volatile uint32_t*)0x74u = 1;
     __asm volatile("dsb st" ::: "memory");   // r0.198: флаг виден CPU1 до эмулятора
+
+    // r0.390 (S1): init и ожидание отпускания пада перенесены ПОСЛЕ
+    // заморозки CPU1 — раньше (до tft_help_show и 0x74) они выполнялись
+    // сотнями I2C-итераций (~500 мс) пока CPU1 ещё писал PA_DAT
+    // (тач-скан/TFT) — окно RMW-гонки с падом. Теперь CPU1 заморожен и
+    // скан пада идёт на чистой шине.
+    // Переинициализация PCF8574 (0xFF → TH=1 idle) лечит «мёртвый» пад
+    // после сбоя I2C — тот же приём, что в Sega 6-button test.
+    sega_pad_init();
+
+    // r155: ждём ОТПУСКАНИЯ пада (макс 500 мс), чтобы зажатая в браузере
+    // кнопка (Enter/A/Start) не «доехала» в первый кадр игры как ложное
+    // нажатие. См. usb_pad_wait_release — лимит 500 итераций × 1 мс.
+    usb_pad_wait_release();
 
     emu_clear_fb();
     if (strcmp(sys_id, "a2600") == 0)
@@ -214,8 +218,9 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 fb_puts_s(60, 120, "Folder is empty", 1, 0x00FFAA00);
                 fb_puts_s(60, 145, "Put your ROM files here:", 1, 0x00AAAAAA);
                 fb_puts_s(60, 163, path, 1, 0x00AAAAAA);
-                char ext[48] = "Supports: .bin .rom .sms .ngp .ngc .npc";
-                fb_puts_s(60, 185, ext, 1, 0x00666666);
+                // r0.391 (M14): список расширений зависит от системы и устаревал
+                // (у ZX .z80/.sna, у PCE .pce и т.д.) — показан общий хинт.
+                fb_puts_s(60, 185, "Formats depend on system", 1, 0x00666666);
             } else {
                 int y = 85;
                 for (int i = scroll; i < n && i < scroll + max_rows; i++) {
@@ -310,7 +315,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
         } else if (k == 41) {
             return;
         } else if (k == 42 || k == 76) {
-            // Backspace / Delete / или "D" — удалить ROM (двойное подтверждение)
+            // Backspace (42) / Delete (76) — удалить ROM (двойное подтверждение)
             if (n > 0) {
                 // Копируем имя ДО удаления — fat_delete_file затрёт g_scratch_dir
                 char del_name[FAT_NAME_LEN];

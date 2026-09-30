@@ -110,6 +110,9 @@ static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
 // затем emu_scale() растянет на 1024x600.
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
+    // r0.390 (S5): GET_CAN_DUPE=true — ядро может «продублировать» кадр
+    // вызовом video_refresh(NULL,…). Держать это нельзя: memcpy из NULL.
+    if (!data) return;
     uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
     const uint16_t* src = (const uint16_t*)data;
     unsigned w = width  < PCE_SCALE_W ? width  : PCE_SCALE_W;

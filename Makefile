@@ -311,7 +311,7 @@ MSX_RENAME := $(OBJCOPY) \
 	--redefine-sym strcasestr=msx_strcasestr \
 	--redefine-sym chdir=msx_chdir \
 	--redefine-sym getcwd=msx_getcwd
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data msx503_cpm_data msx503_net_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_MSX msx_V9938 msx_Sound msx_SHA1 msx_Floppy msx_FDIDisk msx_MCF msx_Z80 msx_I8255 msx_YM2413 msx_AY8910 msx_SCC msx_WD1793 msx_opll msx_WrapNukeYKT))
 
 $(BUILD)/msx_host.o: $(MSX)/host/msx_host.c | $(BUILD)
@@ -327,6 +327,12 @@ $(BUILD)/msx2_rom_data.o: $(MSX)/host/msx2_rom_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx2ext_rom_data.o: $(MSX)/host/msx2ext_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx503_cpm_data.o: $(MSX)/host/msx503_cpm_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx503_net_data.o: $(MSX)/host/msx503_net_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx_MSX.o: $(MSX)/fMSX/MSX.c | $(BUILD)
@@ -452,7 +458,6 @@ $(BUILD)/c1s_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # C-файлы звука (fm.c — ОБЯЗАТЕЛЬНО как C, иначе YM* имена C++)
-$(BUILD)/c1sc_%.o: $(CPS1)/src/burn/snd/%.c | $(BUILD)
 $(BUILD)/c1sc_ay8910.o: $(CPS1)/src/burn/snd/ay8910.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
@@ -516,7 +521,7 @@ CPS1_CAV := cave cave_palette cave_sprite cave_tile \
 OBJ += $(addprefix $(BUILD)/c1v_,$(addsuffix .o,$(CPS1_CAV)))
 # Toaplan (r0.330): подключены 68K/Z80-игры (truxton2, batrider, bgaregga,
 # snowbro2, tekipaki, pipibibs, enmadaio, mahoudai, shippumd, kbash2, bbakraid,
-# sstriker и клоны). NEC V25/V30-игры (batsugun, twincobr, wardner…) — позже.
+# sstriker, клоны) и NEC V25/V30-игры (batsugun, twincobr, wardner…, см. c1nec_).
 CPS1_TOA  := toaplan toaplan1 toa_gp9001 toa_palette toa_extratext \
              d_batrider d_battleg d_bbakraid d_enmadaio d_kbash2 \
              d_mahoudai d_pipibibs d_shippumd d_snowbro2 d_tekipaki d_truxton2 \
@@ -549,8 +554,8 @@ $(BUILD)/c1se_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # NEC V20/V25/V30/V33 — Toaplan б/з nec (r0.337): batsugun, dogyuun, fixeight,
 # kbash, vfive. API nek-intf.: Vez*. Ядро — nec.cpp/v25.cpp (C++) + несинструкции
-# necinstr/v25instr/v25sfr (.c). Пока правила без OBJ — включаем после проверки
-# компиляции и линка.
+# necinstr/v25instr/v25sfr (.c); o`.c`-файлы #include внутрь nec.cpp/v25.cpp —
+# отдельными единицами компиляции НЕ собирать (см. docs, аудит r0.337).
 $(BUILD)/c1nec_nec_intf.o: $(CPS1)/src/cpu/nec_intf.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@

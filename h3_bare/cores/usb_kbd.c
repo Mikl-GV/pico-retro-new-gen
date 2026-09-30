@@ -162,8 +162,8 @@ static int      g_esc3_fired = 0;
 // При удержании отчёты продолжают идти, поэтому: тишина > KBD_IDLE_RELEASE_US
 // при зажатых клавишах = их отпустили (или связь потеряна — тоже безопасно
 // «отпустить»). Так же делают простые эмуляторы/драйверы, чей стек не видит
-// ключевого апдейта устройства; тайминг согласован с прежним рабочим r172 (25 мс).
-#define KBD_IDLE_RELEASE_US 40000
+// ключевого апдейта устройства; тайминг согласован с прежним рабочим r172
+// (25 мс), фактически 40 мс (см. usb_kbd.h, r0.390: дубль убран).
 
 // Автоповтор Sega-геймпада — ЗАМЕДЛЕННЫЙ (в меню D-Pad не должен летать)
 #define PAD_REPEAT_DELAY_US 400000
@@ -305,8 +305,54 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
     if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return 0; }
     uint16_t vid = (uint16_t)(buf[8] | (buf[9] << 8));
     uint16_t pid = (uint16_t)(buf[10] | (buf[11] << 8));
-    printf("usb: port=0x%X vid=%04X pid=%04X class=%02X mps=%d\n",
-           (unsigned)base, (unsigned)vid, (unsigned)pid, (unsigned)buf[5], mps);
+    // r0.395: «живое» имя устройства по вендоской таблице (печатаем поверх
+    // голого VID/PID, чтобы в UART было видно, что реально подключено).
+    const char* dname = "?";
+    switch (vid) {
+    case 0x0603: dname = "Avatto/NOVATEK (i8 Pro донгл)"; break;
+    case 0x046D: dname = "Logitech"; break;
+    case 0x05AC: dname = "Apple"; break;
+    case 0x413C: dname = "Dell"; break;
+    case 0x03F0: dname = "HP"; break;
+    case 0x04F2: dname = "Chicony"; break;
+    case 0x1C4F: dname = "SiGma"; break;
+    default: break;
+    }
+    printf("usb: port=0x%X device: %s (vid=%04X pid=%04X class=%02X mps=%d)\n",
+           (unsigned)base, dname, (unsigned)vid, (unsigned)pid,
+           (unsigned)buf[5], mps);
+
+    // r0.395: строковые дескрипторы iManufacturer/iProduct — настоящее имя
+    // с клавиатуры (AVATTO, Logitech...), UTF-16LE → ASCII.
+    {
+        uint8_t si[66];
+        uint16_t lang = 0x0409;
+        int rr = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
+                                .bRequest = GET_DESCRIPTOR,
+                                .wValue = (3 << 8), .wIndex = 0, .wLength = 4 },
+                              si, 4, 1, 1000);
+        if (rr >= 4 && si[0] >= 4 && si[1] == 3 && rr >= 4) {
+            if (si[2] | si[3])
+                lang = (uint16_t)(si[2] | (si[3] << 8));
+        }
+        for (int sidx = 1; sidx <= 2; sidx++) {   // 1=manufacturer, 2=product
+            rr = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
+                                    .bRequest = GET_DESCRIPTOR,
+                                    .wValue = (uint16_t)((3 << 8) | sidx),
+                                    .wIndex = lang, .wLength = 64 },
+                              si, 64, 1, 1000);
+            if (rr >= 2 && si[1] == 3 && si[0] >= 2) {
+                char lbuf[40];
+                int n = 0, lim = si[0];
+                if (lim > rr) lim = rr;
+                for (int k = 2; k + 1 < lim && n < (int)sizeof(lbuf) - 1; k += 2)
+                    lbuf[n++] = (char)si[k];   // ASCII-подмножество UTF-16LE
+                lbuf[n] = 0;
+                if (lbuf[0])
+                    printf("usb:   %s: \"%s\"\n", sidx == 1 ? "manuf" : "prod ", lbuf);
+            }
+        }
+    }
 
     // 4. конфигурация
     r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,

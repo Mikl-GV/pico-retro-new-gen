@@ -933,7 +933,11 @@ static void tft_calib_mode(void) {
             tft_puts2(300 + got * 20, 300, tmp, 0x07E0);
             tft_flush();
             // ждём отпускания (анти-дребезг: повторяющийся фронт не тап)
-            while (tft_touch_scan(&px, &py, &rawx, &rawy, &rawz) && TFT_CMD == 1)
+            // r0.390 (S7): с таймаутом 3 с — залипший тач/PENIRQ или сбой
+            // шины не должен вешать CPU1 в калибровке навсегда.
+            uint32_t rel_t0 = h3_hs_timer_lo_us();
+            while (tft_touch_scan(&px, &py, &rawx, &rawy, &rawz) && TFT_CMD == 1 &&
+                   (h3_hs_timer_lo_us() - rel_t0) < 3000000u)
                 { for (int d = 0; d < 1000; d++) udelay(30); }
         }
         prev = p;

@@ -23,11 +23,15 @@ extern int printf(const char* fmt, ...);
 // У нас диски не поддерживаются — NULL.
 uint8_t* sram_disk_ptr = NULL;
 
-// ---- встроенные BIOS (генерятся xxd из fMSX/ROMs) ----
-extern unsigned char fMSX_ROMs_MSX2_ROM[];     // MSX2.ROM  (32768)
+// ---- встроенные BIOS (генерятся xxd из fMSX/ROMs; 503III — дампы Yamaha) ----
+extern unsigned char fMSX_ROMs_MSX2_ROM[];     // MSX2.ROM  (32768) = YIS-503III basic-bios2
 extern unsigned int  fMSX_ROMs_MSX2_ROM_len;
-extern unsigned char fMSX_ROMs_MSX2EXT_ROM[];  // MSX2EXT.ROM (16384)
+extern unsigned char fMSX_ROMs_MSX2EXT_ROM[];  // MSX2EXT.ROM (16384) = YIS-503III msx2sub
 extern unsigned int  fMSX_ROMs_MSX2EXT_ROM_len;
+extern unsigned char fMSX_ROMs_CPM_ROM[];      // CPM.ROM (16384) — «СПМ» (CP/M) YIS-503III
+extern unsigned int  fMSX_ROMs_CPM_ROM_len;
+extern unsigned char fMSX_ROMs_NET_ROM[];      // NET.ROM (32768) — картридж «СЕТЬ» YIS-503III
+extern unsigned int  fMSX_ROMs_NET_ROM_len;
 
 #define MAX_OPEN_FILES 16
 typedef struct {
@@ -45,8 +49,15 @@ static msx_file_t g_files[MAX_OPEN_FILES];
 // ---- встроенные BIOS ----
 typedef struct { const char* name; const uint8_t* data; int32_t size; } msx_bios_t;
 static const msx_bios_t g_bios[] = {
+    // r0.392: машина = Yamaha YIS-503III (дампы из /503III, вшиты):
+    //   MSX2.ROM      ← yis503iii_basic-bios2.rom (BIOS+BASIC)
+    //   MSX2EXT.ROM   ← yis503iii_msx2sub.rom     (SubROM)
+    //   CPM.ROM       ← yis503iii_cpm.rom         (СПМ = CP/M)
+    //   NET.ROM       ← yis503iii_net_2.rom       (сетевой картридж «СЕТЬ»)
     { "MSX2.ROM",    fMSX_ROMs_MSX2_ROM,    32768 },
     { "MSX2EXT.ROM", fMSX_ROMs_MSX2EXT_ROM, 16384 },
+    { "CPM.ROM",     fMSX_ROMs_CPM_ROM,     16384 },
+    { "NET.ROM",     fMSX_ROMs_NET_ROM,     32768 },
     { 0, 0, 0 }
 };
 

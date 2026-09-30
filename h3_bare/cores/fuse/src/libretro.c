@@ -358,6 +358,12 @@ size_t tape_size;
 char tape_wildcard[32];
 int joymap[16];
 uint16_t *palette = palettes[PALETTE_FUSE];
+/* r0.392: результат загрузки контента в retro_load_game(). Стоковое ядро
+   игнорировало возврат utils_open_file(): при «нераспознанном» файле
+   (не .z80/.sna/.tap/.tzx/… или битый заголовок) оно молча оставляло пустой
+   BASIC, и гость никогда не знал, что загрузка не удалась. Хост читает
+   этот флаг после fuse_retro_load_game() и показывает понятное сообщение. */
+int fuse_content_load_ok;
 
 static const struct { unsigned x; unsigned y; } keyb_positions[4] = {
    { 32, 40 }, { 40, 88 }, { 48, 136 }, { 32, 184 }
@@ -2219,6 +2225,7 @@ bool retro_load_game(const struct retro_game_info *info)
       {
          tape_size = info->size;
          tape_data = malloc(tape_size);
+         fuse_content_load_ok = 0;   /* r0.392: контент ещё не загружен */
 
          if (!tape_data)
          {
@@ -2276,9 +2283,14 @@ bool retro_load_game(const struct retro_game_info *info)
                libspectrum_id_t type;
 
                fuse_emulation_pause();
-               utils_open_file(disk_image_paths[current_disk_index], settings_current.auto_load, &type);
+               fuse_content_load_ok = (utils_open_file(disk_image_paths[current_disk_index],
+                                              settings_current.auto_load, &type) == 0);
                display_refresh_all();
                fuse_emulation_unpause();
+            }
+            else
+            {
+               fuse_content_load_ok = 0;   /* M3U без записей — контента нет */
             }
          }
          else
@@ -2357,7 +2369,9 @@ bool retro_load_game(const struct retro_game_info *info)
             */
 
             fuse_emulation_pause();
-            utils_open_file(filename, autoload, &type);
+            /* r0.392: не молчать, если ядро не распознало/не загрузило файл:
+               сток игнорировал возврат и оставлял пустой BASIC. */
+            fuse_content_load_ok = (utils_open_file(filename, autoload, &type) == 0);
             display_refresh_all();
             fuse_emulation_unpause();
 

@@ -344,9 +344,14 @@ int fat_init(void) {
     g_root_cluster    = le32(g_sector + 44);
 
     if (!g_fat_size || g_fat_size == 0xFFFFFFFF) return -1;
+    // r0.390 (S3): битый BPB (sec/clu=0) или data_start за пределами тома
+    // → деление на 0 / unsigned-underflow → Data Abort. Отвергаем раздел.
+    if (g_sec_per_cluster == 0) return -1;
+    if (g_num_fats == 0) return -1;
 
     g_data_start = part_lba + g_reserved + g_num_fats * g_fat_size;
     uint32_t total_sectors = le32(g_sector + 32);
+    if (g_data_start >= total_sectors) return -1;
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
 
     printf("FAT: part LBA=%u sec/clu=%u reserved=%u fats=%u fat_size=%u root_clu=%u data_start=%u total_clu=%u\n",

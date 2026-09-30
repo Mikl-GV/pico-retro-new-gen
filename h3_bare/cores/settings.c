@@ -47,9 +47,6 @@ static void touch_cal_run(void) {
     fb_puts_s(60, 225, "ESC - cancel", 1, 0x00888888);
     fb_flush();
 
-    // r117 debug: что CPU1 делает перед калибровкой (ожидаем 0x02 = меню)
-    printf("cal: TFT_STAT=0x%X before\n", (unsigned)*(volatile uint32_t*)0x24u);
-
     CAL_OK = 0;    // r119: чистим результат перед запуском (SRAM не zero-инициализируется)
     CAL_CMD = 1;
 
@@ -67,9 +64,6 @@ static void touch_cal_run(void) {
     }
 
     int calok = (int)CAL_OK;
-    // r117 debug: TFT_STAT=0x2E → CPU1 входил в калибровку, 0x2F → завершил
-    printf("cal: TFT_STAT=0x%X after cmd=%d cancel=%d ok=%d\n",
-           (unsigned)*(volatile uint32_t*)0x24u, (int)CAL_CMD, cancelled, calok);
 
     fb_clear();
     if (cancelled) {

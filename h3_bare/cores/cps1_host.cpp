@@ -46,6 +46,10 @@ extern UINT32 nBurnDrvActive;
 extern UINT8* pBurnDraw;
 extern INT32 nBurnPitch;
 extern INT32 nBurnBpp;
+extern INT32 nBurnFPS;   // частота драйвера ×100 (напр. 60.00 Гц → 6000)
+// Глобальный период кадра (settings.c:29, 16667 мкс = 60 Гц).
+// r0.390: run_cps временно подменяет его под частоту драйвера (как MSX 50 Гц).
+extern uint16_t emu_period_us;
 // BurnHighCol — конвертация R/G/B в наш пиксельный формат (RGB565).
 // Вендорный filler возвращает ~0 (белый) — без host-функции экран белый.
 extern UINT32 (__cdecl *BurnHighCol)(INT32 r, INT32 g, INT32 b, INT32 i);
@@ -99,7 +103,6 @@ extern UINT8 NeoDiag[2];
 static uint16_t g_frame[CPS1_W * 320];
 static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
-static int g_rot = 0;            // 1 = вертикалку разворачиваем на 90° при выводе
 
 // ---- ROM-источники (выбранная игра) ----
 // zip-буферы: основной 0x50000000 (92 МБ, крупнейшие сеты NEOGEO ~84 МБ),
@@ -421,58 +424,15 @@ static void host_render_frame(void)
     uint32_t* dst = FB_ADDR;
 
     // Кадр из драйвера всегда «альбомный» W×H: NEO 304×224, CPS 384×224,
-    // Toaplan-гор 304×240. Для вертикальных Toaplan драйвер рисует сцену
-    // «лежащей» (строки кадра = вертикаль сцены, колонки = горизонталь),
-    // а g_rot ниже транспонирует её под портретную панель.
+    // Toaplan-гор 304×240. Вертикальные Toaplan/Cave/S16 ядро кладёт «боком»
+    // (строки кадра = вертикаль сцены, колонки = горизонталь); панель стоит
+    // ПОРТРЕТНО физически, поэтому программного транспонирования НЕТ
+    // (r0.362-364: g_rot всегда 0, ветвь поворота удалена). Выводим кадр
+    // как есть — contain + центр на панели.
     int W = cols, H = rows;
-    // Панель ПОРТРЕТНАЯ (600×1024 после физ. поворота). Вертикальную игру
-    // выводим как на портретной панели: длинная ось (rows) идёт по вертикали,
-    // короткая (cols) по горизонтали, равномерный масштаб, центр панели.
-    if (g_rot) {
-        const int FWp = FB_H;   // панельная ширина 600
-        const int FHp = FB_W;   // панельная высота 1024
-        int pw = (int)(((int64_t)cols * FHp) / rows);   // если бы вписывали по вертикали
-        int ph = FHp;
-        if (pw > FWp) { ph = (int)(((int64_t)rows * FWp) / cols); pw = FWp; }
-        if (pw < 1) pw = 1;
-        if (ph < 1) ph = 1;
-        int px0 = (FWp - pw) / 2;      // по панельной горизонтали (600)
-        int py0 = (FHp - ph) / 2;      // по панельной вертикали (1024)
 
-        // закрашиваем весь буфер чёрным; поля по бокам остаются от заливки
-        for (int y = 0; y < FB_H; y++) {
-            uint32_t* drow = dst + (size_t)y * FB_W;
-            for (int x = 0; x < FB_W; x++) drow[x] = 0;
-        }
-
-        // транспонированная запись: панель (px,py) -> буфер (x=py, y=px).
-        // Шаги 16.16 считаются ОДИН раз на кадр (по правилу r0.360: без
-        // делений/умножений int64 в пиксельном цикле). Порядок осей и область
-        // чтения не менялись — только убраны ~480k div64 на кадр у вертикалок.
-        uint32_t step_gy = ((uint32_t)cols << 16) / (uint32_t)pw;
-        uint32_t step_gx = ((uint32_t)rows << 16) / (uint32_t)ph;
-        uint32_t acc_gy = step_gy >> 1;
-        for (int px = px0; px < px0 + pw; px++) {
-            uint32_t gy = acc_gy >> 16;
-            if (gy >= (uint32_t)cols) gy = cols - 1;
-            uint32_t acc_gx = step_gx >> 1;
-            uint32_t* drow = dst + (size_t)px * FB_W;
-            for (int py = py0; py < py0 + ph; py++) {
-                uint32_t gx = acc_gx >> 16;
-                if (gx >= (uint32_t)rows) gx = rows - 1;
-                uint16_t p = src[(size_t)gx * sstride + gy];
-                uint32_t r = ((p >> 11) & 0x1F) << 3;
-                uint32_t g = ((p >> 5) & 0x3F) << 2;
-                uint32_t b = (p & 0x1F) << 3;
-                drow[py] = (r << 16) | (g << 8) | b;
-                acc_gx += step_gx;
-            }
-            acc_gy += step_gy;
-        }
-        return;
-    }
-
-    // Обычный (не-повёрнутый) кадр: размеры, центрирование, поля, таблица X
+    // Размеры, центрирование, поля, таблица X (r0.360: без делений int64
+    // в пиксельном цикле)
     int vw, vh;
     if ((int64_t)W * FB_H > (int64_t)H * FB_W) { vw = FB_W; vh = (int)(((int64_t)H * FB_W) / W); }
     else { vh = FB_H; vw = (int)(((int64_t)W * FB_H) / H); }
@@ -867,7 +827,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         nBurnPitch = nNeoScreenWidth * 2;
         g_frame_h = CPS1_H;
         g_frame_w = nBurnPitch >> 1;
-        g_rot = 0;
 } else if (g_toa) {
         // Toaplan: выводим ТОЧНО то, что рисует ядро — как на родном железе.
         // Кадр всегда «альбомный» nw×nh: GP9001 и generic-платы рисуют буфер
@@ -878,50 +837,48 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // нужно: обычный contain-рендер кадра как есть + поворот панели даёт
         // ровную вертикальную/горизонтальную картинку (масштаб — по меньшей
         // стороне панели 600, центр, чёрные поля), ничего не режется.
+        // r0.390 (S4): nh не может превышать высоту буфера g_frame (320) —
+        // иначе ядро пишет за пределы BSS-массива.
         INT32 fw = 0, fh = 0, vw = 0, vh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         BurnDrvGetVisibleSize(&vw, &vh);
         int vert = (BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL) != 0;
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;
         nBurnPitch = nw * 2;                   // stride копии BurnTransferCopy
         g_frame_w = nw;                        // полный кадр ядра: без кропа (не 304),
         g_frame_h = nh;                        // без свопов/транспонирования
-        g_rot = 0;
-        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d -> %dx%d pitch=%d rot=%d\n",
+        printf("TOA: game %s full=%dx%d visible=%dx%d vert=%d -> %dx%d pitch=%d\n",
                game, (int)fw, (int)fh, (int)vw, (int)vh, vert,
-               g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
+               g_frame_w, g_frame_h, (int)nBurnPitch);
     } else if (g_cave) {
         // Cave (ранняя 68K-эра): как Toaplan — кадр ядра как есть (без кропа/
         // транспонирования), вертикали ставит физический поворот панели.
         INT32 fw = 0, fh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;   // S4: буфер 384×320
         nBurnPitch = nw * 2;
         g_frame_w = nw;
         g_frame_h = nh;
-        g_rot = 0;
-        printf("CAV: game %s full=%dx%d -> %dx%d pitch=%d rot=%d\n",
-               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
+        printf("CAV: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else if (g_sega) {
-        // Sega System 16 (r0.383): 68K+Z80, кадр как есть (rot=0); панель
+        // Sega System 16 (r0.383): 68K+Z80, кадр как есть; панель
         // физически портретная — вертикалки (скроллеры) встают сами.
         INT32 fw = 0, fh = 0;
         BurnDrvGetFullSize(&fw, &fh);
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
-        int nh = (fh > 0 && fh <= 400)    ? fh : TOA_H;
+        int nh = (fh > 0 && fh <= 320)    ? fh : TOA_H;   // S4: буфер 384×320
         nBurnPitch = nw * 2;
         g_frame_w = nw;
         g_frame_h = nh;
-        g_rot = 0;
-        printf("S16: game %s full=%dx%d -> %dx%d pitch=%d rot=%d\n",
-               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_rot);
+        printf("S16: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
         g_frame_w = CPS1_W;
-        g_rot = 0;
     }
     // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
     // без очистки при повторном входе виден мусор предыдущей игры.
@@ -954,6 +911,19 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
 
+    // r0.390 (Sega 16 «подтормаживает»): ядро тикает на частоте ДРАЙВЕРА
+    // (nBurnFPS, напр. S16 59.6 Гц / CPS 60.00), а throttle стоял на общих
+    // 60.00 Гц → биение фаз давало периодические подтормаживания и дрейф.
+    // Синхронизируем период с драйвером (паттерн MSX 50 Гц, r0.210) и
+    // возвращаем общий период на выходе.
+    uint16_t saved_period = emu_period_us;
+    if (nBurnFPS > 0) {
+        uint32_t p = 100000000u / (uint32_t)nBurnFPS;   // 1e8/fps*100 = мкс
+        if (p >= 15000 && p <= 25000) emu_period_us = (uint16_t)p;
+        printf("CPS: throttle %u Hz (period %u us)\n",
+               (unsigned)(nBurnFPS / 100), (unsigned)emu_period_us);
+    }
+
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -968,6 +938,7 @@ for (;;) {
     }
 
     BurnDrvExit();
+    emu_period_us = saved_period;   // r0.390: вернуть общий период (60 Гц)
     fb_clear(); fb_flush();
 }
 

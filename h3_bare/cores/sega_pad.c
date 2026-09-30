@@ -86,6 +86,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "sega_pad.h"
+#include "pcf8574_bb.h"
 #include "h3.h"
 #include "h3_hs_timer.h"
 #include "uart.h"
@@ -126,49 +127,49 @@ static inline int pa_sda_read(void) { return (PA_DAT & (1u << SDA_PIN)) ? 1 : 0;
 
 // Полупериод SCL: 130 тиков @~97 МГц = ~1.3 мкс → SCL ~370 кГц.
 // Медленнее (92 кГц) 6-btn детект не успевает за окно 1.6 мс ↔
-static inline void t_half(void) {
+// r0.390: не-static — общий с btn_pad.c (pcf8574_bb.h), «один поток» bit-bang.
+void i2c_t_half(void) {
     const uint32_t t0 = H3_HS_TIMER->CURNT_LO;
     while ((t0 - H3_HS_TIMER->CURNT_LO) < 130) {
         __asm__ volatile("nop");
     }
 }
 
-static void i2c_start(void) { pa_sda_out(1); pa_scl_out(1); t_half();
-                              pa_sda_out(0); t_half(); pa_scl_out(0); t_half(); }
+void i2c_start(void) { pa_sda_out(1); pa_scl_out(1); i2c_t_half();
+                              pa_sda_out(0); i2c_t_half(); pa_scl_out(0); i2c_t_half(); }
 
-static void i2c_stop(void)  { pa_sda_out(0); pa_scl_out(1); t_half();
-                              pa_sda_out(1); t_half(); }
+void i2c_stop(void)  { pa_sda_out(0); pa_scl_out(1); i2c_t_half();
+                              pa_sda_out(1); i2c_t_half(); }
 
 // Возвращает 0 = ACK, 1 = NACK
-static int i2c_write_byte(uint8_t b) {
+int i2c_write_byte(uint8_t b) {
     for (int i = 7; i >= 0; i--) {
-        pa_sda_out((b >> i) & 1); t_half();
-        pa_scl_out(1); t_half(); pa_scl_out(0); t_half();
+        pa_sda_out((b >> i) & 1); i2c_t_half();
+        pa_scl_out(1); i2c_t_half(); pa_scl_out(0); i2c_t_half();
     }
-    pa_sda_in(); t_half();
-    pa_scl_out(1); t_half();
+    pa_sda_in(); i2c_t_half();
+    pa_scl_out(1); i2c_t_half();
     int ack = pa_sda_read();
-    pa_scl_out(0); t_half();
+    pa_scl_out(0); i2c_t_half();
     return ack;
 }
 
 // last=1 — NACK после последнего байта чтения
-static uint8_t i2c_read_byte(int last) {
+uint8_t i2c_read_byte(int last) {
     uint8_t b = 0;
     pa_sda_in();
     for (int i = 7; i >= 0; i--) {
-        pa_scl_out(1); t_half();
+        pa_scl_out(1); i2c_t_half();
         if (pa_sda_read()) b |= (1u << i);
-        pa_scl_out(0); t_half();
+        pa_scl_out(0); i2c_t_half();
     }
-    pa_sda_out(last ? 1 : 0); t_half();
-    pa_scl_out(1); t_half(); pa_scl_out(0); t_half();
+    pa_sda_out(last ? 1 : 0); i2c_t_half();
+    pa_scl_out(1); i2c_t_half(); pa_scl_out(0); i2c_t_half();
     pa_sda_in();
     return b;
 }
 
-#define PCF8574_W  0x40
-#define PCF8574_R  0x41
+// (PCF8574_W/R — общие константы из pcf8574_bb.h)
 
 // Записать SELECT (TH=1/0) в PCF8574 со STOP — обновление выходов.
 static int pcf_select(uint8_t sel) {

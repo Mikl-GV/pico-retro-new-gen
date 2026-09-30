@@ -68,7 +68,3 @@ int _write(int fd, const void* buf, unsigned len) {
 }
 int _kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
 int _getpid(void) { return 1; }
-
-// ---- Gearcoleco: mcp_stdio_mode (использует Log_func в GearcolecoCore) ----
-// В libretro-сборке это управление выводом MCP (AdamNet). Нам не нужно.
-int g_mcp_stdio_mode = 0;
