@@ -1384,7 +1384,6 @@ const u32 cpu_modes[16] =
 // shadowing it since it has a constant 1bit represenation.
 
 u32 instruction_count = 0;
-u32 g_diag_irq_cnt = 0;   // r532: счётчик трейса IRQ
 
 void set_cpu_mode(cpu_mode_type new_mode)
 {
@@ -1475,16 +1474,6 @@ cpu_alert_type flag_interrupt(irq_type irq_raised)
 {
   // Flag interrupt
   write_ioreg(REG_IF, read_ioreg(REG_IF) | irq_raised);
-
-  // r532/r536 ВРЕМЕННЫЙ трейс (ужатый): какие IRQ реально возводятся.
-  {
-    extern u32 g_diag_irq_cnt;
-    if (g_diag_irq_cnt < 12) {
-      printf("gba irq: %08X IF=%04X\n", (unsigned)irq_raised,
-             (unsigned)read_ioreg(REG_IF));
-      g_diag_irq_cnt++;
-    }
-  }
 
   return check_interrupt();
 }
@@ -1674,27 +1663,6 @@ arm_loop:
        #ifdef TRACE_INSTRUCTIONS
        interp_trace_instruction(reg[REG_PC], 1);
        #endif
-
-       // r536: компактный PC-трейс (не простыня).
-       {
-           static u32 g_diag_pc = 0;
-           u32 pc = reg[REG_PC];
-           if ((g_diag_pc < 12) ||
-               (pc >= 0x03005900u && pc <= 0x03005C00u && g_diag_pc < 48)) {
-               printf("gba pc: %08X %08X\n", pc, opcode);
-               g_diag_pc++;
-           }
-       }
-
-       // r534/r536 ВРЕМЕННЫЙ трейс (ужатый): BX r0 в диспетчере RnR.
-       {
-           static u32 g_diag_bx = 0;
-           if (reg[REG_PC] == 0x03005AD4u && g_diag_bx < 4) {
-               printf("gba bx: r0=%08X cpsr=%08X\n",
-                      (unsigned)reg[0], (unsigned)reg[REG_CPSR]);
-               g_diag_bx++;
-           }
-       }
 
        switch((opcode >> 20) & 0xFF)
        {
@@ -3173,16 +3141,6 @@ thumb_loop:
        interp_trace_instruction(reg[REG_PC], 0);
        #endif
 
-       // r535/r536 ВРЕМЕННЫЙ трейс (ужатый): первые 24 Thumb-инструкции.
-       {
-           static u32 g_diag_th = 0;
-           if (g_diag_th < 24) {
-               printf("gba th: %08X %04X\n", (unsigned)reg[REG_PC],
-                      (unsigned)(opcode & 0xFFFF));
-               g_diag_th++;
-           }
-       }
-
        switch((opcode >> 8) & 0xFF)
        {
           case 0x00 ... 0x07:
@@ -3655,8 +3613,6 @@ void init_cpu(void)
   memset(reg_mode, 0, sizeof(reg_mode));
   for (u32 i = 0; i < sizeof(spsr)/sizeof(spsr[0]); i++)
     spsr[i] = 0x00000010;
-
-  g_diag_irq_cnt = 0;   // r532: трейс IRQ заново на каждый запуск игры
 
   reg[CPU_HALT_STATE] = CPU_ACTIVE;
   reg[REG_SLEEP_CYCLES] = 0;

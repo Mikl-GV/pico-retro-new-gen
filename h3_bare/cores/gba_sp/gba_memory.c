@@ -2990,8 +2990,11 @@ static u32 rom_scan_signatures_in_memory(void)
     u32 chunk_size = (size_left > gamepak_buffer_blocksize) ? gamepak_buffer_blocksize : size_left;
     u8 *chunk = gamepak_buffers[buf_idx];
     u32 i;
+    /* r545: chunk_size < 10 давал underflow (u32) и чтение за буфером —
+     * сигнатуры длиной до 10 байт дальше всё равно не проверить. */
+    u32 scan = (chunk_size > 10) ? (chunk_size - 10) : 0;
 
-    for (i = 0; i < chunk_size - 10; i += 4)
+    for (i = 0; i < scan; i += 4)
     {
       if (chunk[i] == 'E' && !(found & ROM_SIG_EEPROM) && memcmp(&chunk[i], sig_eeprom, 8) == 0) found |= ROM_SIG_EEPROM;
       else if (chunk[i] == 'S' && !(found & ROM_SIG_SRAM) && memcmp(&chunk[i], sig_sram, 6) == 0) found |= ROM_SIG_SRAM;
@@ -3015,6 +3018,11 @@ static u32 rom_scan_signatures_in_memory(void)
 
 static bool rom_is_pokemon_family(const u8 *rom)
 {
+  /* r545: заголовок начинается на 0xA0 (title с 0xA0, gamecode 0xAC) —
+   * ROM меньше 0xB0 байт не может быть Pokémon, не читаем за границей. */
+  if (gamepak_size < 0xB0)
+    return false;
+
   if (memcmp(&rom[0xA0], "POKEMON", 7) == 0)
     return true;
 
@@ -3122,13 +3130,23 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
    if (load_gamepak_raw(name))
       return -1;
 
-   gamepak_header_nonstandard =
-      (gamepak_buffers[0][3] != 0xEA) || (gamepak_buffers[0][0xB2] != 0x96);
+   gamepak_header_nonstandard = true;   // r545: ROM без полного заголовка
 
    /* Buffer 0 always has the first 1MB chunk of the ROM.
     * Read game code regardless of header validity: ROM hacks usually
     * preserve the code at 0xAC even when other header bytes are wrong. */
-   memcpy(game_code, &gamepak_buffers[0][0xAC], 4);
+   if (gamepak_size >= 0xB3)
+   {
+      gamepak_header_nonstandard =
+         (gamepak_buffers[0][3] != 0xEA) || (gamepak_buffers[0][0xB2] != 0x96);
+      memcpy(game_code, &gamepak_buffers[0][0xAC], 4);
+   }
+   else
+   {
+      /* r545: обрезанный/мусорный ROM (< 179 байт) — заголовка нет,
+       * game_code = UNKN, иначе чтение ушло бы за буфер ROM. */
+      memcpy(game_code, "UNKN", 4);
+   }
 
    /* Sanitise game code: if all bytes are non-alphanumeric
     * (homebrews, some NSP-extracted ROMs), use "UNKN" so

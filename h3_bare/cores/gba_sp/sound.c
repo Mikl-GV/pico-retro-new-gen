@@ -758,6 +758,41 @@ bool sound_read_savestate(const u8 *src)
       return false;
   }
 
+  /* r545: валидация значений из савстейта. Повреждённый/подставленный стейт
+   * не должен дать индексацию за fifo[32]/таблицы громкости, мусорные
+   * индексы буфера (нечётные/за размером — OOB в sound_buffer) или
+   * UB-сдвиг в >>= volume_halve (сдвиг ≥ 32). */
+  for (i = 0; i < 2; i++)
+  {
+    direct_sound_struct *ds = &direct_sound_channel[i];
+    ds->fifo_top &= 31;
+    ds->fifo_base &= 31;
+    ds->buffer_index = (ds->buffer_index & BUFFER_SIZE_MASK) & ~1u;
+    if (ds->volume_halve > 1)
+      ds->volume_halve = 1;
+  }
+  sound_buffer_base = (sound_buffer_base & BUFFER_SIZE_MASK) & ~1u;
+  gbc_sound_buffer_index = (gbc_sound_buffer_index & BUFFER_SIZE_MASK) & ~1u;
+  gbc_sound_partial_ticks &= 0xFFFF;
+  gbc_sound_master_volume_left &= 7;    /* индекс gbc_sound_channel_volume_table[8] */
+  gbc_sound_master_volume_right &= 7;
+  gbc_sound_master_volume &= 3;         /* индекс gbc_sound_master_volume_table[4] */
+  for (i = 0; i < 4; i++)
+  {
+    gbc_sound_struct *gs = &gbc_sound_channel[i];
+    gs->sample_table_idx &= 3;          /* square_pattern_duty[4] */
+    gs->wave_bank &= 1;
+    gs->wave_type &= 1;
+    gs->noise_type &= 1;
+    gs->sweep_shift &= 7;
+    gs->envelope_volume &= 15;          /* gbc_sound_envelope_volume_table[16] */
+    gs->envelope_ticks &= 0xFFFF;
+    gs->envelope_initial_ticks &= 0xFFFF;
+    gs->sweep_ticks &= 0xFFFF;
+    gs->sweep_initial_ticks &= 0xFFFF;
+    gs->length_ticks &= 0x3FF;
+  }
+
   return true;
 }
 

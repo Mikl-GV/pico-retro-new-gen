@@ -239,6 +239,35 @@ btn-слой на 0x20 НЕ подключается (0x20 = Sega). Кнопоч
 `h3_bare.bin` см. ниже. | Проверить на стенде: Sega 6-button test — B/C только
 свои биты; с подключённой кнопочной платой 0x27 — оба слоя работают.
 
+**Д-8 | 2026-10-01 | A6/A7/B4 (LOW, чистота) | GBA: удалены временные трейсы.**
+По решению владельца (Д-2): убраны все printf-трейсы серии r522/r532..r537 из
+production-кода — `gba_host.c` (pc/dma-трейс 8 кадров, snd-трейс каждые 60 кадров),
+`gba_sp/main.c` (hbl-dma/hbl-irq), `gba_sp/serial.c` (sio), `gba_sp/cpu.cc`
+(irq, pc, bx, thumb; удалены `g_diag_irq_cnt` и его сброс). Убраны ставшие
+лишними `g_gba_trc_cnt`, include `h3_hs_timer.h` из gba_host.c. Попутно:
+A6 — `gba_rs_phase = 0;` в `gba_init_game` (фаза ресемплера не несётся между
+играми); B4 — `sound_read_samples(sndbuf, 549)` вместо магического 550
+(комментарий-противоречие убран). Версия **r543 → r544**. | Сборка: `make -j16`
+EXIT=0, предупреждений в наших файлах — 0; размер `h3_bare.bin` см. ниже. |
+Проверить на стенде: GBA-игры запускаются, звук непрерывный, UART без спама.
+
+**Д-9 | 2026-10-01 | A2/A3 (MED, GBA-вход) | Валидация savestate и размера ROM.**
+По решению владельца (Д-4). В `gba_sp/sound.c` (`sound_read_savestate`) —
+валидация всех полей из стейта: fifo_top/fifo_base &=31, buffer_index/sound_buffer_base/
+gbc_sound_buffer_index — маска BUFFER_SIZE-1 и чётность (нечётный индекс давал
+OOB в sound_buffer), volume_halve клампится ≤1 (сдвиг ≥32 = UB), маски индексов
+таблиц громкости/волн (master_volume_left/right &7, master_volume &3,
+envelope_volume &15, sample_table_idx &3, wave_bank/type/noise_type &1,
+sweep_shift &7) и тиковых счётчиков. В `gba_sp/gba_memory.c`:
+`rom_scan_signatures_in_memory` — underflow chunk_size-10 при ROM < 10 байт
+(замена на `scan = chunk_size > 10 ? chunk_size - 10 : 0`);
+`rom_is_pokemon_family` — guard `gamepak_size < 0xB0`;
+`load_gamepak` — чтение заголовка (0x03/0xAC/0xB2) только при
+`gamepak_size >= 0xB3`, иначе header_nonstandard=true и game_code="UNKN".
+Версия **r544 → r545**. | Сборка: `make -j16` EXIT=0, предупреждений в наших
+файлах — 0; `h3_bare.bin` см. ниже. | Проверить на стенде: GBA-игры стартуют
+и звучат как раньше (валидация затрагивает только пути повреждённых данных).
+
 _(следующие дельты — ниже)_
 
 
