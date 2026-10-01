@@ -79,17 +79,14 @@ static void pll_audio_enable(void) {
 static int g_i2s_ready = 0;
 static int g_volume_pct = 20;
 static int g_muted = 1;
-static uint32_t g_i2s_next = 0;   // r124: момент следующей пары (для повторного init)
 
-// DC-blocker (r508/r518/r519): эмуляторы/blip дают постоянную составляющую и
-// её перепады между кадрами («фон»). HPF: K=8 (~30 Гц — фон слышен), K=6
-// (~120 Гц — лучше), r519: K=5 (~240 Гц — фон почти ушёл; выше режем музыку).
+// r558: DC-блокер (HPF) — убирает постоянную составляющую/перепады фона от
+// blip, не трогая музыку. r560: срез поднят с ~240 Гц (DC_SHIFT=5) до
+// ~480 Гц (DC_SHIFT=4) по решению владельца («обрезать фон»); FIR/лимитер
+// не возвращаем.
 static int32_t dc_l = 0;
 static int32_t dc_r = 0;
-#define DC_SHIFT 5
-// Лёгкий сглаживающий FIR (r520): (x[n]+2*x[n-1]+x[n-2])/4 — убирает резкие
-// ступеньки blip (треск), срез ~0.38*fs (48к → ~18 кГц), музыку не режет.
-static int32_t sm_l1 = 0, sm_l2 = 0, sm_r1 = 0, sm_r2 = 0;
+#define DC_SHIFT 4   // ~480 Гц (5 = ~240 Гц)
 
 // ---- кольцо потока эмулятора (объявлено раньше геттеров — их использует) ----
 #define AUDIO_RING_SIZE 8192
@@ -106,7 +103,7 @@ void i2s_volume(int p) {
 }
 int i2s_volume_pct(void) { return g_volume_pct; }
 int i2s_ready(void) { return g_i2s_ready; }
-void i2s_ring_reset(void) { g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0; sm_l1 = 0; sm_l2 = 0; sm_r1 = 0; sm_r2 = 0; }
+void i2s_ring_reset(void) { g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0; }
 void i2s_mute(int m) { g_muted = m; if (m) H3_PIO_PORTA->DAT &= ~(1u<<SD_PIN); else H3_PIO_PORTA->DAT |= (1u<<SD_PIN); }
 
 int i2s_init(void) {
@@ -140,11 +137,17 @@ int i2s_init(void) {
     I2S_FIFO_CTL |= (1u << 24) | (1u << 25);
     udelay(100);
     for (int i = 0; i < 256; i++) { volatile uint32_t d = I2S_RX_FIFO; (void)d; }
+    I2S_TX_CNT = 0;   // r553: сброс счётчика TX FIFO (как Linux sun4i_i2s_start_playback)
+                      // — иначе TX_CNT не отражает реальный уровень и pump считает FIFO «полным»
 
     // 48к: WSS=7 (32-бит слот), SR=3 (16-бит), LRCKPER=64, BCLK 3.072M
     I2S_FMT0 = (7u << 0) | (3u << 4) | (0u << 7) | I2S_FMT0_LRCKPER(64) | (0u << 19);
     I2S_FMT1 = 0;
-    I2S_CLK_DIV = I2S_CLK_MCLK_EN | I2S_CLK_BCLK(5) | I2S_CLK_MCLK(2);
+    // r556: BCLK val 5 → 3. На стенде txcnt рос ~23.6 к/с (вдвое медленнее
+    // 48 к) — H3 похоже использует sun4i-шкалу делителей (val=5 → div=16 →
+    // BCLK 1.536 М → LRCK 24 кГц), а не sun8i. val=3 → div=8 → BCLK 3.072 М
+    // → настоящие 48 кГц. Проверить тест-тоном 1000 Гц (должен звенеть ровно).
+    I2S_CLK_DIV = I2S_CLK_MCLK_EN | I2S_CLK_BCLK(3) | I2S_CLK_MCLK(2);
 
     I2S_TX_CMAP = 0x76543210;
     I2S_TX_CSEL = (3u << 4) | I2S_TX_CHAN_OFF(1) | 1;
@@ -154,7 +157,6 @@ int i2s_init(void) {
              | I2S_CTRL_TX_EN | I2S_CTRL_SDO_EN0 | I2S_CTRL_GL_EN;
     udelay(1000);
 
-    g_i2s_next = 0;   // r124: сброс темпа при (повторном) init
     g_i2s_ready = 1;
     printf("I2S: ready (48000 Hz, vol=%d%%)\n", g_volume_pct);
     return 0;
@@ -164,30 +166,29 @@ int i2s_init(void) {
 static inline uint32_t ring_count(void) { return (uint32_t)(g_ring_wr - g_ring_rd); }
 int i2s_ring_level(void) { return (int)ring_count(); }   // r522: для диагностики
 
-// Приём сэмпла: НЕБЛОКИРУЮЩИЙ. Громкость здесь.
+// r557: срезать накопленную историю — оставить только keep_pairs самых
+// СВЕЖИХ (двигаем rd к wr, самые старые пар дропаются). Нужно, когда темп
+// железа чуть ниже производства и кольцо «застряло» полным (задержка ~170мс
+// + дропы) — мгновенно убирает отставание, дальше период стабилизируется.
+void i2s_ring_trim(uint32_t keep_pairs) {
+    if (keep_pairs >= AUDIO_RING_SIZE) keep_pairs = AUDIO_RING_SIZE - 1;
+    if (ring_count() > keep_pairs)
+        g_ring_rd = g_ring_wr - keep_pairs;
+}
+
+// Приём сэмпла: НЕБЛОКИРУЮЩИЙ. r558: DC-блокер (~240 Гц) на сыром сигнале,
+// затем громкость и жёсткий кламп s16. FIR/лимитер не возвращаем.
 void i2s_push_sample(int16_t left, int16_t right) {
     if (!g_i2s_ready) return;
     if (g_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
-    if (ring_count() >= AUDIO_RING_SIZE) return;
+    if (ring_count() >= AUDIO_RING_SIZE) return;   // drop-on-full
 
-    // убираем постоянную составляющую (и подбасовый гул)
     int32_t fl = (int32_t)left  - dc_l;  dc_l += fl >> DC_SHIFT;
     int32_t fr = (int32_t)right - dc_r;  dc_r += fr >> DC_SHIFT;
 
-    // r520: лёгкое сглаживание ступенек
-    int32_t f2l = (fl + 2 * sm_l1 + sm_l2) >> 2;  sm_l2 = sm_l1; sm_l1 = fl;
-    int32_t f2r = (fr + 2 * sm_r1 + sm_r2) >> 2;  sm_r2 = sm_r1; sm_r1 = fr;
-
     int32_t v = (g_volume_pct * 32) / 100;
-    int32_t L = f2l * v / 32;
-    int32_t R = f2r * v / 32;
-    if (L > 32767) L = 32767 + (L - 32767) / 4;   // r508: мягкий лимит
-    if (L < -32768) L = -32768 + (L + 32768) / 4;
-    if (R > 32767) R = 32767 + (R - 32767) / 4;
-    if (R < -32768) R = -32768 + (R + 32768) / 4;
-    // r546: после сжатия перегруз всё ещё может превышать диапазон s16
-    // (напр. 98301 → 32767+16383=49150 → обёртка при касте в int16).
-    // Повторный кламп — гарантирует валидный сэмпл.
+    int32_t L = fl * v / 32;
+    int32_t R = fr * v / 32;
     if (L > 32767) L = 32767;
     if (L < -32768) L = -32768;
     if (R > 32767) R = 32767;
@@ -203,15 +204,29 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // (таймер 24 МГц, lo_us() даёт настоящие микросекунды: 48кГц → пара за 20.8 мкс).
 #define I2S_PACE_UNITS 21
 
-// Перенос кольцо → FIFO. Малый лимит пар, чтобы вызов был коротким.
+// r555: заполнение TX FIFO берём из I2S/PCM_FSTA (0x18, даташит 8.6.7.7):
+//   bit 28      TXE     = 1 — есть место ≥1 слова
+//   bits 23:16  TXE_CNT = число СВОБОДНЫХ слов TX FIFO (128 при 16-бит)
+// (r550/r553 ошибочно использовали I2S_TX_CNT (0x28) — это «TX Sample
+// Counter», кумулятивный счётчик выданных сэмплов: он растёт на 48 к за
+// секунду, никогда не опускается к 0, поэтому pump почти не писал, а
+// кольцо I2S застревало полным — задержка/дропы.)
+#define I2S_FSTA_TXE_CNT(st) (((st) >> 16) & 0xFFu)   // свободных слов
+#define I2S_TXE_MIN 8                                 // стоп, если свободно меньше 4 пар
+
+// Порция неблокирующего долива (~0.5 мс звука): CPU не ждёт темп.
+#define I2S_FLUSH_BURST 24
+
+// Перенос кольцо → FIFO. НЕБЛОКИРУЮЩИЙ — пишем пары, пока в TX FIFO есть
+// свободные слова (контроллер играет сам с темпом 48 кГц). Больше никакого
+// busy-wait по 21 мкс/пара: CPU освобождается, звук «fire-and-forget».
 // Если кольцо пусто — доливаем тишину (FIFO не уходит в ноль).
 void i2s_flush_max(int max_pairs) {
     if (!g_i2s_ready) return;
+    if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
     int n = 0;
     while (n < max_pairs) {
-        if (g_i2s_next) { while ((int32_t)(h3_hs_timer_lo_us() - g_i2s_next) < 0); }
-        g_i2s_next = h3_hs_timer_lo_us() + I2S_PACE_UNITS;
-
+        if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) break;   // мало места — вернёмся позже
         if (ring_count() > 0) {
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
             I2S_FIFO_TX = (uint32_t)(uint16_t)g_ring_l[r] << 16;
@@ -226,7 +241,7 @@ void i2s_flush_max(int max_pairs) {
     }
 }
 
-void i2s_flush(void) { i2s_flush_max(64); }
+void i2s_flush(void) { i2s_flush_max(24); }
 
 // Синус-таблица 1/4 периода (общая для тест-тона и меню-клика).
 static const int16_t sin_tab[256] = {
@@ -269,6 +284,7 @@ void i2s_test_tone(int freq, int msec) {
         int32_t s = (int32_t)sin_tab[idx] * 5 / 10;   // r504: 50% — тон не оглушает
         i2s_push_sample((int16_t)s, (int16_t)s);
         i2s_flush_max(1);
+        udelay(I2S_PACE_UNITS);   // r549: flush теперь неблокирующий — темп держим вручную
     }
     i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
@@ -290,6 +306,7 @@ void i2s_click(void) {
         int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
         i2s_push_sample((int16_t)s, (int16_t)s);
         i2s_flush_max(1);
+        udelay(I2S_PACE_UNITS);   // r549: темп вручную (flush неблокирующий)
     }
     i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }

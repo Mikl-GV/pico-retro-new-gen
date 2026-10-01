@@ -191,14 +191,24 @@ void emu_throttle(void) {
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
     if (elapsed < emu_period_us) {
-        // r506: остаток кадра ждём ДОЛИВОМ звука (пара ≈ 21 мкс при 48 кГц),
-        // а не пустым udelay: поток в кольцо уходит в реальном темпе сразу,
-        // как только эмулятор его положил (худший случай — темп звука слегка
-        // ниже номинала, если эмуляция сама ест почти весь кадр).
-        // Если I2S не готов — чистый udelay (старое поведение).
+        // r549: fire-and-forget. Раньше остаток кадра ждали ДОЛИВОМ ЗВУКА с
+        // темпом 21 мкс/пара — CPU простаивал ~13 мс/кадр на «проигрывании».
+        // Теперь доливаем кольцо в аппаратный FIFO короткими порциями
+        // (24 пары ≈ 0.5 мс) и между ними спим: средний темп ≈ 48 кГц,
+        // а процессор свободен для эмуляции/рендера. При неготовом I2S —
+        // чистый udelay (старое поведение).
         if (i2s_ready()) {
-            do { i2s_flush_max(1); }
-            while ((h3_hs_timer_lo_us() - emu_ts0) < emu_period_us);
+            uint32_t left = emu_period_us - elapsed;
+            while (left > 0) {
+                i2s_flush_max(24);
+                uint32_t step = (left > 500) ? 500 : left;
+                udelay(step);
+                left -= step;
+            }
+            i2s_flush_max(24);
+            // r556: догон (r553) убран — при темпе железа ≈ производству он
+            // молотил вхолостую (~13.5 мс/кадр → fps 36). Реальная причина
+            // накопления кольца — половинный BCLK (см. i2s.c, r556).
         } else {
             udelay(emu_period_us - elapsed);
         }
@@ -490,9 +500,11 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_ts0 = 0;
     emu_esc_hold_reset();
     // r511: рефреш Lynx ~75 Гц (48000/75 = 640 сэмплов/кадр), а не 60 Гц.
-    // Период кадра считаем от фактического числа сэмплов (пара = 21 мкс),
-    // иначе 640 пар растягивались на 16.7 мс → звук на ~80% скорости
-    // (всё ниже, «жирный бас», потеря верха). Восстанавливаем по выходу.
+    // Период кадра считаем от фактического числа сэмплов (пара = 21 мкс).
+    // r548 пробовал адаптивный период (T_emu + p*21) — в лёгких играх fps
+    // просел до ~55 даже при быстрой эмуляции; r550 вернул 75 Гц: с
+    // неблокирующим pump'ом (r549) звук не требует busy-wait и не дрейфует,
+    // кольцо разгружается в течение кадра и в throttle.
     uint16_t saved_period = emu_period_us;
     for (;;) {
         lynx_run_frame();
@@ -502,13 +514,38 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
             uint32_t u = p * 21;
             if (u >= 5000 && u <= 40000) emu_period_us = (uint16_t)u;
         }
+        // r559/r560: период кадра = время, за которое железо РЕАЛЬНО выводит
+        // 640 пар (слежение по I2S TX Sample Counter за прошедший кадр).
+        // r560: EMA утяжелён до 1/8 — кольцо меньше «дышит".
+        {
+            volatile uint32_t txc = *(volatile uint32_t*)0x01C22028u;   // I2S/PCM TX Sample Counter
+            uint32_t now = h3_hs_timer_lo_us();
+            static uint32_t prev_txc = 0, prev_t = 0;
+            if (prev_txc && txc > prev_txc) {
+                uint32_t dp = txc - prev_txc;          // пар выведено за прошедший кадр
+                uint32_t dtime = now - prev_t;         // мкс
+                if (dp > 0 && dp < 2000 && dtime > 5000 && dtime < 30000) {
+                    uint32_t peri = (uint32_t)(((uint64_t)dtime * 640u) / dp);
+                    if (peri >= 10000 && peri <= 20000)
+                        emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
+                }
+            }
+            prev_txc = txc;
+            prev_t = now;
+        }
+        // Страховка от дикого переполнения (редкий случай). r560: мягче —
+        // срез 6500 → 4000 (реже, не режет на 1500 агрессивно).
+        {
+            extern int i2s_ring_level(void);
+            if (i2s_ring_level() > 6500) i2s_ring_trim(4000);
+        }
         lynx_render_frame();
         emu_throttle();
         emu_scale_int(160, 102);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = saved_period; fb_clear(); fb_flush();
+exit: emu_period_us = saved_period; i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
