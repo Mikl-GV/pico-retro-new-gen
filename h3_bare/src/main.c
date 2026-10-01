@@ -17,6 +17,7 @@
 #include "sega_pad.h"
 #include "remap.h"
 #include "tft_drv.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -233,7 +234,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r502";
+const char g_fw_version[] = "r520";
 
 void main(void) {
     int sd_ok = 0;
@@ -241,7 +242,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r502\n");
+    uart_puts("build: r520\n");
 
     led_init();
     led_set(0);
@@ -290,6 +291,10 @@ void main(void) {
 
     // Пользовательский ремап клавиатуры (из /retro.cfg) — после fat_init
     if (sd_ok) { remap_load(); uart_puts("remap: loaded\n"); }
+
+    // Аудио (I2S0 + MAX98357A): r503 — инициализируем при старте, звук
+    // эмуляторов подключается пошагово; для тестов готово сразу.
+    i2s_init();
 
     // I2C (TWI0 PA11/PA12): Sega-геймпад@0x20 (если подключён).
     // r0.411: печать инициализации возвращена в boot-лог (было тихо с r0.397):

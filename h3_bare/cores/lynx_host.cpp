@@ -9,6 +9,7 @@ extern "C" {
 #include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
+#include "i2s.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -27,6 +28,10 @@ extern "C" void led_set(int on);
 static CSystem* g_lynx = NULL;
 static uint16_t lynx_fb[LYNX_W * LYNX_H]; // наш буфер 160x102 RGB565
 static volatile int lynx_frame_ready = 0;  // 1 = кадр отрисован (ставит display_callback)
+static uint32_t g_lynx_pairs = 800;        // r511: сэмплов (пар) за последний кадр
+
+extern "C" uint32_t lynx_last_pairs(void) { return g_lynx_pairs; }
+static ULONG g_lynx_next_cycle = 0;   // r516: стaтик, сбрасывается в lynx_init_game
 
 // Callback — вызывается Mikie в конце каждого кадра
 static UBYTE* display_callback(ULONG objref) {
@@ -85,6 +90,15 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     g_lynx = new CSystem(NULL, rom, size, NULL, false, NULL);
     if (!g_lynx) { printf("[lynx] new CSystem failed\n"); return 0; }
 
+    // r516: счётчик кадрового цикла — НЕЛЬЗЯ нести между играми (иначе target
+    // уходит вперёд от прошлой сессии и следующий запуск упирается в safety).
+    g_lynx_next_cycle = 0;
+
+    // r507: звук. gAudioEnabled в Handy по умолчанию FALSE — без TRUE
+    // Mikie::Update НЕ обновляет аудио-подсистему (mikie.cpp:3224) и
+    // blip остаётся пустым. В оригинале libretro выставляется в retro_load_game.
+    gAudioEnabled = TRUE;
+
     if (!g_lynx->mMikie) {
         printf("[lynx] mMikie is NULL, cartridge init failed\n");
         delete g_lynx; g_lynx = NULL;
@@ -125,12 +139,8 @@ extern "C" void lynx_run_frame(void) {
         }
     }
 
-    // Гоняем Update() пока display_callback не поставит флаг готового кадра.
+    // Гоняем Update() до готовности кадра.
     // r125: мигание alive (PL10) делает CPU1 (led_heartbeat_cpu1).
-
-    // Диагностика: проверяем, рисует ли что-то Handy
-    static uint32_t frame_cnt = 0;
-    frame_cnt++;
 
     // Страховка от "чёрного экрана": если игра не выставила DISPCTL.DMAEnable
     // (Mikie::DisplayRenderLine при этом сразу выходит, буфер пуст) —
@@ -152,19 +162,43 @@ extern "C" void lynx_run_frame(void) {
         }
     }
 
+    // r514-r516: кадр = 213333 виртуальных цикла (16 МГц / 75 Гц, как libretro).
+    // Выход по display_callback допускается ТОЛЬКО когда осталось <12.5% кадра,
+    // иначе кадр обрывается слишком рано (у игр с быстрой развёрткой пары
+    // падали до 35-133 → рывки). Batman не набирает target без кадра — выходит
+    // по callback в конце кадра.
+    extern ULONG gSystemCycleCount;
+    if (!g_lynx_next_cycle) g_lynx_next_cycle = gSystemCycleCount;
+    ULONG target = g_lynx_next_cycle + (HANDY_SYSTEM_FREQ / 75);
+    const int32_t EARLY_OK = (int32_t)((HANDY_SYSTEM_FREQ / 75) / 8);
     lynx_frame_ready = 0;
     int safety = 0;
-    while (!lynx_frame_ready) {
+    while ((int32_t)(target - gSystemCycleCount) > 0) {
         g_lynx->Update();
         if (++safety > 4000000) {
             printf("lynx: frame timeout (safety)\n");
-            lynx_frame_ready = 1; break; // ~4M инструкций на кадр макс
+            break;
         }
+        if (lynx_frame_ready && (int32_t)(target - gSystemCycleCount) <= EARLY_OK)
+            break;
     }
+    g_lynx_next_cycle = target;
 
-    // Звук отключён: сбрасываем буфер Handy (blip не должен переполняться)
-    extern ULONG gAudioBufferPointer;
-    gAudioBufferPointer = 0;
+    // Звук (r507): СНАЧАЛА собираем сэмплы кадра — без FetchAudioSamples()
+    // AudioEndOfFrame() не вызывается и gAudioBufferPointer остаётся нулём
+    // (это и был обрыв в r506: буфер читался до сборки).
+    // Формат: gAudioBuffer = стерео int16 (L,R чередуются; blip выдаёт
+    // mix_stereo/mix_mono с парами), gAudioBufferPointer = число int16 => пары = /2.
+    g_lynx->FetchAudioSamples();
+    {
+        extern ULONG gAudioBufferPointer;
+        ULONG np = gAudioBufferPointer / 2;
+        if (np > (HANDY_AUDIO_BUFFER_SIZE / 2) / 2) np = (HANDY_AUDIO_BUFFER_SIZE / 2) / 2;
+        g_lynx_pairs = np;   // r511: для синхронизации периода кадра
+        const int16_t* p = (const int16_t*)gAudioBuffer;
+        for (ULONG i = 0; i < np; i++)
+            i2s_push_sample(p[2 * i], p[2 * i + 1]);
+    }
 }
 
 extern "C" void lynx_render_frame(void) {

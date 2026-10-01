@@ -9,6 +9,7 @@
 #include "btn_pad.h"
 #include "h3_hs_timer.h"
 #include "led.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -165,6 +166,7 @@ void emu_prepare(void) {
     // пуст на входе в любой эмулятор (включая builtin; rom_browser сбрасывал
     // только свои пути). Пустой список = применение в host-слоях — no-op.
     cheats_reset();
+    i2s_ring_reset();   // r506: кольцо I2S не должно нести сэмплы предыдущей системы
     emu_clear_fb();
     fb_clear();
     fb_flush();
@@ -188,8 +190,19 @@ void emu_throttle(void) {
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;
     uint32_t elapsed = now - emu_ts0;
-    if (elapsed < emu_period_us)
-        udelay(emu_period_us - elapsed);
+    if (elapsed < emu_period_us) {
+        // r506: остаток кадра ждём ДОЛИВОМ звука (пара ≈ 21 мкс при 48 кГц),
+        // а не пустым udelay: поток в кольцо уходит в реальном темпе сразу,
+        // как только эмулятор его положил (худший случай — темп звука слегка
+        // ниже номинала, если эмуляция сама ест почти весь кадр).
+        // Если I2S не готов — чистый udelay (старое поведение).
+        if (i2s_ready()) {
+            do { i2s_flush_max(1); }
+            while ((h3_hs_timer_lo_us() - emu_ts0) < emu_period_us);
+        } else {
+            udelay(emu_period_us - elapsed);
+        }
+    }
     emu_ts0 = h3_hs_timer_lo_us();
 }
 
@@ -468,7 +481,7 @@ exit: fb_clear(); fb_flush();
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("lynx", "none");
+    snd_manifest("lynx", "i2s");
     if (lynx_init_game(rom, size) != 1) {
         printf("Lynx: init failed\n"); return;
     }
@@ -476,15 +489,26 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_set_border_color(0x000E0D26);   // тёмно-фиолетовый (Lynx)
     emu_ts0 = 0;
     emu_esc_hold_reset();
+    // r511: рефреш Lynx ~75 Гц (48000/75 = 640 сэмплов/кадр), а не 60 Гц.
+    // Период кадра считаем от фактического числа сэмплов (пара = 21 мкс),
+    // иначе 640 пар растягивались на 16.7 мс → звук на ~80% скорости
+    // (всё ниже, «жирный бас», потеря верха). Восстанавливаем по выходу.
+    uint16_t saved_period = emu_period_us;
     for (;;) {
         lynx_run_frame();
+        {
+            extern uint32_t lynx_last_pairs(void);
+            uint32_t p = lynx_last_pairs();
+            uint32_t u = p * 21;
+            if (u >= 5000 && u <= 40000) emu_period_us = (uint16_t)u;
+        }
         lynx_render_frame();
         emu_throttle();
         emu_scale_int(160, 102);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_period_us = saved_period; fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {

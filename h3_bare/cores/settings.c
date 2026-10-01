@@ -9,6 +9,7 @@
 #include "sega_pad.h"
 #include "remap.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 extern int printf(const char* fmt, ...);
 
 // r118: SRAM A1 почта калибровки тача (определена в tft_drv.c — дублируем
@@ -373,6 +374,12 @@ enum {
     // r500 (П1 сессии): TV-режим A2600 добавлен В КОНЕЦ enum — порядок первых
     // пунктов совпадает с TFT-меню (tft_drv.c items[]), сдвигать индексы нельзя.
     SET_A2600_TV,
+    // r503/r504: громкость + тесты звука (I2S/MAX98357A) — тоже в конец,
+    // TFT-индексы не трогаем.
+    SET_AUDIO_VOLUME,
+    SET_AUDIO_T440,
+    SET_AUDIO_T1000,
+    SET_AUDIO_T3000,
     SET_COUNT,
 };
 
@@ -385,6 +392,10 @@ static const char* const set_labels[SET_COUNT] = {
     "Touch Calibration (TFT)",
     "ROM partition info",
     "Atari 2600 TV mode",
+    "Audio volume",
+    "Audio test 440 Hz",
+    "Audio test 1000 Hz",
+    "Audio test 3000 Hz",
 };
 
 // Рисуем меню настроек с курсором
@@ -410,6 +421,11 @@ static void settings_draw(int sel) {
         }
         if (i == SET_A2600_TV) {
             fb_puts_s(440, y, a2600_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
+        }
+        if (i == SET_AUDIO_VOLUME) {
+            char b[8];
+            snprintf(b, sizeof(b), "%d%%", i2s_volume_pct());
+            fb_puts_s(440, y, b, 1, 0x00AAAAAA);
         }
         y += 34;
     }
@@ -517,8 +533,8 @@ void settings_run(void) {
         int k = input_wait();
 
         if (k == 41) return;                       // ESC -> выход
-        else if (k == 82) { sel--; if (sel < 0) sel = SET_COUNT - 1; }  // Up
-        else if (k == 81) { sel++; if (sel >= SET_COUNT) sel = 0; }      // Down
+        else if (k == 82) { sel--; if (sel < 0) sel = SET_COUNT - 1; i2s_click(); }  // Up
+        else if (k == 81) { sel++; if (sel >= SET_COUNT) sel = 0; i2s_click(); }      // Down
 
         // Стрелки влево/вправо: меняют значение переключаемого пункта
         else if (k == 80 || k == 79) {   // LArr / RArr
@@ -529,6 +545,13 @@ void settings_run(void) {
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
                 break;
+            case SET_AUDIO_VOLUME: {
+                int v = i2s_volume_pct() + (k == 79 ? 5 : -5);   // RArr = +
+                if (v < 0) v = 0;
+                if (v > 100) v = 100;
+                i2s_volume(v);
+                break;
+            }
             default:
                 break;
             }
@@ -546,6 +569,15 @@ void settings_run(void) {
                 break;
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
+                break;
+            case SET_AUDIO_T440:
+                i2s_test_tone(440, 2000);
+                break;
+            case SET_AUDIO_T1000:
+                i2s_test_tone(1000, 2000);
+                break;
+            case SET_AUDIO_T3000:
+                i2s_test_tone(3000, 2000);
                 break;
             case SET_SEGA_PAD:
                 sega_pad_test_run();

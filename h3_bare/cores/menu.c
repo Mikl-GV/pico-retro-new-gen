@@ -7,6 +7,7 @@
 #include "uart.h"
 #include "usb_kbd.h"
 #include "h3.h"
+#include "i2s.h"
 
 #define PHYS_W 1024
 #define PHYS_H 600
@@ -409,6 +410,7 @@ int menu_run(void) {
             if (rows[r].item != -1) {
                 sel_row = r;
                 menu_scroll_to(sel_row, max_visible);
+                i2s_click();   // r505: щелчок при смене пункта
             }
         } else if (k == 81) {   // Down — по кольцу (S=22 не маппим: 22 = Mode геймпада)
             int r = sel_row;
@@ -419,6 +421,7 @@ int menu_run(void) {
             if (rows[r].item != -1) {
                 sel_row = r;
                 menu_scroll_to(sel_row, max_visible);
+                i2s_click();   // r505
             }
         } else if (k == 58) {   // F1 — быстрый переключатель A2600 diff
             // r121: дублируем значение в SRAM-почту (0x70) — CPU1 рисует
