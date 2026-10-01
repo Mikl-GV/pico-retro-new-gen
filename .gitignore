@@ -19,4 +19,6 @@ Thumbs.db
 emulator-refs/
 /host/
 *.tar.gz
-h3_bare/cores/gearcoleco/coleco_bios.bin
+# BIOS-бинарники, которые .S-файлы вшивают через .incbin (нужны для сборки из клона):
+!h3_bare/cores/gba_sp/bios/open_gba_bios.bin
+!h3_bare/cores/gearcoleco/coleco_bios.bin

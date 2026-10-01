@@ -114,12 +114,16 @@ extern "C" unsigned int SDL_GetTicks(void) {
 int initSound() { return 0; }
 void soundCleanup() {}
 void soundStep(int) {}
-void soundOutput() {}
-int osd_start_audio_stream(int) { return 0; }
-void osd_stop_audio_stream() {}
-int osd_update_audio_stream(short*) { return 0; }
-void osd_set_mastervolume(int) {}
-int osd_get_mastervolume() { return 0; }
+void soundOutput() {
+    // r502-diag (гипотеза «отключённый звук вешает игру»): оригинальный RACE
+    // вызывает soundOutput() на VBlank и тикает чипы; у нас был пустой стаб.
+    // Теперь честно прокручиваем чип каждый кадр, вывод в I2S по-прежнему off.
+    static int diag_snd_inited = 0;
+    if (!diag_snd_inited) { sound_init(44100); diag_snd_inited = 1; }
+    static _u16 tmp[768];   // 44100/60 ≈ 735 сэмплов на кадр, на запас 768
+    sound_update(tmp, sizeof(tmp));
+    dac_update(tmp, sizeof(tmp));
+}
 void ngpSoundStart() {}
 void ngpSoundExecute() {}
 void ngpSoundOff() {}
@@ -136,8 +140,6 @@ extern unsigned char sysfont[8*256];
 extern void ngpBiosSYSFONTSET(unsigned char *pt, char trans, char font);
 
 static void blit_to_fb(void) {
-    // Рисуем 160x152 в левый верхний угол EMU_FB (320x240) —
-    // emu_scale(160,152) читает именно оттуда (паттерн как у Game Boy)
     for (int y = 0; y < NGPC_SIZEY; y++) {
         for (int x = 0; x < NGPC_SIZEX; x++) {
             EMU_FB[y * EMU_W + x] = drawBuffer[y * SIZEX + x];
@@ -150,7 +152,20 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
     if (size > 4*1024*1024) size = 4*1024*1024;
 
     memset(mainrom, 0, sizeof(mainrom));
+    // r501-diag (белый экран): верхний 16Mbit-слот читается как mainrom[0x200000..]
+    // — у файла <4МБ там сейчас нули. В RACE-эталоне незанятый ROM/стёртая flash —
+    // 0xFF. Заполняем хвост 0xFF, чтобы «пустой» банк был как стёртый чип.
     memcpy(mainrom, rom, size);
+    if (size < sizeof(mainrom))
+        memset(mainrom + size, 0xFF, sizeof(mainrom) - size);
+    // r501-diag (белый экран): игры типа Sonic (2МБ = 2×8Mbit) читают «верхний
+    // 16Mbit» слот (0x800000+) как вторую половину рома; у нас он мапится на
+    // mainrom[0x200000..]. Кладём туда вторую половину файла. Для 4МБ (MS2)
+    // это no-op (вторая половина и так там), для 1МБ — «верхний» не читается.
+    if (size > 1u * 1024 * 1024 && size < sizeof(mainrom)) {
+        uint32_t half = size / 2;
+        memcpy(mainrom + 2u * 1024 * 1024, mainrom + half, size - half);
+    }
 
     memset(cpurom, 0, sizeof(cpurom));
     memset(mainram, 0, sizeof(mainram));
@@ -199,6 +214,7 @@ extern "C" void ngp_run_frame(void) {
     // Один блит в кадр делает graphics_paint() при scanlineY==151 (VBlank),
     // когда все 152 строки уже нарисованы — здесь НЕ блинкуем повторно.
     tlcs_execute(515 * 198);
+    soundOutput();   // r502 fix: тик звуковых чипов каждый кадр (без вывода I2S)
 }
 
 // Graphics override for graphics_paint — must be C-linkage

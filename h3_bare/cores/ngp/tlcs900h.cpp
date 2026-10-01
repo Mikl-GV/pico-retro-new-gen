@@ -8920,6 +8920,11 @@ void tlcs_execute(int cycles)
     {
         for (elapsed = tlcs_step();elapsed<(515>>(tlcsClockMulti-1)); elapsed += tlcs_step());
 
+        // r502-diag (Z80): Sub-CPU исполнение.  r502-x2: шагов вдвое больше
+        // (elapsed>>1) — большие игры (Sonic/MS2) могут ждать больше событий.
+        for (int zi = 0; zi < (elapsed >> 1); zi++)
+            z80Step();
+
         tlcsTimers(elapsed);
         elapsed*=tlcsClockMulti;
         soundStep(elapsed);
@@ -8946,7 +8951,13 @@ void tlcs_execute(int cycles)
             {
                 // VBlank
                 if (tlcsMemReadB(0x8000)&0x80)
+                {
                     tlcs_interrupt(2);
+                    // r502-x2 (ISR-клей): отражаем VBlank в регистре 0x70C3
+                    // (mainram[0x30C3], shared с Z80-addr 0x00C3). Игра ждёт
+                    // этот флаг, а у нас он всегда 0. Эмпирика — проверить.
+                    tlcsMemWriteB(0x000070C3, tlcsMemReadB(0x000070C3) | 0x01);
+                }
             }
 
         }

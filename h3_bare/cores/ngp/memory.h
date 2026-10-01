@@ -250,7 +250,7 @@ inline unsigned char tlcsMemReadB(unsigned long addr)
 	if(currentCommand == COMMAND_INFO_READ)
         return flashReadInfo(addr);
 
-	if (addr < 0x00200000) {
+if (addr < 0x00200000) {
 		if (addr < 0x000008A0) {
 			if(addr == 0xBC)
 			{
@@ -260,25 +260,18 @@ inline unsigned char tlcsMemReadB(unsigned long addr)
 		}
 		else if (addr > 0x00003FFF && addr < 0x00018000)
         {
-
             switch (addr)  //Thanks Koyote
             {
                 case 0x6DA2:
                     return 0x80;
-                    break;
                 case 0x6F80:
                     return 0xFF;
-                    break;
                 case 0x6F80+1:
                     return 0x03;
-                    break;
                 case 0x6F85:
                     return 0x00;
-                    break;
                 case 0x6F82:
                     return ngpInputState;
-                    break;
-
                 default:
                     return mainram[addr-0x00004000];
             }
