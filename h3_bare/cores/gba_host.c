@@ -21,6 +21,44 @@
 #include "sega_pad.h"
 #include "btn_pad.h"
 #include "remap.h"
+#include "i2s.h"
+#include "h3_hs_timer.h"
+
+// r521: ресемпл звука gpSP 65536 → 48000 Гц (линейная интерполяция, 16.16).
+// I2S остаётся на 48 кГц — честных делителей под 65536 у H3 нет (ср.: ровный
+// 48 кГц это PLL/8; для 65536 пришлось бы дробить LRCKPER/PLL — риск мимо
+// частоты). Отношение 65536/48000 = 4/3: фаза 16.16, шаг по входным парам.
+// r524/r525: ядро на 32768 Гц. ВАЖНО: 32768→48000 — это УВЕЛИЧЕНИЕ
+// ×1.4648: 549 входных пар дают ~804 выходных (16.9 мс вывода) — никак не
+// 402 (r524-комментарий был ошибочен, cap 460 резал звук → «грязно»).
+#define GBA_RS_INC 44739u   // (32768<<16)/48000
+#define GBA_RS_MAX_OUT 900  // норма ~804, cap выше — не режем нормаль
+static u32 gba_rs_phase = 0;   // непрерывна между кадрами (поток не рвётся)
+
+static u32 gba_resample(const s16* in, u32 nin_pairs, s16* out) {
+    u32 ph = gba_rs_phase;
+    u32 o = 0;
+    while (o < GBA_RS_MAX_OUT) {
+        u32 i = ph >> 16;
+        if (i + 1 >= nin_pairs) break;
+        u32 f = ph & 0xFFFFu;
+        int l0 = in[2 * i],     l1 = in[2 * (i + 1)];
+        int r0 = in[2 * i + 1], r1 = in[2 * (i + 1) + 1];
+        // r542: интерполяция в int64 — (l1-l0)*f до ±4.3e9 было signed UB;
+        // результат всё равно обрезается в s16 как и раньше.
+        out[2 * o]     = (s16)(l0 + (s32)(((s64)(l1 - l0) * (s32)f) >> 16));
+        out[2 * o + 1] = (s16)(r0 + (s32)(((s64)(r1 - r0) * (s32)f) >> 16));
+        o++;
+        ph += GBA_RS_INC;
+    }
+    // r523: r522 вычитал nin<<16 даже когда ph меньше — фаза уходила в
+    // огромный unsigned (i=65534) и ресемплер выдавал 0 навсегда.
+    if (ph >= ((u64)nin_pairs << 16))
+        gba_rs_phase = (u32)(ph - ((u64)nin_pairs << 16));
+    else
+        gba_rs_phase = 0;
+    return o;
+}
 
 extern int printf(const char* fmt, ...);
 
@@ -51,6 +89,10 @@ extern const u8 *g_ram_rom;
 extern u32 g_ram_rom_size;
 
 static int g_loaded = 0;
+// r528: счётчик трейса на уровне файла — сбрасывается в gba_init_game,
+// иначе static-счётчик внутри кадра «доживал» до 70 от прошлой игры
+// и на горячую трейс не печатался.
+static u32 g_gba_trc_cnt = 0;
 
 // ---- ввод: USB-клавиатура + Sega-геймпад -> кнопки GBA ----
 // GBA биты (как в input.h): A=0x01 B=0x02 Select=0x04 Start=0x08
@@ -90,7 +132,8 @@ static u16 gba_buttons(void) {
 int gba_init_game(const uint8_t* rom, uint32_t size) {
     if (!rom || size == 0) { printf("GBA: no rom\n"); return 0; }
     printf("GBA: init size=%u\n", (unsigned)size);
-    g_loaded = 0;
+g_loaded = 0;
+    g_gba_trc_cnt = 0;   // r528: трейс работал и «на горячую» (после другой игры)
 
     // ROM из памяти: host-глобалы ядра (без filestream и без аллокации пула)
     g_ram_rom = rom;
@@ -100,8 +143,12 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     gba_screen_pixels = g_gba_screen;
     memset(g_gba_screen, 0, sizeof(g_gba_screen));
 
-    // Встроенный BIOS (16KB open-source)
+    // BIOS ВШИТ В ПРОШИВКУ (16 КБ, open-source, bios_data.S -> .incbin).
+    // r538 (F1): загрузка «официального» BIOS с SD УБРАНА по решению
+    // владельца — BIOS всегда берётся из образа прошивки, никакой
+    // зависимости от файлов на SD (предсказуемый старт, лёгкий клон).
     memcpy(bios_rom, open_gba_bios_rom, sizeof(bios_rom));
+    printf("GBA: BIOS embedded (open-source, 16K)\n");
     selected_boot_mode = boot_game;
 
     // Грузим ROM (load_gamepak_raw увидит g_ram_rom и замапит напрямую)
@@ -109,6 +156,14 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
         printf("GBA: load_gamepak failed\n");
         return 0;
     }
+
+    // r524: выводимый звук ядра — 32768 Гц (не 65536), чтобы пары/кадр
+    // вдвое меньшие (~549) влезали в время кадра. Ставим ДО init_sound():
+    // init_sound() теперь считает tick_step от фактической sound_frequency.
+    extern u32 sound_frequency;
+    extern u32 sound_freq_bits;
+    sound_frequency = 32768;
+    sound_freq_bits = 15;
 
     init_sound();
     reset_gba();
@@ -130,10 +185,57 @@ void gba_run_frame(void) {
     clear_gamepak_stickybits();
     execute_arm(execute_cycles);
 
-    // Звук отключён: дрейним буфер gpSP, чтобы не переполнить
-    static s16 sndbuf[2048];
-    u32 frames = sound_read_samples(sndbuf, 1024);
-    (void)frames;
+    // r536: трейс ужат до 8 кадров (лог не простыня).
+    if (g_gba_trc_cnt < 8) {
+        extern u32 reg[64];
+        printf("gba trc%u: pc=%08X halt=%u IF=%04X IE=%04X ime=%u disp=%04X vc=%u dispstat=%04X\n",
+               (unsigned)g_gba_trc_cnt, (unsigned)reg[15],
+               (unsigned)reg[18],
+               (unsigned)read_ioreg(REG_IF),
+               (unsigned)read_ioreg(REG_IE),
+               (unsigned)read_ioreg(REG_IME),
+               (unsigned)read_ioreg(REG_DISPCNT),
+               (unsigned)read_ioreg(REG_VCOUNT),
+               (unsigned)read_ioreg(REG_DISPSTAT));
+        extern dma_transfer_type dma[DMA_CHAN_CNT];
+        int d_found = 0;
+        printf("  dma:");
+        for (int c = 0; c < DMA_CHAN_CNT; c++) {
+            dma_transfer_type* d = &dma[c];
+            if (d->start_type != DMA_INACTIVE || d->length) {
+                printf(" d%d:%08X>%08X L%d st%d irq%d rep%d",
+                       c, (unsigned)d->source_address, (unsigned)d->dest_address,
+                       (unsigned)d->length, (int)d->start_type,
+                       (int)d->irq, (int)d->repeat_type);
+                d_found = 1;
+            }
+        }
+        printf(d_found ? "\n" : " (none)\n");
+        g_gba_trc_cnt++;
+    }
+
+    // Звук (r521/r524): gpSP отдаёт 32768 Гц стерео s16 — ресемплим в 48000
+    // (~402 пары/кадр, влезает в кадр с запасом) и пушим в I2S.
+    static s16 sndbuf[4096];
+    static s16 rsbuf[GBA_RS_MAX_OUT * 2];
+    u32 frames = sound_read_samples(sndbuf, 550);  // returns число пар (~549)
+    u32 np = gba_resample(sndbuf, frames, rsbuf);
+    // r522/r525 ВРЕМЕННЫЙ трейс: синхронность входа/выхода + время 60 кадров.
+    {
+        extern int i2s_ring_level(void);
+        static u32 dbg = 0;
+        static u32 t0 = 0;
+        if (!t0) t0 = h3_hs_timer_lo_us();
+        if ((dbg++ % 60) == 0) {
+            uint32_t now = h3_hs_timer_lo_us();
+            printf("gba snd: read=%u out=%u ring=%d frame60us=%u\n",
+                   (unsigned)frames, (unsigned)np, i2s_ring_level(),
+                   (unsigned)(now - t0));
+            t0 = now;
+        }
+    }
+    for (u32 i = 0; i < np; i++)
+        i2s_push_sample(rsbuf[2 * i], rsbuf[2 * i + 1]);
 }
 
 void gba_render_frame(void) {

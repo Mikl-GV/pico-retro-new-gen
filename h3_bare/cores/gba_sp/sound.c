@@ -149,10 +149,16 @@ unsigned sound_timer(fixed8_24 frequency_step, u32 channel)
 
   if(((ds->fifo_top - ds->fifo_base) % 32) <= 16)
   {
-    if(dma[1].direct_sound_channel == channel)
+    /* r530: guard — реплина только для реально сконфигурированного FIFO-DMA
+     * (start==SPECIAL), иначе dma_transfer дёргался на любом канале с
+     * заполненным direct_sound_channel (RnR: канал 2 -> вечный ожидающий
+     * IRQ_DMA2 без реального заполнения FIFO). */
+    if(dma[1].direct_sound_channel == channel &&
+       dma[1].start_type == DMA_START_SPECIAL)
       dma_transfer(1, &ret);
 
-    if(dma[2].direct_sound_channel == channel)
+    if(dma[2].direct_sound_channel == channel &&
+       dma[2].start_type == DMA_START_SPECIAL)
       dma_transfer(2, &ret);
   }
   return ret;
@@ -600,8 +606,9 @@ void reset_sound(void)
 
 void init_sound()
 {
-  /* 256 / sound_frequency in 16.16 == 256 (sound_frequency == 2^16). */
-  gbc_sound_tick_step = (fixed16_16)256u;
+  /* 256 / sound_frequency in 16.16: 256 при 2^16, 512 при 2^15 (r524:
+   * считаем от фактической частоты, а не хардкодим под 65536). */
+  gbc_sound_tick_step = (fixed16_16)(((u64)256u << 16) / sound_frequency);
 
   init_noise_table(noise_table15, 32767, 14);
   init_noise_table(noise_table7, 127, 6);

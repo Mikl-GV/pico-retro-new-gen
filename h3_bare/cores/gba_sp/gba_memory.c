@@ -2246,6 +2246,15 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   if (dmach->irq)
     ret |= flag_interrupt(IRQ_DMA0 << dma_chan);
 
+  // r530: FIFO-DMA (SPECIAL, каналы 1/2) с repeat — источник продвигается
+  // на 16 байт (4 слова) на каждую передачу; иначе каждая подкачка берёт
+  // одни и те же 4 слова (зацикленный «трек»), и игра, ждущая прогресса
+  // адреса/партии данных, виснет (RnR Racing).
+  if (dmach->start_type == DMA_START_SPECIAL &&
+      dmach->repeat_type == DMA_REPEAT &&
+      (dma_chan == 1 || dma_chan == 2))
+    dmach->source_address = (dmach->source_address + 16) & 0xFFFFFFF;
+
   // This is an approximation for the most common case (no region cross)
   if (usedcycles)
     *usedcycles += dmach->length * (

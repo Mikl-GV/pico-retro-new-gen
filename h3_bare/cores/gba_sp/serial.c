@@ -107,6 +107,14 @@ cpu_alert_type write_rcnt(u16 value) {
 cpu_alert_type write_siocnt(u16 value) {
   u16 oldval = read_ioreg(REG_SIOCNT);
   u16 newval = (value & 0x7F8B) | (oldval & 0x0004);
+  // r537 ВРЕМЕННЫЙ трейс: SIO-транзакции (гипотеза: RnR ждёт соперника).
+  {
+    static u32 g_diag_sio = 0;
+    if (g_diag_sio < 12) {
+      printf("gba sio: w=%04X\n", (unsigned)newval);
+      g_diag_sio++;
+    }
+  }
   u32 pvmode = get_serial_mode(oldval, read_ioreg(REG_RCNT));
   u32 nwmode = get_serial_mode(newval, read_ioreg(REG_RCNT));
 

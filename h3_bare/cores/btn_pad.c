@@ -66,7 +66,23 @@ static int btn_pad_probe(int verbose) {
         btn_i2c_w = 0x4E; btn_i2c_r = 0x4F;
         // r0.413: вывод «PAD: buttons -> …» убран из бут-лога (шум).
     } else if (a20) {
-        btn_i2c_w = PCF8574_W; btn_i2c_r = PCF8574_R;
+        // r543: на 0x20 ACK даёт И Sega-пад, И кнопочная плата — по ACK их не
+        // различить. Если ошибочно назначить btn-слой на Sega-пад, его линии
+        // TL/TR читаются в idle как кнопки: нажатие B → ложная A, C → ложная B
+        // (симптом «нажата 1 кнопка, а пишет 2» в Sega 6-button test).
+        // Различитель: настоящий Sega в фазе TH0 даёт маркер D2/D3=0
+        // (SEGA_STATUS_PAD); у кнопочной платы без нажатий D2/D3=1.
+        // Делаем диагностический сега-скан — он безопасен для кнопочной
+        // платы (TH возвращается в idle, вывод «OR-или» сохранён).
+        sega_pad_scan();
+        if (sega_pad_get_status() & SEGA_STATUS_PAD) {
+            // 0x20 занят Sega-падом: кнопочную плату не подключаем.
+            btn_i2c_w = 0; btn_i2c_r = 0;
+            if (verbose)
+                printf("PAD: 0x20 = Sega pad, button board OFF\n");
+        } else {
+            btn_i2c_w = PCF8574_W; btn_i2c_r = PCF8574_R;
+        }
     } else {
         btn_i2c_w = 0; btn_i2c_r = 0;
         if (verbose)

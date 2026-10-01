@@ -183,11 +183,29 @@ u32 function_cc update_gba(int remaining_cycles)
             if(dma[i].start_type == DMA_START_HBLANK)
               dma_transfer(i, &dma_cycles);
           }
+
+          // r537 ВРЕМЕННЫЙ трейс: HBlank-DMA активность (Mode7-игры).
+          {
+            static u32 g_diag_hbl = 0;
+            if (g_diag_hbl < 8) {
+              printf("gba hbl: dma vc=%u\n", (unsigned)vcount);
+              g_diag_hbl++;
+            }
+          }
         }
 
         // Trigger the hblank interrupt, if enabled in DISPSTAT
-        if (dispstat & 0x10)
+        if (dispstat & 0x10) {
+          // r537 ВРЕМЕННЫЙ трейс.
+          {
+            static u32 g_diag_hblirq = 0;
+            if (g_diag_hblirq < 4) {
+              printf("gba hbl: irq\n");
+              g_diag_hblirq++;
+            }
+          }
           irq_raised |= IRQ_HBLANK;
+        }
       }
       else
       {

@@ -7,24 +7,34 @@ static void pputc(char c) {
     uart_putc(c);
 }
 
-static int parse_width(const char** fmt) {
-    if (**fmt != '0') return 0;
-    (*fmt)++;
-    int w = 0;
-    while (**fmt >= '0' && **fmt <= '9') { w = w * 10 + (**fmt - '0'); (*fmt)++; }
-    return w;
-}
-
-static void print_uint(unsigned long v, int base, int upper, int width) {
+// r540 (F3): паддинг-символ вынесен параметром — '%05X' → нули, '%5d' → пробелы.
+static void print_uint(unsigned long v, int base, int upper, int width, char pad) {
     char buf[32];
     const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     int i = 0;
-    if (v == 0 && width <= 0) { pputc('0'); return; }
-    while (v && i < 32) { buf[i++] = digits[v % base]; v /= base; }
+    // do/while: минимум одна цифра (для v==0 → '0'), иначе '%5u' от 0 дал бы
+    // поле из одних пробелов без нуля.
+    do { buf[i++] = digits[v % base]; v /= base; } while (v && i < 32);
     // r0.417 (L5 аудита): клампим width — раньше "%09999999d" писал за buf[32]
     if (width > 31) width = 31;
-    while (i < width) buf[i++] = '0';
-    if (i == 0) buf[i++] = '0';
+    while (i < width) buf[i++] = pad;
+    while (i) pputc(buf[--i]);
+}
+
+// r540 (F3): знаковое число — '-' входит в поле ширины и стоит по стандарту:
+// '%5d' от -42 → "  -42" (пробелы ПЕРЕД знаком), '%05d' → "-0042" (знак до нулей).
+static void print_int(long v, int width, char pad) {
+    char buf[32];
+    int i = 0;
+    unsigned long u = (unsigned long)v;   // F2: модуль без signed overflow
+    int neg = (v < 0);
+    if (neg) u = 0ul - u;
+    do { buf[i++] = (char)('0' + (u % 10)); u /= 10; } while (u && i < 32);
+    if (width > 31) width = 31;
+    int need = width - i - (neg ? 1 : 0);
+    if (neg && pad == '0') pputc('-');
+    while (need-- > 0) pputc(pad);
+    if (neg && pad != '0') pputc('-');
     while (i) pputc(buf[--i]);
 }
 
@@ -32,8 +42,13 @@ static int do_printf(const char* fmt, va_list ap) {
     for (; *fmt; fmt++) {
         if (*fmt != '%') { pputc(*fmt); continue; }
         fmt++;
+        // F3 (r540): ширина — '%5d' И '%05d'. Ведущий '0' = паддинг нулями,
+        // иначе — пробелами (как в стандартном printf). Прежний код принимал
+        // ширину только после '0', поэтому '%5d' печатался как литерал.
         int width = 0;
-        if (*fmt == '0') { width = parse_width(&fmt); }
+        char pad = ' ';
+        if (*fmt == '0') { pad = '0'; fmt++; }
+        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
         int lng = 0;
         while (*fmt == 'l') { lng++; fmt++; }
         switch (*fmt) {
@@ -42,18 +57,17 @@ static int do_printf(const char* fmt, va_list ap) {
                     while (*s) pputc(*s++);
                     break; }
         case 'c': pputc((char)va_arg(ap, int)); break;
-        case 'd': case 'i': {
-            long v = lng ? va_arg(ap, long) : (long)va_arg(ap, int);
-            if (v < 0) { pputc('-'); v = -v; }
-            print_uint((unsigned long)v, 10, 0, width); break; }
+        case 'd': case 'i':
+            print_int(lng ? va_arg(ap, long) : (long)va_arg(ap, int), width, pad);
+            break;
         case 'u': {
             unsigned long v = lng ? va_arg(ap, unsigned long) : (unsigned long)va_arg(ap, unsigned);
-            print_uint(v, 10, 0, width); break; }
+            print_uint(v, 10, 0, width, pad); break; }
         case 'x': case 'X': {
             unsigned long v = lng ? va_arg(ap, unsigned long) : (unsigned long)va_arg(ap, unsigned);
-            print_uint(v, 16, *fmt == 'X', width); break; }
+            print_uint(v, 16, *fmt == 'X', width, pad); break; }
         case 'p': { const void* v = va_arg(ap, const void*);
-                    pputc('0'); pputc('x'); print_uint((unsigned long)v, 16, 0, 0); break; }
+                    pputc('0'); pputc('x'); print_uint((unsigned long)v, 16, 0, 0, ' '); break; }
         case '%': pputc('%'); break;
         default: pputc('%'); if (*fmt) pputc(*fmt); break;
         }

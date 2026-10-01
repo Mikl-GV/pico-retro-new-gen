@@ -162,6 +162,7 @@ int i2s_init(void) {
 
 // ---- приём/перенос потока эмулятора ----
 static inline uint32_t ring_count(void) { return (uint32_t)(g_ring_wr - g_ring_rd); }
+int i2s_ring_level(void) { return (int)ring_count(); }   // r522: для диагностики
 
 // Приём сэмпла: НЕБЛОКИРУЮЩИЙ. Громкость здесь.
 void i2s_push_sample(int16_t left, int16_t right) {

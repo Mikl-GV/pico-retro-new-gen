@@ -579,11 +579,18 @@ static const u8 gba_header_logo[156] = {
   if(new_pc_region != pc_region)                                              \
   {                                                                           \
     pc_region = new_pc_region;                                                \
-    pc_address_block = memory_map_read[new_pc_region];                        \
-    touch_gamepak_page(pc_region);                                            \
-                                                                              \
-    if(!pc_address_block)                                                     \
-      pc_address_block = load_gamepak_page(pc_region & 0x3FF);                \
+    /* r542: PC вне карты (≥0x10000000) — memory_map_read всего 8K страниц;  \
+     * прямое индексирование даёт OOB-read и разыменование мусора.  Ставим   \
+     * pc_address_block=NULL, циклы останавливают CPU (см. arm_loop/thumb).  */\
+    if (new_pc_region < (8 * 1024))                                           \
+    {                                                                         \
+      pc_address_block = memory_map_read[new_pc_region];                      \
+      touch_gamepak_page(pc_region);                                          \
+      if(!pc_address_block)                                                   \
+        pc_address_block = load_gamepak_page(pc_region & 0x3FF);              \
+    }                                                                         \
+    else                                                                      \
+      pc_address_block = NULL;                                                \
   }                                                                           \
 
 
@@ -863,11 +870,12 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     STATS_MEMORY_ACCESS(read, type, region);                                  \
   }                                                                           \
                                                                               \
-  if (                                                                        \
-     (((_address >> 24) == 0) && (reg[REG_PC] >= 0x4000)) ||  /* BIOS read */ \
-     (_address & aligned_address_mask##size) ||      /* Unaligned access */   \
-     !(map = memory_map_read[_address >> 15])        /* Unmapped memory */    \
-  )                                                                           \
+if (                                                                         \
+     ((_address >> 24) == 0 && (reg[REG_PC] >= 0x4000)) ||  /* BIOS read */    \
+     (_address >= 0x10000000) ||                         /* r542: open bus  */ \
+     (_address & aligned_address_mask##size) ||      /* Unaligned access */     \
+     !(map = memory_map_read[_address >> 15])        /* Unmapped memory */      \
+  )                                                                             \
   {                                                                           \
     dest = (type)(readfn)(_address);                                          \
   }                                                                           \
@@ -894,7 +902,7 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
 #define load_aligned32(address, dest)                                         \
 {                                                                             \
   u32 _address = address;                                                     \
-  u8 *map = memory_map_read[_address >> 15];                                  \
+  u8 *map = (_address < 0x10000000) ? memory_map_read[_address >> 15] : NULL;\
   if(_address < 0x10000000)                                                   \
   {                                                                           \
     /* Account for cycles and other stats */                                  \
@@ -1355,7 +1363,7 @@ inline cpu_alert_type exec_thumb_block_mem(u32 rn, u32 reglist, s32 &cycles_rema
   {                                                                           \
     thumb_pc_offset(2);                                                       \
   }                                                                           \
-  cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][0];                      \
+  cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][0];              \
 }                                                                             \
 
 // When a mode change occurs from non-FIQ to non-FIQ retire the current
@@ -1376,6 +1384,7 @@ const u32 cpu_modes[16] =
 // shadowing it since it has a constant 1bit represenation.
 
 u32 instruction_count = 0;
+u32 g_diag_irq_cnt = 0;   // r532: счётчик трейса IRQ
 
 void set_cpu_mode(cpu_mode_type new_mode)
 {
@@ -1467,6 +1476,16 @@ cpu_alert_type flag_interrupt(irq_type irq_raised)
   // Flag interrupt
   write_ioreg(REG_IF, read_ioreg(REG_IF) | irq_raised);
 
+  // r532/r536 ВРЕМЕННЫЙ трейс (ужатый): какие IRQ реально возводятся.
+  {
+    extern u32 g_diag_irq_cnt;
+    if (g_diag_irq_cnt < 12) {
+      printf("gba irq: %08X IF=%04X\n", (unsigned)irq_raised,
+             (unsigned)read_ioreg(REG_IF));
+      g_diag_irq_cnt++;
+    }
+  }
+
   return check_interrupt();
 }
 
@@ -1494,14 +1513,30 @@ void execute_arm(u32 cycles)
   u32 condition;
   u32 n_flag, z_flag, c_flag, v_flag;
   u32 pc_region = (reg[REG_PC] >> 15);
-  u8 *pc_address_block = memory_map_read[pc_region];
+  u8 *pc_address_block;
   u32 new_pc_region;
   s32 cycles_remaining;
   u32 update_ret;
   cpu_alert_type cpu_alert;
 
+  if (pc_region < (8 * 1024))
+    pc_address_block = memory_map_read[pc_region];
+  else
+    pc_address_block = NULL;
+
   if(!pc_address_block)
-    pc_address_block = load_gamepak_page(pc_region & 0x3FF);
+  {
+    if (pc_region < (8 * 1024))
+      pc_address_block = load_gamepak_page(pc_region & 0x3FF);
+    else
+    {
+      /* r542: PC вне карты (≥0x10000000) — битая/мусорная игра. Вместо
+       * выполнения за границами memory_map_read останавливаем CPU: кадры
+       * идут «пустые», выход по ESC работает. */
+      reg[CPU_HALT_STATE] = CPU_STOP;
+      return;
+    }
+  }
   touch_gamepak_page(pc_region);
 
   cycles_remaining = cycles;
@@ -1535,6 +1570,11 @@ arm_loop:
        /* Execute ARM instruction */
        using_instruction(arm);
        check_pc_region();
+       if(!pc_address_block)              /* r542: PC ушёл за карту памяти */
+       {
+         reg[CPU_HALT_STATE] = CPU_STOP;
+         goto alert;
+       }
        reg[REG_PC] &= ~0x03;
        opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
        condition = opcode >> 28;
@@ -1634,6 +1674,27 @@ arm_loop:
        #ifdef TRACE_INSTRUCTIONS
        interp_trace_instruction(reg[REG_PC], 1);
        #endif
+
+       // r536: компактный PC-трейс (не простыня).
+       {
+           static u32 g_diag_pc = 0;
+           u32 pc = reg[REG_PC];
+           if ((g_diag_pc < 12) ||
+               (pc >= 0x03005900u && pc <= 0x03005C00u && g_diag_pc < 48)) {
+               printf("gba pc: %08X %08X\n", pc, opcode);
+               g_diag_pc++;
+           }
+       }
+
+       // r534/r536 ВРЕМЕННЫЙ трейс (ужатый): BX r0 в диспетчере RnR.
+       {
+           static u32 g_diag_bx = 0;
+           if (reg[REG_PC] == 0x03005AD4u && g_diag_bx < 4) {
+               printf("gba bx: r0=%08X cpsr=%08X\n",
+                      (unsigned)reg[0], (unsigned)reg[REG_CPSR]);
+               g_diag_bx++;
+           }
+       }
 
        switch((opcode >> 20) & 0xFF)
        {
@@ -2116,7 +2177,7 @@ arm_loop:
                    {
                       reg[REG_PC] = src;
                    }
-                   cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
+                   cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
                 }
                 else
                 {
@@ -3035,7 +3096,7 @@ arm_loop:
                 /* B offset */
                 arm_decode_branch();
                 reg[REG_PC] += offset + 8;
-                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
+                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
                 break;
              }
 
@@ -3045,7 +3106,7 @@ arm_loop:
                 arm_decode_branch();
                 reg[REG_LR] = reg[REG_PC] + 4;
                 reg[REG_PC] += offset + 8;
-                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
+                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
                 break;
              }
 
@@ -3100,12 +3161,27 @@ thumb_loop:
 
        using_instruction(thumb);
        check_pc_region();
+       if(!pc_address_block)              /* r542: PC ушёл за карту памяти */
+       {
+         reg[CPU_HALT_STATE] = CPU_STOP;
+         goto alert;
+       }
        reg[REG_PC] &= ~0x01;
        opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
 
        #ifdef TRACE_INSTRUCTIONS
        interp_trace_instruction(reg[REG_PC], 0);
        #endif
+
+       // r535/r536 ВРЕМЕННЫЙ трейс (ужатый): первые 24 Thumb-инструкции.
+       {
+           static u32 g_diag_th = 0;
+           if (g_diag_th < 24) {
+               printf("gba th: %08X %04X\n", (unsigned)reg[REG_PC],
+                      (unsigned)(opcode & 0xFFFF));
+               g_diag_th++;
+           }
+       }
 
        switch((opcode >> 8) & 0xFF)
        {
@@ -3523,7 +3599,7 @@ thumb_loop:
                 thumb_decode_branch();
                 s32 br_offset = ((s32)(offset << 21) >> 20) + 4;
                 reg[REG_PC] += br_offset;
-                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][0];
+                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][0];
                 break;
              }
 
@@ -3544,7 +3620,7 @@ thumb_loop:
                 u32 newpc = reg[REG_LR] + (offset * 2);
                 reg[REG_LR] = newlr;
                 reg[REG_PC] = newpc;
-                cycles_remaining -= ws_cyc_nseq[newpc >> 24][0];
+                cycles_remaining -= ws_cyc_nseq[(newpc >> 24) & 0xF][0];
                 break;
              }
        }
@@ -3579,6 +3655,8 @@ void init_cpu(void)
   memset(reg_mode, 0, sizeof(reg_mode));
   for (u32 i = 0; i < sizeof(spsr)/sizeof(spsr[0]); i++)
     spsr[i] = 0x00000010;
+
+  g_diag_irq_cnt = 0;   // r532: трейс IRQ заново на каждый запуск игры
 
   reg[CPU_HALT_STATE] = CPU_ACTIVE;
   reg[REG_SLEEP_CYCLES] = 0;

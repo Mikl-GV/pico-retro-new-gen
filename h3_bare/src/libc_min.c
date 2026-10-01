@@ -306,14 +306,24 @@ int snprintf(char* buf, size_t n, const char* fmt, ...) {
     return r;
 }
 
+// F4/F5 (r541): регистронезависимое сравнение — понижаем ТОЛЬКО 'A'..'Z'.
+// Прежний `| 0x20` по всем байтам давал ложное равенство пар @≡`, [≡{,
+// \≡|, ]≡}, ^≡~. Здесь сравниваем нормализованные значения (в unsigned char,
+// чтобы знак не влиял на порядок).
+static inline int ascii_lc(int c) {
+    return (c >= 'A' && c <= 'Z') ? (c + 0x20) : c;
+}
+
 int strcasecmp(const char* a, const char* b) {
-    while (*a && *a == *b) { a++; b++; }
-    while (*a && (*a | 0x20) == (*b | 0x20)) { a++; b++; }
-    return (int)((unsigned char)*a | 0x20) - (int)((unsigned char)*b | 0x20);
+    while (*a && ascii_lc((unsigned char)*a) == ascii_lc((unsigned char)*b)) { a++; b++; }
+    return ascii_lc((unsigned char)*a) - ascii_lc((unsigned char)*b);
 }
 
 int strncasecmp(const char* a, const char* b, size_t n) {
-    while (n > 0 && *a && (*a | 0x20) == (*b | 0x20)) { a++; b++; n--; }
+    while (n > 0 && ascii_lc((unsigned char)*a) == ascii_lc((unsigned char)*b)) {
+        if (*a == 0) return 0;   // оба конца строки — равны (иначе уйдём за '\0')
+        a++; b++; n--;
+    }
     if (n == 0) return 0;
-    return (int)((unsigned char)*a | 0x20) - (int)((unsigned char)*b | 0x20);
+    return ascii_lc((unsigned char)*a) - ascii_lc((unsigned char)*b);
 }
