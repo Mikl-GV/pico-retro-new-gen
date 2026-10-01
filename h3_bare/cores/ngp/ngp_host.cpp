@@ -115,11 +115,10 @@ int initSound() { return 0; }
 void soundCleanup() {}
 void soundStep(int) {}
 void soundOutput() {
-    // r502-diag (гипотеза «отключённый звук вешает игру»): оригинальный RACE
-    // вызывает soundOutput() на VBlank и тикает чипы; у нас был пустой стаб.
-    // Теперь честно прокручиваем чип каждый кадр, вывод в I2S по-прежнему off.
-    static int diag_snd_inited = 0;
-    if (!diag_snd_inited) { sound_init(44100); diag_snd_inited = 1; }
+    // r502 fix: реальный тик звуковых чипов каждый кадр (без вывода в I2S) —
+    // игры ждут продвижения звуковой подсистемы, пустой стаб их вешал.
+    static int snd_inited = 0;
+    if (!snd_inited) { sound_init(44100); snd_inited = 1; }
     static _u16 tmp[768];   // 44100/60 ≈ 735 сэмплов на кадр, на запас 768
     sound_update(tmp, sizeof(tmp));
     dac_update(tmp, sizeof(tmp));
@@ -152,16 +151,16 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
     if (size > 4*1024*1024) size = 4*1024*1024;
 
     memset(mainrom, 0, sizeof(mainrom));
-    // r501-diag (белый экран): верхний 16Mbit-слот читается как mainrom[0x200000..]
-    // — у файла <4МБ там сейчас нули. В RACE-эталоне незанятый ROM/стёртая flash —
-    // 0xFF. Заполняем хвост 0xFF, чтобы «пустой» банк был как стёртый чип.
+    // r502 fix: верхний 16Mbit-слот читается как mainrom[0x200000..] — у файла
+    // <4МБ там нули. В RACE-эталоне незанятый ROM/стёртая flash — 0xFF.
+    // Заполняем хвост 0xFF, чтобы «пустой» банк был как стёртый чип.
     memcpy(mainrom, rom, size);
     if (size < sizeof(mainrom))
         memset(mainrom + size, 0xFF, sizeof(mainrom) - size);
-    // r501-diag (белый экран): игры типа Sonic (2МБ = 2×8Mbit) читают «верхний
-    // 16Mbit» слот (0x800000+) как вторую половину рома; у нас он мапится на
-    // mainrom[0x200000..]. Кладём туда вторую половину файла. Для 4МБ (MS2)
-    // это no-op (вторая половина и так там), для 1МБ — «верхний» не читается.
+    // r502 fix: игры типа Sonic (2МБ = 2×8Mbit) читают «верхний 16Mbit» слот
+    // (0x800000+) как вторую половину рома; он мапится на mainrom[0x200000..].
+    // Кладём туда вторую половину файла. Для 4МБ (MS2) это no-op, для 1МБ —
+    // «верхний» не читается.
     if (size > 1u * 1024 * 1024 && size < sizeof(mainrom)) {
         uint32_t half = size / 2;
         memcpy(mainrom + 2u * 1024 * 1024, mainrom + half, size - half);
