@@ -35,6 +35,7 @@ extern "C" {
 #include "mcume/resource.h"
 #include "mcume/Memory.h"
 }
+#include "settings.h"   // r500: a2600_tv_pal — TV-режим только для слоя A2600
 
 static uint8_t pool[160 * 192 + 8 + 4096 + 4096 + 1024 + 28 * 8];
 static uint8_t* pool_ptr = pool;
@@ -126,6 +127,23 @@ extern "C" void emu_sndPlayBuzz(int, int) {}
 
 static int mcume_ready = 0;
 
+// r500 (П2 сессии): детект банка по CRC32 картриджа (вместо размера) для
+// 16К/32К SuperChip-игр (F6SC/F8SC — RAM-картридж). Таблица заполняется CRC
+// известных SC-игр. ПОКА ПУСТА: поведение не меняется (банк по размеру);
+// запись CRC добавляется, когда встретится конкретная игра на стенде.
+static uint32_t a26_crc32(const uint8_t* p, uint32_t len) {
+    uint32_t c = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < len; i++) {
+        c ^= p[i];
+        for (int b = 0; b < 8; b++)
+            c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+    }
+    return ~c;
+}
+static const struct { uint32_t crc; int bank; } a26_crc_bank[] = {
+    // { 0x00000000, 5 },   // пример: F6SC (SuperChip 16K)
+};
+
 extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
     extern int rom_size;
     extern BYTE* theCart;
@@ -143,11 +161,20 @@ extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
         rom_size = (int)size;
     }
 
-    if (rom_size == 8192)      base_opts.bank = 1;
-    else if (rom_size == 16384) base_opts.bank = 2;
-    else if (rom_size == 32768) base_opts.bank = 6;
-    else                        base_opts.bank = 0;
-    base_opts.tvtype = NTSC;
+    int bank = 0;
+    if (rom_size == 8192)      bank = 1;
+    else if (rom_size == 16384) bank = 2;
+    else if (rom_size == 32768) bank = 6;
+    // r500 (П2): CRC-таблица может переопределить банк (SuperChip и т.п.)
+    for (unsigned i = 0; i < sizeof(a26_crc_bank)/sizeof(a26_crc_bank[0]); i++) {
+        if (a26_crc_bank[i].crc == a26_crc32((const uint8_t*)theCart, (uint32_t)rom_size)) {
+            bank = a26_crc_bank[i].bank;
+            break;
+        }
+    }
+    base_opts.bank = bank;
+    // r500 (П1 сессии): TV-режим из Settings — влияет ТОЛЬКО на слой A2600
+    base_opts.tvtype = a2600_tv_pal ? PAL : NTSC;
     base_opts.lcon = STICK;
     base_opts.rcon = STICK;
 

@@ -497,6 +497,12 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_set_border_color(0x000E1A2B);   // тёмно-синий (NGP)
     emu_ts0 = 0;
     emu_esc_hold_reset();
+    // r0.417 (NGP, п.5 сессии): ядро RACE считает кадр 515×198=101970 тиков
+    // при Ticks=6·2^20 → ~61.7 Гц, а throttle стоял на общих 60 Гц — игра шла
+    // на ~2.8% медленнее. Подстраиваем период под ядро; возвращаем общий 60 Гц
+    // на выходе (паттерн из CPS, r0.390).
+    uint16_t saved_period = emu_period_us;
+    emu_period_us = 16200;   // 61.7 Гц
     for (;;) {
         ngp_run_frame();
         emu_throttle();
@@ -504,5 +510,7 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit:
+    emu_period_us = saved_period;
+    fb_clear(); fb_flush();
 }

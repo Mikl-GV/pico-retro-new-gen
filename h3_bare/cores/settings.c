@@ -28,6 +28,7 @@ extern int printf(const char* fmt, ...);
 
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
+uint8_t  a2600_tv_pal     = 0;   // A2600 TV-режим: 0 = NTSC, 1 = PAL (только слой A2600)
 
 #define PHYS_W 1024
 #define PHYS_H 600
@@ -369,6 +370,9 @@ enum {
     SET_KEYBOARD_REMAP,
     SET_TOUCH_CAL,
     SET_PART_INFO,
+    // r500 (П1 сессии): TV-режим A2600 добавлен В КОНЕЦ enum — порядок первых
+    // пунктов совпадает с TFT-меню (tft_drv.c items[]), сдвигать индексы нельзя.
+    SET_A2600_TV,
     SET_COUNT,
 };
 
@@ -380,6 +384,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Keyboard remap (per system)",
     "Touch Calibration (TFT)",
     "ROM partition info",
+    "Atari 2600 TV mode",
 };
 
 // Рисуем меню настроек с курсором
@@ -402,6 +407,9 @@ static void settings_draw(int sel) {
         // Значение справа (для переключаемых)
         if (i == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
+        }
+        if (i == SET_A2600_TV) {
+            fb_puts_s(440, y, a2600_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
         }
         y += 34;
     }
@@ -518,6 +526,9 @@ void settings_run(void) {
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
                 break;
+            case SET_A2600_TV:
+                a2600_tv_pal = !a2600_tv_pal;
+                break;
             default:
                 break;
             }
@@ -532,6 +543,9 @@ void settings_run(void) {
                 break;
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
+                break;
+            case SET_A2600_TV:
+                a2600_tv_pal = !a2600_tv_pal;
                 break;
             case SET_SEGA_PAD:
                 sega_pad_test_run();
