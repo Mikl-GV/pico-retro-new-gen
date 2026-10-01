@@ -730,7 +730,7 @@ void menu_arcade_guide(void) {
         fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
 
         int line = 0;
-        for (int i = 0; i < 28; i++) {
+        for (int i = 0; i < 29; i++) {   // r547: 29 строк (было 28 — «Protection…» не печаталась)
             fb_puts_s(80, 65 + line * 18, lines[i], 1, 0x00FFFFFF);
             line++;
         }

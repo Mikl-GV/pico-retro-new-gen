@@ -185,6 +185,13 @@ void i2s_push_sample(int16_t left, int16_t right) {
     if (L < -32768) L = -32768 + (L + 32768) / 4;
     if (R > 32767) R = 32767 + (R - 32767) / 4;
     if (R < -32768) R = -32768 + (R + 32768) / 4;
+    // r546: после сжатия перегруз всё ещё может превышать диапазон s16
+    // (напр. 98301 → 32767+16383=49150 → обёртка при касте в int16).
+    // Повторный кламп — гарантирует валидный сэмпл.
+    if (L > 32767) L = 32767;
+    if (L < -32768) L = -32768;
+    if (R > 32767) R = 32767;
+    if (R < -32768) R = -32768;
 
     uint32_t w = g_ring_wr & (AUDIO_RING_SIZE - 1);
     g_ring_l[w] = (int16_t)L;
@@ -249,7 +256,10 @@ void i2s_test_tone(int freq, int msec) {
     uint32_t step = (uint32_t)(((uint64_t)freq << 16) / 48000u);
     uint32_t ph = 0;
     int total = 48000 * msec / 1000;
-    if (g_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    // r546: не гасим усилитель, если звук уже шёл (пример: клик/тон поверх
+    // игры) — запоминаем прежнее состояние и восстанавливаем в конце.
+    int was_muted = g_muted;
+    if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
 
     // Генерируем ровно msec миллисекунд звука в РЕАЛЬНОМ темпе 48 кГц:
     // каждый сэмпл сразу уходит через i2s_flush_max(1) (~20.8 мкс на пару),
@@ -261,7 +271,7 @@ void i2s_test_tone(int freq, int msec) {
         i2s_flush_max(1);
     }
     i2s_flush();
-    g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN);
+    if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }
 
 // Короткий тихий щелчок при навигации в меню (~5 мс, 1.5 кГц, ~25% амплитуды).
@@ -272,7 +282,9 @@ void i2s_click(void) {
     uint32_t step = (uint32_t)(((uint64_t)1500u << 16) / 48000u);
     uint32_t ph = 0;
     int total = 48000 * 5 / 1000;
-    if (g_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    // r546: как в i2s_test_tone — восстанавливаем прежнее состояние мьюта.
+    int was_muted = g_muted;
+    if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
         int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
@@ -280,5 +292,5 @@ void i2s_click(void) {
         i2s_flush_max(1);
     }
     i2s_flush();
-    g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN);
+    if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }

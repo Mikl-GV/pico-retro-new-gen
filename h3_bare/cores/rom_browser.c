@@ -359,8 +359,11 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     // перечитываем список
                     n = fat_list(path, list, FAT_MAX_ENTRIES);
                     sort_entries(list, n);
-                    if (cursor >= n) cursor = n - 1;
-                    if (cursor < 0) cursor = 0;
+                    // r547: после удаления последнего файла n=0 давал
+                    // cursor = n-1 = -1 (исправлялось следующей строкой,
+                    // но хрупко) — теперь явная ветка для пустого списка.
+                    if (n <= 0) cursor = 0;
+                    else if (cursor >= n) cursor = n - 1;
                 } else {
                     // Буфер g_scratch_dir испорчен — выходим в меню
                     return;
