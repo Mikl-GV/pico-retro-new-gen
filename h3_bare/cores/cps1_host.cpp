@@ -39,6 +39,7 @@ extern "C" {
 #include "fb_text.h"
 #include "fat.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 }
 
 // ---- FBNeo extern (burn.cpp / драйвер) ----
@@ -811,6 +812,15 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     nBurnPitch = CPS1_W * 2;
     nBurnBpp = 2;
 
+    // r607: звук FBNeo на I2S. Драйверы рендерят звук ТОЛЬКО если
+    // pBurnSoundOut не NULL (иначе всё за if(pBurnSoundOut)). Ставим
+    // 48 кГц стерео (пары int16), буфер на nBurnSoundLen (≈ nBurnFPS*?).
+    // nBurnSoundLen заполняется в BurnDrvInit по nBurnSoundRate/nBurnFPS.
+    static int16_t cps_snd[4096];
+    nBurnSoundRate = 48000;
+    pBurnSoundOut = cps_snd;
+    i2s_dc_shift_set(6);   // непрерывный поток → ~120 Гц
+
     BurnExtLoadRom = host_ext_load_rom;
     BurnHighCol = host_high_col;   // иначе вендорный filler даёт белый экран
 
@@ -989,6 +999,18 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 for (;;) {
         host_update_input();
         BurnDrvFrame();
+
+        // r607: звук FBNeo → I2S. Драйвер заполнил pBurnSoundOut (стерео
+        // пары int16, nBurnSoundLen сэмплов/кадр @48к). Выводим напрямую.
+        {
+            extern INT32 nBurnSoundLen;
+            int n = nBurnSoundLen;
+            if (n > 2048) n = 2048;   // страховка от переполнения буфера
+            if (n > 0 && pBurnSoundOut) {
+                for (int i = 0; i < n; i++)
+                    i2s_push_sample(pBurnSoundOut[2 * i], pBurnSoundOut[2 * i + 1]);
+            }
+        }
         host_render_frame();
         fb_flush();
         emu_throttle();

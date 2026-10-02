@@ -1240,3 +1240,22 @@ interleaved sound_buf, ~735 стерео-пар/кадр), зовёт
 | Проверить: PCE — звук PSG (HuC6280), громкость общая. | Далее: из списка
 без звука остались ZX Spectrum (Fuse), BK-0010, Portfolio, MS1504, аркады.
 
+
+**Д-72 | 2026-10-02 | Звук аркад (FinalBurn Neo) на I2S (r607).**
+По решению владельца «аркады». Общий host cps1_host.cpp (CPS-1/2, NeoGeo,
+Toaplan, Cave, Sega16, fbneo). По первоисточнику FBNeo: драйверы рендерят
+звук ТОЛЬКО при `pBurnSoundOut != NULL` (всё под if(pBurnSoundOut)); у нас
+было `nBurnSoundRate=0, pBurnSoundOut=NULL` — звук выключен. Механика:
+`nBurnSoundLen = nBurnSoundRate*100/nBurnFPS` (сэмплов/кадр), `pBurnSoundOut`
+— стерео пары int16 (burn_sound.cpp: [i*2+0]=R,[i*2+1]=L; драйверы пишут
+L,R). Правки в cps1_host.cpp:
+1) перед BurnDrvInit: `nBurnSoundRate=48000; pBurnSoundOut=cps_snd[4096]`
+   (+ DC 120 Гц);
+2) после BurnDrvFrame: читаем nBurnSoundLen пар → i2s_push_sample(L,R);
+3) include i2s.h.
+Версия **r606 → r607**. | Сборка: `make -j16` EXIT=0, бинарник `build: r607`.
+| Проверить: аркады (CPS/NeoGeo/Toaplan/Cave/Sega16/fbneo) — звук (чипы:
+YM2151/OKI6295/SEGA PCM и т.д.), громкость общая. | Замечание: звук аркад
+идёт через ВСЕ драйверы сразу (один host) — если на каком-то чипе глухо,
+смотреть конкретный драйвер на стенде.
+
