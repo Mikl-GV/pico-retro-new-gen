@@ -25,6 +25,7 @@
 #include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
+#include "i2s.h"
 
 // Ядро (враппер mednafen), определено в pce_fast/libretro.c
 void retro_set_environment(retro_environment_t);
@@ -102,8 +103,33 @@ static void host_audio_sample(int16_t l, int16_t r)
 
 static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
 {
-    (void)data;
-    return frames;   // звук отключён
+    // r606: звук PCE на I2S. Ядро отдаёт стерео пары int16, 44100 Гц
+    // (audio_batch_cb, sound_buf interleaved L/R). Ресемпл 44100→48000
+    // (линейный, фаза 16.16, шаг 60211 = (44100<<16)/48000), push в I2S.
+    if (!data || frames == 0) return frames;
+    static uint32_t rs_phase = 0;
+    static int16_t out[2048];   // максимум выходных стерео-пар за вызов
+    const size_t in_n = frames;
+    size_t o = 0;
+    while (o < 2048) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= (uint32_t)in_n) break;
+        uint32_t f = rs_phase & 0xFFFFu;
+        // интерполяция L и R независимо
+        int32_t l0 = data[2 * i],     l1 = data[2 * (i + 1)];
+        int32_t r0 = data[2 * i + 1], r1 = data[2 * (i + 1) + 1];
+        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)f) >> 16));
+        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)f) >> 16));
+        o++;
+        rs_phase += 60211u;
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (size_t i = 0; i < o; i++)
+        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    return frames;
 }
 
 // Кадр RGB565 (uint16, pitch в байтах) -> EMU_FB 320x240 (левый верх),
@@ -202,6 +228,7 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
         return;
     }
     printf("PCE: started (%u bytes)\n", (unsigned)size);
+    i2s_dc_shift_set(6);   // r606: PCE — непрерывный поток → ~120 Гц
 
     emu_set_border_color(0x000A0F18);   // тёмно-синий (PCE)
     emu_throttle_reset();

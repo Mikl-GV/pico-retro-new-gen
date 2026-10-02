@@ -1224,3 +1224,19 @@ NULL). Правки в `coleco_host.cpp`:
 | Проверить: ColecoVision — звук PSG (SN76489) + AY8910 (если SGM), громкость
 общая. | Далее: PCE (Beetle PCE Fast) — следующая по списку.
 
+
+**Д-71 | 2026-10-02 | Звук PC Engine (Beetle PCE Fast) на I2S (r606).**
+По решению владельца «PCE». По первоисточнику: ядро PCE-Fast генерит стерео
+int16 44100 Гц (libretro.c: два blip-буфера sbuf[0]=L, sbuf[1]=R,
+interleaved sound_buf, ~735 стерео-пар/кадр), зовёт
+`audio_batch_cb(spec.SoundBuf, spec.SoundBufSize)`. В host pce_host.c
+`host_audio_sample_batch` был заглушкой ((void)data; return frames) — звук
+отбрасывался. Правки в pce_host.c:
+1) `host_audio_sample_batch`: ресемпл 44100→48000 (линейный, фаза 16.16,
+   шаг 60211) стерео-пар → `i2s_push_sample(L,R)`;
+2) `i2s_dc_shift_set(6)` (120 Гц, непрерывный поток) в emu_run_pce;
+3) include i2s.h.
+Версия **r605 → r606**. | Сборка: `make -j16` EXIT=0, бинарник `build: r606`.
+| Проверить: PCE — звук PSG (HuC6280), громкость общая. | Далее: из списка
+без звука остались ZX Spectrum (Fuse), BK-0010, Portfolio, MS1504, аркады.
+
