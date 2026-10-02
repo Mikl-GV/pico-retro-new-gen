@@ -84,16 +84,70 @@ static int g_muted = 1;
 // blip. r560 поднял срез до ~480 Гц (DC_SHIFT=4) — но на стенде звук стал
 // «режущим» (бедный бас) по сравнению с оригиналом (retrogpSP без такого
 // фильтра). r572: возвращён DC_SHIFT=5 (~240 Гц) — низ восстановлен.
-static int32_t dc_l = 0;
-static int32_t dc_r = 0;
+// r585 (Ф1): dc_l/dc_r — в .coherent: их пишет core0 (i2s_push_sample) и
+// обнуляет CPU2 (i2s_audio_poll_cmd при RING_RESET); без uncached core0
+// читал бы своё старое значение из write-back кэша после сброса.
+static int32_t dc_l __attribute__((section(".coherent"), aligned(4))) = 0;
+static int32_t dc_r __attribute__((section(".coherent"), aligned(4))) = 0;
 #define DC_SHIFT 5   // ~240 Гц (4 = ~480 Гц резало низ)
 
 // ---- кольцо потока эмулятора (объявлено раньше геттеров — их использует) ----
 #define AUDIO_RING_SIZE 8192
-static int16_t g_ring_l[AUDIO_RING_SIZE];
-static int16_t g_ring_r[AUDIO_RING_SIZE];
-static volatile uint32_t g_ring_wr = 0;
-static volatile uint32_t g_ring_rd = 0;   // r124: volatile — читается в нескольких местах
+// r584 (Ф0): кольцо и индексы — в .coherent (uncached, 1МБ область). Продюсер
+// (core0, i2s_push_sample) и потребитель (core2, audio_core_main) — РАЗНЫЕ
+// ядра, у core0 D-cache write-back: без uncached CPU2 читал бы stale-линии.
+// Секция .coherent обнуляется стартом (startup.S) и помечена non-cacheable
+// через mmu_mark_uncached (main.c). Размер: 2×8192×2 + 8 = 32776 б.
+static int16_t g_ring_l[AUDIO_RING_SIZE] __attribute__((section(".coherent"), aligned(8)));
+static int16_t g_ring_r[AUDIO_RING_SIZE] __attribute__((section(".coherent"), aligned(8)));
+static volatile uint32_t g_ring_wr __attribute__((section(".coherent"), aligned(4))) = 0;
+static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(4))) = 0;
+
+// ---- Почта core0↔CPU2 (аудио-ядро) в .coherent (uncached) ----
+// core0 (эмулятор) пишет команды и читает состояние; CPU2 (долив) обрабатывает
+// команды и тикает heartbeat. CPU2 с выключенным MMU/кэшами читает/пишет
+// напрямую в DRAM; core0 — через uncached-маппинг .coherent (оба ядра видят
+// одну физическую память, кэш-когерентность обеспечена свойством секции).
+enum {
+    AUDIO_CMD_NONE = 0,
+    AUDIO_CMD_RING_RESET = 1,
+};
+static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(4))) = 0; // 1 = CPU2 в цикле
+static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(4))) = 0;
+static volatile uint32_t g_audio_beat   __attribute__((section(".coherent"), aligned(4))) = 0; // инкремент CPU2 (heartbeat)
+static volatile uint32_t g_audio_pairs  __attribute__((section(".coherent"), aligned(4))) = 0; // пар вывел CPU2 (диагностика)
+static volatile uint32_t g_audio_ring   __attribute__((section(".coherent"), aligned(4))) = 0; // уровень кольца от CPU2
+
+// core0: ядро 2 живо? (heartbeat не замер — сравнивается в emu_throttle)
+int i2s_audio_core_active(void) { return g_audio_state ? 1 : 0; }
+uint32_t i2s_audio_beat(void)   { return g_audio_beat; }
+uint32_t i2s_audio_pairs(void)  { return g_audio_pairs; }
+uint32_t i2s_audio_ring(void)   { return g_audio_ring; }
+
+// CPU2 (audio_core.c): пометить себя активным/неактивным, тикать heartbeat,
+// класть диагностику (кольцо/пары) — сеттеры, т.к. поля static в i2s.c.
+void i2s_audio_set_state(int on) { g_audio_state = on ? 1 : 0; }
+void i2s_audio_set_beat(uint32_t b) { g_audio_beat = b; }
+void i2s_audio_set_ring(uint32_t r) { g_audio_ring = r; }
+void i2s_audio_set_pairs(uint32_t p) { g_audio_pairs = p; }
+
+// core0: послать команду CPU2. Неблокирующая (диагностика), heartbeat-контроль
+// в emu_throttle решает, оффлоадить ли звук.
+void i2s_audio_cmd(uint32_t cmd) {
+    if (!g_audio_state) return;   // ядро не поднято — нечего слать
+    g_audio_cmd = cmd;
+}
+
+// CPU2: обработать одну команду (вызывается в цикле аудио-ядра).
+void i2s_audio_poll_cmd(void) {
+    uint32_t cmd = g_audio_cmd;
+    if (cmd == AUDIO_CMD_RING_RESET) {
+        g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+        g_audio_cmd = 0;
+    } else if (cmd != 0) {
+        g_audio_cmd = 0;   // неизвестная — сбросить
+    }
+}
 
 void i2s_volume(int p) {
     if (p < 0) p = 0;
@@ -103,7 +157,16 @@ void i2s_volume(int p) {
 }
 int i2s_volume_pct(void) { return g_volume_pct; }
 int i2s_ready(void) { return g_i2s_ready; }
-void i2s_ring_reset(void) { g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0; }
+void i2s_ring_reset(void) {
+    // r585 (Ф1): если долив делает CPU2 — сброс кольца/DC через почту,
+    // чтобы CPU2 не читал обнуляемое кольцо одновременно с нами (гонка).
+    // Если CPU2 не поднят — обнуляем напрямую (прежнее поведение).
+    if (g_audio_state) {
+        i2s_audio_cmd(AUDIO_CMD_RING_RESET);
+    } else {
+        g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+    }
+}
 void i2s_mute(int m) { g_muted = m; if (m) H3_PIO_PORTA->DAT &= ~(1u<<SD_PIN); else H3_PIO_PORTA->DAT |= (1u<<SD_PIN); }
 
 int i2s_init(void) {
@@ -283,17 +346,23 @@ void i2s_test_tone(int freq, int msec) {
     int was_muted = g_muted;
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
 
-    // Генерируем ровно msec миллисекунд звука в РЕАЛЬНОМ темпе 48 кГц:
-    // каждый сэмпл сразу уходит через i2s_flush_max(1) (~20.8 мкс на пару),
-    // иначе кольцо (8192) переполняется за мгновение и получается «щелчок».
+    // Генерируем ровно msec миллисекунд звука в РЕАЛЬНОМ темпе 48 кГц.
+    // r585 (Ф1): если долив делает CPU2 — core0 ТОЛЬКО кладёт сэмплы в кольцо
+    // (темп закладки udelay), вывод в FIFO делает CPU2 (иначе двойной flush=
+    // гонка двух ядер в один FIFO). Если CPU2 нет — старый путь: flush+udelay.
+    int cpu2 = i2s_audio_core_active();
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
         int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает (F7: было *5/10)
         i2s_push_sample((int16_t)s, (int16_t)s);
-        i2s_flush_max(1);
-        udelay(I2S_PACE_UNITS);   // r549: flush теперь неблокирующий — темп держим вручную
+        if (!cpu2) {
+            i2s_flush_max(1);
+            udelay(I2S_PACE_UNITS);   // r549: flush теперь неблокирующий — темп держим вручную
+        } else {
+            udelay(I2S_PACE_UNITS);   // темп закладки — CPU2 выводит сам
+        }
     }
-    i2s_flush();
+    if (!cpu2) i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }
 
@@ -308,13 +377,18 @@ void i2s_click(void) {
     // r546: как в i2s_test_tone — восстанавливаем прежнее состояние мьюта.
     int was_muted = g_muted;
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    int cpu2 = i2s_audio_core_active();
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
         int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
         i2s_push_sample((int16_t)s, (int16_t)s);
-        i2s_flush_max(1);
-        udelay(I2S_PACE_UNITS);   // r549: темп вручную (flush неблокирующий)
+        if (!cpu2) {
+            i2s_flush_max(1);
+            udelay(I2S_PACE_UNITS);   // r549: темп вручную (flush неблокирующий)
+        } else {
+            udelay(I2S_PACE_UNITS);   // r585: выводит CPU2 — только темп закладки
+        }
     }
-    i2s_flush();
+    if (!cpu2) i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }

@@ -51,6 +51,30 @@ void i2s_test_tone(int freq, int msec);
 // Короткий тихий «щелчок» при навигации по меню (5 мс, 1.5 кГц).
 void i2s_click(void);
 
+// ---- Аудио-ядро CPU2 (Ф1, r585) ----
+// Долив кольца I2S обслуживает CPU2 (audio_core.c), а не core0. core0
+// синтезирует звук и кладёт в кольцо; CPU2 выводит кольцо в TX FIFO с
+// честным темпом 48 кГц. Почта — в .coherent.
+int      i2s_audio_core_active(void);  // 1 = CPU2 в цикле
+uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент)
+uint32_t i2s_audio_pairs(void);        // пар вывел CPU2 (диагностика)
+uint32_t i2s_audio_ring(void);         // уровень кольца от CPU2 (диагностика)
+void     i2s_audio_cmd(uint32_t cmd);  // послать команду CPU2 (0=нет)
+// CPU2 (audio_core.c): обработать одну команду из почты (вызывается в цикле).
+void i2s_audio_poll_cmd(void);
+// Сеттеры — вызывает ТОЛЬКО CPU2 (audio_core.c): отметить активность,
+// heartbeat, диагностику. Поля static в i2s.c (секция .coherent).
+void i2s_audio_set_state(int on);
+void i2s_audio_set_beat(uint32_t b);
+void i2s_audio_set_ring(uint32_t r);
+void i2s_audio_set_pairs(uint32_t p);
+
+// Команды аудио-ядра.
+enum {
+    AUDIO_CMD_NONE = 0,
+    AUDIO_CMD_RING_RESET = 1,   // сбросить кольцо + DC (смена системы)
+};
+
 #ifdef __cplusplus
 }
 #endif

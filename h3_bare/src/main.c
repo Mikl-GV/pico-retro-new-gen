@@ -234,7 +234,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r583";
+const char g_fw_version[] = "r585";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,7 +242,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r583\n");
+    uart_puts("build: r585\n");
 
     led_init();
     led_set(0);
@@ -322,6 +322,19 @@ void main(void) {
         uart_puts("smp: CPU1 started (TFT core)\n");
     else
         uart_puts("smp: CPU1 FAILED to start\n");
+
+    // Ф1 (r585): аудио-ядро на CPU2 — долив кольца I2S в TX FIFO. CPU2
+    // обслуживает звук с честным темпом 48 кГц, освобождая core0 от
+    // busy-wait в emu_throttle. Кольцо/почта в .coherent (r584) — оба ядра
+    // видят актуальное состояние. Печатает в UART0 по-прежнему core0.
+    // ВАЖНО: стартуем ЧЕРЕЗ asm cpu2_entry (startup.S) — он ставит СВОЙ стек
+    // и включает VFP/NEON до C-кода; прямой старт C-функции дал бы стек CPU1
+    // и Undefined (совпадает с моделью CPU1/TFT).
+    extern void cpu2_entry(void);
+    if (h3_cpu_start(2, cpu2_entry) == 1)
+        uart_puts("smp: CPU2 started (audio core)\n");
+    else
+        uart_puts("smp: CPU2 FAILED to start (audio stays on core0)\n");
 
 // Меню на HDMI — обычная работа core0; справка на TFT.
     // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может

@@ -494,4 +494,66 @@ cpu1_entry:
     mov r3, #0xEF           /* st=0xEF — вернулись (не должно) */
     str r3, [r2]
 2:  b 2b
+
+/* ---- Точка входа CPU2 (audio core) ----
+ * Ф1 (r585): аудио-ядро. Запускается h3_cpu_start(2, cpu2_entry):
+ *  1) выходит из сброса с выключенными MMU/кэшами
+ *  2) SVC-стек (отдельная область ниже стека CPU1)
+ *  3) VFP/NEON (как cpu1_entry) — иначе Undefined на первой C-инструкции
+ *  4) прыжок в cpu2_audio_entry (audio_core.c) — вечный цикл долива I2S.
+ * MMU выключен: кольцо/почта в .coherent доступны по физическим адресам.
+ * VBAR ставим на таблицу векторов core0 (исключения дадут P:/D: в UART).
+ */
+.section .text
+.global cpu2_entry
+cpu2_entry:
+    /* «Почта» в SRAM A1: h3_secondary_start (h3_smp.c) ждёт CPU1_MAGIC
+     * в 0x20 ПОСЛЕ release — записываем тот же magic 0x13579BDF. */
+    mov r2, #0x20
+    ldr r3, =0x13579BDF
+    str r3, [r2]
+    ldr r0, =_vectors
+    mcr p15, 0, r0, c12, c0, 0
+    dsb
+    isb
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */
+    msr cpsr, r0
+    ldr sp, =0x5FC01000     /* стек CPU2 audio: 4 МБ ниже стека/банков CPU1 */
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xDF       /* FIQ */
+    msr cpsr, r0
+    ldr sp, =0x5FC00000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD2       /* IRQ */
+    msr cpsr, r0
+    ldr sp, =0x5FBFF000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD7       /* ABT */
+    msr cpsr, r0
+    ldr sp, =0x5FBFE000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xDB       /* UND */
+    msr cpsr, r0
+    ldr sp, =0x5FBFD000
+    mrs r0, cpsr
+    bic r0, r0, #0x1F
+    orr r0, r0, #0xD3       /* обратно в SVC */
+    msr cpsr, r0
+    /* VFP/NEON для CPU2 — как cpu1_entry (CPACR + FPEXC.EN) */
+    mrc p15, 0, r0, c1, c0, 2
+    orr r0, r0, #(0xF << 20)
+    mcr p15, 0, r0, c1, c0, 2
+    isb
+    mov r0, #0x40000000
+    vmsr fpexc, r0
+    isb
+    ldr r0, =cpu2_audio_entry
+    bx  r0
+2:  b 2b
 .end
