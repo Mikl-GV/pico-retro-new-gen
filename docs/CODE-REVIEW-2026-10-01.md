@@ -1259,3 +1259,19 @@ YM2151/OKI6295/SEGA PCM и т.д.), громкость общая. | Замеч�
 идёт через ВСЕ драйверы сразу (один host) — если на каком-то чипе глухо,
 смотреть конкретный драйвер на стенде.
 
+
+**Д-73 | 2026-10-02 | Звук ZX Spectrum (Fuse) на I2S (r608).**
+По решению владельца «zx». Цепь по первоисточнику (Fuse libretro):
+`sound_lowlevel_frame(data, len)` (compat/sound.c:17) зовёт
+`audio_cb(data, len/2)` — data = стерео пары int16 (L,R), 44100 Гц
+(sound_lowlevel_init: *freqptr=44100). Хост `host_audio_sample_batch`
+(fuse_host.c:200) был заглушкой ((void)d; return f) — звук отбрасывался.
+Правки в fuse_host.c:
+1) `host_audio_sample_batch`: ресемпл 44100→48000 (линейный, фаза 16.16,
+   шаг 60211) стерео-пар → `i2s_push_sample(L,R)` (как NGP/PCE);
+2) `i2s_dc_shift_set(6)` (120 Гц, непрерывный поток) в emu_run_fuse;
+3) include i2s.h.
+Версия **r607 → r608**. | Сборка: `make -j16` EXIT=0, бинарник `build: r608`.
+| Проверить: ZX Spectrum — звук AY-3-8912 + beeper (через blip), громкость
+общая.
+

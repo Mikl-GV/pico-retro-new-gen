@@ -26,6 +26,7 @@
 #include "btn_pad.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 // fuse_retro_* — переименованный враппер (fuse_rename.sh)
 void fuse_retro_set_environment(retro_environment_t);
@@ -197,7 +198,35 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 }
 
 static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }
-static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; return f; }
+static size_t host_audio_sample_batch(const int16_t* d, size_t f)
+{
+    // r608: звук ZX Spectrum (Fuse) на I2S. Ядро отдаёт стерео пары int16
+    // 44100 Гц (compat/sound.c: sound_lowlevel_frame → audio_cb(data,len/2)).
+    // Ресемпл 44100→48000 (линейный, фаза 16.16, шаг 60211), push в I2S.
+    if (!d || f == 0) return f;
+    static uint32_t rs_phase = 0;
+    static int16_t out[2048];   // максимум выходных стерео-пар за вызов
+    const size_t in_n = f;
+    size_t o = 0;
+    while (o < 2048) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= (uint32_t)in_n) break;
+        uint32_t fr = rs_phase & 0xFFFFu;
+        int32_t l0 = d[2 * i],     l1 = d[2 * (i + 1)];
+        int32_t r0 = d[2 * i + 1], r1 = d[2 * (i + 1) + 1];
+        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)fr) >> 16));
+        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)fr) >> 16));
+        o++;
+        rs_phase += 60211u;
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (size_t i = 0; i < o; i++)
+        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    return f;
+}
 
 // Кадр RGB565 (pitch в байтах) -> EMU_FB 320x240 (с downscale для Timex 640x480).
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
@@ -411,6 +440,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_deinit();
         return;
     }
+    i2s_dc_shift_set(6);   // r608: ZX — непрерывный поток → ~120 Гц
 
     // r0.392: ядро могло «успешно» стартовать в пустой BASIC, не распознав
     // контент. Показываем причину и возвращаемся в меню (после короткой
