@@ -43,5 +43,6 @@ void a5_PaletteEntry(unsigned char r, unsigned char g, unsigned char b, int inde
 void a5_DrawLinePal16(unsigned char *VBuf, int width, int height, int line);
 void a5_DrawVsync(void);
 int a5_GetPad(void);
+void emu_sndInit(void);   // r609: требуется atari5200.c (HAS_SND=1), определена в host a5200
 
 #endif

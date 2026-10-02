@@ -68,6 +68,7 @@ extern "C" int emu_FileSeek(int, int, int) { return 0; }
 extern "C" int emu_FileTell(int) { return 0; }
 extern "C" void emu_FileClose(int) {}
 extern "C" unsigned int emu_FileSize(const char*) { return 0; }
+extern "C" void emu_sndInit(void) {}   // r609: требуется atari5200.c (HAS_SND=1)
 extern "C" int emu_FileRead(void*, int, int) { return 0; }
 extern "C" void SndSave_CloseSoundFile(void) {}
 extern "C" void SndSave_WriteToSoundFile(const unsigned char*, int) {}
