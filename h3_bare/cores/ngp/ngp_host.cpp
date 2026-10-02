@@ -28,6 +28,7 @@ extern "C" {
 #include "flash.h"
 #include "neopopsound.h"
 #include "sound.h"
+#include "i2s.h"
 
 // BIOS ROM data (koyote.bin) — defines the koyote_bin symbol
 #include "koyote_bin.h"
@@ -117,11 +118,44 @@ void soundStep(int) {}
 void soundOutput() {
     // r502 fix: реальный тик звуковых чипов каждый кадр (без вывода в I2S) —
     // игры ждут продвижения звуковой подсистемы, пустой стаб их вешал.
+    // r597 (Д-62): звук NGP на I2S.
+    // ЦЕПЬ (NeoPop): звук = ЧИП (SN76489: 3×Tone+Noise, sound_update) + DAC
+    // (данные из RAM 0x80-области, dac_update). ВАЖНО: это ДВА РАЗНЫХ
+    // источника, в оригинале они МИКШИРУЮТСЯ. Здесь в host раньше оба
+    // вызывались в ОДИН буфер tmp — dac_update перезаписывал чип (при пустом
+    // DAC — тишина). Разделяем: чип в chip[], DAC в dac[], смешиваем.
     static int snd_inited = 0;
     if (!snd_inited) { sound_init(44100); snd_inited = 1; }
-    static _u16 tmp[768];   // 44100/60 ≈ 735 сэмплов на кадр, на запас 768
-    sound_update(tmp, sizeof(tmp));
-    dac_update(tmp, sizeof(tmp));
+    static _u16 chip[768];   // 44100/60 ≈ 735 сэмплов/кадр, запас 768
+    static _u16 dac[768];
+    const int in_n = (int)(sizeof(chip) / sizeof(chip[0]));
+    sound_update(chip, (int)sizeof(chip));   // моно чип (0..0x7FFF)
+    dac_update(dac, (int)sizeof(dac));       // моно DAC (0..0xFFFF)
+
+    // 44100→48000 ресемпл + u16→s16 + моно→стерео. Микс: (chip+dac) с
+    // центром ~0x4000 (0..0x17FFF), >>1, кламп s16.
+    static uint32_t rs_phase = 0;
+    int o = 0;
+    static int16_t out[840];   // 735 * 48000/44100 ≈ 800, запас 840
+    while (o < 840) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= (uint32_t)in_n) break;
+        uint32_t f = rs_phase & 0xFFFFu;
+        int32_t m0 = ((int32_t)chip[i] + (int32_t)dac[i]) >> 1;   // микшируем
+        int32_t m1 = ((int32_t)chip[i + 1] + (int32_t)dac[i + 1]) >> 1;
+        int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)f) >> 16);
+        s = (s - 0x4000) << 1;   // центр 0x4000 → s16
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        out[o++] = (int16_t)s;
+        rs_phase += 60211u;   // (44100<<16)/48000
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (int k = 0; k < o; k++)
+        i2s_push_sample(out[k], out[k]);   // моно → стерео
 }
 void ngpSoundStart() {}
 void ngpSoundExecute() {}
@@ -149,6 +183,8 @@ static void blit_to_fb(void) {
 extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
     if (!rom || size == 0) return 0;
     if (size > 4*1024*1024) size = 4*1024*1024;
+
+    i2s_dc_shift_set(6);   // r597: NGP — непрерывный поток → ~120 Гц (как Lynx)
 
     memset(mainrom, 0, sizeof(mainrom));
     // r502 fix: верхний 16Mbit-слот читается как mainrom[0x200000..] — у файла
