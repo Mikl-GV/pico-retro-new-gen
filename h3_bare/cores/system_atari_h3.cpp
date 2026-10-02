@@ -34,6 +34,7 @@ extern "C" {
 #include "mcume/tiasound.h"
 #include "mcume/resource.h"
 #include "mcume/Memory.h"
+#include "i2s.h"
 }
 #include "settings.h"   // r500: a2600_tv_pal — TV-режим только для слоя A2600
 
@@ -181,6 +182,12 @@ extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
     init_machine();
     init_hardware();
     tv_on();
+    // r601: звук A2600 на I2S. MCUME генерит TIA-звук (Update_tia_sound при
+    // записи AUD*), но сэмплы нигде не формировались (Tia_process_2 не
+    // вызывался). Tia_sound_init: TIA-клок ~30 кГц → вывод 48 кГц
+    // (Tia_process_2 ресемплит через Samp_n_max). DC 120 Гц.
+    Tia_sound_init(30000, 48000);
+    i2s_dc_shift_set(6);
     mcume_ready = 1;
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
     printf("MCUME: size=%d bank=%d\n", rom_size, base_opts.bank);
@@ -211,6 +218,20 @@ extern "C" void atari2600_run_frame(void) {
         if (cheats_raw_get(i, &a, &v, &c, &hc)) {
             a &= 0x7F;
             if (!hc || theRam[a] == c) theRam[a] = v;
+        }
+    }
+
+    // r601: звук A2600 на I2S. Tia_process_2 заполняет моно u16
+    // (buffer[i] = (outvol_0+outvol_1)*256, центр ~0x4000), 48 кГц
+    // (Tia_sound_init ресемплит TIA-клок → 48000). 48000/60 = 800 сэмплов/кадр.
+    {
+        static uint16_t a26buf[1024];
+        Tia_process_2(a26buf, 800);
+        for (int i = 0; i < 800; i++) {
+            int32_t s = ((int32_t)a26buf[i] - 0x4000) << 1;   // u16 → s16 (центр 0x4000)
+            if (s > 32767) s = 32767;
+            if (s < -32768) s = -32768;
+            i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
         }
     }
 }
