@@ -25,8 +25,10 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
   строку `build:` в h3_bare/src/main.c И синхронизируй docs/ (HANDOVER, реестр
   дельт) — «r537/r521/r502 одновременно» недопустимо.
 - BIOS (GBA и т.п.) ВШИТ в прошивку (bios_data.S/.incbin); загрузка вшитого
-  BIOS с SD ЗАПРЕЩЕНА. Звук — В РАБОТЕ, подключается ПОСЛОЙНО (уже Lynx, GBA на
-  I2S); логику синтеза звука в ядрах НЕ удалять, «отключён» = только слой вывода.
+  BIOS с SD ЗАПРЕЩЕНА. Звук — В РАБОТЕ, подключено 15 систем (r609: Lynx,
+  GBA, GB/GBC, NGP, MD/SMS/GG, NES, SNES, A2600, A5200, A7800, Coleco, PCE,
+  ZX, аркады; не подключены MSX/Vectrex/BK/Portfolio/MS1504); логику синтеза
+  звука в ядрах НЕ удалять, «отключён» = только слой вывода.
   Полный свод — AGENTS.md → «Правила владельца (2026-10-01)». Накопленный
   контекст и история дельт (BK rename, startup.S-грабли, NGP r502, аудио
   r503..r521): `docs/PROJECT-MEMORY.md`.
@@ -57,9 +59,9 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 - Скрипты для записи: `./build.sh` (Linux) / `build.ps1` (Windows) = make.
 
 ## 4. АРХИТЕКТУРА / КАРТА ПАМЯТИ (r502, проверено)
-0x40000000 образ: .text → .rodata → .data → .bss(0x40CE5AC0..0x42B98098,
-≈48.8 МБ) → .noinit_fbn (NOLOAD 96 МБ — пул FBNeo, НЕ обнуляется стартом)
-→ _gb_heap 24 МБ (0x48B980A0..0x4A3980A0) → _hend 0x4A3980A0
+0x40000000 образ: .text → .rodata → .data → .bss(0x40CE6D80..0x42B986B8,
+≈30.7 МБ) → .noinit_fbn (NOLOAD 96 МБ — пул FBNeo, НЕ обнуляется стартом)
+→ _gb_heap 24 МБ (0x48B986C0..0x4A3986C0) → _hend 0x4A3986C0
 → .coherent 0x4A400000 (uncached, USB/OHCI) → _menu_arena 0x4F000000
 → ROM_BUF 0x50000000 → EMU_FB 0x5F800000 → HDMI FB 0x5F900000 → стек 0x60000000.
 newlib-куча (_sbrk) живёт ПОСЛЕ coherent-окна (0x4A500000..0x4F000000).

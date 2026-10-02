@@ -29,7 +29,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  usb_kbd.c  usb_ohci.c  sd.c  fat.c  led.c  fb_text.c         │
 │  uart.c  printf.c  libc_min.c  cxx_runtime.cpp                │
 │  cheatdb.c (чит-менеджер, парсер .cht)  gp_cheats.c (GPGX)    │
-│  sega_pad.c (Sega 6-btn геймпад, PCF8574)  i2s.c (звук: Lynx+GBA на I2S)  │
+│  sega_pad.c (Sega 6-btn геймпад, PCF8574@0x20)  i2s.c (звук: 15 систем на I2S)  │
 ├───────────────────────────────────────────────────────────────┤
 │  CPU1 (tft_drv.c): SPI0 ILI9486 480×320 + тач TSC2046I (PA21) │
 │  зв′язь — SRAM A1 (0x34..0x70), heartbeat — PL10              │
@@ -128,7 +128,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   находится в linker.ld (резерв _gb_heap_start/end между BSS и _hend).
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
-- Звук: аудио-буфер 44100 Гц, заглушен (нет DAC-вывода), но без звука ядро не зависает
+- Звук: 48000 Гц стерео пары (binjgb u8→s16), выводится в I2S (r596)
 
 ### gba_host.c (Game Boy Advance, gpSP)
 
@@ -142,7 +142,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   (`vram/reg/cheats/init_memory/init_cpu/load_bios` → `gpsp_*`) — см. Makefile `GBA_RENAME`
 - Рендер: `gba_screen_pixels` (240×160 RGB565) → EMU_FB
 - Ввод: USB-клавиатура → кнопки GBA (Z=A X=B S=Select Enter=Start Q=L W=R + Sega-геймпад C=L X=R)
-- Звук: заглушен (нет DAC-вывода)
+- Звук: gpSP 32768 Гц → полифазный ресемпл 48000, выводится в I2S (r521/r592)
 
 ### msx_host.c (MSX / MSX2, fMSX 6.0)
 
@@ -156,7 +156,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ### snes_host.cpp (SNES / Super Famicom, Snes9x 2005)
 
 - Ядро: `snes/` (Snes9x 2005, libretro, 39 C-файлов + libretro-common-заглушки)
-- `snes_init_game()`: `S9xInitMemory → InitAPU → InitDisplay → InitGFX → InitSound → LoadROM (прямое копирование в Memory.ROM) → S9xReset`. Настройки `Settings.Mute=true` (звук заглушен)
+- `snes_init_game()`: `S9xInitMemory → InitAPU → InitDisplay → InitGFX → InitSound → LoadROM (прямое копирование в Memory.ROM) → S9xReset`. `Settings.Mute=false` с r600; звук стерео 48 кГц выводится в I2S
 - Рендер: `GFX.Screen` (RGB565, pitch = IMAGE_WIDTH×2 = 1024) → EMU_FB. Разрешение 256×224/240 (H32/H40, NTSC/PAL)
 - Ввод: USB-клавиатура → геймпад SNES (Z=B, X=Y, A=A, S=X, Q=L, W=R, Space=Select, Enter=Start)
 - Выход: ESC-удержание ~0.9 с
@@ -192,8 +192,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   (Blip_Buffer/Blip_Synth/Effects_Buffer/Multi_Buffer/Stereo_Buffer/Silent_Blip_Buffer)
   и читает символы через `$NF` (у U-символов нет колонки адреса). Иначе `gc_Sms_Apu.o`
   линковался с Lynx-версией Blip_Buffer → рассинхрон → Data Abort в `new Sms_Apu()`.
-- Звук: `RunToVBlank(..., NULL, NULL)` — audio-буфер не выводится (нет DAC), но `Audio::Init`
-  инициализирует blargg-цепочку нормально; `Audio::EndFrame` имеет NULL-guard.
+- Звук: `RunToVBlank(..., col_snd, &col_snd_count, ...)` — моно s16 48 кГц (PSG SN76489 + AY8910 микс) выводится в I2S (r605)
 
 ### ngp_host.cpp + ngp/ (Neo Geo Pocket / Pocket Color, RACE)
 
@@ -449,12 +448,14 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   C64, Enterprise, Atari 8-bit (atari800 собран в OBJ? — НЕТ, a8-объекты не
   линкуются в прошивку, в меню статус PLANNED).
 
-### Звук (актуально, r585)
+### Звук (актуально, r609)
 
-I2S (MAX98357A, 48 кГц): подключены **Lynx** (`lynx_host.cpp:208`) и **GBA**
-(`gba_host.c:194`). Остальные системы — звук синтезируется в ядрах, но в I2S
-НЕ выводится (послойное подключение, см. AGENTS.md правило 5). История и
-пороги — см. docs/CODE-REVIEW-2026-10-01.md (Д-12..Д-41).
+I2S (MAX98357A, 48 кГц): подключены **15 систем** (продюсеры → `i2s_push_sample` в коде, всё через кольцо + CPU2-долив r585):
+Lynx (`lynx_host.cpp:202`), GBA (`gba_host.c:282`, полифаз 32768→48000), GB/GBC (`gameboy_host.cpp:171`), NGP (`ngp_host.cpp:158`, 44100→48000), MD/SMS/GG (`system_gpgx_h3.c:292`), NES (`nes_host_fceumm.cpp:242`), SNES (`snes_host.cpp:278`), A2600 (`system_atari_h3.cpp:234`), A5200 (`system_a5200_h3.cpp:180`), A7800 (`system_a7800_h3.cpp:199`, 31440→48000), Coleco (`coleco_host.cpp:189`), PCE (`pce_host.c:131`, 44100→48000), ZX Spectrum (`fuse_host.c:227`, 44100→48000), аркады FBNeo (`cps1_host.cpp:1011`).
+
+НЕ подключены (звук только в ядрах, без I2S): MSX, Vectrex, BK-0010, Portfolio, MS1504.
+
+Карта и истории подключения — docs/CODE-REVIEW-2026-10-01.md (Д-12..Д-41 Lynx/GBA, Д-59..Д-73 SGG/GB/NGP/NES/SNES/A2600/A5200/A7800/Coleco/PCE/ZX/аркады), docs/HANDOVER.md r594..r609.
 
 ### Архитектура CPU2 — аудио-ядро (Ф1, r585)
 
