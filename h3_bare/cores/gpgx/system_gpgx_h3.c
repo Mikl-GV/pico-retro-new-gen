@@ -28,6 +28,7 @@
 #include "emu.h"
 #include "cheatdb.h"
 #include "gp_cheats.h"
+#include "i2s.h"
 #include "fat.h"
 
 extern int printf(const char* fmt, ...);
@@ -158,6 +159,9 @@ static void gpgx_render_emu(int max_w, int max_h) {
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
+    // r594: MD/SMS — непрерывный поток через blip (не пачки) → ~120 Гц DC,
+    // как Lynx/GG. Ставим до audio_init (до звукового пути).
+    i2s_dc_shift_set(6);
 
     int force_sms = g_force_sms;
     g_force_sms = 0;
@@ -227,6 +231,17 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     config.hq_psg = 0;
     config.filter = 1;
     config.mono = 0;
+    // r595: звуковые поля конфига — по первоисточнику (libretro-gpgx
+    // config_default()). Раньше НЕ выставлялись → оставались 0 из статики →
+    // psg.chanAmp = preamp(0)*… = 0 (PSG тишина = главный звук SGG),
+    // fm_preamp=0 и ym2413=0 (FM выключена) → «SGG тишина», хотя картинка и
+    // ввод работали. Это НЕ заглушка слоя вывода, а обнулённый конфиг ядра.
+    config.psg_preamp  = 150;   /* PSG предусилитель (как libretro) */
+    config.fm_preamp   = 100;   /* FM предусилитель */
+    config.cdda_volume = 100;
+    config.pcm_volume  = 100;
+    config.ym2612      = YM2612_DISCRETE;   /* 0 = discrete (как libretro) */
+    config.ym2413      = 2;                 /* AUTO: FM(SMS/GG) по региону/картриджу */
 
     // ---- настройка ввода: 6-кнопочный геймпад на порту 0 (как libretro.c) ----
     // Единый SYSTEM_GAMEPAD + padtype включает обработку вводов в ядре
@@ -265,12 +280,16 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
                 // в меню (GCC -Wreturn-type: system_gpgx_h3.c:263)
 }
 
-// ---- вывод звука отключён: дрейним blip-буферы ядра, чтобы они
-// не переполнялись при генерации кадра ----
+// ---- вывод звука: PSG+FM (стерео 48к через blip) → I2S ----
+// r594: gpgx_audio_out() больше не дренит сэмплы в никуда, а пушит их в
+// кольцо I2S (CPU2 выводит). Формат audio_update: стерео пары int16
+// (abuf[2i]=L, abuf[2i+1]=R), частота snd.sample_rate = 48000.
+// Один патч покрывает SMS/MD/GG (общий host-слой GPGX).
 static void gpgx_audio_out(void) {
     static int16_t abuf[4096];
     int n = audio_update(abuf);
-    (void)n;
+    for (int i = 0; i < n; i++)
+        i2s_push_sample(abuf[2 * i], abuf[2 * i + 1]);
 }
 
 void gpgx_run_frame(void) {
@@ -347,6 +366,7 @@ void sms_run_frame(void) {
 int gg_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
+    i2s_dc_shift_set(6);   // r594: GG — непрерывный поток (как Lynx) → ~120 Гц; пачек нет (в отличие от GBA)
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
         printf("GPGX: bad rom\n"); return 0;
@@ -386,6 +406,15 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     config.hq_psg = 0;
     config.filter = 1;
     config.mono = 0;
+    // r595: звуковые поля конфига (как в gpgx_init_game и первоисточнике
+    // libretro-gpgx config_default()) — без них PSG/FM молчат (preamp=0,
+    // FM off) → «SGG тишина».
+    config.psg_preamp  = 150;
+    config.fm_preamp   = 100;
+    config.cdda_volume = 100;
+    config.pcm_volume  = 100;
+    config.ym2612      = YM2612_DISCRETE;
+    config.ym2413      = 2;                 /* AUTO */
 
     input.system[0] = SYSTEM_GAMEPAD;
     input.system[1] = SYSTEM_GAMEPAD;

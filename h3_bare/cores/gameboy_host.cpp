@@ -9,6 +9,7 @@ extern "C" {
 #include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
+#include "i2s.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -93,6 +94,8 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     // на пустом буфере (это единственный host без guard'а, как у остальных).
     if (!rom || size == 0) { printf("[GB] no ROM\n"); return 0; }
 
+    i2s_dc_shift_set(6);   // r596: GB — непрерывный поток (как Lynx) → ~120 Гц
+
     EmulatorInit init;
     memset(&init, 0, sizeof(init));
     init.rom.data = (uint8_t*)rom;  // ROM напрямую, без копирования
@@ -154,11 +157,20 @@ extern "C" void gb_run_frame(void) {
         events = emulator_run_until(g_emu, emulator_get_ticks(g_emu) + PPU_FRAME_TICKS);
     } while (!(events & EMULATOR_EVENT_NEW_FRAME) && ++guard < 4);
 
-    // Звук отключён (без I2S): сбрасываем буфер, ядро перезапишет
+    // Звук GB/GBC на I2S (r596). binjgb отдаёт буфер u8 2-канальный
+    // (пары L/R, 0..255, центр 128, 48000 Гц) — см. write_audio_frame
+    // в emulator.c (SOUND_OUTPUT_COUNT=2). Раньше здесь была ЗАГЛУШКА:
+    // буфер сбрасывался в никуда (ab->position = ab->data), звук ядро
+    // синтезировало, но в I2S не уходил.
     AudioBuffer* ab = emulator_get_audio_buffer(g_emu);
     u32 nframes = audio_buffer_get_frames(ab);
-    (void)nframes;
-    ab->position = ab->data;
+    for (u32 i = 0; i < nframes; i++) {
+        // u8 (0..255) → s16: (-128..+127) << 8
+        int16_t l = (int16_t)((int32_t)ab->data[2 * i] - 128) << 8;
+        int16_t r = (int16_t)((int32_t)ab->data[2 * i + 1] - 128) << 8;
+        i2s_push_sample(l, r);
+    }
+    ab->position = ab->data;   // буфер перезапишется ядром («съели»)
 }
 
 extern "C" void gb_render_frame(void) {
