@@ -779,7 +779,7 @@ $(BUILD)/a7800_%.o: $(TOP)h3_bare/cores/a7800/%.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BUILD)/a5200_atari5200.o: $(TOP)h3_bare/cores/a5200/atari5200.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu11 -c -o $@ $<
+	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu11 -DHAS_SND=1 -c -o $@ $<
 $(BUILD)/a5200_%.o: $(TOP)h3_bare/cores/a5200/%.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -std=gnu89 -c -o $@ $<
 

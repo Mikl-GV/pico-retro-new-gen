@@ -11,6 +11,8 @@ extern "C" {
 #include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
+#include "i2s.h"
+#include "a5200/pokeysnd.h"
 }
 
 #define EMU_FB   ((uint16_t*)0x5F800000)
@@ -143,6 +145,9 @@ extern "C" int a5200_init_game(const uint8_t *rom, uint32_t size) {
 
     at5_Init();
     at5_Start((char *)"cart");
+    // r602: звук A5200 — POKEYSND_Init(48000, BIT16) вызывается ядром
+    // (HAS_SND=1 в Makefile); DC 120 Гц (непрерывный поток).
+    i2s_dc_shift_set(6);
     printf("[a5200] loaded size=%d\n", (int)size);
     return 1;
 }
@@ -161,4 +166,16 @@ extern "C" void a5200_run_frame(void) {
         }
     }
     at5_Step();
+
+    // r602: звук A5200 на I2S. HAS_SND=1 включает POKEYSND_Init(48000, BIT16)
+    // в ядре → POKEYSND_Process_ptr = pokeysnd_process_16 (моно int16 48к).
+    // 48000/60 = 800 сэмплов/кадр.
+    {
+        extern void (*POKEYSND_Process_ptr)(void *sndbuffer, int sndn);
+        static int16_t a5buf[1024];
+        if (POKEYSND_Process_ptr)
+            POKEYSND_Process_ptr(a5buf, 800);
+        for (int i = 0; i < 800; i++)
+            i2s_push_sample(a5buf[i], a5buf[i]);   // моно → стерео
+    }
 }
