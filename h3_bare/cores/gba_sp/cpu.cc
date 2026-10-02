@@ -1519,11 +1519,11 @@ void execute_arm(u32 cycles)
       pc_address_block = load_gamepak_page(pc_region & 0x3FF);
     else
     {
-      /* r542: PC вне карты (≥0x10000000) — битая/мусорная игра. Вместо
-       * выполнения за границами memory_map_read останавливаем CPU: кадры
-       * идут «пустые», выход по ESC работает. */
-      reg[CPU_HALT_STATE] = CPU_STOP;
-      return;
+      /* r542/r563: PC вне карты (≥0x10000000). r542 останавливал CPU —
+       * некоторые игры (RnR) легально ходят по open-bus, «стоп» давал
+       * чёрный экран. Теперь не останавливаем: цикл исполнит NOP
+       * (см. arm_loop/thumb_loop) — open-bus-поведение как на железе. */
+      pc_address_block = NULL;
     }
   }
   touch_gamepak_page(pc_region);
@@ -1559,13 +1559,11 @@ arm_loop:
        /* Execute ARM instruction */
        using_instruction(arm);
        check_pc_region();
-       if(!pc_address_block)              /* r542: PC ушёл за карту памяти */
-       {
-         reg[CPU_HALT_STATE] = CPU_STOP;
-         goto alert;
-       }
        reg[REG_PC] &= ~0x03;
-       opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
+       if (pc_address_block)
+         opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
+       else
+         opcode = 0xE1A00000;   /* r563: open-bus NOP (MOV r0,r0) — не глушим CPU */
        condition = opcode >> 28;
 
        switch(condition)
@@ -3129,13 +3127,11 @@ thumb_loop:
 
        using_instruction(thumb);
        check_pc_region();
-       if(!pc_address_block)              /* r542: PC ушёл за карту памяти */
-       {
-         reg[CPU_HALT_STATE] = CPU_STOP;
-         goto alert;
-       }
        reg[REG_PC] &= ~0x01;
-       opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
+       if (pc_address_block)
+         opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
+       else
+         opcode = 0xBF00;   /* r563: open-bus NOP (Thumb) — не глушим CPU */
 
        #ifdef TRACE_INSTRUCTIONS
        interp_trace_instruction(reg[REG_PC], 0);

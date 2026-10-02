@@ -182,6 +182,15 @@ void snd_manifest(const char* sys, const char* cores) {
 
 // ---- throttle ----
 #include "settings.h"
+
+// Страховочные пороги среза кольца I2S (r573, Д-3 — вынесены из магических
+// чисел). Подобраны на стенде: HI — уровень кольца, при котором начинаем
+// срезать (GBA r572: 7800 — реже/мягче, чем 6500; Lynx r560: 6500); LO —
+// сколько пар оставляем свежих после среза. Менять осознанно, по стенду.
+#define I2S_TRIM_HI_GBA  7800
+#define I2S_TRIM_HI_LYNX 6500
+#define I2S_TRIM_LO      4000
+
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
@@ -213,6 +222,14 @@ void emu_throttle(void) {
             udelay(emu_period_us - elapsed);
         }
     }
+    // r573 (Д-2): безусловный долив кольца → FIFO даже при переполнении
+    // периода (тяжёлый кадр). Раньше при elapsed >= emu_period_us ветка
+    // выше не выполнялась вовсе — за кадр не уходило НИ одной пары, кольцо
+    // пустело и I2S играл тишину на лагах. Один flush_max(24) ≈ 0.5 мс
+    // звука: при пустом кольце подмешивает тишину в FIFO (не даёт ему
+    // просесть), при неготовом I2S — no-op.
+    if (i2s_ready())
+        i2s_flush_max(24);
     emu_ts0 = h3_hs_timer_lo_us();
 }
 
@@ -480,13 +497,42 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     for (;;) {
         gba_run_frame();
+        // r562: слежение периода за фактическим потреблением железа (как
+        // Lynx r559/r560). GBA-звук (32768→48000) пушится в кольцо пачкой в
+        // конце кадра; без слежения период 16667 не равен реальному темпу
+        // I2S, кольцо дрейфует → дропы → «плохой звук».
+        {
+            volatile uint32_t txc = *(volatile uint32_t*)0x01C22028u;   // I2S/PCM TX Sample Counter
+            uint32_t now = h3_hs_timer_lo_us();
+            static uint32_t prev_txc = 0, prev_t = 0;
+            if (prev_txc && txc > prev_txc) {
+                uint32_t dp = txc - prev_txc;          // пар выведено за прошедший кадр
+                uint32_t dtime = now - prev_t;         // мкс
+                if (dp < 2000 && dtime > 5000 && dtime < 30000) {
+                    // аппроксимация: за кадр (60 Гц) железу нужно время на
+                    // ~800 пар. Точнее: gpSP на 32768 Гц даёт ~549 входных
+                    // пар/кадр, ресемпл 32768→48000 (×1.4648) → ~804 пары —
+                    // берём 800 как округлённую константу.
+                    uint32_t peri = (uint32_t)(((uint64_t)dtime * 800u) / dp);
+                    if (peri >= 12000 && peri <= 24000)
+                        emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
+                }
+            }
+            prev_txc = txc;
+            prev_t = now;
+        }
+        {
+            // r572: порог среза поднят 6500→7800 (в логе GBA ring доходил до
+            // ~6800 — частые срезы давали «тёрку»/клипы). Теперь реже, мягче.
+            if (i2s_ring_level() > I2S_TRIM_HI_GBA) i2s_ring_trim(I2S_TRIM_LO);
+        }
         gba_render_frame();
         emu_throttle();
         emu_scale_int(240, 160);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_period_us = 16667; fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -536,8 +582,7 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         // Страховка от дикого переполнения (редкий случай). r560: мягче —
         // срез 6500 → 4000 (реже, не режет на 1500 агрессивно).
         {
-            extern int i2s_ring_level(void);
-            if (i2s_ring_level() > 6500) i2s_ring_trim(4000);
+            if (i2s_ring_level() > I2S_TRIM_HI_LYNX) i2s_ring_trim(I2S_TRIM_LO);
         }
         lynx_render_frame();
         emu_throttle();

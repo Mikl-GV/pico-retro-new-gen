@@ -22,6 +22,10 @@ void i2s_ring_reset(void);
 // переполнении (когда темп железа чуть ниже производства).
 void i2s_ring_trim(uint32_t keep_pairs);
 
+// r522: текущий уровень кольца (пар в буфере) — для страховочного среза
+// в эмуляторах (emu.c) и диагностики.
+int  i2s_ring_level(void);
+
 // Громкость 0..100 (%). Старт 20%.
 void i2s_volume(int percent);
 int  i2s_volume_pct(void);

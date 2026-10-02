@@ -68,7 +68,7 @@ extern int printf(const char* fmt, ...);
 
 // ---- глобалы, которые в оригинале даёт libretro.c / input.c ----
 // main_path определён в gba_sp/main.c — здесь НЕ дублируем.
-boot_mode selected_boot_mode = boot_game;
+boot_mode selected_boot_mode = boot_bios;   // r565: старт через вшитый BIOS
 u32 skip_next_frame = 0;
 int  sprite_limit = 1;
 u32  idle_loop_target_pc = 0xFFFFFFFF;
@@ -144,7 +144,11 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     // зависимости от файлов на SD (предсказуемый старт, лёгкий клон).
     memcpy(bios_rom, open_gba_bios_rom, sizeof(bios_rom));
     printf("GBA: BIOS embedded (open-source, 16K)\n");
-    selected_boot_mode = boot_game;
+    // r565: boot_bios (а не boot_game). Стеночный лог RnR: pc=0, vc=0,
+    // disp=0 — игра стартует как с реального GBA: через BIOS (SWI/VBlank
+    // сервисы). boot_game (прямо на 0x08000000 без BIOS-старта) оставлял
+    // игры, полагающиеся на BIOS-инициализацию, в висящем состоянии.
+    selected_boot_mode = boot_bios;
 
     // Грузим ROM (load_gamepak_raw увидит g_ram_rom и замапит напрямую)
     if (load_gamepak(NULL, NULL, FEAT_AUTODETECT, FEAT_AUTODETECT, SERIAL_MODE_AUTO) != 0) {
