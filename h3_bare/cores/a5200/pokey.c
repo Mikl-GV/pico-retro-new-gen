@@ -164,7 +164,13 @@ static int POKEY_siocheck(void)
 #endif
 
 #ifndef SOUND
-#define POKEYSND_Update(addr, val, chip, gain)
+/* r604: макрос был ПУСТЫМ («звук вырезан»): при записи AUDC/AUDF/AUDCTL
+ * POKEYSND_Update_ptr (настроен pokeysnd_init_rf) не вызывался → счётчики
+ * POKEY мертвы, pokeysnd_process_16 выдаёт тишину. Теперь шлём регистры
+ * в звуковое ядро всегда (SND подключается отдельно, без глобального
+ * флага SOUND). */
+#define POKEYSND_Update(addr, val, chip, gain) \
+    POKEYSND_Update_ptr(addr, val, chip, gain)
 #else
 //#define POKEYSND_Update(addr, val, chip, gain) if (chip == 0) emu_sndPlaySound((chip*4)+addr, gain*16, val*16)
 #endif

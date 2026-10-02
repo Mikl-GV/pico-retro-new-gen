@@ -11,6 +11,7 @@ extern "C" {
 #include "btn_pad.h"
 #include "remap.h"
 #include "cheatdb.h"
+#include "i2s.h"
 }
 
 #define EMU_FB  ((uint16_t*)0x5F800000)
@@ -23,6 +24,8 @@ extern "C" {
 #include "a7800/Memory.h"
 #include "a7800/Cartridge.h"
 #include "a7800/Region.h"
+#include "a7800/Tia.h"
+#include "a7800/Pokey.h"
 
 static uint16_t a7_pal_rgb565[256];
 static uint8_t a7_rom_data[1024 * 1024];
@@ -126,7 +129,10 @@ extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
     }
     prosystem_Reset();
     a7_build_palette();
-    printf("[a7800] loaded size=%d\n", (int)size);
+    // r603: звук A7800 — TIA (всегда) + POKEY (если чип в картридже),
+    // буферы byte моно 524/кадр (31440 Гц). DC 120 Гц (непрерывный поток).
+    i2s_dc_shift_set(6);
+    printf("[a7800] loaded size=%d pokey=%d\n", (int)size, cartridge_pokey ? 1 : 0);
     return 1;
 }
 
@@ -159,4 +165,36 @@ extern "C" void a7800_run_frame(void) {
         }
     }
     prosystem_ExecuteFrame(input);
+
+    // r603: звук A7800 на I2S. TIA и POKEY пишут byte-буферы моно
+    // (524 сэмпла/кадр = 31440 Гц при 60fps; tia: 0..30, pokey: 8..120).
+    // Смешиваем (TIA + POKEY, если чип есть), ресемпл 31440→48000 (линейный,
+    // фаза 16.16), u8→s16, моно→стерео.
+    extern byte tia_buffer[];
+    extern uint tia_size;
+    extern byte pokey_buffer[];
+    static uint32_t rs_phase = 0;
+    const int in_n = (int)tia_size;            // 524
+    /* 31440→48000: шаг фазы (31440<<16)/48000 = 42939 */
+    int o = 0;
+    static int16_t out[880];                   // 524*48000/31440 ≈ 800
+    while (o < 880) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= (uint32_t)in_n) break;
+        uint32_t f = rs_phase & 0xFFFFu;
+        int32_t m0 = (int32_t)tia_buffer[i] + (cartridge_pokey ? (int32_t)pokey_buffer[i] : 0);
+        int32_t m1 = (int32_t)tia_buffer[i + 1] + (cartridge_pokey ? (int32_t)pokey_buffer[i + 1] : 0);
+        int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)f) >> 16);
+        s = (s - 64) << 8;                     // центр ~64 → s16 (масштаб u8)
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        out[o++] = (int16_t)s;
+        rs_phase += 42939u;
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (int i = 0; i < o; i++)
+        i2s_push_sample(out[i], out[i]);       // моно → стерео
 }
