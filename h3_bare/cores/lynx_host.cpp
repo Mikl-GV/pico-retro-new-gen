@@ -77,6 +77,8 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     if (!rom || size == 0) { printf("[lynx] no ROM data\n"); return 0; }
     if (size < 64) { printf("[lynx] ROM too small (%u)\n", (unsigned)size); return 0; }
 
+    i2s_dc_shift_set(6);   // r590: Lynx — ~120 Гц (непрерывный поток, по стенду)
+
     if (memcmp(rom, "LYNX", 4) != 0) {
         printf("[lynx] no LYNX header (headerless ROM), size=%u\n", (unsigned)size);
     } else {
@@ -173,19 +175,11 @@ extern "C" void lynx_run_frame(void) {
     const int32_t EARLY_OK = (int32_t)((HANDY_SYSTEM_FREQ / 75) / 8);
     lynx_frame_ready = 0;
     int safety = 0;
-    ULONG pump_cycle = gSystemCycleCount;   // r549: подкачка звука
     while ((int32_t)(target - gSystemCycleCount) > 0) {
         g_lynx->Update();
         if (++safety > 4000000) {
             printf("lynx: frame timeout (safety)\n");
             break;
-        }
-        // r549: fire-and-forget — аппаратный TX FIFO (≈32 пары ≈ 0.66 мс)
-        // опустеет, пока длится эмуляция, поэтому каждые ~2 мс CPU-циклов
-        // доливаем кольцо → FIFO. Вызов неблокирующий (flushes ≤24 пар).
-        if ((int32_t)(gSystemCycleCount - pump_cycle) >= 32768) {
-            pump_cycle = gSystemCycleCount;
-            i2s_flush_max(24);
         }
         if (lynx_frame_ready && (int32_t)(target - gSystemCycleCount) <= EARLY_OK)
             break;

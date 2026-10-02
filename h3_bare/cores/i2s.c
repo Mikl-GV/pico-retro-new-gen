@@ -18,6 +18,7 @@
 #include "h3.h"
 #include "h3_ccu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -33,6 +34,12 @@ extern int printf(const char* fmt, ...);
 #define I2S_CLK_DIV  (*(volatile uint32_t*)(I2S_BASE + 0x24))
 #define I2S_TX_CNT   (*(volatile uint32_t*)(I2S_BASE + 0x28))
 #define I2S_TX_CSEL  (*(volatile uint32_t*)(I2S_BASE + 0x34))
+
+// r555: заполнение TX FIFO — из I2S/PCM_FSTA (0x18): bit28 TXE (место ≥1 слова),
+// bits23:16 TXE_CNT (число СВОБОДНЫХ слов). r588: вынесено НАВЕРХ — используется
+// и i2s_flush_max, и i2s_write_pair_direct (прямой вывод тона на паузе CPU2).
+#define I2S_FSTA_TXE_CNT(st) (((st) >> 16) & 0xFFu)   // свободных слов
+#define I2S_TXE_MIN 8                                 // стоп, если свободно меньше 4 пар
 #define I2S_TX_CMAP  (*(volatile uint32_t*)(I2S_BASE + 0x44))
 #define I2S_CHAN_CFG (*(volatile uint32_t*)(I2S_BASE + 0x30))
 
@@ -89,7 +96,21 @@ static int g_muted = 1;
 // читал бы своё старое значение из write-back кэша после сброса.
 static int32_t dc_l __attribute__((section(".coherent"), aligned(4))) = 0;
 static int32_t dc_r __attribute__((section(".coherent"), aligned(4))) = 0;
-#define DC_SHIFT 5   // ~240 Гц (4 = ~480 Гц резало низ)
+// r590: DC_SHIFT — переменная (не #define): для разных систем свой срез.
+//   GBA (пачки с паузами тишины) — 5 (~240 Гц): медленный блокер (6=120 Гц)
+//   давал щелчок/посторонний шум на каждом стыке «тишина→пачка» (восстановление
+//   ~1.3 мс) → «слабый/неразборчивый».
+//   Lynx (непрерывный поток) — 6 (~120 Гц): по стенду ровнее, ближе к оригиналу.
+// Задают хосты через i2s_dc_shift_set(); только core0 пишет (push_sample),
+// в .coherent не нужно.
+static int g_dc_shift = 5;   // по умолчанию ~240 Гц (безопасно для всех)
+
+void i2s_dc_shift_set(int shift) {
+    if (shift < 1) shift = 1;
+    if (shift > 12) shift = 12;
+    g_dc_shift = shift;
+    dc_l = 0; dc_r = 0;   // сброс истории — иначе блокер «помнит» старый срез
+}
 
 // ---- кольцо потока эмулятора (объявлено раньше геттеров — их использует) ----
 #define AUDIO_RING_SIZE 8192
@@ -108,15 +129,13 @@ static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(
 // команды и тикает heartbeat. CPU2 с выключенным MMU/кэшами читает/пишет
 // напрямую в DRAM; core0 — через uncached-маппинг .coherent (оба ядра видят
 // одну физическую память, кэш-когерентность обеспечена свойством секции).
-enum {
-    AUDIO_CMD_NONE = 0,
-    AUDIO_CMD_RING_RESET = 1,
-};
+// (enum команд — в i2s.h: AUDIO_CMD_NONE/RING_RESET/PAUSE/RESUME.)
 static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(4))) = 0; // 1 = CPU2 в цикле
 static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(4))) = 0;
 static volatile uint32_t g_audio_beat   __attribute__((section(".coherent"), aligned(4))) = 0; // инкремент CPU2 (heartbeat)
 static volatile uint32_t g_audio_pairs  __attribute__((section(".coherent"), aligned(4))) = 0; // пар вывел CPU2 (диагностика)
 static volatile uint32_t g_audio_ring   __attribute__((section(".coherent"), aligned(4))) = 0; // уровень кольца от CPU2
+static volatile uint32_t g_audio_paused_f __attribute__((section(".coherent"), aligned(4))) = 0; // 1 = CPU2 подтвердил паузу
 
 // core0: ядро 2 живо? (heartbeat не замер — сравнивается в emu_throttle)
 int i2s_audio_core_active(void) { return g_audio_state ? 1 : 0; }
@@ -136,7 +155,15 @@ void i2s_audio_set_pairs(uint32_t p) { g_audio_pairs = p; }
 void i2s_audio_cmd(uint32_t cmd) {
     if (!g_audio_state) return;   // ядро не поднято — нечего слать
     g_audio_cmd = cmd;
+    // Для PAUSE ждём, пока CPU2 подтвердит (пауза) — иначе core0 начнёт
+    // писать в FIFO, а CPU2 ещё не встал → двойной вывод.
+    if (cmd == AUDIO_CMD_PAUSE) {
+        uint32_t t = 0;
+        while (!g_audio_paused_f && ++t < 100000) {}
+    }
 }
+
+int i2s_audio_paused(void) { return g_audio_paused_f ? 1 : 0; }
 
 // CPU2: обработать одну команду (вызывается в цикле аудио-ядра).
 void i2s_audio_poll_cmd(void) {
@@ -144,9 +171,33 @@ void i2s_audio_poll_cmd(void) {
     if (cmd == AUDIO_CMD_RING_RESET) {
         g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
         g_audio_cmd = 0;
+    } else if (cmd == AUDIO_CMD_PAUSE) {
+        g_audio_paused_f = 1;   // подтвердить паузу
+        g_audio_cmd = 0;
+    } else if (cmd == AUDIO_CMD_RESUME) {
+        g_audio_paused_f = 0;
+        g_audio_cmd = 0;
     } else if (cmd != 0) {
         g_audio_cmd = 0;   // неизвестная — сбросить
     }
+}
+
+// r588: вывод ОДНОЙ пары НАПРЯМУЮ в TX FIFO (без кольца) — для тест-тона/клика,
+// когда CPU2 на паузе. Уважает место в FIFO (иначе переполнение).
+// r589: применяет громкость и кламп (как i2s_push_sample) — раньше писал сырые
+// l/r, поэтому регулировка громкости НЕ влияла на тест-тон/клики.
+void i2s_write_pair_direct(int16_t l, int16_t r) {
+    if (!g_i2s_ready) return;
+    if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) return;   // полон — пропустить (редко)
+    int32_t v = (g_volume_pct * 32) / 100;
+    int32_t L = (int32_t)l * v / 32;
+    int32_t R = (int32_t)r * v / 32;
+    if (L > 32767) L = 32767;
+    if (L < -32768) L = -32768;
+    if (R > 32767) R = 32767;
+    if (R < -32768) R = -32768;
+    I2S_FIFO_TX = (uint32_t)(uint16_t)L << 16;
+    I2S_FIFO_TX = (uint32_t)(uint16_t)R << 16;
 }
 
 void i2s_volume(int p) {
@@ -253,8 +304,8 @@ void i2s_push_sample(int16_t left, int16_t right) {
     if (g_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
     if (ring_count() >= AUDIO_RING_SIZE) return;   // drop-on-full
 
-    int32_t fl = (int32_t)left  - dc_l;  dc_l += fl >> DC_SHIFT;
-    int32_t fr = (int32_t)right - dc_r;  dc_r += fr >> DC_SHIFT;
+    int32_t fl = (int32_t)left  - dc_l;  dc_l += fl >> g_dc_shift;
+    int32_t fr = (int32_t)right - dc_r;  dc_r += fr >> g_dc_shift;
 
     int32_t v = (g_volume_pct * 32) / 100;
     int32_t L = fl * v / 32;
@@ -274,38 +325,35 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // (таймер 24 МГц, lo_us() даёт настоящие микросекунды: 48кГц → пара за 20.8 мкс).
 #define I2S_PACE_UNITS 21
 
-// r555: заполнение TX FIFO берём из I2S/PCM_FSTA (0x18, даташит 8.6.7.7):
-//   bit 28      TXE     = 1 — есть место ≥1 слова
-//   bits 23:16  TXE_CNT = число СВОБОДНЫХ слов TX FIFO (128 при 16-бит)
-// (r550/r553 ошибочно использовали I2S_TX_CNT (0x28) — это «TX Sample
-// Counter», кумулятивный счётчик выданных сэмплов: он растёт на 48 к за
-// секунду, никогда не опускается к 0, поэтому pump почти не писал, а
-// кольцо I2S застревало полным — задержка/дропы.)
-#define I2S_FSTA_TXE_CNT(st) (((st) >> 16) & 0xFFu)   // свободных слов
-#define I2S_TXE_MIN 8                                 // стоп, если свободно меньше 4 пар
-
 // Порция неблокирующего долива (~0.5 мс звука): CPU не ждёт темп.
 #define I2S_FLUSH_BURST 24
 
 // Перенос кольцо → FIFO. НЕБЛОКИРУЮЩИЙ — пишем пары, пока в TX FIFO есть
 // свободные слова (контроллер играет сам с темпом 48 кГц). Больше никакого
 // busy-wait по 21 мкс/пара: CPU освобождается, звук «fire-and-forget».
-// Если кольцо пусто — доливаем тишину (FIFO не уходит в ноль).
+// r591 (Д-56): при пустом кольце — HOLD последней пары (не тишина 0).
+// Раньше писали 0: на микроголоде (кадр эмуляции чуть дольше периода)
+// ступенька в 0 на непрерывной мелодии давала «треск как песок» у Lynx.
 void i2s_flush_max(int max_pairs) {
     if (!g_i2s_ready) return;
     if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
     int n = 0;
+    static int16_t hold_l = 0, hold_r = 0;   // последняя выведенная пара
     while (n < max_pairs) {
         if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) break;   // мало места — вернёмся позже
         if (ring_count() > 0) {
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
-            I2S_FIFO_TX = (uint32_t)(uint16_t)g_ring_l[r] << 16;
-            I2S_FIFO_TX = (uint32_t)(uint16_t)g_ring_r[r] << 16;
+            hold_l = g_ring_l[r];
+            hold_r = g_ring_r[r];
+            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
+            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
             g_ring_rd++;
         } else {
-            // тишина, чтобы FIFO не проседал в ноль
-            I2S_FIFO_TX = 0;
-            I2S_FIFO_TX = 0;
+            // кольцо пусто (микроголод): повторяем последнюю пару, чтобы
+            // не было ступеньки в 0 («песок»); при долгой тишине сигнал
+            // в DS-фильтре всё равно уйдёт в 0 плавно.
+            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
+            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
         }
         n++;
     }
@@ -347,22 +395,30 @@ void i2s_test_tone(int freq, int msec) {
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
 
     // Генерируем ровно msec миллисекунд звука в РЕАЛЬНОМ темпе 48 кГц.
-    // r585 (Ф1): если долив делает CPU2 — core0 ТОЛЬКО кладёт сэмплы в кольцо
-    // (темп закладки udelay), вывод в FIFO делает CPU2 (иначе двойной flush=
-    // гонка двух ядер в один FIFO). Если CPU2 нет — старый путь: flush+udelay.
+    // r588: если долив делает CPU2 — ставим его на паузу (ждать подтверждение)
+    // и выводим тон НАПРЯМУЮ в TX FIFO. Это убирает двойного потребителя
+    // (гонка core0↔CPU2 = «очень громкий/щелчки/тихий»): пока CPU2 встал,
+    // он не трогает FIFO, а мы пишем ровный тон. Без CPU2 — старый путь.
     int cpu2 = i2s_audio_core_active();
-    for (int d = 0; d < total; d++) {
-        uint32_t idx = (ph >> 8) & 0xFF; ph += step;
-        int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает (F7: было *5/10)
-        i2s_push_sample((int16_t)s, (int16_t)s);
-        if (!cpu2) {
-            i2s_flush_max(1);
-            udelay(I2S_PACE_UNITS);   // r549: flush теперь неблокирующий — темп держим вручную
-        } else {
-            udelay(I2S_PACE_UNITS);   // темп закладки — CPU2 выводит сам
+    if (cpu2) {
+        i2s_audio_cmd(AUDIO_CMD_PAUSE);     // ждёт g_audio_paused_f
+        for (int d = 0; d < total; d++) {
+            uint32_t idx = (ph >> 8) & 0xFF; ph += step;
+            int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает
+            i2s_write_pair_direct((int16_t)s, (int16_t)s);
+            udelay(I2S_PACE_UNITS);   // темп 48 кГц
         }
+        i2s_audio_cmd(AUDIO_CMD_RESUME);
+    } else {
+        for (int d = 0; d < total; d++) {
+            uint32_t idx = (ph >> 8) & 0xFF; ph += step;
+            int32_t s = (int32_t)sin_tab[idx] / 2;
+            i2s_push_sample((int16_t)s, (int16_t)s);
+            i2s_flush_max(1);
+            udelay(I2S_PACE_UNITS);
+        }
+        i2s_flush();
     }
-    if (!cpu2) i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }
 
@@ -378,17 +434,26 @@ void i2s_click(void) {
     int was_muted = g_muted;
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
     int cpu2 = i2s_audio_core_active();
-    for (int d = 0; d < total; d++) {
-        uint32_t idx = (ph >> 8) & 0xFF; ph += step;
-        int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
-        i2s_push_sample((int16_t)s, (int16_t)s);
-        if (!cpu2) {
-            i2s_flush_max(1);
-            udelay(I2S_PACE_UNITS);   // r549: темп вручную (flush неблокирующий)
-        } else {
-            udelay(I2S_PACE_UNITS);   // r585: выводит CPU2 — только темп закладки
+    if (cpu2) {
+        // r588: CPU2 на паузу — выводим клик напрямую в FIFO (без двойного
+        // потребителя; иначе «прорывы/шумы» в меню, т.к. два ядра в FIFO).
+        i2s_audio_cmd(AUDIO_CMD_PAUSE);
+        for (int d = 0; d < total; d++) {
+            uint32_t idx = (ph >> 8) & 0xFF; ph += step;
+            int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
+            i2s_write_pair_direct((int16_t)s, (int16_t)s);
+            udelay(I2S_PACE_UNITS);
         }
+        i2s_audio_cmd(AUDIO_CMD_RESUME);
+    } else {
+        for (int d = 0; d < total; d++) {
+            uint32_t idx = (ph >> 8) & 0xFF; ph += step;
+            int32_t s = (int32_t)sin_tab[idx] >> 2;
+            i2s_push_sample((int16_t)s, (int16_t)s);
+            i2s_flush_max(1);
+            udelay(I2S_PACE_UNITS);
+        }
+        i2s_flush();
     }
-    if (!cpu2) i2s_flush();
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
 }

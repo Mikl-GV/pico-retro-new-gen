@@ -73,7 +73,18 @@ void i2s_audio_set_pairs(uint32_t p);
 enum {
     AUDIO_CMD_NONE = 0,
     AUDIO_CMD_RING_RESET = 1,   // сбросить кольцо + DC (смена системы)
+    AUDIO_CMD_PAUSE = 2,        // CPU2 замирает (не трогает FIFO) — для тона/клика
+    AUDIO_CMD_RESUME = 3,       // CPU2 снова доливает
 };
+// Пауза CPU2 активна? (геттер для core0, чтобы знать, встал ли CPU2)
+int i2s_audio_paused(void);
+// r588: вывод одной пары НАПРЯМУЮ в TX FIFO (мимо кольца) — для тест-тона/
+// клика, когда CPU2 на паузе. Уважает место в FIFO.
+void i2s_write_pair_direct(int16_t l, int16_t r);
+
+// r590: задать срез DC-блокера по системе (5 ≈ 240 Гц, 6 ≈ 120 Гц).
+// GBA — 5 (пачки, медленный блокер даёт щелчки), Lynx — 6 (непрерывный поток).
+void i2s_dc_shift_set(int shift);
 
 #ifdef __cplusplus
 }

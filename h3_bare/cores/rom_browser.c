@@ -8,6 +8,7 @@
 #include "emu.h"
 #include "cheatdb.h"
 #include "sega_pad.h"
+#include "i2s.h"
 #include "h3.h"
 #include "h3_hs_timer.h"
 
@@ -264,6 +265,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             // двусторонний скролл: курсор всегда в видимой области
             if (cursor < scroll) scroll = cursor;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
+            i2s_click();   // r589: щелчок при навигации в браузере ROM
             dirty = 1;
         } else if (k == 81) {   // Down — по кольцу
             if (n <= 1) { dirty = 1; }
@@ -271,6 +273,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             // двусторонний скролл
             if (cursor < scroll) scroll = cursor;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
+            i2s_click();   // r589
             dirty = 1;
         } else if (k >= 4 && k <= 29) {
             // Поиск по первой букве (HID-сканкоды A=4..Z=29). Регистронезависимо.

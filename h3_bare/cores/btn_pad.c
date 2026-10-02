@@ -128,16 +128,36 @@ uint16_t btn_pad8_scan(void) {
     g_btn_reprobe = 0;
 
     if (!btn_pad_read(&r)) return 0;
-    uint16_t pad = 0;
-    if (!(r & 0x01)) pad |= 0x0001;   // B0 Up
-    if (!(r & 0x02)) pad |= 0x0004;   // B1 Left
-    if (!(r & 0x04)) pad |= 0x0008;   // B2 Right
-    if (!(r & 0x08)) pad |= 0x0002;   // B3 Down
-    if (!(r & 0x10)) pad |= 0x0010;   // B4 A
-    if (!(r & 0x20)) pad |= 0x0020;   // B5 B
-    if (!(r & 0x40)) pad |= 0x0080;   // B6 Start
-    if (!(r & 0x80)) pad |= 0x0100;   // B7 Select/Coin
-    return pad;
+    uint16_t raw = 0;
+    if (!(r & 0x01)) raw |= 0x0001;   // B0 Up
+    if (!(r & 0x02)) raw |= 0x0004;   // B1 Left
+    if (!(r & 0x04)) raw |= 0x0008;   // B2 Right
+    if (!(r & 0x08)) raw |= 0x0002;   // B3 Down
+    if (!(r & 0x10)) raw |= 0x0010;   // B4 A
+    if (!(r & 0x20)) raw |= 0x0020;   // B5 B
+    if (!(r & 0x40)) raw |= 0x0080;   // B6 Start
+    if (!(r & 0x80)) raw |= 0x0100;   // B7 Select/Coin
+
+    // r588: антидребезг простых кнопок (плата на 0x27, независима от джоя).
+    // Механические кнопки дребезжат десятки мс: мгновенное чтение ловит
+    // «мигание» линии → ложные срабатывания («Start вместо Up», «несколько
+    // Start = вылет»). Держим стабильную маску; новое состояние принимаем,
+    // только когда BTN_DEBOUNCE подряд чтений совпали. Скан зовётся раз в
+    // кадр/несколько мс — задержка принятия ≤ BTN_DEBOUNCE×период, для
+    // кнопок (не автоповтор) незаметно, дребезг вырезается.
+    // Джойстик (sega_pad.c) НЕ трогаем — у него свой протокол/тайминги.
+    enum { BTN_DEBOUNCE = 3 };
+    static uint16_t stable = 0;
+    static unsigned seq = 0;
+    if (raw == stable) {
+        seq = 0;
+        return stable;
+    }
+    if (++seq >= BTN_DEBOUNCE) {
+        stable = raw;
+        seq = 0;
+    }
+    return stable;
 }
 
 uint16_t pad_scan_combined(void) {

@@ -183,14 +183,6 @@ void snd_manifest(const char* sys, const char* cores) {
 // ---- throttle ----
 #include "settings.h"
 
-// Страховочные пороги среза кольца I2S (r573, Д-3 — вынесены из магических
-// чисел). Подобраны на стенде: HI — уровень кольца, при котором начинаем
-// срезать (GBA r572: 7800 — реже/мягче, чем 6500; Lynx r560: 6500); LO —
-// сколько пар оставляем свежих после среза. Менять осознанно, по стенду.
-#define I2S_TRIM_HI_GBA  7800
-#define I2S_TRIM_HI_LYNX 6500
-#define I2S_TRIM_LO      4000
-
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
@@ -240,6 +232,7 @@ static uint16_t g_pad_esc_val = 0;
 static int      g_esc_armed = 0;
 static uint32_t g_no_esc_since = 0;   // r155: sticky — отсутствие нажатия выхода
 static uint32_t g_esc_arm_t = 0;      // r158: сколько держится «доезд» после входа
+static int      g_esc_hold_from_pad = 0; // r590: hold накоплен от Start (геймпад)
 
 void emu_esc_hold_reset(void) {
     g_esc_hold_us = 0;
@@ -248,6 +241,7 @@ void emu_esc_hold_reset(void) {
     g_esc_armed   = 0;
     g_no_esc_since = 0;
     g_esc_arm_t   = 0;
+    g_esc_hold_from_pad = 0;
     usb_kbd_esc3_reset();   // ESC x3 (Low-Speed донгл) не должен «доехать»
 }
 
@@ -274,7 +268,11 @@ int emu_esc_hold(void) {
         g_pad_esc_t = now;
         g_pad_esc_val = pad_scan_combined();
     }
-    if (g_pad_esc_val & 0x0080) esc = 1;   // Start (hold через esc-арм ниже)
+    // r590: выход по геймпаду — ТОЛЬКО непрерывное удержание Start ~1 с.
+    // Раньше hold «накапливался» суммой коротких нажатий (интервал <250 мс
+    // не сбрасывал g_esc_hold_us) → несколько старта выкидывали из игры.
+    int pad_start = 0;
+    if (g_pad_esc_val & 0x0080) { esc = 1; pad_start = 1; }   // Start (удержание)
 
     if (esc) {
         g_no_esc_since = 0;
@@ -287,18 +285,27 @@ int emu_esc_hold(void) {
             else if (now - g_esc_arm_t > 1500000) { g_esc_armed = 1; g_esc_arm_t = 0; }
             if (!g_esc_armed) return 0;
         }
-        if (!g_esc_hold_us) g_esc_hold_us = now;
+        if (!g_esc_hold_us) { g_esc_hold_us = now; g_esc_hold_from_pad = pad_start; }
         else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
     } else {
         g_esc_arm_t = 0;
+        g_esc_hold_from_pad = 0;   // Start отпущен — любое накопление недействительно
         // r155: клавиатура шлёт отчёты ПАЧКАМИ (между ними «пустые» промежутки),
         // поэтому непрерывное удержание не требуется: отсчёт выхода теряется
         // только если нажатие отсутствует >250 мс подряд. Иначе после
         // «поиграть» пустой пакет клавы каждые ~10-30 мс рвал бы удержание
         // и выход никогда не накапливался.
         if (g_esc_hold_us) {
-            if (!g_no_esc_since) g_no_esc_since = now;
-            else if (now - g_no_esc_since > 250000) { g_esc_hold_us = 0; g_no_esc_since = 0; }
+            if (g_esc_hold_from_pad) {
+                // hold от геймпада: отпускание Start сбрасывает hold СРАЗУ
+                // (только непрерывное удержание 1 с, без «суммирования»
+                // коротких нажатий).
+                g_esc_hold_us = 0;
+                g_no_esc_since = 0;
+            } else {
+                if (!g_no_esc_since) g_no_esc_since = now;
+                else if (now - g_no_esc_since > 250000) { g_esc_hold_us = 0; g_no_esc_since = 0; }
+            }
         } else {
             g_no_esc_since = 0;
             g_esc_armed = 1;   // чистый кадр без удержания — «доезд» разряжен
@@ -510,11 +517,6 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
             prev_txc = txc;
             prev_t = now;
         }
-        {
-            // r572: порог среза поднят 6500→7800 (в логе GBA ring доходил до
-            // ~6800 — частые срезы давали «тёрку»/клипы). Теперь реже, мягче.
-            if (i2s_ring_level() > I2S_TRIM_HI_GBA) i2s_ring_trim(I2S_TRIM_LO);
-        }
         gba_render_frame();
         emu_throttle();
         emu_scale_int(240, 160);
@@ -567,11 +569,6 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
             }
             prev_txc = txc;
             prev_t = now;
-        }
-        // Страховка от дикого переполнения (редкий случай). r560: мягче —
-        // срез 6500 → 4000 (реже, не режет на 1500 агрессивно).
-        {
-            if (i2s_ring_level() > I2S_TRIM_HI_LYNX) i2s_ring_trim(I2S_TRIM_LO);
         }
         lynx_render_frame();
         emu_throttle();
