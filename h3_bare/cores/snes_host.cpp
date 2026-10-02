@@ -28,6 +28,7 @@ extern "C" {
 #include "sega_pad.h"
 #include "btn_pad.h"
 #include "cheatdb.h"
+#include "i2s.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 }
@@ -165,6 +166,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     memset(&Settings, 0, sizeof(Settings));
     Settings.JoystickEnabled = false;
     Settings.SoundPlaybackRate = 48000;
+    i2s_dc_shift_set(6);   // r600: SNES — непрерывный поток → ~120 Гц (как Lynx)
     Settings.CyclesPercentage = 100;
     Settings.DisableSoundEcho = false;
     Settings.InterpolatedSound = true;
@@ -179,7 +181,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     Settings.ControllerOption = SNES_JOYPAD;
     Settings.ApplyCheats = true;
     Settings.HBlankStart = (256 * Settings.H_Max) / 341;
-    Settings.Mute = true;
+    Settings.Mute = false;   // r600: звук SNES на I2S (было true = «отключён»; см. S9xSetSoundMute)
 
     // Инициализация памяти
     if (!S9xInitMemory()) {
@@ -264,12 +266,16 @@ extern "C" void snes_run_frame(void) {
     g_s9x_guard = 0;
     S9xMainLoop();
 
-    // Звук отключён: дрейним сэмплы (S9xMixSamples), вывод не делаем
+    // Звук SNES на I2S (r600). S9xMixSamples отдаёт СТЕРЕО пары int16
+    // (MixStereo пишет buffer[2*i]=L, buffer[2*i+1]=R; cnt = число пар),
+    // частота 48000 (Settings.SoundPlaybackRate). Раньше — дренаж в никуда.
     {
         static int16_t sndbuf[4096];
-        int cnt = (Settings.SoundPlaybackRate * 1000) / 60000;   // ~735
+        int cnt = (Settings.SoundPlaybackRate * 1000) / 60000;   // ~800 пар
         if (cnt > 2048) cnt = 2048;
         S9xMixSamples(sndbuf, cnt);
+        for (int i = 0; i < cnt; i++)
+            i2s_push_sample(sndbuf[2 * i], sndbuf[2 * i + 1]);   // стерео → I2S
     }
 
     // Рендер: GFX.Screen → EMU_FB

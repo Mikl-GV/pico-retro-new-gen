@@ -1111,3 +1111,34 @@ psg=150/fm=100 (по первоисточнику libretro). У MD YM2612 даё
 Версия **r597 → r598**. | Сборка: `make -j16` EXIT=0, бинарник `build: r598`.
 | Проверить: MD/SMS/GG — не «орут», комфортно; SGG звук (r594) не пострадал.
 
+
+**Д-64 | 2026-10-02 | Звук NES (FCEUmm) на I2S (r599).**
+По решению владельца «NES, SNES». Цепь NES: FCEUmm в `FCEUI_Emulate` отдаёт
+`WaveFinal` — МОНО int32 (0..48000 Гц, см. FlushEmulateSound: end = число моно-
+сэмплов; FCEUI_Sound(48000)). В host `fceumm_run_frame` была ЗАГЛУШКА:
+`(void)snd; (void)ssize;` — звук APU выбрасывался. Правки в
+`nes_host_fceumm.cpp`:
+1) читаем `snd[0..ssize]` (int32→s16 кламп, моно→стерео `i2s_push_sample(s,s)`),
+   cap 4096 сэмплов;
+2) `i2s_dc_shift_set(6)` (120 Гц, непрерывный поток) в init;
+3) include i2s.h; заодно убран unused-параметр в заглушке NSFLoad (0 warning).
+Версия **r598 → r599**. | Сборка: `make -j16` EXIT=0, бинарник `build: r599`.
+| Проверить: NES — звук APU (2A03: 2×square+triangle+noise+DPCM), громкость
+общая.
+
+
+**Д-65 | 2026-10-02 | Звук SNES (Snes9x 2005) на I2S (r600).**
+По решению владельца «NES, SNES». Цепь SNES: ядро Snes9x генерит стерео
+через `S9xMixSamples(buf, cnt)` (soundux.c: MixStereo пишет buffer[2i]=L,
+[2i+1]=R; cnt = число пар; 48000 Гц = Settings.SoundPlaybackRate). Отключено
+двумя местами: (1) `Settings.Mute = true` (snes_host.cpp:182) — глобальный
+мьют; (2) блок вывода — «дрейним сэмплы, вывод не делаем» ((void)buf).
+Правки в `snes_host.cpp`:
+1) `Settings.Mute = false` (иначе S9xSetSoundMute(true) → ядро не звучит);
+2) после S9xMixSamples читаем стерео-пары int16 → `i2s_push_sample(L,R)` (cnt
+   пар, 48000 Гц);
+3) `i2s_dc_shift_set(6)` (120 Гц, непрерывный поток) в init;
+4) include i2s.h.
+Версия **r599 → r600**. | Сборка: `make -j16` EXIT=0, бинарник `build: r600`.
+| Проверить: SNES — звук SPC700/DSP (стерео, каналы с эхо), громкость общая.
+

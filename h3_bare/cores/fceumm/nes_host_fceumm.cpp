@@ -31,6 +31,7 @@ extern "C" {
 #include "sega_pad.h"
 #include "btn_pad.h"
 #include "remap.h"
+#include "i2s.h"
 }
 
 extern "C" int printf(const char* fmt, ...);
@@ -67,7 +68,7 @@ unsigned swapDuty = 0;
 // Debug-лента: при трансляции линкер просит printf — он уже есть в printf.c
 
 // Заглушки вместо nsf.c (тянет math-библиотеку, не нужна в bare-metal)
-int NSFLoad(void* fp) { return 0; }
+int NSFLoad(void* fp) { (void)fp; return 0; }
 void DrawNSF(uint8_t* XBuf) { (void)XBuf; }
 void DoNSFFrame(void) {}
 
@@ -189,9 +190,10 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
         printf("FCEUmm: no FC keyboard\n");
     }
 
-    // Звук: NES APU включён, вывод не делаем
+    // Звук: NES APU включён, вывод — в I2S (r599). 48000 Гц.
     FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
+    i2s_dc_shift_set(6);   // r599: NES — непрерывный поток → ~120 Гц (как Lynx)
 
     // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run
     // через cheats_load: NES-коды — 6/8-символьный Game Genie + PAR)
@@ -227,8 +229,19 @@ extern "C" void fceumm_run_frame(void) {
     FCEUI_Emulate(&gfx, &snd, &ssize, 0);
     if (!gfx) return;
 
-    // Звук отключён: WaveFinal не читаем и не выводим
-    (void)snd; (void)ssize;
+    // Звук NES на I2S (r599). FCEUmm отдаёт WaveFinal — МОНО int32 (0..48000 Гц,
+    // см. FlushEmulateSound: end = число моно-сэмплов). Раньше здесь была
+    // заглушка (snd/ssize выбрасывались). Читаем int32→s16, моно→стерео.
+    if (snd && ssize > 0) {
+        int32_t n = ssize;   // число сэмплов (моно)
+        if (n > 4096) n = 4096;   // страховка от переполнения
+        for (int32_t i = 0; i < n; i++) {
+            int32_t s = snd[i];
+            if (s > 32767) s = 32767;
+            if (s < -32768) s = -32768;
+            i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
+        }
+    }
 
     // Рендер: gfx = XBuf[256×240] индексов палитры.
     // Деэмфазис строки из XDBuf: база 256 + (deemp<<6), иначе база 0.
