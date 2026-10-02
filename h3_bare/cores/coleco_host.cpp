@@ -8,7 +8,7 @@
 // Выход: ESC (удержание ~0.9 с), как в NES/SNES.
 //
 // Формат кадра: GC_PIXEL_RGB565 (256x192) -> EMU_FB напрямую.
-// Звук не используется (pSampleBuffer=NULL).
+// Звук: pSampleBuffer=s16 моно 48000 Гц (PSG+AЯ8910), см. Audio::EndFrame.
 #include <stdint.h>
 #include <string.h>
 
@@ -22,6 +22,7 @@ extern "C" {
 #include "btn_pad.h"
 #include "remap.h"
 #include "fb_text.h"
+#include "i2s.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
 #include "fat.h"
@@ -164,6 +165,7 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     g_loaded = 1;
+    i2s_dc_shift_set(6);   // r605: Coleco — непрерывный поток → ~120 Гц
     printf("Coleco: loaded %u bytes\n", (unsigned)size);
     return 1;
 }
@@ -174,8 +176,18 @@ extern "C" void coleco_run_frame(void) {
     coleco_build_input(g_core);
 
     // Один кадр: ядро рисует в g_col_fb (256x192, pitch 256) и возвращается
-    // после VBlank. Звук отключён: pSampleBuffer=NULL (ядро не рендерит audio)
-    g_core->RunToVBlank((u8*)g_col_fb, NULL, NULL);
+    // после VBlank. r605: звук Coleco на I2S — передаём буфер сэмплов
+    // (s16 моно, 48000 Гц, Audio::EndFrame), выводим моно→стерео.
+    static s16 col_snd[GC_AUDIO_BUFFER_SIZE];
+    int col_snd_count = 0;
+    g_core->RunToVBlank((u8*)g_col_fb, col_snd, &col_snd_count, NULL, true);
+
+    if (col_snd_count > 0) {
+        int n = col_snd_count;
+        if (n > GC_AUDIO_BUFFER_SIZE) n = GC_AUDIO_BUFFER_SIZE;
+        for (int i = 0; i < n; i++)
+            i2s_push_sample(col_snd[i], col_snd[i]);   // моно → стерео
+    }
 
     // r0.194: перенос 256×192 в EMU_FB с pitch 320 построчно — иначе картинка
     // «дублируется со сдвигом» (строки ложились подряд, без учёта ширины FB).

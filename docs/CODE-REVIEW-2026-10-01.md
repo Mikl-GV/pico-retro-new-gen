@@ -1208,3 +1208,19 @@ pokeysnd_init_rf) не вызывался → счётчики/огибающи�
 | Проверить: A5200 — есть звук POKEY (4 канала). Если тихо/громко —
 подстроить SOUND_GAIN (сейчас 4) или центр.
 
+
+**Д-70 | 2026-10-02 | Звук ColecoVision (Gearcoleco) на I2S (r605).**
+По решению владельца «ColecoVision затем PCE». Цепь по первоисточнику:
+Gearcoleco `RunToVBlank(frame, s16* buf, int* count)` в конце кадра зовёт
+`Audio::EndFrame` (Audio.cpp:115) — заполняет буфер **моно s16** (PSG SN76489
++ AY8910-SGM микс, CLAMP), **48000 Гц** (GC_AUDIO_SAMPLE_RATE). У нас host
+передавал `RunToVBlank(frame, NULL, NULL)` — звук отключён (pSampleBuffer
+NULL). Правки в `coleco_host.cpp`:
+1) `coleco_run_frame`: RunToVBlank(..., col_snd, &col_snd_count, NULL, true) →
+   читаем моно s16 count → `i2s_push_sample(s,s)` (моно→стерео);
+2) `i2s_dc_shift_set(6)` (120 Гц, непрерывный поток) в init;
+3) include i2s.h.
+Версия **r604 → r605**. | Сборка: `make -j16` EXIT=0, бинарник `build: r605`.
+| Проверить: ColecoVision — звук PSG (SN76489) + AY8910 (если SGM), громкость
+общая. | Далее: PCE (Beetle PCE Fast) — следующая по списку.
+
