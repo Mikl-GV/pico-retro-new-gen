@@ -288,7 +288,7 @@ void i2s_test_tone(int freq, int msec) {
     // иначе кольцо (8192) переполняется за мгновение и получается «щелчок».
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
-        int32_t s = (int32_t)sin_tab[idx] * 5 / 10;   // r504: 50% — тон не оглушает
+        int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает (F7: было *5/10)
         i2s_push_sample((int16_t)s, (int16_t)s);
         i2s_flush_max(1);
         udelay(I2S_PACE_UNITS);   // r549: flush теперь неблокирующий — темп держим вручную

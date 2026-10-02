@@ -736,8 +736,6 @@ $(BUILD)/remap.o: $(TOP)h3_bare/cores/remap.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/i2s.o: $(TOP)h3_bare/cores/i2s.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
-$(BUILD)/ths_fan.o: $(TOP)h3_bare/cores/ths_fan.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/tft_drv.o: $(TOP)h3_bare/cores/tft_drv.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<   # r58: вернул -O2 (r57 -O0 тормозил дисплей)
 

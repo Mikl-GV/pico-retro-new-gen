@@ -54,9 +54,16 @@ static int do_printf(const char* fmt, va_list ap) {
         switch (*fmt) {
         case 's': { const char* s = va_arg(ap, const char*);
                     if (!s) s = "(null)";
+                    // r582 (F8): '%5s' — паддинг пробелами до/после строки.
+                    int len = 0; { const char* p = s; while (*p++) len++; }
+                    if (width > 31) width = 31;
+                    for (int sp = width - len; sp > 0; sp--) pputc(' ');   // right-align
                     while (*s) pputc(*s++);
                     break; }
-        case 'c': pputc((char)va_arg(ap, int)); break;
+        case 'c': { char c = (char)va_arg(ap, int);
+                    if (width > 31) width = 31;
+                    for (int sp = width - 1; sp > 0; sp--) pputc(' ');
+                    pputc(c); break; }
         case 'd': case 'i':
             print_int(lng ? va_arg(ap, long) : (long)va_arg(ap, int), width, pad);
             break;

@@ -40,8 +40,12 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
     // (DCIMVAC) НЕ подходит — она отбросит грязные данные. Используем
     // clean+invalidate (DCCIMVAC): сливаем кэш в DRAM и делаем линии
     // невалидными, чтобы CPU читал настоящий ROM.
+    // r581 (Д-47): end = округление ВВЕРХ до границы линии (32 б) — раньше
+    // было `a + f.size + 32`, что чистило до 31 байта ЗА прочитанными данными
+    // (при f.size%32==0 — ровно +32); внутри ROM_BUF безвредно, но формально
+    // выход за границы буфера. Теперь чистим ровно линии, покрывающие ROM.
     uint32_t a = (uint32_t)buf & ~0x1Fu;
-    uint32_t end = a + f.size + 32;
+    uint32_t end = (a + f.size + 31) & ~0x1Fu;
     for (; a < end; a += 32)
         __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
     __asm volatile("dsb" ::: "memory");

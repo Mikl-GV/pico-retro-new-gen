@@ -14,7 +14,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
 │  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
 │  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)      │
-│  ngp/ (RACE)  vecx/ (Vectrex, отложен)  gearcoleco/ (Coleco)  │
+│  ngp/ (RACE)  vecx/ (Vectrex, реализован, статус READY)  gearcoleco/ (Coleco)  │
 │  msx/ (fMSX)  fuse/ (ZX Spectrum)  pce_fast/ (PC Engine)      │
 │  bk/ (BK-0010/0011M)                                          │
 ├───────────────────────────────────────────────────────────────┤
@@ -29,7 +29,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  usb_kbd.c  usb_ohci.c  sd.c  fat.c  led.c  fb_text.c         │
 │  uart.c  printf.c  libc_min.c  cxx_runtime.cpp                │
 │  cheatdb.c (чит-менеджер, парсер .cht)  gp_cheats.c (GPGX)    │
-│  sega_pad.c (Sega 6-btn геймпад, PCF8574)  i2s.c (звук, off)  │
+│  sega_pad.c (Sega 6-btn геймпад, PCF8574)  i2s.c (звук: Lynx+GBA на I2S)  │
 ├───────────────────────────────────────────────────────────────┤
 │  CPU1 (tft_drv.c): SPI0 ILI9486 480×320 + тач TSC2046I (PA21) │
 │  зв′язь — SRAM A1 (0x34..0x70), heartbeat — PL10              │
@@ -62,7 +62,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | ColecoVision | **Gearcoleco** | C++ | 256×192 → g_col_fb → построчно → EMU_FB | usb_kbd_get_raw + sega_pad (full keypad) |
 | ZX Spectrum | **Fuse (libretro)** | C | 320×240 → EMU_FB (fuse_host.c) | usb_kbd + sega_pad (порт 2 клавиатуры) |
 | PC Engine / TG | **Beetle PCE Fast** | C | 256×240 → EMU_FB (pce_host.c) | usb_kbd + sega_pad |
-| БК-0010/0011М | **BK-Terak-Emu (libretro)** | C | 512×512 (кадр 256×256 content) → EMU_FB (bk_host.c) | usb_kbd (полная клава) + sega_pad |
+| БК-0010/0011М | **BK-Terak-Emu (libretro)** | C | 512×256 → прямая запись в HDMI FB (bk_host.c:163-174, НЕ через EMU_FB/emu_scale) | usb_kbd (полная клава) + sega_pad |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -124,7 +124,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 ### gameboy_host.cpp (Game Boy / GBC, binjgb)
 
 - Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
-- Менеджер памяти — bump-аллокатор `gb_heap` (12 МБ) в gameboy_stubs.c, `gb_heap_reset()`
+- Менеджер памяти — bump-аллокатор `gb_heap` (24 МБ) в gameboy_stubs.c, `gb_heap_reset()`
   находится в linker.ld (резерв _gb_heap_start/end между BSS и _hend).
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
@@ -270,7 +270,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | 7 | ROM partition info (справка по разметке SD) |
 
 > Порядок пунктов совпадает с TFT-меню (`tft_drv.c`) — при изменении править оба.
-> Настройки частоты кадра **убраны** (r158): эмуляторы всегда 60 Гц.
+> Настройки частоты кадра **убраны** (r158). Период кадра: по умолчанию 60 Гц
+> (16667 мкс), но системы с собственным темпом ядра/звука имеют свой:
+> Lynx — 75 Гц (плюс слежение за потреблением I2S, r559/r560), NGP — ~61.7 Гц
+> (16200 мкс), GBA — адаптивный период по TX Sample Counter (r562).
 
 ## Ввод (usb_kbd.c / usb_ohci.c)
 
@@ -432,3 +435,23 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
 запас до 16.6 мс. Более тяжёлые системы (A5200 — ANTIC 140K, A7800 — MARIA 55K
 вызовов/кадр, Portfolio — 8088 интерпретация + LCD-рендер) тяжелее, но укладываются.
 512 МБ DRAM + Cortex-A7 @ 1.2 ГГц — запас достаточен.
+### Системы сверх таблицы (добавлены после базового описания)
+
+К базовой таблице эмуляторов (см. выше) добавлены (r0.38x..r577, все READY
+в `systems.h`, точки входа в `emu.h`/`emu.c`/host-слоях):
+
+- **Аркады (FinalBurn Neo, ядро `cps1/`, host `cps1_host.cpp`)**: CPS-1/CPS-2,
+  NeoGeo/MVS, Toaplan, Cave 68K, Sega System 16, общий fbneo — рендер через
+  `g_frame` (384×320) → HDMI FB; ввод через `toa_input_cache`.
+- **БК-0010/0011М** — см. таблицу (прямая запись в HDMI FB).
+- **МС 1504** (8088, `ms1504/ms1504_host.c`, BIOS PK300 вшит) — рендер, ввод.
+- **Плановые компьютеры** (в `systems.h`, ядер в дереве нет): Radio-86RK, CPC,
+  C64, Enterprise, Atari 8-bit (atari800 собран в OBJ? — НЕТ, a8-объекты не
+  линкуются в прошивку, в меню статус PLANNED).
+
+### Звук (актуально, r577)
+
+I2S (MAX98357A, 48 кГц): подключены **Lynx** (`lynx_host.cpp:208`) и **GBA**
+(`gba_host.c:194`). Остальные системы — звук синтезируется в ядрах, но в I2S
+НЕ выводится (послойное подключение, см. AGENTS.md правило 5). История и
+пороги — см. docs/CODE-REVIEW-2026-10-01.md (Д-12..Д-41).
