@@ -318,6 +318,12 @@ void i2s_push_sample(int16_t left, int16_t right) {
     uint32_t w = g_ring_wr & (AUDIO_RING_SIZE - 1);
     g_ring_l[w] = (int16_t)L;
     g_ring_r[w] = (int16_t)R;
+    // r593: БАРЬЕР перед публикацией индекса. Кольцо в .coherent (uncached),
+    // но на ARM две обычные записи к Normal-памяти могут переупорядочиться:
+    // g_ring_wr++ мог дойти до DRAM РАНЬШЕ сэмплов → CPU2 читал по новому
+    // индексу ещё НЕ записанные данные = «ритмичные громкие щелчки с
+    // динамикой игры». dmb упорядочивает: сэмплы видны раньше индекса.
+    __asm volatile("dmb sy" ::: "memory");
     g_ring_wr++;
 }
 
@@ -334,26 +340,42 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // r591 (Д-56): при пустом кольце — HOLD последней пары (не тишина 0).
 // Раньше писали 0: на микроголоде (кадр эмуляции чуть дольше периода)
 // ступенька в 0 на непрерывной мелодии давала «треск как песок» у Lynx.
+// r593 (Д-58): HOLD заменён на ЗАТУХАНИЕ к 0 (~1 мс). Держать пик пачки
+// до следующей пачки = «ритмичные громкие щелчки с динамикой игры» (при
+// отставании эмуляции кольцо пустеет между пачками; на стыке скачок от
+// удержанного пика к новому сэмплу). Затухание убирает и громкий hold-тон,
+// и стыковочный скачок; «песок» (скачок в 0) не возвращается.
+#define I2S_HOLD_FADE_PAIRS 48   // ~1 мс затухания при 48 кГц
+
 void i2s_flush_max(int max_pairs) {
     if (!g_i2s_ready) return;
     if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
     int n = 0;
     static int16_t hold_l = 0, hold_r = 0;   // последняя выведенная пара
+    static int fade_left = 0;                // пар до конца затухания
     while (n < max_pairs) {
         if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) break;   // мало места — вернёмся позже
         if (ring_count() > 0) {
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
             hold_l = g_ring_l[r];
             hold_r = g_ring_r[r];
+            fade_left = I2S_HOLD_FADE_PAIRS;   // следующий голод начнёт затухать от нового уровня
             I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
             I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
             g_ring_rd++;
         } else {
-            // кольцо пусто (микроголод): повторяем последнюю пару, чтобы
-            // не было ступеньки в 0 («песок»); при долгой тишине сигнал
-            // в DS-фильтре всё равно уйдёт в 0 плавно.
-            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
-            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
+            // кольцо пусто (пауза между пачками): плавно гасим уровень до 0.
+            // Держать пик (старый HOLD) давало громкие щелчки на стыке пачек.
+            if (fade_left > 0) {
+                fade_left--;
+                int32_t l = (int32_t)hold_l * fade_left / I2S_HOLD_FADE_PAIRS;
+                int32_t r = (int32_t)hold_r * fade_left / I2S_HOLD_FADE_PAIRS;
+                I2S_FIFO_TX = (uint32_t)(uint16_t)l << 16;
+                I2S_FIFO_TX = (uint32_t)(uint16_t)r << 16;
+            } else {
+                I2S_FIFO_TX = 0;
+                I2S_FIFO_TX = 0;
+            }
         }
         n++;
     }
@@ -399,14 +421,22 @@ void i2s_test_tone(int freq, int msec) {
     // и выводим тон НАПРЯМУЮ в TX FIFO. Это убирает двойного потребителя
     // (гонка core0↔CPU2 = «очень громкий/щелчки/тихий»): пока CPU2 встал,
     // он не трогает FIFO, а мы пишем ровный тон. Без CPU2 — старый путь.
+    // r593: pacing — через точный h3_hs_timer_lo_us (core0, MMU вкл), а не
+    // udelay(21): udelay грубый (~±10 мкс) → «металлический оттенок, 400 Гц
+    // плавает, битрейт плохой». Также пишем пары в ПАКЕТЕ из-за FIFO: если
+    // писать по одной и FIFO полон — i2s_write_pair_direct молча дропает
+    // (пауза-щелчок). Точный темп убирает и джиттер, и дропы.
     int cpu2 = i2s_audio_core_active();
     if (cpu2) {
         i2s_audio_cmd(AUDIO_CMD_PAUSE);     // ждёт g_audio_paused_f
+        uint32_t t0 = h3_hs_timer_lo_us();
         for (int d = 0; d < total; d++) {
             uint32_t idx = (ph >> 8) & 0xFF; ph += step;
             int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает
             i2s_write_pair_direct((int16_t)s, (int16_t)s);
-            udelay(I2S_PACE_UNITS);   // темп 48 кГц
+            // точный темп 48 кГц (20.833 мкс/пара)
+            uint32_t next = t0 + (uint32_t)(d + 1) * 21u;
+            while ((int32_t)(h3_hs_timer_lo_us() - next) < 0) {}
         }
         i2s_audio_cmd(AUDIO_CMD_RESUME);
     } else {
