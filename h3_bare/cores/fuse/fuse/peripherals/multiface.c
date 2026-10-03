@@ -35,9 +35,11 @@
 #include "debugger/debugger.h"
 #include "event.h"
 #include "infrastructure/startup_manager.h"
-#ifndef __PS3__
-#include "memory.h"
-#endif
+#include "memory_pages.h"   // r612: вместо legacy "memory.h" (в fuse-libretro его
+                            // нет; в старом fuse memory.h был, тут подхватывался
+                            // НЕДЕТЕРМИНИРОВАННО из newlib-тулчейна → сборка
+                            // падала на других машинах). Нужные символы
+                            // (memory_page, MEMORY_PAGES_IN_8K) — из memory_pages.h.
 #include "module.h"
 #include "multiface.h"
 #include "options.h"
