@@ -416,28 +416,26 @@ void i2s_test_tone(int freq, int msec) {
     int was_muted = g_muted;
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
 
-    // r615: вывод тона ЧЕРЕЗ КОЛЬЦО (i2s_push_sample) и штатный долив (CPU2
-    // или i2s_flush_max), а НЕ напрямую в TX FIFO с программным busy-wait.
-    // Прямой путь (r588/r593) дропал пары при полном FIFO и имел джиттер
-    // от h3_hs_timer_lo_us (64-бит деление + ретрай) — темп записи (~21.5 мкс)
-    // не совпадал с реальным потреблением FIFO (20.83 мкс) → выпадающие куски
-    // синусоиды («не хватает частей», рваный/дробный тон). Кольцо + аппаратный
-    // долив дают демпфер: пары уходят ровно 48 кГц, дропы/джиттер исчезают.
-    // Длительность держим, заполняя кольцо не быстрее потребления (не даём
-    // кольцу переполниться и не обгоняем CPU2).
+    // r615: pacиг по РЕАЛЬНОМУ времени через точный таймер (как r593), но
+    // пары пишем в КОЛЬЦО (i2s_push_sample), а не напрямую в TX FIFO.
+    // Прямой вывод с дропом при полном FIFO давал «не хватает частей»;
+    // кольцо убирает дропы, аппаратный долив задаёт честные 48 кГц.
+    // pacing: 21 мкс на пару (чуть медленнее 20.83 мкс потребления — кольцо
+    // не растёт, CPU2 успевает выводить). После тона выплескиваем остаток.
+    int cpu2 = i2s_audio_core_active();
+    uint32_t t0 = h3_hs_timer_lo_us();
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
         int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает
         i2s_push_sample((int16_t)s, (int16_t)s);
-        if (i2s_ring_level() >= 64) {            // кольцо подросло — даём доливу уйти
-            if (i2s_audio_core_active())
-                h3_hs_timer_lo_us();             // пустое чтение (микро-пауза)
-            else
-                i2s_flush_max(24);
+        if (!cpu2) {
+            // без CPU2 — выводим сами, но тоже по pacing, чтобы не разом
+            i2s_flush_max(1);
         }
+        uint32_t next = t0 + (uint32_t)(d + 1) * I2S_PACE_UNITS;
+        while ((int32_t)(h3_hs_timer_lo_us() - next) < 0) {}
     }
-    // Выплеснуть остаток кольца в FIFO (если CPU2 не поднят — делаем сами).
-    if (!i2s_audio_core_active()) {
+    if (!cpu2) {
         while (i2s_ring_level() > 0) i2s_flush_max(24);
     }
 
@@ -457,18 +455,17 @@ void i2s_click(void) {
     // r546: как в i2s_test_tone — восстанавливаем прежнее состояние мьюта.
     int was_muted = g_muted;
     if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    int cpu2 = i2s_audio_core_active();
+    uint32_t t0 = h3_hs_timer_lo_us();
     for (int d = 0; d < total; d++) {
         uint32_t idx = (ph >> 8) & 0xFF; ph += step;
         int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
         i2s_push_sample((int16_t)s, (int16_t)s);
-        if (i2s_ring_level() >= 64) {
-            if (i2s_audio_core_active())
-                h3_hs_timer_lo_us();
-            else
-                i2s_flush_max(24);
-        }
+        if (!cpu2) i2s_flush_max(1);
+        uint32_t next = t0 + (uint32_t)(d + 1) * I2S_PACE_UNITS;
+        while ((int32_t)(h3_hs_timer_lo_us() - next) < 0) {}
     }
-    if (!i2s_audio_core_active()) {
+    if (!cpu2) {
         while (i2s_ring_level() > 0) i2s_flush_max(24);
     }
     if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
