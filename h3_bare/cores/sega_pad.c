@@ -23,14 +23,17 @@
 //   Вход/выход эмулятора: re-init пада sega_pad_init() (лечит сбой I2C).
 //   Выход из игры — удержание Start+Mode ~0.9 с (emu.c: armed + sticky).
 //
-//   PA_DAT (0x01C20810) ДЕЛЯТ ТРИ ВЛАДЕЛЬЦА НА ДВУХ ЯДРАХ:
-//     CPU0 — PA11/PA12 (SCL/SDA пада, этот файл) и PA15 (SD-LED, led.c);
+//   PA_DAT (0x01C20810) ДЕЛЯТ ДВА ВЛАДЕЛЬЦА НА ДВУХ ЯДРАХ:
+//     CPU0 — i2s-SD (PA10, i2s.c) и PA15 (SD-LED, led.c);
 //     CPU1 — PA21 (CS тача TSC2046I) и PA2 (RST TFT, tft_drv.c).
 //   Битовые |= / &= на PA_DAT НЕ атомарны → возможна RMW-гонка. НЕ добавлять
 //   новые записи в PA_DAT из CPU0 без необходимости; «alive» держать на PL10.
+//   r614: Sega-пад/кнопки (bit-bang TWI) ПЕРЕВЕДЕНЫ с PA11/PA12 (TWI0) на
+//   PG9/PG8 (порт G, см. ниже) — чтобы убрать тысячи неатомарных записей
+//   PA_DAT из горячего пути и не рвать регистр с i2s-SD (PA10)/CPU1 (PA21).
 // ============================================================================
 //
-// Разводка (TWI0, bit-bang): PA11=SCL, PA12=SDA.
+// Разводка (bit-bang TWI на порту G): PG9=SCL, PG8=SDA (разъём 40-pin 36/32).
 // PCF8574 (адрес 0x20), раскладка СЕГА (все линии данных — активный низ):
 //   P0 = D0  (Up)          — всегда (в 6-btn фазе = Z)
 //   P1 = D1  (Down)        — всегда (в 6-btn фазе = Y)
@@ -93,37 +96,42 @@
 
 extern int printf(const char* fmt, ...);
 
-// ---- PA11 = SCL, PA12 = SDA (GPIO на TWI0) ----
-#define SCL_PIN  11
-#define SDA_PIN  12
+// ---- SCL = PG9, SDA = PG8 (GPIO на порту G, бит-банг I2C) ----
+// r614: перенос с PA11/PA12 (TWI0) на PG9/PG8 — убрать неатомарные RMW
+// записи в PA_DAT (делится с i2s-SD PA10 и CPU1-TFT PA21) из горячего пути
+// бит-банга (см. RMW-гонку PA_DAT, sega_pad.c:26-30/tft_drv.c:176-182).
+// Пины: разъём 40-pin — PG9=pin36, PG8=pin32. Функция GPIO: CFG=1.
+// Далее логика протокола НЕ меняется («1 в 1»): только база порта и пины.
+#define SCL_PIN  9
+#define SDA_PIN  8
 
-#define PA_BASE  0x01C20800u
-#define PA_CFG1  (*(volatile uint32_t*)(PA_BASE + 0x04u))
-#define PA_DAT   (*(volatile uint32_t*)(PA_BASE + 0x10u))
+#define PG_BASE  0x01C208D8u   // H3_PIO_PORTG_BASE (порт G)
+#define PG_CFG1  (*(volatile uint32_t*)(PG_BASE + 0x04u))   // PG8..PG15
+#define PG_DAT   (*(volatile uint32_t*)(PG_BASE + 0x10u))
 
 static inline void pa_scl_out(int v) {
-    uint32_t cfg = PA_CFG1;
+    uint32_t cfg = PG_CFG1;
     int shift = (SCL_PIN % 8) * 4;
-    if (v) { PA_DAT |=  (1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    else   { PA_DAT &= ~(1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    PA_CFG1 = cfg;
+    if (v) { PG_DAT |=  (1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    else   { PG_DAT &= ~(1u << SCL_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    PG_CFG1 = cfg;
 }
 
 static inline void pa_sda_out(int v) {
-    uint32_t cfg = PA_CFG1;
+    uint32_t cfg = PG_CFG1;
     int shift = (SDA_PIN % 8) * 4;
-    if (v) { PA_DAT |=  (1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    else   { PA_DAT &= ~(1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
-    PA_CFG1 = cfg;
+    if (v) { PG_DAT |=  (1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    else   { PG_DAT &= ~(1u << SDA_PIN); cfg = (cfg & ~(0xFu << shift)) | (0x1u << shift); }
+    PG_CFG1 = cfg;
 }
 
 static inline void pa_sda_in(void) {
-    uint32_t cfg = PA_CFG1;
+    uint32_t cfg = PG_CFG1;
     cfg &= ~(0xFu << ((SDA_PIN % 8) * 4));
-    PA_CFG1 = cfg;
+    PG_CFG1 = cfg;
 }
 
-static inline int pa_sda_read(void) { return (PA_DAT & (1u << SDA_PIN)) ? 1 : 0; }
+static inline int pa_sda_read(void) { return (PG_DAT & (1u << SDA_PIN)) ? 1 : 0; }
 
 // Полупериод SCL: 130 тиков @~97 МГц = ~1.3 мкс → SCL ~370 кГц.
 // Медленнее (92 кГц) 6-btn детект не успевает за окно 1.6 мс ↔

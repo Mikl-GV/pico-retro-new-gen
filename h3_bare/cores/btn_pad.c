@@ -1,4 +1,4 @@
-// btn_pad.c — прямой 8-битовый PCF8574 (TWI0, bit-bang PA11/PA12).
+// btn_pad.c — прямой 8-битовый PCF8574 (bit-bang TWI на PG9/PG8, см. sega_pad.c).
 // ОТДЕЛЬНЫЙ модуль: никак не лезем в протокол скана sega_pad.c.
 // Карта кнопок (активный низ — кнопка замыкает линию на GND):
 //   B0=Up B1=Left B2=Right B3=Down B4=A B5=B B6=Start B7=Select(Coin).
