@@ -1308,3 +1308,13 @@ SD дёргается → щелчок на I2S. РЕШЕНИЕ ЗА ВЛАДЕ�
 MEMORY_PAGES_IN_8K). Мусор legacy-инклюда убран. ВЕРСИЯ **r609 → r612**.
 Сборка: `make -j16` EXIT=0, бинарник `build: r612`. Проверка: голый клон с
 GitHub — см. ниже.
+**Д-76 | 2026-10-03 | Fix: cps1_rename.sh — Windows/MSYS response-файл (r613).**
+Сборка из свежего клона падала на линковке: `undefined reference to m68ki_cpu /
+m68k_ICount` из c1m_m68kops.o. Причина: сгенерированный m68kops.c даёт ~2000
+токенов, и cps1_rename.sh строил прямую команду `objcopy --redefine-sym ...`
+(~110 КБ), превышающую лимит командной строки Windows (~32K) → objcopy падал
+с «Argument list too long» и молча НЕ переименовывал символы. На Linux
+(ARG_MAX ~2МБ) рецепт работал — потому эталон собирался, а на Windows нет.
+Фикс: аргументы передаются через response-файл (`objcopy @file`), лимит снят.
+ВЕРСИЯ **r612 → r613**. Сборка: `make clean && make -j16` EXIT=0, бинарник
+`build: r613` (h3_bare.bin = 13528212 байт), проверен с голого клона r613.

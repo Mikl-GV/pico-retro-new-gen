@@ -13,15 +13,22 @@
 # ВАЖНО: применяется к КАЖДОМУ cps1-объекту после компиляции (соответственно
 # переименовываются и определения, и ссылки внутри объекта). all m68k/YM2612
 # токены перечисляются динамически через nm (как gc_rename.sh по токенам).
+#
+# Windows/MSYS: сгенерированный m68kops.c даёт ~2000 токенов, и прямая команда
+# objcopy --redefine-sym ... каждой строкой превышает лимит командной строки
+# Windows (~32K) → «Argument list too long». Передаём аргументы через response-
+# файл (@file), который binutils читает целиком, без ограничения по длине.
 IN=$1
 [ -f "$IN" ] || exit 0
 
-ARGS=""
+REFLIST="$IN.rsp"
+: > "$REFLIST"
 for sym in $(arm-none-eabi-nm "$IN" 2>/dev/null | awk '{print $NF}' | grep -E '^(m68k|m68ki|YM2612)' | sort -u); do
-  ARGS="$ARGS --redefine-sym $sym=c1$sym"
+  printf '%s\n' "--redefine-sym=$sym=c1$sym" >> "$REFLIST"
 done
 
-if [ -n "$ARGS" ]; then
-  arm-none-eabi-objcopy $ARGS "$IN" "$IN.tmp" && mv "$IN.tmp" "$IN"
+if [ -s "$REFLIST" ]; then
+  arm-none-eabi-objcopy @"$REFLIST" "$IN" "$IN.tmp" && mv "$IN.tmp" "$IN"
 fi
+rm -f "$REFLIST"
 exit 0

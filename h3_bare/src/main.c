@@ -234,7 +234,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r612";
+const char g_fw_version[] = "r613";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,7 +242,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r612\n");
+    uart_puts("build: r613\n");
 
     led_init();
     led_set(0);
