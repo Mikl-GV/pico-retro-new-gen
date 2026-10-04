@@ -286,6 +286,7 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
         bk_retro_run();
         emu_throttle();
         fb_flush();   // r0.255: host_video уже записал HDMI FB напрямую (emu_scale не нужен)
+        emu_hdmi_flip();   // r703: no-op при CONFIG_HDMI_DOUBLE_BUF=0
         if (emu_esc_hold() || g_bk_exit_req) break;
     }
 

@@ -28,6 +28,27 @@ void emu_set_border_color(uint32_t rgb888) {
     g_border_color = rgb888;
 }
 
+// r703 (C3): double-buffer HDMI для direct-писателей (BK/Vectrex).
+// ВЫКЛЮЧЕН по умолчанию. DE2 UI-канал запущен с единственным TOP_LADDR=FB_ADDR;
+// настоящий vsync-free flip двух буферов без аппаратной проверки опасен (риск
+// чёрного/рваного кадра на стенде), поэтому активный dbl-buf закрыт за макросом.
+// Функция остаётся точкой интеграции: при включении bk/vecx пишут в back buffer,
+// а emu_hdmi_flip() меняет H3_DE2_MUX0_UI->CFG[0].BOT_LADDR (см. h3_de2.h).
+#define CONFIG_HDMI_DOUBLE_BUF 0   // 0 = выкл. (безопасно), 1 = вкл. (только со стендом)
+#define FB_ADDR_BACK 0x5FB40000u   // второй FB для direct-писателей (1 МБ ниже стека CPU2)
+
+void emu_hdmi_flip(void) {
+#if CONFIG_HDMI_DOUBLE_BUF
+    // Пометка для документации: здесь переключение адреса DE2 UI-канала.
+    // Без правильного vsync-гейта (статус TCON1/DE2) flip может показать
+    // пустой буфер — проверяется только на живом железе.
+    extern void h3_de2_set_ui_addr(uint32_t addr);
+    h3_de2_set_ui_addr(FB_ADDR_BACK);
+#else
+    (void)FB_ADDR_BACK;
+#endif
+}
+
 // ---- единый nearest-neighbour скейлер ----
 // Оптимизация: без делений в пиксельном цикле. Таблица sx[] (индекс исходной
 // колонки для каждой целевой) считается один раз — на Cortex-A7 деление ~12-20
@@ -171,6 +192,10 @@ void emu_prepare(void) {
                              // между системами (напр. NGP ставил 16200, а выход
                              // возвращал saved_period от прошлого, не 16667).
     i2s_ring_reset();   // r506: кольцо I2S не должно нести сэмплы предыдущей системы
+    // r702: ring_reset больше НЕ делает auto-RESUME (чтобы тест-тон/клик,
+    // пишущие напрямую в FIFO, держали CPU2 в паузе). Эмулятору долив нужен —
+    // возвращаем CPU2 в работу явно (watermark накопит запас, CPU2 заиграет).
+    i2s_audio_cmd(AUDIO_CMD_RESUME);
     emu_clear_fb();
     fb_clear();
     fb_flush();
@@ -187,23 +212,63 @@ void snd_manifest(const char* sys, const char* cores) {
 }
 
 // ---- throttle ----
-static uint32_t emu_ts0 = 0;
+// C5: throttle от РЕАЛЬНОГО времени, с накоплением «долга» переработки.
+// Раньше (r585): emu_ts0 переустанавливался на now каждый кадр — если кадр
+// эмуляции был дольше периода (тяжёлая сцена), переработка ТЕРЯЛАСЬ: видео
+// «плавало» по реальному времени, а звук (ведомый железным 48 кГц FIFO на
+// CPU2) не догонялся → накапливался рассинхрон видео↔звук и «хвосты».
+// C5: база сдвигается на +period от СТАРОЙ базы (а не на now), а всё, что
+// ушло на эмуляцию сверх периода, засчитывается в emu_debt. Следующий кадр
+// ждёт период - debt: мелкая переработка догоняется, дрейф не копится.
+static uint32_t emu_ts0 = 0;      // следующая «распланированная» граница кадра
+static int32_t  emu_debt = 0;     // переработка [мкс], вычтем из следующего wait
+
+// r703 (C4): liveness CPU2. g_audio_beat инкрементится CPU2 в цикле — если он
+// перестал расти, аудио-ядро зависло (напр. на I2S_FIFO_STA-спине) при том, что
+// g_audio_core_active() всё ещё =1. Нужен явный detection + fallback на долив core0,
+// иначе зависший CPU2 = вечная тишина без возврата к штатному выводу.
+#define CPU2_HANG_MS 250   // через сколько «затишья» beat считаем ядро зависшим
+static uint32_t emu_cpu2_last_beat = 0;
+static uint32_t emu_cpu2_stall_t  = 0;   // 0 = не в состоянии «завис»
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
     // ЯДРО 1 (led_heartbeat_cpu1), чтобы core0 не писал в PA_DAT (гонка с PA21/CS).
 
     uint32_t now = h3_hs_timer_lo_us();
-    if (!emu_ts0) emu_ts0 = now;
-    uint32_t elapsed = now - emu_ts0;
-    if (elapsed < emu_period_us) {
-        // r585 (Ф1): долив звука I2S делает CPU2 (audio_core.c) — с честным
-        // темпом 48 кГц непрерывно. core0 здесь ТОЛЬКО ждёт конца периода
-        // (синхронизация видео↔звук), не трогая FIFO. Если аудио-ядро не
-        // поднято (fallback) — старый путь: долив в throttle на core0.
+    if (!emu_ts0) emu_ts0 = now;   // первый кадр — стартовая база
+    uint32_t period = emu_period_us;
+
+    // Сколько в этой итерации реально заняла эмуляция с прошлого throttle.
+    uint32_t elapsed = now - emu_ts0 + (uint32_t)emu_debt;
+    emu_debt = 0;
+
+    if (elapsed < period) {
+        // В уложились: ждём остаток периода. Активный CPU2 — просто спим
+        // (звук на железе); fallback — старый долив в throttle.
+        uint32_t wait = period - elapsed;
+        // r703 (C4): liveness CPU2 — не полагаемся на «поднялся хоть раз».
+        // Сравниваем прирост heartbeat внутри переданного периода.
+        int cpu2_hung = 0;
         if (i2s_audio_core_active()) {
-            udelay(emu_period_us - elapsed);
+            uint32_t b = i2s_audio_beat();
+            if (b != emu_cpu2_last_beat) {
+                emu_cpu2_last_beat = b;
+                emu_cpu2_stall_t = 0;   // beat растёт — CPU2 жив
+            } else {
+                if (!emu_cpu2_stall_t) emu_cpu2_stall_t = now;
+                else if ((uint32_t)(now - emu_cpu2_stall_t) > (CPU2_HANG_MS * 1000u)) {
+                    cpu2_hung = 1;      // beat стоит > 250 мс — ядро зависло
+                }
+            }
+        } else {
+            emu_cpu2_stall_t = 0;
+        }
+
+        if (i2s_audio_core_active() && !cpu2_hung) {
+            udelay(wait);
         } else if (i2s_ready()) {
-            uint32_t left = emu_period_us - elapsed;
+            // fallback: CPU2 не поднялся / завис — долив на core0 (как до Ф1)
+            uint32_t left = wait;
             while (left > 0) {
                 i2s_flush_max(24);
                 uint32_t step = (left > 500) ? 500 : left;
@@ -212,24 +277,29 @@ void emu_throttle(void) {
             }
             i2s_flush_max(24);
         } else {
-            udelay(emu_period_us - elapsed);
+            udelay(wait);
         }
-    }
-    emu_ts0 = h3_hs_timer_lo_us();
-
-    // r639-DIAG: печать под-железа в игре (раз в 60 кадров). g_audio_ring теперь
-    // = счётчик «кольцо было пусто» (CPU2 считает), g_audio_pairs = свободные слова FIFO.
-    static uint32_t diag_frames = 0;
-    if ((++diag_frames % 60) == 0) {
-        extern uint32_t i2s_audio_ring(void);
-        extern uint32_t i2s_audio_pairs(void);
-        printf("THR: underrun_cnt=%u fifo_free=%u\n",
-               (unsigned)i2s_audio_ring(), (unsigned)i2s_audio_pairs());
+        // База сдвигается ровно на один период от СТАРОЙ границы:
+        // переработка (если она была) «догоняется» здесь, а не теряется.
+        emu_ts0 += period;
+    } else {
+        // Переработали период (кадр был тяжёлым). Не ждём — сразу рисуем,
+        // а переработку копим как долг, чтобы следующие кадры его догнали.
+        emu_debt = (int32_t)(elapsed - period);
+        if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3); // кап: не уходить в минус надолго
+        emu_ts0 += period;   // граница всё равно сдвинута на период
+        if (i2s_audio_core_active() == 0) {
+            // fallback: хотя бы долить накопившееся, чтобы FIFO не проседал
+            i2s_flush_max(24);
+        }
     }
 }
 
 void emu_throttle_reset(void) {
     emu_ts0 = 0;
+    emu_debt = 0;
+    emu_cpu2_last_beat = 0;   // r703: сброс liveness-детектора CPU2 на новом цикле кадров
+    emu_cpu2_stall_t = 0;
 }
 
 // ---- единый выход из эмулятора: удержание ~0.9 с ----
@@ -263,7 +333,7 @@ int emu_esc_hold(void) {
     // Выход по ESC x3 — для Low-Speed донгла (I8 Pro), где длинное удержание
     // ненадёжно. Срабатывает от фронтов, «доезд» залипшей ESC не сгенерирует
     // (повторов не бывает), поэтому арм-предохранитель обходим сознательно.
-    if (usb_kbd_esc3_pressed()) return 1;
+    if (usb_kbd_esc3_pressed()) { i2s_ring_reset(); return 1; }
 
     uint8_t raw_keys[6];
     // r0.221: НИ ОДНОГО нового USB-чтения здесь! Два usb_kbd_get_raw за кадр
@@ -304,7 +374,7 @@ int emu_esc_hold(void) {
             if (!g_esc_armed) return 0;
         }
         if (!g_esc_hold_us) { g_esc_hold_us = now; g_esc_hold_from_pad = pad_start; }
-        else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
+        else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; i2s_ring_reset(); return 1; }
     } else {
         g_esc_arm_t = 0;
         g_esc_hold_from_pad = 0;   // Start отпущен — любое накопление недействительно
@@ -372,7 +442,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("A7800: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00281206);   // тёмно-бордовый
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
@@ -389,7 +459,7 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("A5200: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00061428);   // тёмно-синий
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         a5200_run_frame();
@@ -409,7 +479,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         sms_run_frame();
@@ -428,7 +498,7 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00082030);   // тёмно-синий (GG)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         gg_run_frame();
@@ -448,7 +518,7 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
     printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
            a2600_diff_expert ? "Expert" : "Novice");
     emu_set_border_color(0x00201A08);   // тёмно-янтарный (woodgrain A2600)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
@@ -466,7 +536,7 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
     printf("Portfolio: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00101816);   // тёмно-оливковый
     uint32_t fc = 0;
-    emu_ts0 = 0;
+    emu_throttle_reset();
     for (;;) {
         portfolio_run_frame();
         if (portfolio_exit_requested()) break;
@@ -486,7 +556,7 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GameBoy: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A0E);   // тёмно-зелёный (DMG)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         gb_run_frame();
@@ -507,33 +577,20 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GBA: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A2E);   // тёмно-синий (GBA)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         gba_run_frame();
-        // r562: слежение периода за фактическим потреблением железа (как
-        // Lynx r559/r560). GBA-звук (32768→48000) пушится в кольцо пачкой в
-        // конце кадра; без слежения период 16667 не равен реальному темпу
-        // I2S, кольцо дрейфует → дропы → «плохой звук».
+        // r645: период кадра от ФАКТИЧЕСКОГО числа пар звука за кадр
+        // (вместо магического адреса 0x01C22028 — хрупкий прямой доступ к I2S).
         {
-            volatile uint32_t txc = *(volatile uint32_t*)0x01C22028u;   // I2S/PCM TX Sample Counter
-            uint32_t now = h3_hs_timer_lo_us();
-            static uint32_t prev_txc = 0, prev_t = 0;
-            if (prev_txc && txc > prev_txc) {
-                uint32_t dp = txc - prev_txc;          // пар выведено за прошедший кадр
-                uint32_t dtime = now - prev_t;         // мкс
-                if (dp < 2000 && dtime > 5000 && dtime < 30000) {
-                    // аппроксимация: за кадр (60 Гц) железу нужно время на
-                    // ~800 пар. Точнее: gpSP на 32768 Гц даёт ~549 входных
-                    // пар/кадр, ресемпл 32768→48000 (×1.4648) → ~804 пары —
-                    // берём 800 как округлённую константу.
-                    uint32_t peri = (uint32_t)(((uint64_t)dtime * 800u) / dp);
-                    if (peri >= 12000 && peri <= 24000)
-                        emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
-                }
+            extern uint32_t gba_last_pairs(void);
+            uint32_t p = gba_last_pairs();
+            if (p >= 400 && p <= 2000) {
+                uint32_t peri = (uint32_t)(((uint64_t)p * 1000000u) / 48000u);
+                if (peri >= 12000 && peri <= 24000)
+                    emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
             }
-            prev_txc = txc;
-            prev_t = now;
         }
         gba_render_frame();
         emu_throttle();
@@ -552,7 +609,7 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("Lynx: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E0D26);   // тёмно-фиолетовый (Lynx)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     // r511: рефреш Lynx ~75 Гц (48000/75 = 640 сэмплов/кадр), а не 60 Гц.
     // Период кадра считаем от фактического числа сэмплов (пара = 21 мкс).
@@ -563,30 +620,17 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     uint16_t saved_period = emu_period_us;
     for (;;) {
         lynx_run_frame();
+        // r645: период кадра от ФАКТИЧЕСКОГО числа пар звука за кадр
+        // (убрано слежение по магическому адресу 0x01C22028 — хрупкий прямой
+        // доступ к I2S). Lynx: 75 Гц, ~640 пар/кадр при 48000.
         {
             extern uint32_t lynx_last_pairs(void);
             uint32_t p = lynx_last_pairs();
-            uint32_t u = p * 21;
-            if (u >= 5000 && u <= 40000) emu_period_us = (uint16_t)u;
-        }
-        // r559/r560: период кадра = время, за которое железо РЕАЛЬНО выводит
-        // 640 пар (слежение по I2S TX Sample Counter за прошедший кадр).
-        // r560: EMA утяжелён до 1/8 — кольцо меньше «дышит".
-        {
-            volatile uint32_t txc = *(volatile uint32_t*)0x01C22028u;   // I2S/PCM TX Sample Counter
-            uint32_t now = h3_hs_timer_lo_us();
-            static uint32_t prev_txc = 0, prev_t = 0;
-            if (prev_txc && txc > prev_txc) {
-                uint32_t dp = txc - prev_txc;          // пар выведено за прошедший кадр
-                uint32_t dtime = now - prev_t;         // мкс
-                if (dp > 0 && dp < 2000 && dtime > 5000 && dtime < 30000) {
-                    uint32_t peri = (uint32_t)(((uint64_t)dtime * 640u) / dp);
-                    if (peri >= 10000 && peri <= 20000)
-                        emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
-                }
+            if (p >= 300 && p <= 1200) {
+                uint32_t peri = (uint32_t)(((uint64_t)p * 1000000u) / 48000u);
+                if (peri >= 8000 && peri <= 16000)
+                    emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
             }
-            prev_txc = txc;
-            prev_t = now;
         }
         lynx_render_frame();
         emu_throttle();
@@ -594,7 +638,7 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = saved_period; i2s_ring_reset(); fb_clear(); fb_flush();
+exit: emu_period_us = 16667; i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -605,7 +649,7 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("NGP: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A2B);   // тёмно-синий (NGP)
-    emu_ts0 = 0;
+    emu_throttle_reset();
     emu_esc_hold_reset();
     // r0.417 (NGP, п.5 сессии): ядро RACE считает кадр 515×198=101970 тиков
     // при Ticks=6·2^20 → ~61.7 Гц, а throttle стоял на общих 60 Гц — игра шла
@@ -621,6 +665,6 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
         if (emu_esc_hold()) goto exit;
     }
 exit:
-    emu_period_us = saved_period;
+    emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
     fb_clear(); fb_flush();
 }

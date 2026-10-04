@@ -164,15 +164,12 @@ extern "C" void lynx_run_frame(void) {
         }
     }
 
-    // r514-r516: кадр = 213333 виртуальных цикла (16 МГц / 75 Гц, как libretro).
-    // Выход по display_callback допускается ТОЛЬКО когда осталось <12.5% кадра,
-    // иначе кадр обрывается слишком рано (у игр с быстрой развёрткой пары
-    // падали до 35-133 → рывки). Batman не набирает target без кадра — выходит
-    // по callback в конце кадра.
+    // r645: цикл кадра по эталону libretro-handy: выходим сразу по готовности
+    // кадра (display_callback), не «догоняем» target. Принудительное догоняние
+    // гнало ядро сверх 75 Гц → неравномерный звук, переполнение кольца, микрофризы.
     extern ULONG gSystemCycleCount;
     if (!g_lynx_next_cycle) g_lynx_next_cycle = gSystemCycleCount;
     ULONG target = g_lynx_next_cycle + (HANDY_SYSTEM_FREQ / 75);
-    const int32_t EARLY_OK = (int32_t)((HANDY_SYSTEM_FREQ / 75) / 8);
     lynx_frame_ready = 0;
     int safety = 0;
     while ((int32_t)(target - gSystemCycleCount) > 0) {
@@ -181,8 +178,7 @@ extern "C" void lynx_run_frame(void) {
             printf("lynx: frame timeout (safety)\n");
             break;
         }
-        if (lynx_frame_ready && (int32_t)(target - gSystemCycleCount) <= EARLY_OK)
-            break;
+        if (lynx_frame_ready) break;   // r645: выход сразу по готовности кадра
     }
     g_lynx_next_cycle = target;
 

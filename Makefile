@@ -938,10 +938,31 @@ $(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp
 	    -Wl,--allow-multiple-definition \
 	    -o $@ @$(BUILD)/linker.rsp
 
-$(BIN): $(ELF)
+$(BIN): $(ELF) $(BUILD)/linkcheck.stamp
 	$(OBJCOPY) -O binary $(ELF) $@
 	cp -f $@ $(TOP)h3_bare.bin
 	@echo "--- h3_bare.bin: $$(stat -c%s $@) байт (build/ и корень) ---"
+
+# r703 (C6): проверка целостности линковки обособленным шагом.
+# Bare-metal образ самодостаточен: не должно быть НЕопределённых символов
+# (undefined refs) в итоговом ELF. Дополнительно ловим «тихие» коллизии objcopy-
+# переименований (gc-blargg/msx/bk/gba/cps1): повторное определение одних и тех же
+# blargg-символов (Blip_Buffer и т.п. БЕЗ суффикса _gc) означало бы, что gc-объект
+# не был переименован и склеился с Lynx-версией (краш Coleco, r0.193).
+$(BUILD)/linkcheck.stamp: $(ELF)
+	@echo "linkcheck: undefined symbols + blargg-коллизии..."
+	@if arm-none-eabi-nm $(ELF) | awk '$$1=="U" || $$1=="w" || $$1=="v" {print}' | grep -q .; then \
+	    echo "ОШИБКА: в h3_bare.elf есть неразрешённые символы:"; \
+	    arm-none-eabi-nm $(ELF) | awk '$$1=="U" || $$1=="w" || $$1=="v" {print "  "$$0}'; \
+	    exit 1; \
+	fi
+	@if arm-none-eabi-nm $(ELF) | awk '$$2=="T"||$$2=="t"||$$2=="D"||$$2=="d"||$$2=="B"||$$2=="b"' | awk '{print $$3}' | grep -E '(_Z|^)Blip_|Effects_Buffer|Multi_Buffer|Stereo_Buffer|Silent_Blip_Buffer' | grep -v '_gc$$' | sort | uniq -d | grep -q .; then \
+	    echo "ОШИБКА: коллизия blargg-символов (gc-объект не переименован?):"; \
+	    arm-none-eabi-nm $(ELF) | awk '$$2=="T"||$$2=="t"||$$2=="D"||$$2=="d"||$$2=="B"||$$2=="b"' | awk '{print $$3}' | grep -E '(_Z|^)Blip_|Effects_Buffer|Multi_Buffer|Stereo_Buffer|Silent_Blip_Buffer' | grep -v '_gc$$' | sort | uniq -d | while read s; do echo "  дубль: $$s"; done; \
+	    exit 1; \
+	fi
+	@touch $@
+	@echo "linkcheck: OK"
 
 .PHONY: all clean sd fel help
 all: $(BIN)

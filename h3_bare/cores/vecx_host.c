@@ -277,6 +277,7 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
         emu_throttle();
         vx_render_hdmi(border);          // vx_fb[330×410] → HDMI 1024×600 (портрет)
         fb_flush();
+        emu_hdmi_flip();   // r703: no-op при CONFIG_HDMI_DOUBLE_BUF=0
         // ESC удержание ~0.9с — выход
         if (emu_esc_hold()) goto exit;
     }

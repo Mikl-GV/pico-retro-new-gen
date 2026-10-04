@@ -31,7 +31,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  cheatdb.c (чит-менеджер, парсер .cht)  gp_cheats.c (GPGX)    │
 │  sega_pad.c (Sega 6-btn геймпад, PCF8574@0x20)  i2s.c (звук: 15 систем на I2S)  │
 ├───────────────────────────────────────────────────────────────┤
-│  CPU1 (tft_drv.c): SPI0 ILI9486 480×320 + тач TSC2046I (PA21) │
+│  CPU1 (tft_drv.c): SPI0 ILI9486 480×320 + тач TSC2046I (CS PC4 с r703) │
 │  зв′язь — SRAM A1 (0x34..0x70), heartbeat — PL10              │
 ├───────────────────────────────────────────────────────────────┤
 │  HDMI: h3_de2 + h3_hdmi + dw_hdmi + h3_lcd                    │
@@ -212,8 +212,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 - **PL10** — зелёный, «проц жив»: мигает 0.5/0.5 с с **CPU1** (`led_heartbeat_cpu1`).
   Вынесен на R_PIO специально — CPU1 не трогает PA_DAT (меньше RMW-гонки с падом/тачем).
-- **PA15** — красный, «обращение к SD» (`led_sd_on/off` в sd.c). Живёт на PA_DAT —
-  редкие короткие всплески, RMW-гонка возможна (см. sega_pad.c / tft_drv.c).
+- **PA15** — красный, «обращение к SD» (`led_sd_on/off` в sd.c). r703: PA_DAT в
+  рантайме пишет ТОЛЬКО CPU2 через coherent-shadow (led.c) — core0/CPU1 RMW по
+  порту A не делают, гонок PA_DAT нет (см. sega_pad.c / tft_drv.c).
 - Активный уровень HIGH (проверено на железе: горит при DAT=1)
 - R_PIO требует включения тактирования (PRCM) — настраивается через U-Boot `gpio set PL10`
   в boot.scr (или остаётся в функции 7)
@@ -284,7 +285,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - USB-тач (Waveshare GT911, VID 0EEF / PID 0005): парсер HID-пакета — Report ID 0x01,
   Status бит0 = нажатие, X/Y 16-бит Little-Endian, диапазон 0..4095; `usb_touch_poll()`
 - **SPI-тач TFT TSC2046I** — на CPU1 (tft_drv.c): протокол XPT2046 (Mode 1 только),
-  CS=PA21, калибровка 5 мишеней. Подробно в `docs/HARDWARE.md`
+  CS=PC4 (с r703, спец. ревизия — перепаяно с PA21), калибровка 5 мишеней.
+  Подробно в `docs/HARDWARE.md`
 
 ## Sega-геймпад 6-button (sega_pad.c)
 

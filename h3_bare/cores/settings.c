@@ -380,6 +380,11 @@ enum {
     SET_AUDIO_T440,
     SET_AUDIO_T1000,
     SET_AUDIO_T3000,
+    // r702: тест слоя — тон пачками за кадр (как реальный эмулятор), разный
+    // размер «пачки»: GBA ~549, Lynx ~640, крупная (SNES/тяжёлые) ~2400.
+    SET_LAYER_T_GBA,
+    SET_LAYER_T_LYNX,
+    SET_LAYER_T_BIG,
     SET_COUNT,
 };
 
@@ -396,16 +401,30 @@ static const char* const set_labels[SET_COUNT] = {
     "Audio test 440 Hz",
     "Audio test 1000 Hz",
     "Audio test 3000 Hz",
+    "Layer test: tone GBA (800/fr)",
+    "Layer test: tone Lynx (1600/fr)",
+    "Layer test: tone big (3200/fr)",
 };
 
-// Рисуем меню настроек с курсором
-static void settings_draw(int sel) {
+// Рисуем меню настроек с курсором и вертикальным скроллом.
+// SET_COUNT пунктов > видимой области нельзя — рисуем окно [scroll, scroll+V).
+// r702: добавлен скролл (раньше все 15+ пунктов рисовались, залезая на футер).
+#define SET_VISIBLE 12
+
+static void settings_draw(int sel, int scroll) {
     fb_draw_stars();
     fb_puts_s(60, 40, "Settings", 2, 0x00FF0000);
     fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
 
+    // Удержание курсора в пределах видимого окна (страховка на случай, если
+    // scroll и sel рассинхронизировались).
+    if (sel < scroll) scroll = sel;
+    if (sel >= scroll + SET_VISIBLE) scroll = sel - SET_VISIBLE + 1;
+
     int y = 110;
-    for (int i = 0; i < SET_COUNT; i++) {
+    int last = scroll + SET_VISIBLE;
+    if (last > SET_COUNT) last = SET_COUNT;
+    for (int i = scroll; i < last; i++) {
         int is_sel = (i == sel);
         uint32_t clr = is_sel ? 0x00FFFF00 : 0x00FFFFFF;
         if (is_sel)
@@ -429,6 +448,12 @@ static void settings_draw(int sel) {
         }
         y += 34;
     }
+
+    // Индикаторы скролла (если есть что скрыто сверху/снизу)
+    if (scroll > 0)
+        fb_puts(58, 85, "^", 0x00888888);
+    if (last < SET_COUNT)
+        fb_puts(58, PHYS_H - 58, "v", 0x00888888);
 
     fb_puts(60, FOOTER_Y, "  ^v : select    Enter : action    ESC : back", 0x00888888);
     fb_flush();
@@ -527,14 +552,23 @@ static void create_folders_flow(void) {
 
 void settings_run(void) {
     int sel = 0;
+    int scroll = 0;   // r702: вертикальный скролл
 
     for (;;) {
-        settings_draw(sel);
+        settings_draw(sel, scroll);
         int k = input_wait();
 
         if (k == 41) return;                       // ESC -> выход
-        else if (k == 82) { sel--; if (sel < 0) sel = SET_COUNT - 1; i2s_click(); }  // Up
-        else if (k == 81) { sel++; if (sel >= SET_COUNT) sel = 0; i2s_click(); }      // Down
+        else if (k == 82) {                        // Up
+            sel--; if (sel < 0) sel = SET_COUNT - 1;
+            if (sel < scroll) scroll = sel;        // скроллим вверх при выходе за окно
+            i2s_click();
+        }
+        else if (k == 81) {                        // Down
+            sel++; if (sel >= SET_COUNT) sel = 0;
+            if (sel >= scroll + SET_VISIBLE) scroll = sel - SET_VISIBLE + 1;   // скроллим вниз
+            i2s_click();
+        }
 
         // Стрелки влево/вправо: меняют значение переключаемого пункта
         else if (k == 80 || k == 79) {   // LArr / RArr
@@ -578,6 +612,19 @@ void settings_run(void) {
                 break;
             case SET_AUDIO_T3000:
                 i2s_test_tone(3000, 2000);
+                break;
+            // r702: тест слоя — тон пачками за кадр (как реальный эмулятор). Пачки
+    // сбалансированы под 60 Гц (не проседают): 800/кадр = ровно 48000 пар/с,
+    // 1600 и 3200 — крупнее (нагрузка на кольцо/watermark). Если слой рвётся
+    // на ровном тоне — видно артефакты; если стабильно — слой в порядке.
+            case SET_LAYER_T_GBA:
+                i2s_tone_burst_test(1000, 800, 120);   // ровно 48k пар/с
+                break;
+            case SET_LAYER_T_LYNX:
+                i2s_tone_burst_test(1000, 1600, 120);  // в 2 раза быстрее 48k — переполнение
+                break;
+            case SET_LAYER_T_BIG:
+                i2s_tone_burst_test(1000, 3200, 120);  // в 4 раза — жёсткое переполнение кольца
                 break;
             case SET_SEGA_PAD:
                 sega_pad_test_run();

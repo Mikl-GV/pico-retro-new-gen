@@ -35,6 +35,13 @@ void emu_scale_int(int src_w, int src_h);
 // чтобы поля были своего цвета; 0 = чёрный (по умолчанию).
 void emu_set_border_color(uint32_t rgb888);
 
+// r703 (C3): double-buffer HDMI для систем, пишущих напрямую в HDMI FB
+// (BK-0010 / Vectrex). ВЫКЛЮЧЕН по умолчанию (CONFIG_HDMI_DOUBLE_BUF=0) — DE2/TCON1
+// в этом биндинге не дают дешёвого vsync-флага, безусловный flip рискует сломать
+// уже работающий HDMI на стенде. При 0 — no-op (поведение прошивки не меняется).
+// При 1 — bk/vecx пишут в back buffer, а emu_hdmi_flip() переключает BOT_LADDR.
+void emu_hdmi_flip(void);
+
 // rom_name может быть NULL
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name);

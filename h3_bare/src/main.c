@@ -234,7 +234,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r641";
+const char g_fw_version[] = "r703";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,10 +242,12 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r641\n");
+    uart_puts("build: r703\n");
 
     led_init();
     led_set(0);
+    extern void pa_dat_set_owner_cpu2(int);
+    pa_dat_set_owner_cpu2(0);   // r703: до старта CPU2 PA_DAT пишет core0
 
     h3_hs_timer_init();
 
@@ -331,9 +333,13 @@ void main(void) {
     // и включает VFP/NEON до C-кода; прямой старт C-функции дал бы стек CPU1
     // и Undefined (совпадает с моделью CPU1/TFT).
     extern void cpu2_entry(void);
-    if (h3_cpu_start(2, cpu2_entry) == 1)
+    if (h3_cpu_start(2, cpu2_entry) == 1) {
         uart_puts("smp: CPU2 started (audio core)\n");
-    else
+        // r703: с подъёма CPU2 весь PA_DAT в рантайме пишет CPU2 (через
+        // coherent-shadow, led.c). core0 больше не делает RMW по порту A.
+        extern void pa_dat_set_owner_cpu2(int);
+        pa_dat_set_owner_cpu2(1);
+    } else
         uart_puts("smp: CPU2 FAILED to start (audio stays on core0)\n");
 
 // Меню на HDMI — обычная работа core0; справка на TFT.

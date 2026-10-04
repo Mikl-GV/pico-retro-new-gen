@@ -236,12 +236,14 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     // psg.chanAmp = preamp(0)*… = 0 (PSG тишина = главный звук SGG),
     // fm_preamp=0 и ym2413=0 (FM выключена) → «SGG тишина», хотя картинка и
     // ввод работали. Это НЕ заглушка слоя вывода, а обнулённый конфиг ядра.
-    config.psg_preamp  = 100;   /* r598: 150→100 (уравнять с другими системами; MD «охуенно громко») */
-    config.fm_preamp   = 60;    /* r598: 100→60 (FM MD — полный размах, тише) */
+    config.psg_preamp  = 150;   /* r645: эталон libretro-gpgx (было 100) */
+    config.fm_preamp   = 100;   /* r645: эталон libretro-gpgx (было 60)  */
     config.cdda_volume = 100;
     config.pcm_volume  = 100;
     config.ym2612      = YM2612_DISCRETE;   /* 0 = discrete (как libretro) */
     config.ym2413      = 2;                 /* AUTO: FM(SMS/GG) по региону/картриджу */
+    config.hq_fm       = 1;   /* r645: качественный ресемплинг (эталон) */
+    config.hq_psg      = 1;   /* r645: качественный ресемплинг (эталон) */
 
     // ---- настройка ввода: 6-кнопочный геймпад на порту 0 (как libretro.c) ----
     // Единый SYSTEM_GAMEPAD + padtype включает обработку вводов в ядре
@@ -409,12 +411,14 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     // r595: звуковые поля конфига (как в gpgx_init_game и первоисточнике
     // libretro-gpgx config_default()) — без них PSG/FM молчат (preamp=0,
     // FM off) → «SGG тишина».
-    config.psg_preamp  = 100;   /* r598: 150→100 (уравнять) */
-    config.fm_preamp   = 60;    /* r598: 100→60 */
+    config.psg_preamp  = 150;   /* r645: эталон libretro-gpgx */
+    config.fm_preamp   = 100;   /* r645: эталон libretro-gpgx */
     config.cdda_volume = 100;
     config.pcm_volume  = 100;
     config.ym2612      = YM2612_DISCRETE;
     config.ym2413      = 2;                 /* AUTO */
+    config.hq_fm       = 1;   /* r645: качественный ресемплинг */
+    config.hq_psg      = 1;   /* r645: качественный ресемплинг */
 
     input.system[0] = SYSTEM_GAMEPAD;
     input.system[1] = SYSTEM_GAMEPAD;

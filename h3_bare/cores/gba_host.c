@@ -255,6 +255,8 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     return 1;
 }
 
+static u32 g_gba_pairs = 0;
+
 void gba_run_frame(void) {
     if (!g_loaded) return;
 
@@ -280,7 +282,10 @@ void gba_run_frame(void) {
     // мягким лимитером, не хард-клампом.
     for (u32 i = 0; i < np; i++)
         i2s_push_sample(rsbuf[2 * i], rsbuf[2 * i + 1]);
+    g_gba_pairs = np;   // r645: для периода кадра (вместо магического адреса I2S)
 }
+
+u32 gba_last_pairs(void) { return g_gba_pairs; }
 
 void gba_render_frame(void) {
     if (!g_loaded) return;

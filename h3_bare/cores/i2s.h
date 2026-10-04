@@ -42,7 +42,9 @@ void i2s_flush(void);
 
 // Вытолкнуть НЕ БОЛЕЕ max_pairs пар (лимит за один вызов — не блокирует
 // эмуляцию). Используется в emu_throttle для долива звука.
-void i2s_flush_max(int max_pairs);
+// D-audio: возвращает число фактически записанных пар (0/частично = FIFO или
+// кольцо были заняты в этот проход).
+int i2s_flush_max(int max_pairs);
 
 // Тест звука: синусоида на частоте freq (440/1000/2000 Гц),
 // длительность msec (мс), стерео, с текущей громкостью.
@@ -51,14 +53,23 @@ void i2s_test_tone(int freq, int msec);
 // Короткий тихий «щелчок» при навигации по меню (5 мс, 1.5 кГц).
 void i2s_click(void);
 
+// Тестовый «эмулятор» звука (проверка слоя): тон пачками за кадр через
+// обычный путь кольцо→CPU2→FIFO, как настоящий эмулятор. freq — частота Гц,
+// pairs_per_frame — размер пачки (GBA ~549, Lynx ~640), frames — число кадров.
+void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames);
+
 // ---- Аудио-ядро CPU2 (Ф1, r585) ----
 // Долив кольца I2S обслуживает CPU2 (audio_core.c), а не core0. core0
 // синтезирует звук и кладёт в кольцо; CPU2 выводит кольцо в TX FIFO с
 // честным темпом 48 кГц. Почта — в .coherent.
 int      i2s_audio_core_active(void);  // 1 = CPU2 в цикле
 uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент)
-uint32_t i2s_audio_pairs(void);        // пар вывел CPU2 (диагностика)
-uint32_t i2s_audio_ring(void);         // уровень кольца от CPU2 (диагностика)
+uint32_t i2s_audio_pairs(void);         // пар вывел CPU2 (диагностика)
+uint32_t i2s_audio_ring(void);          // уровень кольца от CPU2 (диагностика)
+// r702-DIAG: маркер местонахождения CPU2 + локальный счётчик (для отлова
+// зависания аудио-ядра). CPU2 пишет trace на стадиях цикла; core0 печатает.
+uint32_t i2s_audio_trace(void);
+uint32_t i2s_audio_live(void);
 void     i2s_audio_cmd(uint32_t cmd);  // послать команду CPU2 (0=нет)
 // CPU2 (audio_core.c): обработать одну команду из почты (вызывается в цикле).
 void i2s_audio_poll_cmd(void);
@@ -68,6 +79,9 @@ void i2s_audio_set_state(int on);
 void i2s_audio_set_beat(uint32_t b);
 void i2s_audio_set_ring(uint32_t r);
 void i2s_audio_set_pairs(uint32_t p);
+// r702-DIAG: см. геттеры выше.
+void i2s_audio_set_trace(uint32_t t);
+void i2s_audio_set_live(uint32_t l);
 
 // Команды аудио-ядра.
 enum {

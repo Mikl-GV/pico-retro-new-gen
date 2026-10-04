@@ -19,6 +19,9 @@ Thumbs.db
 emulator-refs/
 /host/
 *.tar.gz
+# Локальный кэш инструментов/аудио-заметки — не для GitHub:
+.gigatool/
+*.m4a
 # BIOS-бинарники, которые .S-файлы вшивают через .incbin (нужны для сборки из клона):
 !h3_bare/cores/gba_sp/bios/open_gba_bios.bin
 !h3_bare/cores/gearcoleco/coleco_bios.bin

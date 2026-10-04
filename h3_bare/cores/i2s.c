@@ -19,6 +19,7 @@
 #include "h3_ccu.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
+#include "led.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -108,8 +109,13 @@ static int g_dc_shift = 5;   // по умолчанию ~240 Гц (безопа�
 // r635: hold/fade из i2s_flush_max вынесены в файловые статики (сбрасываются в
 // i2s_ring_reset/AUDIO_CMD_RING_RESET) — иначе при смене игры flush_max «затухал»
 // от старого hold-пика → рваный старт/накопительный треск.
-static int16_t hold_l = 0, hold_r = 0;   // последняя выведенная пара
-static int fade_left = 0;                // пар до конца затухания
+// r703: hold/fade в .coherent (uncached) — их пишет CPU2 (i2s_flush_max) и core0
+// (i2s_ring_reset / i2s_audio_poll_cmd). Обычная static-переменная кэшировалась
+// бы в D-cache core0: после RING_RESET сброс не доходил до DRAM, и CPU2 при
+// RESUME читал старый пик удержания/счётчик затухания → «треск на старте» игры.
+static int16_t hold_l __attribute__((section(".coherent"), aligned(4))) = 0;
+static int16_t hold_r __attribute__((section(".coherent"), aligned(4))) = 0;
+static int fade_left __attribute__((section(".coherent"), aligned(4))) = 0;
 
 void i2s_dc_shift_set(int shift) {
     if (shift < 1) shift = 1;
@@ -120,6 +126,13 @@ void i2s_dc_shift_set(int shift) {
 
 // ---- кольцо потока эмулятора (объявлено раньше геттеров — их использует) ----
 #define AUDIO_RING_SIZE 8192
+// D-audio: мягкий целевой уровень кольца (пар), до которого продюсер срезает
+// при переполнении (i2s_push_sample → i2s_ring_trim при достижении HIGH).
+// 1600 пар ≈ 33 мс по 48 кГц — больше, чем способен накопить один кадр
+// (~800), поэтому срез срабатывает только на устойчивый дрифт производства
+// выше железа, а не вырезает пачку целиком.
+#define AUDIO_RING_TRIM_HIGH 7000u
+#define AUDIO_RING_TRIM_TARGET 1600u
 // r584 (Ф0): кольцо и индексы — в .coherent (uncached, 1МБ область). Продюсер
 // (core0, i2s_push_sample) и потребитель (core2, audio_core_main) — РАЗНЫЕ
 // ядра, у core0 D-cache write-back: без uncached CPU2 читал бы stale-линии.
@@ -129,6 +142,9 @@ static int16_t g_ring_l[AUDIO_RING_SIZE] __attribute__((section(".coherent"), al
 static int16_t g_ring_r[AUDIO_RING_SIZE] __attribute__((section(".coherent"), aligned(8)));
 static volatile uint32_t g_ring_wr __attribute__((section(".coherent"), aligned(4))) = 0;
 static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(4))) = 0;
+// W: фаза watermark-предбуферизации. Пишет сброс (core0, i2s_ring_reset) и
+// потребитель (CPU2, flush_max) — оба ядра, поэтому в .coherent (uncached).
+static volatile uint32_t g_ring_watermark_active __attribute__((section(".coherent"), aligned(4))) = 0;
 
 // ---- Почта core0↔CPU2 (аудио-ядро) в .coherent (uncached) ----
 // core0 (эмулятор) пишет команды и читает состояние; CPU2 (долив) обрабатывает
@@ -137,62 +153,93 @@ static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(
 // одну физическую память, кэш-когерентность обеспечена свойством секции).
 // (enum команд — в i2s.h: AUDIO_CMD_NONE/RING_RESET/PAUSE/RESUME.)
 static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(4))) = 0; // 1 = CPU2 в цикле
-static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(4))) = 0;
+static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(4))) = 0; // команда (0=нет)
+static volatile uint32_t g_audio_seq    __attribute__((section(".coherent"), aligned(4))) = 0; // монотон. № команды (core0)
+static volatile uint32_t g_audio_ack    __attribute__((section(".coherent"), aligned(4))) = 0; // послед.подтв. seq (CPU2)
 static volatile uint32_t g_audio_beat   __attribute__((section(".coherent"), aligned(4))) = 0; // инкремент CPU2 (heartbeat)
 static volatile uint32_t g_audio_pairs  __attribute__((section(".coherent"), aligned(4))) = 0; // пар вывел CPU2 (диагностика)
 static volatile uint32_t g_audio_ring   __attribute__((section(".coherent"), aligned(4))) = 0; // уровень кольца от CPU2
 static volatile uint32_t g_audio_paused_f __attribute__((section(".coherent"), aligned(4))) = 0; // 1 = CPU2 подтвердил паузу
+// r702-DIAG: маркер местонахождения CPU2 (trace) + локальный «живой» счётчик.
+// CPU2 пишет trace на входе/выходе из стадий цикла; core0 печатает. Если trace
+// застыл на одном значении при растущем/стоящем beat — видно, где CPU2 залип.
+static volatile uint32_t g_audio_trace __attribute__((section(".coherent"), aligned(4))) = 0;
+static volatile uint32_t g_audio_live  __attribute__((section(".coherent"), aligned(4))) = 0; // местный счётчик CPU2
 
 // core0: ядро 2 живо? (heartbeat не замер — сравнивается в emu_throttle)
 int i2s_audio_core_active(void) { return g_audio_state ? 1 : 0; }
 uint32_t i2s_audio_beat(void)   { return g_audio_beat; }
 uint32_t i2s_audio_pairs(void)  { return g_audio_pairs; }
 uint32_t i2s_audio_ring(void)   { return g_audio_ring; }
+uint32_t i2s_audio_trace(void)  { return g_audio_trace; }
+uint32_t i2s_audio_live(void)   { return g_audio_live; }
 
 // CPU2 (audio_core.c): пометить себя активным/неактивным, тикать heartbeat,
 // класть диагностику (кольцо/пары) — сеттеры, т.к. поля static в i2s.c.
 void i2s_audio_set_state(int on) { g_audio_state = on ? 1 : 0; }
 void i2s_audio_set_beat(uint32_t b) { g_audio_beat = b; }
-void i2s_audio_set_ring(uint32_t r) { g_audio_ring = r; }
+void i2s_audio_set_trace(uint32_t t) { g_audio_trace = t; }
+void i2s_audio_set_live(uint32_t l) { g_audio_live = l; }
 void i2s_audio_set_pairs(uint32_t p) { g_audio_pairs = p; }
 
-// core0: послать команду CPU2. Неблокирующая (диагностика), heartbeat-контроль
-// в emu_throttle решает, оффлоадить ли звук.
+// N1: протокол почты cmd+ack+seq. Оба ядра читают/пишут однословные поля
+// .coherent (uncached): 32-битные store/load на ARMv7 атомарны сами по себе,
+// поэтому «послать команду + получить подтверждение» не требует LDREX/STREX —
+// хватает монотонного seq, который однозначно отличает новую команду от
+// «ещё не дочитанной старой». Это закрывает гонку (раньше двуштапная
+// запись g_audio_cmd, потом сброс в 0 могли пересечься с новой командой).
+// core0: послать команду CPU2. Для PAUSE/RING_RESET — ждать подтверждения
+// (с NOP-backoff, без горячего спина по uncached-флагам). RESUME — неблокирующ.
 void i2s_audio_cmd(uint32_t cmd) {
     if (!g_audio_state) return;   // ядро не поднято — нечего слать
+    // Новая команда: публикуем СНАЧАЛА cmd, ПОТОМ seq (строго монотонный).
+    // Порядок важен: когда CPU2 увидит НОВЫЙ seq, команда в g_audio_cmd уже
+    // гарантированно новая (dmb упорядочивает запись cmd до seq). Раньше seq
+    // шёл первым, и CPU2 мог прочитать новый seq при ещё СТАРОЙ cmd (=0 от
+    // предыдущей обработки) → подтвердить ack, НЕ выполнив команду, а команда
+    // навсегда оставалась при seq==ack (poll_cmd возвращает). Это давало
+    // «зависание» RING_RESET/PAUSE при входе в эмулятор.
     g_audio_cmd = cmd;
-    // Для PAUSE ждём, пока CPU2 подтвердит (пауза) — иначе core0 начнёт
-    // писать в FIFO, а CPU2 ещё не встал → двойной вывод.
-    if (cmd == AUDIO_CMD_PAUSE) {
-        uint32_t t = 0;
-        while (!g_audio_paused_f && ++t < 100000) {}
-    } else if (cmd == AUDIO_CMD_RING_RESET) {
-        // r640: ЖДЁМ, пока CPU2 сбросит кольцо (wr/rd=0). Иначе сброс асинхронный,
-        // и новая игра может начать лить в кольцо ДО сброса → «наложение старого и
-        // нового звука» (хвост предыдущей игры + ускорение). Блокируем до завершения.
-        uint32_t t = 0;
-        while ((g_ring_wr != 0 || g_ring_rd != 0) && ++t < 100000) {}
+    __asm volatile("dmb sy" ::: "memory");
+    uint32_t nseq = g_audio_seq + 1;
+    if (nseq == 0) nseq = 1;   // не перечёркиваем во врапе
+    g_audio_seq = nseq;
+    if (cmd == AUDIO_CMD_PAUSE || cmd == AUDIO_CMD_RING_RESET) {
+        // Дождаться, пока CPU2 подтвердит именно этот seq (ack==nseq) —
+        // r640: RING_RESET/PAUSE обязаны завершиться до продолжения core0
+        // (иначе «хвост старой игры»/двойной вывод). NOP-backoff, чтобы не
+        // забивать шину синхронными DRAM-чтениями (uncached).
+        for (uint32_t t = 0; t < 100000 && g_audio_ack != nseq; t++) {
+#if defined(__GNUC__)
+            __asm__ volatile("nop; nop; nop; nop");
+#endif
+        }
     }
 }
 
 int i2s_audio_paused(void) { return g_audio_paused_f ? 1 : 0; }
 
-// CPU2: обработать одну команду (вызывается в цикле аудио-ядра).
+// CPU2: обработать команду (вызывается в цикле аудио-ядра). Берёт только
+// НОВЫЕ команды: seq должен отличаться от последнего исполненного (ack).
 void i2s_audio_poll_cmd(void) {
+    uint32_t seq = g_audio_seq;
+    uint32_t ack = g_audio_ack;
+    if (seq == ack) return;              // новой команды нет
     uint32_t cmd = g_audio_cmd;
     if (cmd == AUDIO_CMD_RING_RESET) {
         g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
         hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade (накопительный треск)
-        g_audio_cmd = 0;
+        g_ring_watermark_active = 0;             // W: рестарт watermark (новая игра)
     } else if (cmd == AUDIO_CMD_PAUSE) {
         g_audio_paused_f = 1;   // подтвердить паузу
-        g_audio_cmd = 0;
     } else if (cmd == AUDIO_CMD_RESUME) {
         g_audio_paused_f = 0;
-        g_audio_cmd = 0;
-    } else if (cmd != 0) {
-        g_audio_cmd = 0;   // неизвестная — сбросить
+        // остальное — неизвестная команда: игнорируем payload, но seq всё равно
+        // подтверждаем, чтобы core0 не завис на ожидании ack.
     }
+    __asm volatile("dmb sy" ::: "memory");
+    g_audio_cmd = 0;                 // освободить слот
+    g_audio_ack = seq;               // подтвердить: команда seq ИСПОЛНЕНА
 }
 
 // r639: пакетная запись. v (масштаб громкости) считается ОДИН раз вне цикла —
@@ -234,17 +281,39 @@ void i2s_volume(int p) {
 int i2s_volume_pct(void) { return g_volume_pct; }
 int i2s_ready(void) { return g_i2s_ready; }
 void i2s_ring_reset(void) {
-    // r585 (Ф1): если долив делает CPU2 — сброс кольца/DC через почту,
-    // чтобы CPU2 не читал обнуляемое кольцо одновременно с нами (гонка).
-    // Если CPU2 не поднят — обнуляем напрямую (прежнее поведение).
+    // Сброс кольца/DC/FIFO. КОРНЕВАЯ ПРАВКА (r702-слой): нельзя писать в
+    // аппаратный TX FIFO (I2S_FIFO_CTL bit25, I2S_TX_CNT) конкурентно с
+    // CPU2, который в этот же момент доливает → гонка за регистры может
+    // оставить контроллер в нерабочем состоянии → ТИШИНА/рваный старт.
+    // Старые тест-тон/клик работали потому, что СНАЧАЛА ставят CPU2 на
+    // PAUSE (i2s_menu_begin); эмуляторы входят через emu_prepare→
+    // i2s_ring_reset при живом CPU2 — и тихо ломали FIFO. Поэтому здесь:
+    //   если CPU2 жив — ПАУЗА (CPU2 встаёт, FIFO никто не пишет) →
+    //   весь сброс на core0 (кольцо, dc, hold, FIFO, TX_CNT).
+    //   RESUME НЕ делаем — решает вызывающий: тест-тон/клик после ring_reset
+    //   пишут напрямую в FIFO и обязаны держать CPU2 в паузе до i2s_menu_end;
+    //   эмулятор после ring_reset сам возвращает CPU2 в долив (emu_prepare).
+    //   Иначе (auto-RESUME) получили бы двойного писателя FIFO на тон/клике.
     if (g_audio_state) {
-        i2s_audio_cmd(AUDIO_CMD_RING_RESET);
-    } else {
-        g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
-        hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade (fallback)
+        i2s_audio_cmd(AUDIO_CMD_PAUSE);      // CPU2 встал, подтвердил ack
     }
+    g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+    hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade
+    g_ring_watermark_active = 0;             // W: рестарт watermark (новая игра)
+    // r644: очистка аппаратного TX FIFO — иначе после выхода из игры хвост
+    // из FIFO ещё играется в меню (программный сброс кольца его не трогает).
+    I2S_FIFO_CTL |= (1u << 25);
+    udelay(2);
+    I2S_FIFO_CTL &= ~(1u << 25);
+    I2S_TX_CNT = 0;                          // сброс счётчика TX (как в init)
 }
-void i2s_mute(int m) { g_muted = m; if (m) H3_PIO_PORTA->DAT &= ~(1u<<SD_PIN); else H3_PIO_PORTA->DAT |= (1u<<SD_PIN); }
+void i2s_mute(int m) {
+    g_muted = m;
+    // r703: PA_DAT (PA10 SD-усилка) в рантайме — через coherent-shadow, применяет CPU2.
+    // Если CPU2 ещё не владеет регистром — применяем немедленно здесь.
+    pa_dat_request(SD_PIN, m ? 0 : 1);
+    pa_dat_apply_if_core0();
+}
 
 int i2s_init(void) {
     pll_audio_enable();
@@ -271,7 +340,12 @@ int i2s_init(void) {
     // PA10 — SD усилителя, output=1 (HIGH = работа). CFG1 = PA8..PA15.
     H3_PIO_PORTA->CFG1 = (H3_PIO_PORTA->CFG1 & ~(0xFu << ((SD_PIN - 8) * 4)))
                          | (1u << ((SD_PIN - 8) * 4));
+    // r703: PA_DAT в рантайме пишет CPU2 через coherent-shadow (led.c). Здесь
+    // CPU2 ещё не стартовал — пишем PA10 напрямую и синхронизируем shadow,
+    // чтобы CPU2 при подъёме сохранил PA10=1 (маска PA_RUNTIME_BITS).
+    pa_dat_request(SD_PIN, 1);
     H3_PIO_PORTA->DAT |= (1u << SD_PIN);
+    pa_dat_apply_desired();
 
     I2S_CTRL = 0;
     I2S_FIFO_CTL |= (1u << 24) | (1u << 25);
@@ -310,32 +384,65 @@ int i2s_ring_level(void) { return (int)ring_count(); }   // r522: для диа�
 // СВЕЖИХ (двигаем rd к wr, самые старые пар дропаются). Нужно, когда темп
 // железа чуть ниже производства и кольцо «застряло» полным (задержка ~170мс
 // + дропы) — мгновенно убирает отставание, дальше период стабилизируется.
-void i2s_ring_trim(uint32_t keep_pairs) {
+// D-audio: раньше trim вызывался на CPU2 (consummer) конкурентно с push/rd,
+// обновляя g_ring_rd неатомарной записью и сбрасывая dc (который пишет core0
+// и читает CPU2) → data-race и «хвосты/наложения». Теперь:
+//   - вызов ТОЛЬКО из продюсера (i2s_push_sample / i2s_ring_trim), где кольцо
+//     и dc принадлежат этому же потоку — гонки нет;
+//   - индексы двигаются атомарно (LDREX/STREX), чтобы CPU2-читатель никогда
+//     не увидел «рваный» rd/yровень = срезу посреди чтения.
+static int ring_trim_atomic(uint32_t keep_pairs) {
     if (keep_pairs >= AUDIO_RING_SIZE) keep_pairs = AUDIO_RING_SIZE - 1;
-    if (ring_count() > keep_pairs) {
-        g_ring_rd = g_ring_wr - keep_pairs;
-        // r575 (Д-4): дропнутые старые пары не должны влиять на DC-оценку —
-        // иначе после среза блокер «помнит» уровень сброшенной истории и
-        // выдаёт короткий щелчок/перепад. Сброс = мгновенный, как в
-        // i2s_ring_reset().
+    int did = 0;
+    for (;;) {
+        uint32_t wr = g_ring_wr;                 // продюсер — свой индекс
+        uint32_t rd;
+        __asm volatile("ldrex %0, [%1]" : "=r"(rd) : "r"(&g_ring_rd) : "memory");
+        if (wr - rd <= keep_pairs) break;        // уже в границах
+        uint32_t nrd = wr - keep_pairs;
+        uint32_t old;
+        // "=&r" у результата + "r" у значения и адреса: STREX запрещает
+        // одинаковый Rd и Rn на ARMv7 — форсируем разные регистры.
+        __asm volatile(
+            "strex %0, %1, [%2]" : "=&r"(old)
+            : "r"(nrd), "r"(&g_ring_rd) : "memory");
+        if (old == 0) { did = 1; break; }        // CAS успешен
+    }
+    return did;
+}
+
+void i2s_ring_trim(uint32_t keep_pairs) {
+    if (ring_trim_atomic(keep_pairs)) {
+        // r575 (Д-4): дропнутые старые пары не должны влиять на DC-оценку.
+        // Здесь мы на продюсере тредом, владеющим dc — сброс без гонки.
         dc_l = 0;
         dc_r = 0;
     }
 }
 
-// Приём сэмпла: НЕБЛОКИРУЮЩИЙ. r558: DC-блокер (~240 Гц) на сыром сигнале,
-// затем громкость и жёсткий кламп s16. FIR/лимитер не возвращаем.
+// Приём сэмпла: НЕБЛОКИРУЮЩИЙ. r642: DC-блокер УБРАН из этого слоя.
+// Эмуляторы (NGP fast, SNES, Lynx, GB...) уже центрируют сигнал на своём слое
+// (у NGP есть DC-блокер в neopopsound.c). Повторное центрирование здесь — двойной
+// DC = шум при появлении/динамике звука (симптом владельца). Оставляем громкость+кламп.
 void i2s_push_sample(int16_t left, int16_t right) {
     if (!g_i2s_ready) return;
-    if (g_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
-    if (ring_count() >= AUDIO_RING_SIZE) return;   // drop-on-full
-
-    int32_t fl = (int32_t)left  - dc_l;  dc_l += fl >> g_dc_shift;
-    int32_t fr = (int32_t)right - dc_r;  dc_r += fr >> g_dc_shift;
+    // r703: PA10 (SD-усилка) пишет CPU2 через shadow; при активном CPU2 этого
+    // достаточно (применяется в цикле). При неактивном — применяем сразу.
+    if (g_muted) {
+        g_muted = 0;
+        pa_dat_request(SD_PIN, 1);
+        pa_dat_apply_if_core0();
+    }
+    // D-audio: drop-on-high. Уровень кольца контролируется у продюсера
+    // (единственного потока, которому безопасно срезать и сбрасывать dc).
+    // При достижении высокого порога срезаем хвост до целевого — кольцо не
+    // растёт в бесконечность, срез идёт в этом же потоке без гонки с CPU2.
+    uint32_t lvl = ring_count();
+    if (lvl >= AUDIO_RING_TRIM_HIGH) { i2s_ring_trim(AUDIO_RING_TRIM_TARGET); return; }
 
     int32_t v = (g_volume_pct * 32) / 100;
-    int32_t L = fl * v / 32;
-    int32_t R = fr * v / 32;
+    int32_t L = (int32_t)left  * v / 32;
+    int32_t R = (int32_t)right * v / 32;
     if (L > 32767) L = 32767;
     if (L < -32768) L = -32768;
     if (R > 32767) R = 32767;
@@ -360,6 +467,25 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // Порция неблокирующего долива (~0.5 мс звука): CPU не ждёт темп.
 #define I2S_FLUSH_BURST 24
 
+// r703 (C2): атомарный инкремент g_ring_rd потребителем (CPU2). Продюсер
+// (ring_trim_atomic) двигает тот же индекс через LDREX/STREX — ранее простой
+// g_ring_rd++ здесь был RMW-гонкой двух ядер: если trim сработал между чтением
+// и записью CPU2, тот перезаписывал индекс «старое+1» → откат rd → перечитывание
+// уже перезаписанных слотов (искажённые сэмплы). CAS устраняет обращение-к-обращению.
+static inline void ring_rd_advance_atomic(void) {
+    for (;;) {
+        uint32_t rd;
+        __asm volatile("ldrex %0, [%1]" : "=r"(rd) : "r"(&g_ring_rd) : "memory");
+        uint32_t nrd = rd + 1;
+        uint32_t old;
+        // "=&r" у результата + "r" у значения и адреса: STREX запрещает одинаковый Rd и Rn
+        __asm volatile(
+            "strex %0, %1, [%2]" : "=&r"(old)
+            : "r"(nrd), "r"(&g_ring_rd) : "memory");
+        if (old == 0) break;   // CAS успешен
+    }
+}
+
 // Перенос кольцо → FIFO. НЕБЛОКИРУЮЩИЙ — пишем пары, пока в TX FIFO есть
 // свободные слова (контроллер играет сам с темпом 48 кГц). Больше никакого
 // busy-wait по 21 мкс/пара: CPU освобождается, звук «fire-and-forget».
@@ -375,12 +501,33 @@ void i2s_push_sample(int16_t left, int16_t right) {
 
 // r635: hold/fade — файловые статики (см. объявление выше): сбрасываются при
 // смене системы/перезаходе (i2s_ring_reset/AUDIO_CMD_RING_RESET).
-void i2s_flush_max(int max_pairs) {
-    if (!g_i2s_ready) return;
+// D-audio: возвращает число записанных пар — CPU2 по нему решает, делать ли
+// NOP-backoff (не долбить регистр I2S_FSTA вплотную), см. audio_core.c.
+// r702-DIAG(+ИСПРАВЛЕНИЕ): watermark-gate (CEILING/FLOOR) УБРАН — по данным
+// стенда CPU2 залипал ВНУТРИ flush_max с этим gate (tr=flush-in, beat стоит,
+// wm=0 при lvl≥CEILING). Причины две:
+//   1) gate «не опускаться ниже FLOOR» + «не играть до CEILING» создавал
+//      состояние, где CPU2 уходил в недостижимый выход;
+//   2) мой прежний break вместо fade при пустом кольце давал резкие обрывы
+//      FIFO = «помехи на тишине» в играх.
+// Возвращён ПРОВЕРЕННЫЙ каркас (как было до watermark): долив до предела,
+// при пустом кольце — плавное затухание к 0 (~1 мс), никаких блокирующих
+// «ждать накопления». Анти-«тишина между пачками» будет добавлена позже и
+// НЕ через блокировку потребителя.
+int i2s_flush_max(int max_pairs) {
+    if (!g_i2s_ready) return 0;
     if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
     int n = 0;
+
+    // r702-DIAG: маркеры внутри функции (CPU2 пишет, core0 печатает через
+    // i2s_audio_trace) — видно, в какой точке выполнение прерывается.
+    i2s_audio_set_trace(0x40);   // вошли в flush_max
+
     while (n < max_pairs) {
-        if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) break;   // мало места — вернёмся позже
+        i2s_audio_set_trace(0x41);   // итерация цикла
+        if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN)
+            break;   // мало места — вернёмся позже (FIFO сам играет 48 кГц)
+        i2s_audio_set_trace(0x42);   // место в FIFO есть
         if (ring_count() > 0) {
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
             hold_l = g_ring_l[r];
@@ -388,10 +535,15 @@ void i2s_flush_max(int max_pairs) {
             fade_left = I2S_HOLD_FADE_PAIRS;   // следующий голод начнёт затухать от нового уровня
             I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
             I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
-            g_ring_rd++;
+            // D-audio: барьер ДО публикации rd — гарантирует, что прочитанные
+            // из кольца сэмплы и записи в FIFO завершились, прежде чем пинок
+            // индекса освобождает слот продюсеру (SPSC-упорядочивание).
+            // r703: атомарный инкремент (CAS) — исключить RMW-гонку с trim продюсера.
+            __asm volatile("dmb sy" ::: "memory");
+            ring_rd_advance_atomic();
         } else {
-            // кольцо пусто (пауза между пачками): плавно гасим уровень до 0.
-            // Держать пик (старый HOLD) давало громкие щелчки на стыке пачек.
+            // Кольцо пусто (пауза между пачками): плавно гасим уровень до 0.
+            // Резкий break/тишина дают «помехи на тишине» (обрыв FIFO).
             if (fade_left > 0) {
                 fade_left--;
                 int32_t l = (int32_t)hold_l * fade_left / I2S_HOLD_FADE_PAIRS;
@@ -405,6 +557,8 @@ void i2s_flush_max(int max_pairs) {
         }
         n++;
     }
+    i2s_audio_set_trace(0x43);   // вышли из flush_max (нормально)
+    return n;
 }
 
 void i2s_flush(void) { i2s_flush_max(24); }
@@ -451,11 +605,20 @@ static void i2s_menu_end(void) {
 // Включить усилитель на время вывода, восстановить прежнее состояние в конце.
 static int i2s_mute_push(void) {
     int was = g_muted;
-    if (was) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    if (was) {
+        g_muted = 0;
+        // r703: PA10 через shadow; CPU2 в паузе (меню/тон/клик) → применяем сразу.
+        pa_dat_request(SD_PIN, 1);
+        pa_dat_apply_desired();
+    }
     return was;
 }
 static void i2s_mute_pop(int was) {
-    if (was) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
+    if (was) {
+        g_muted = 1;
+        pa_dat_request(SD_PIN, 0);
+        pa_dat_apply_desired();
+    }
 }
 
 void i2s_test_tone(int freq, int msec) {
@@ -499,6 +662,86 @@ void i2s_test_tone(int freq, int msec) {
 // берём 8 полных периодов = 256 пар (~5.3 мс) — волна заканчивается строго в 0,
 // без щелчка-обрыва. Амплитуда ~25% (sin_tab кратен 4 → >>2 чистое деление).
 // r638: длина из 240 (5.0 мс, нецелое число периодов) → 256 (8 полных периодов).
+// Тестовый «эмулятор» звука: тон, лиющийся в КОЛЬЦО пачками за кадр, как
+// настоящий эмулятор (GBA ~549/кадр, Lynx ~640/кадр, ...). Использует ШТАТНЫЙ
+// путь продюсер→кольцо→CPU2→FIFO (без паузы CPU2, без прямого доступа к TX
+// FIFO) — чтобы проверить именно слой на ровном сигнале: если при кадровом
+// пачечном производстве слой рвётся (паузы, тон/гул, клики), это будет слышно
+// на непрерывном тоне. pairs_per_frame — размер «пачки» эмулятора, frames —
+// сколько кадров играть.
+// Возврат: без паузы CPU2, генерим пачками и ждём кадровую границу, как ядро.
+void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
+    if (!g_i2s_ready) return;
+    if (freq < 20) freq = 20;
+    if (pairs_per_frame < 16) pairs_per_frame = 16;
+    if (frames <= 0) frames = 60;
+
+    // Не блокируем CPU2: это проверка штатного слоя, тон идёт через кольцо.
+    // ring_reset ставит CPU2 на паузу + чистит FIFO — сразу возвращаем долив.
+    i2s_ring_reset();
+    if (g_audio_state) i2s_audio_cmd(AUDIO_CMD_RESUME);
+    if (g_muted) {
+        g_muted = 0;
+        pa_dat_request(SD_PIN, 1);
+        pa_dat_apply_if_core0();
+    }
+
+    const uint32_t step = (uint32_t)(((uint64_t)freq << 16) / 48000u);
+    uint32_t ph = 0;
+    uint32_t t0 = 0;
+
+    // r702-TMPDIAG: временная одноразовая печать состояния слоя через 2 кадра
+    // (причина тишины new-тестов; будет удалена после локализации).
+    int diag_pending = 2;
+
+    for (int f = 0; f < frames; f++) {
+        // «Кадр» эмулятора: настоящие ядра синтезируют звук за кадр и отдают
+        // пачкой. Мы честно ждём кадровую границу перед генерацией (как
+        // run_frame), потом льём пачку.
+        if (!t0) t0 = h3_hs_timer_lo_us();
+        else {
+            uint32_t el = (uint32_t)(h3_hs_timer_lo_us() - t0);
+            if (el < 16667u) udelay(16667u - el);
+            t0 = h3_hs_timer_lo_us();
+        }
+        // Пачка тона (моно → стерео), как sound_read_samples→i2s_push_sample.
+        for (int p = 0; p < pairs_per_frame; p++) {
+            int32_t s = (int32_t)sin_tab[(ph >> 8) & 0xFF] / 2;   // 50%
+            ph += step;
+            i2s_push_sample((int16_t)s, (int16_t)s);
+        }
+
+        // r702-TMPDIAG
+        if (diag_pending && --diag_pending == 0) {
+            extern int i2s_audio_core_active(void);
+            const char* tr;
+            switch (i2s_audio_trace()) {
+            case 1: tr = "loop-top"; break;
+            case 2: tr = "poll_cmd-in"; break;
+            case 3: tr = "poll_cmd-out"; break;
+            case 4: tr = "flush-in"; break;
+            case 5: tr = "flush-out"; break;
+            case 6: tr = "nop-backoff"; break;
+            case 7: tr = "iter-end"; break;
+            default: tr = "?"; break;
+            }
+            printf("LT: frame=%d ppf=%d act=%d paused=%d wm=%u lvl=%u beat=%u live=%u tr=%s\n",
+                   f, pairs_per_frame,
+                   i2s_audio_core_active(),
+                   i2s_audio_paused(),
+                   (unsigned)g_ring_watermark_active,
+                   (unsigned)ring_count(),
+                   (unsigned)i2s_audio_beat(),
+                   (unsigned)i2s_audio_live(),
+                   tr);
+        }
+    }
+    // Доиграть хвост (что успело накопиться) — короткая пауза.
+    udelay(30000);
+    i2s_ring_reset();
+    if (g_audio_state) i2s_audio_cmd(AUDIO_CMD_RESUME);   // вернуть меню в норму
+}
+
 void i2s_click(void) {
     if (!i2s_menu_begin()) return;
     uint32_t step = (uint32_t)(((uint64_t)1500u << 16) / 48000u);

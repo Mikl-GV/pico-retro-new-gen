@@ -171,6 +171,13 @@ void de2_mode_set(const struct display_timing *mode, const uint32_t bpp, uint32_
 	H3_DE2_MUX0_GLB->DBUFFER = 1;
 }
 
+// r703 (C3): переключить адрес UI-канала DE2 (двойная буферизация direct-писателей
+// BK/Vectrex). Вызов только из CONFIG_HDMI_DOUBLE_BUF (по умолчанию выкл.).
+void h3_de2_set_ui_addr(uint32_t addr) {
+	H3_DE2_MUX0_UI->CFG[0].TOP_LADDR = addr;
+	__asm volatile("dsb" ::: "memory");
+}
+
 extern int h3_hdmi_probe(void);
 extern int h3_hdmi_enable(uint32_t panel_bpp, const struct display_timing *edid);
 int __attribute__((cold)) h3_de2_init(struct display_timing *timing, uint32_t fbbase) {

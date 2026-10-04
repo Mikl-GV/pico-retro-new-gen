@@ -1,7 +1,9 @@
 // tft_drv.c — TFT-ядро DFR0428 (ILI9486, 480×320 RGB565)
 // через 74HC4094×2 + 74HC4040 → параллельная шина D0–D15.
 // SPI0 H3 (PC0=MOSI, PC1=MISO, PC2=SCLK, PC3=CS дисплея, PC7=DC),
-// PA21=CS тача **TSC2046I** (аналог XPT2046), PA2=RST. CPU1, MMU off.
+// PC4=CS тача **TSC2046I** (аналог XPT2046; спец. ревизия r703: перепаяно с PA21,
+// чтобы освободить регистр PA из межъядерной RMW-гонки), PA2=RST (однократно).
+// CPU1, MMU off.
 //
 // Ключевые находки по ходу отладки (r1..r28):
 //   1) SPI_RXD на 0x300, а не 0x204 — иначе MISO читается как 0.
@@ -160,9 +162,9 @@ static const uint8_t tft_font[96][8] = {
 #define PC_DAT   (*(volatile uint32_t*)(PC_BASE + 0x10u))
 
 #define PIN_CS  3   // PC3 — CS дисплея (CE0)
-#define PIN_CS2 21  // PA21 — CS тача XPT2046 (CE1)
+#define PIN_CS2 4   // PC4 — CS тача XPT2046 (спец. ревизия: перепаяно с PA21, r703)
 #define PIN_DC  7   // PC7
-#define PIN_RST 2   // PA2
+#define PIN_RST 2   // PA2 (однократное обращение при init — остаётся на месте)
 #define PIN_PEN 1   // PA1 — PENIRQ TSC2046: 0 = касание (активный низкий)
 
 // MADCTL=0xE0 → панель работает в BGR: красный и синий каналы поменяны местами.
@@ -173,13 +175,15 @@ static inline uint16_t tft_swap_rb(uint16_t c) {
 }
 
 // ============================================================================
-// ВНИМАНИЕ (гонка PA_DAT, 0x01C20810): CPU1 пишет PA_DAT для тача (PA21) и
-// RST (PA2); CPU0 — для Sega-пада (PA11=SCL, PA12=SDA, sega_pad.c) и SD-LED
-// (PA15). Битовые |= / &= НЕ атомарны между ядрами → редкая RMW-гонка может
-// «потерять» бит I2C и сорвать скан пада. Меры (r155/r157): мигалку «alive»
-// увели на PL10 (R_PIO, led.c), кэш скана пада 12 мс, ре-инициализация пада на
-// переходах. НЕ добавлять новых частых записей в PA_DAT с CPU0; полное решение —
-// аппаратный TWI0 под пад или сериализация доступа.
+// Гонка PA_DAT (0x01C20810) — РЕШЕНА на r703. Ранее CPU1 писал PA_DAT для CS тача
+// (PA21) и RST (PA2), а CPU0 — для SD-LED (PA15) и SD усилителя (PA10): битовые
+// |= / &= неатомарны между ядрами → RMW-гонка. Теперь:
+//   - CS тача ПЕРЕНЕСЁН на PC4 (спец. ревизия, перепайка) — CPU1 в рантайме
+//     PA_DAT больше НЕ трогает;
+//   - RST (PA2) — однократное обращение при init, в рантайме не используется;
+//   - PA15 (SD-LED) ушёл на CPU2 (управление в цикле звука через почту).
+// Итог: регистр PA_DAT в рантайме трогает ТОЛЬКО core0 (PA10/PA15), межъядерной
+// RMW-гонки нет. Остаточные меры (r155/r157) сохранены как защита.
 // ============================================================================
 
 // SRAM A1 почта (вне кэшей, MMU-disabled на CPU1)
@@ -309,9 +313,9 @@ static int spi0_txrx8(uint8_t tx, uint8_t* rx, uint32_t* rf_out) {
 
 static void cs_select(int sel) {
     PC_DAT |= (1u << PIN_CS);
-    PA_DAT |= (1u << PIN_CS2);
+    PC_DAT |= (1u << PIN_CS2);
     if      (sel == 0) PC_DAT &= ~(1u << PIN_CS);
-    else               PA_DAT &= ~(1u << PIN_CS2);
+    else               PC_DAT &= ~(1u << PIN_CS2);
 }
 
 static uint16_t tft_touch_probe_cs(int sel, uint8_t cmd) {
@@ -327,8 +331,8 @@ static uint16_t tft_touch_probe_cs(int sel, uint8_t cmd) {
         __asm volatile("dsb" ::: "memory");   // CS зажат — барьер ДО SPI
         if (spi0_txrx8(cmd, &d0, NULL) < 0 ||
             spi0_txrx8(0x00, &d1, NULL) < 0 ||
-            spi0_txrx8(0x00, &d2, NULL) < 0) { PA_DAT |= (1u << PIN_CS2); SPI0_TCR = tcr_save; return 0xFFFF; }
-        PA_DAT |= (1u << PIN_CS2);   // поднимаем ТОЛЬКО PA21 (cs_high после P5 не трогает тач)
+            spi0_txrx8(0x00, &d2, NULL) < 0) { PC_DAT |= (1u << PIN_CS2); SPI0_TCR = tcr_save; return 0xFFFF; }
+        PC_DAT |= (1u << PIN_CS2);   // поднимаем ТОЛЬКО PC4 (cs_high после P5 не трогает тач)
         v = (uint16_t)((d1 << 8) | d2);
     }
     SPI0_TCR = tcr_save;
@@ -374,7 +378,11 @@ static void spi0_init(void) {
     *clk = (1u << 31) | (1u << 24);
     udelay(1000);
 
-    PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 28);
+    PC_CFG0 = (3u << 0) | (3u << 4) | (3u << 8) | (1u << 12) | (1u << 16) | (1u << 28);
+    // r703: PC4 = CS тача XPT2046 (перепаяно с PA21 специальной ревизией — см.
+    // docs/HARDWARE.md). PC4 бит [19:16] = 1 (GPIO output). PA21 больше НЕ
+    // используется для CS тача — регистр PA_DAT в рантайме трогает только core0
+    // (PA10/PA15), межъядерная RMW-гонка PA_DAT устранена.
     // r103: PA1 = PENIRQ тача. Вход + внутренняя ПОДТЯЖКА проца:
     // на рабочем таче внешней подтяжки нет, без неё PA1 плавает и
     // детект по значению сыпет мусор 0/2048/4095 без нажатия.
@@ -383,14 +391,14 @@ static void spi0_init(void) {
     PA_PULL0 |=  (0x1u << 2);             // 01 = pull-up
     // Максимальная сила драйвера (8 мА) на MOSI/SCLK/CS — быстрое нарастание
     // фронтов; слабый драйвер по умолчанию режет 8+ МГц на ёмкости шлейфа.
-    PC_DRV0 |= (3u << 0) | (3u << 2) | (3u << 4) | (3u << 6);   /* PC0..PC3 */
+    PC_DRV0 |= (3u << 0) | (3u << 2) | (3u << 4) | (3u << 6) | (3u << 8);   /* PC0..PC4 */
     PA_CFG0 &= ~(0xFu << 8);
     PA_CFG0 |= (1u << 8);
     PA_CFG2 &= ~(0xFu << 20);
     PA_CFG2 |= (1u << 20);
 
     PC_DAT |= (1u << PIN_CS);
-    PA_DAT |= (1u << PIN_CS2);
+    PC_DAT |= (1u << PIN_CS2);
     PC_DAT &= ~(1u << PIN_DC);
     PA_DAT |= (1u << PIN_RST);
 
