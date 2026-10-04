@@ -44,6 +44,8 @@ extern int fskip;
 #include "graphics.h"
 #include "ngpBios.h"
 #include "neopopsound.h"
+#include "sound.h"
+#include "z80.h"
 
 
 #ifdef _DEBUG
@@ -8920,11 +8922,12 @@ void tlcs_execute(int cycles)
     {
         for (elapsed = tlcs_step();elapsed<(515>>(tlcsClockMulti-1)); elapsed += tlcs_step());
 
-        // r502 fix (Z80): исполнение Sub-CPU. Z80 такт ≈4 (z80Step возвращает
-        // 4/инстр), TLCS-строка ~515 тактов → ~elapsed/2 шагов Z80.
-        // Без этого TLCS ставит флаги в shared-RAM и вечно ждёт ответа Z80.
-        for (int zi = 0; zi < (elapsed >> 1); zi++)
-            z80Step();
+        // r632: убран принудительный z80Step() на каждую строку. Он дублировал
+        // исполнение звукового Sub-CPU (Z80), который в эталоне libretro/race
+        // гоняется ТОЛЬКО через ngpSoundExecute() на портовых записях (0xA2,
+        // 0xB9) и на timer3-IRQ. Двойной прогон Z80 разгонял темп музыки
+        // (мелодии шли быстрее нормы). Z80 исполняется портовыми записями ниже
+        // и в ngpSoundExecute() — как в эталоне.
 
         tlcsTimers(elapsed);
         elapsed*=tlcsClockMulti;

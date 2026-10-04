@@ -10,6 +10,7 @@
 #include "h3_hs_timer.h"
 #include "led.h"
 #include "i2s.h"
+#include "settings.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -166,6 +167,9 @@ void emu_prepare(void) {
     // пуст на входе в любой эмулятор (включая builtin; rom_browser сбрасывал
     // только свои пути). Пустой список = применение в host-слоях — no-op.
     cheats_reset();
+    emu_period_us = 16667;   // r622: сброс периода в дефолт — иначе «протечка»
+                             // между системами (напр. NGP ставил 16200, а выход
+                             // возвращал saved_period от прошлого, не 16667).
     i2s_ring_reset();   // r506: кольцо I2S не должно нести сэмплы предыдущей системы
     emu_clear_fb();
     fb_clear();
@@ -175,14 +179,14 @@ void emu_prepare(void) {
 // r0.385: манифест звуковых ядер системы — только лог для послойного
 // подключения звука. Сами ядра линкуются, звук НЕ задействован.
 void snd_manifest(const char* sys, const char* cores) {
+    // r631(лог): строка «(sound OFF)» устарела — звук подключён у большинства
+    // систем (r623+). Печатаем только список звуковых ядер системы.
     if (!sys) sys = "?";
     if (!cores || !cores[0]) cores = "(none)";
-    printf("SND %s cores: %s (sound OFF)\n", sys, cores);
+    printf("SND %s cores: %s\n", sys, cores);
 }
 
 // ---- throttle ----
-#include "settings.h"
-
 static uint32_t emu_ts0 = 0;
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
@@ -212,6 +216,16 @@ void emu_throttle(void) {
         }
     }
     emu_ts0 = h3_hs_timer_lo_us();
+
+    // r639-DIAG: печать под-железа в игре (раз в 60 кадров). g_audio_ring теперь
+    // = счётчик «кольцо было пусто» (CPU2 считает), g_audio_pairs = свободные слова FIFO.
+    static uint32_t diag_frames = 0;
+    if ((++diag_frames % 60) == 0) {
+        extern uint32_t i2s_audio_ring(void);
+        extern uint32_t i2s_audio_pairs(void);
+        printf("THR: underrun_cnt=%u fifo_free=%u\n",
+               (unsigned)i2s_audio_ring(), (unsigned)i2s_audio_pairs());
+    }
 }
 
 void emu_throttle_reset(void) {
@@ -262,17 +276,21 @@ int emu_esc_hold(void) {
     for (int i = 0; i < n; i++)
         if (raw_keys[i] == 41) { esc = 1; break; }
 
-// Геймпад: Start удержан ~1 с = выход в меню (r0.389)
+// Геймпад: выход в меню — ТОЛЬКО Start+Mode удержанием ~1 с (r0.389/r624).
+// Одиночный Start НЕ выходит: он во многих ядрах нужен как игровая кнопка
+// (пауза/старт), и короткие нажатия Start не должны выкидывать из игры
+// («выхожу 2-3 нажатиями»). Start+Mode — намерение, случайным нажатием
+// его не вызвать.
     uint32_t now = h3_hs_timer_lo_us();
     if (now - g_pad_esc_t > 50000) {
         g_pad_esc_t = now;
         g_pad_esc_val = pad_scan_combined();
     }
-    // r590: выход по геймпаду — ТОЛЬКО непрерывное удержание Start ~1 с.
-    // Раньше hold «накапливался» суммой коротких нажатий (интервал <250 мс
-    // не сбрасывал g_esc_hold_us) → несколько старта выкидывали из игры.
+    // r590/r624: выход по геймпаду — ТОЛЬКО непрерывное удержание
+    // Start+Mode ~1 с. Одиночный Start не накапливает hold.
     int pad_start = 0;
-    if (g_pad_esc_val & 0x0080) { esc = 1; pad_start = 1; }   // Start (удержание)
+    int pad_esc = (g_pad_esc_val & 0x0080) && (g_pad_esc_val & 0x0800);
+    if (pad_esc) { esc = 1; pad_start = 1; }   // Start+Mode (удержание)
 
     if (esc) {
         g_no_esc_since = 0;
@@ -581,7 +599,7 @@ exit: emu_period_us = saved_period; i2s_ring_reset(); fb_clear(); fb_flush();
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("ngp", "none");
+    snd_manifest("ngp", "psg dac");
     if (ngp_init_game(rom, size) != 1) {
         printf("NGP: init failed\n"); return;
     }

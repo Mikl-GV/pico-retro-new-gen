@@ -40,6 +40,7 @@ void cpu2_audio_entry(void) {
     i2s_audio_set_beat(0);
 
     uint32_t beat = 0;
+    uint32_t diag_underrun = 0;   // r639-DIAG: число раз, когда кольцо было пусто
     for (;;) {
         // 1) команда от core0 (сброс кольца/DC, пауза для тона/клика)
         i2s_audio_poll_cmd();
@@ -59,11 +60,19 @@ void cpu2_audio_entry(void) {
         if (i2s_ring_level() > AUDIO_TRIM_HI)
             i2s_ring_trim(AUDIO_TRIM_LO);
 
+        // r639-DIAG: считаем, сколько раз кольцо было ПУСТО (Buffer Underrun
+        // между пачками ядра). Если часто >5% от итераций — продактор не успевает.
+        if (i2s_ring_level() == 0)
+            diag_underrun++;
+
         // 5) heartbeat + диагностика (счётчик итераций; темп теперь
         //    аппаратный — это просто частота цикла, не влияет на звук)
         beat++;
         i2s_audio_set_beat(beat);
-        if ((beat & 0x3FF) == 0)
-            i2s_audio_set_ring((uint32_t)i2s_ring_level());
+        if ((beat & 0x7FF) == 0) {
+            i2s_audio_set_ring((uint32_t)diag_underrun);
+            volatile uint32_t fsta = *(volatile uint32_t*)0x01C22018u;
+            i2s_audio_set_pairs(((fsta >> 16) & 0xFFu));   // свободные слова TX FIFO
+        }
     }
 }

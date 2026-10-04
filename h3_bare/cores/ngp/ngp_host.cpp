@@ -27,6 +27,7 @@ extern "C" {
 #include "graphics.h"
 #include "flash.h"
 #include "neopopsound.h"
+#include "neopop_blip.h"
 #include "sound.h"
 #include "i2s.h"
 
@@ -111,40 +112,46 @@ extern "C" unsigned int SDL_GetTicks(void) {
     return h3_hs_timer_lo_us() / 1000;
 }
 
-// Sound stubs — only for functions not provided by neopopsound.cpp
+// Sound stubs — only for functions not provided by neopopsound.cpp / sound.cpp
 int initSound() { return 0; }
 void soundCleanup() {}
-void soundStep(int) {}
-void soundOutput() {
-    // r502 fix: реальный тик звуковых чипов каждый кадр (без вывода в I2S) —
-    // игры ждут продвижения звуковой подсистемы, пустой стаб их вешал.
-    // r597 (Д-62): звук NGP на I2S.
-    // ЦЕПЬ (NeoPop): звук = ЧИП (SN76489: 3×Tone+Noise, sound_update) + DAC
-    // (данные из RAM 0x80-области, dac_update). ВАЖНО: это ДВА РАЗНЫХ
-    // источника, в оригинале они МИКШИРУЮТСЯ. Здесь в host раньше оба
-    // вызывались в ОДИН буфер tmp — dac_update перезаписывал чип (при пустом
-    // DAC — тишина). Разделяем: чип в chip[], DAC в dac[], смешиваем.
-    static int snd_inited = 0;
-    if (!snd_inited) { sound_init(44100); snd_inited = 1; }
-    static _u16 chip[768];   // 44100/60 ≈ 735 сэмплов/кадр, запас 768
-    static _u16 dac[768];
-    const int in_n = (int)(sizeof(chip) / sizeof(chip[0]));
-    sound_update(chip, (int)sizeof(chip));   // моно чип (0..0x7FFF)
-    dac_update(dac, (int)sizeof(dac));       // моно DAC (0..0xFFFF)
 
-    // 44100→48000 ресемпл + u16→s16 + моно→стерео. Микс: (chip+dac) с
-    // центром ~0x4000 (0..0x17FFF), >>1, кламп s16.
+// soundOutput(): разово вызывается из ngp_run_frame() раз в кадр.
+// r628/r629: NGP звук синтезируем на 44100 (эталонный default RETRO_SAMPLE_RATE),
+// затем ресемплим 44100→48000 для I2S. Основная причина «нарастающего шума»:
+// DAC conv (5/6) в neopopsound.c рассчитан под 44100/8000≈5.5; при синтезе на
+// 48000 conv неверен → DAC-буфер накапливается и выдаёт непрерывный шум,
+// усиливающийся с числом звуков. На 44100 conv корректен.
+extern int neopop_audio_accurate;
+void soundOutput() {
+    static int snd_inited = 0;
+    if (!snd_inited) {
+        sound_init(44100);
+        system_sound_chipreset(44100);
+        snd_inited = 1;
+    }
+
+    // Fast (per-sample) путь — эталонный default (rare_audio_quality='fast').
+    // Число входных пар за кадр считаем по ФАКТИЧЕСКОЙ длительности кадра NGP
+    // (16200 мкс = 61.7 Гц), НЕ по 60 Гц: 44100/61.7 = 715. Раньше было 735
+    // (44100/60) — звук опережал кадр, на стыках кадров возникали периодические
+    // клики (~52 Гц). Теперь синтез по времени кадра, ресемпл 44100→48000
+    // даёт ровно столько, сколько проигрывает I2S за кадр.
+    static _u16 sampleBuffer[900];
+    const int in_n = 715;   // 44100/61.7 (фактический кадр NGP)
+    sound_update(sampleBuffer, in_n * (int)sizeof(sampleBuffer[0]));
+    dac_update(sampleBuffer, in_n * (int)sizeof(sampleBuffer[0]));
+
     static uint32_t rs_phase = 0;
     int o = 0;
-    static int16_t out[840];   // 735 * 48000/44100 ≈ 800, запас 840
-    while (o < 840) {
+    static int16_t out[900];
+    while (o < 900) {
         uint32_t i = rs_phase >> 16;
         if (i + 1 >= (uint32_t)in_n) break;
         uint32_t f = rs_phase & 0xFFFFu;
-        int32_t m0 = ((int32_t)chip[i] + (int32_t)dac[i]) >> 1;   // микшируем
-        int32_t m1 = ((int32_t)chip[i + 1] + (int32_t)dac[i + 1]) >> 1;
+        int32_t m0 = (int32_t)(int16_t)sampleBuffer[i];
+        int32_t m1 = (int32_t)(int16_t)sampleBuffer[i + 1];
         int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)f) >> 16);
-        s = (s - 0x4000) << 1;   // центр 0x4000 → s16
         if (s > 32767) s = 32767;
         if (s < -32768) s = -32768;
         out[o++] = (int16_t)s;
@@ -157,10 +164,6 @@ void soundOutput() {
     for (int k = 0; k < o; k++)
         i2s_push_sample(out[k], out[k]);   // моно → стерео
 }
-void ngpSoundStart() {}
-void ngpSoundExecute() {}
-void ngpSoundOff() {}
-void ngpSoundInterrupt() {}
 BOOL system_sound_init(void) { return TRUE; }
 void system_VBL(void) {}
 void dac_write(unsigned char) {}
@@ -249,7 +252,7 @@ extern "C" void ngp_run_frame(void) {
     // Один блит в кадр делает graphics_paint() при scanlineY==151 (VBlank),
     // когда все 152 строки уже нарисованы — здесь НЕ блинкуем повторно.
     tlcs_execute(515 * 198);
-    soundOutput();   // r502 fix: тик звуковых чипов каждый кадр (без вывода I2S)
+    soundOutput();   // r502/r631: тик звуковых чипов каждый кадр (вывод в I2S)
 }
 
 // Graphics override for graphics_paint — must be C-linkage

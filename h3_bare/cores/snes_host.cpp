@@ -266,15 +266,25 @@ extern "C" void snes_run_frame(void) {
     g_s9x_guard = 0;
     S9xMainLoop();
 
-    // Звук SNES на I2S (r600). S9xMixSamples отдаёт СТЕРЕО пары int16
-    // (MixStereo пишет buffer[2*i]=L, buffer[2*i+1]=R; cnt = число пар),
-    // частота 48000 (Settings.SoundPlaybackRate). Раньше — дренаж в никуда.
+    // Звук SNES на I2S (r600/r622). S9xMixSamples(sndbuf, sample_count) заполняет
+    // СТЕРЕО: MixStereo пишет buffer[0..sample_count-1] как L,R чередуясь, т.е.
+    // sample_count — число ОТСЧЁТОВ стерео (пар×2), и потребляет ровно столько.
+    // r622: исправлена размерность (был cnt=800 «пар», но ядро заполняло 800
+    // отсчётов=400 пар; читалось 800 пар → мусор/песок). Число пар считаем по
+    // эталону (libretro.c): samples_per_frame = SoundPlaybackRate/refresh_rate с
+    // дробным аккумулятором — это убирает дрейф и корректно ведёт PAL (50 Гц).
     {
         static int16_t sndbuf[4096];
-        int cnt = (Settings.SoundPlaybackRate * 1000) / 60000;   // ~800 пар
-        if (cnt > 2048) cnt = 2048;
-        S9xMixSamples(sndbuf, cnt);
-        for (int i = 0; i < cnt; i++)
+        static float   acc = 0.0f;
+        float refresh = (Settings.PAL ? 50.0f : 60.0f);
+        float spf     = (float)Settings.SoundPlaybackRate / refresh;   // пар/кадр
+        int   frames  = (int)spf;
+        acc          += spf - (float)frames;
+        if (acc > 1.0f) { frames++; acc -= 1.0f; }
+
+        if (frames > 2048) frames = 2048;
+        S9xMixSamples(sndbuf, frames << 1);   // отсчёты стерео
+        for (int i = 0; i < frames; i++)
             i2s_push_sample(sndbuf[2 * i], sndbuf[2 * i + 1]);   // стерео → I2S
     }
 

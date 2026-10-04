@@ -292,6 +292,11 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             dirty = 1;
         } else if (k == 40) {
             if (n > 0) {
+                // Объявляем до goto (r625): C++ запрещает goto через
+                // инициализацию переменной ("jump bypasses initialization").
+                uint8_t* rom = 0;
+                uint32_t size = 0;
+
                 // Копируем имя ДО load_rom — fat_find внутри перезатрёт g_scratch_dir
                 char sel_name[FAT_NAME_LEN];
                 int sl = strlen(list[cursor].name);
@@ -308,21 +313,23 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     // ROM-сет читает сам host по имени. Единый ROM не грузим.
                     emu_clear_fb();
                     run_emulator(sys_id, NULL, 0, sel_name);
-                    return;
+                    // r625: после игры возвращаемся в браузер (не в главное меню).
+                    goto reload_list;
                 }
 
-                uint8_t* rom = 0;
-                uint32_t size = 0;
                 if (load_rom(path, sel_name, &rom, &size) == 0) {
                     emu_clear_fb();
                     run_emulator(sys_id, rom, size, sel_name);
+                    // r625: после игры возвращаемся в браузер (не в главное меню).
+                    goto reload_list;
                 } else {
                     fb_clear();
                     fb_text_center("Failed to load ROM", 200, 2, 0x00FF4444);
                     fb_flush();
                     input_wait();
                 }
-                return;
+                // r625: неудача загрузки тоже возвращает в браузер (не выходим).
+                goto reload_list;
             }
         } else if (k == 41) {
             return;
@@ -378,5 +385,17 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 dirty = 1;
             }
         }
+
+reload_list:
+        // r625: вернулись из эмулятора — перечитываем список ROM (файлы могли
+        // измениться/удалиться) и остаёмся в браузере текущей системы.
+        dirty = 1;
+        if (n > 0) { cursor = (cursor >= n) ? n - 1 : cursor; }
+        n = fat_list(path, list, FAT_MAX_ENTRIES);
+        sort_entries(list, n);
+        if (n <= 0) cursor = 0;
+        else if (cursor >= n) cursor = n - 1;
+        if (cursor < scroll) scroll = cursor;
+        if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
     }
 }

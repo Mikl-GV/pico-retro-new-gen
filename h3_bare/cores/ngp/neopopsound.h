@@ -1,30 +1,11 @@
-// Flavor modified sound.c and sound.h from NEOPOP
-//  which was originally based on sn76496.c from MAME
-//  some ideas also taken from NeoPop-SDL code
-
-//---------------------------------------------------------------------------
-// Originally from
-// NEOPOP : Emulator as in Dreamland
-//
-// Copyright (c) 2001-2002 by neopop_uk
-//---------------------------------------------------------------------------
-
-//---------------------------------------------------------------------------
-//	This program is free software; you can redistribute it and/or modify
-//	it under the terms of the GNU General Public License as published by
-//	the Free Software Foundation; either version 2 of the License, or
-//	(at your option) any later version. See also the license.txt file for
-//	additional informations.
-//---------------------------------------------------------------------------
-
+/* Flavor modified sound.c and sound.h from NEOPOP
+ *  which was originally based on sn76496.c from MAME
+ *  some ideas also taken from NeoPop-SDL code
+ */
 
 #ifndef __NEOPOPSOUND__
 #define __NEOPOPSOUND__
-//=============================================================================
 
-#ifdef __GP32__
-#include "main.h"
-#endif
 #include "StdAfx.h"
 
 typedef struct
@@ -41,48 +22,43 @@ typedef struct
 
 } SoundChip;
 
-//=============================================================================
-
 extern SoundChip toneChip;
 extern SoundChip noiseChip;
 
-void WriteSoundChip(SoundChip* chip, _u8 data);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-int sound_system_init();
-BOOL system_sound_init(void);
-void system_sound_chipreset(void);
+void WriteSoundChip(SoundChip* chip, uint8_t data);
 
+void system_sound_chipreset(int sample_rate);
 
-
-//void system_sound_update(void);
-void system_sound_update(int nframes);
 void system_VBL(void);
 
 #define Write_SoundChipTone(VALUE)		(WriteSoundChip(&toneChip, VALUE))
 #define Write_SoundChipNoise(VALUE)		(WriteSoundChip(&noiseChip, VALUE))
 
-//=============================================================================
-
-//void dac_writeL(unsigned char);
-//void dac_writeR(unsigned char);
-
 void sound_init(int SampleRate);
 
-extern BOOL mute;
+void dac_update(uint16_t* dac_buffer, int length_bytes);
+void sound_update(uint16_t* chip_buffer, int length_bytes);
 
-void dac_update(_u16* dac_buffer, int length_bytes);
-void sound_update(_u16* chip_buffer, int length_bytes);
+void dac_writeL(unsigned char a);
+void dac_write(unsigned char a);
 
-#ifndef __GP32__
-void increaseVolume();
-void decreaseVolume();
+/* Fix for Super Real Mahjong (PSG noise-rate correction). */
+extern int fixsoundmahjong;
+
+/* Accessors used by the band-limited (Blip) audio path so it observes the same
+ * decoded oscillator state as the per-sample synth. */
+int neopop_sound_tone_divider(int chan);
+int neopop_sound_tone_volume(int chan);
+int neopop_sound_noise_divider(void);
+int neopop_sound_noise_volume(void);
+int neopop_sound_noise_feedback_periodic(void);
+
+#ifdef __cplusplus
+}
 #endif
 
-//#define dac_writeL dac_write
-//#define dac_writeR dac_write
-void dac_writeL(unsigned char);
-//void dac_writeR(unsigned char);
-void dac_write(unsigned char);
-
-//=============================================================================
 #endif

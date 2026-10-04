@@ -453,6 +453,7 @@ int menu_run(void) {
                 extern void usb_pad_wait_release(void);
                 usb_kbd_wait_release();
                 usb_pad_wait_release();
+                i2s_click();   // звук подтверждения выбора пункта
                 return item;
             }
         } else if (k == -2 || k == -4) {

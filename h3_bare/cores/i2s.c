@@ -105,6 +105,12 @@ static int32_t dc_r __attribute__((section(".coherent"), aligned(4))) = 0;
 // в .coherent не нужно.
 static int g_dc_shift = 5;   // по умолчанию ~240 Гц (безопасно для всех)
 
+// r635: hold/fade из i2s_flush_max вынесены в файловые статики (сбрасываются в
+// i2s_ring_reset/AUDIO_CMD_RING_RESET) — иначе при смене игры flush_max «затухал»
+// от старого hold-пика → рваный старт/накопительный треск.
+static int16_t hold_l = 0, hold_r = 0;   // последняя выведенная пара
+static int fade_left = 0;                // пар до конца затухания
+
 void i2s_dc_shift_set(int shift) {
     if (shift < 1) shift = 1;
     if (shift > 12) shift = 12;
@@ -170,6 +176,7 @@ void i2s_audio_poll_cmd(void) {
     uint32_t cmd = g_audio_cmd;
     if (cmd == AUDIO_CMD_RING_RESET) {
         g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+        hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade (накопительный треск)
         g_audio_cmd = 0;
     } else if (cmd == AUDIO_CMD_PAUSE) {
         g_audio_paused_f = 1;   // подтвердить паузу
@@ -182,14 +189,11 @@ void i2s_audio_poll_cmd(void) {
     }
 }
 
-// r588: вывод ОДНОЙ пары НАПРЯМУЮ в TX FIFO (без кольца) — для тест-тона/клика,
-// когда CPU2 на паузе. Уважает место в FIFO (иначе переполнение).
-// r589: применяет громкость и кламп (как i2s_push_sample) — раньше писал сырые
-// l/r, поэтому регулировка громкости НЕ влияла на тест-тон/клики.
-void i2s_write_pair_direct(int16_t l, int16_t r) {
+// r639: пакетная запись. v (масштаб громкости) считается ОДИН раз вне цикла —
+// деление на 100 на каждый семпл было узким местом real-time (кряхтение на 48к).
+// Клик/тон вызывают быстрый вариант с заранее посчитанным v.
+static void i2s_write_pair_direct_v(int16_t l, int16_t r, int32_t v) {
     if (!g_i2s_ready) return;
-    if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) return;   // полон — пропустить (редко)
-    int32_t v = (g_volume_pct * 32) / 100;
     int32_t L = (int32_t)l * v / 32;
     int32_t R = (int32_t)r * v / 32;
     if (L > 32767) L = 32767;
@@ -198,6 +202,21 @@ void i2s_write_pair_direct(int16_t l, int16_t r) {
     if (R < -32768) R = -32768;
     I2S_FIFO_TX = (uint32_t)(uint16_t)L << 16;
     I2S_FIFO_TX = (uint32_t)(uint16_t)R << 16;
+}
+
+void i2s_write_pair_direct(int16_t l, int16_t r) {
+    int32_t v = (g_volume_pct * 32) / 100;
+    i2s_write_pair_direct_v(l, r, v);
+}
+
+// Ждать, пока в TX FIFO освободится место для минимум ОДНОЙ ПОЛНОЙ пары
+// (2 слова = I2S_TXE_MIN). Контроллер выводит с темпом 48 кГц, поэтому
+// спин даёт «железный» темп записи без потери пар. Таймаут страхует от
+// зависшего контроллера. Возвращает 1, если место есть.
+static int i2s_wait_tx_room(void) {
+    volatile uint32_t t = 0;
+    while (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN && ++t < 200000u) {}
+    return I2S_FSTA_TXE_CNT(I2S_FIFO_STA) >= I2S_TXE_MIN;
 }
 
 void i2s_volume(int p) {
@@ -216,6 +235,7 @@ void i2s_ring_reset(void) {
         i2s_audio_cmd(AUDIO_CMD_RING_RESET);
     } else {
         g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+        hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade (fallback)
     }
 }
 void i2s_mute(int m) { g_muted = m; if (m) H3_PIO_PORTA->DAT &= ~(1u<<SD_PIN); else H3_PIO_PORTA->DAT |= (1u<<SD_PIN); }
@@ -347,12 +367,12 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // и стыковочный скачок; «песок» (скачок в 0) не возвращается.
 #define I2S_HOLD_FADE_PAIRS 48   // ~1 мс затухания при 48 кГц
 
+// r635: hold/fade — файловые статики (см. объявление выше): сбрасываются при
+// смене системы/перезаходе (i2s_ring_reset/AUDIO_CMD_RING_RESET).
 void i2s_flush_max(int max_pairs) {
     if (!g_i2s_ready) return;
     if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
     int n = 0;
-    static int16_t hold_l = 0, hold_r = 0;   // последняя выведенная пара
-    static int fade_left = 0;                // пар до конца затухания
     while (n < max_pairs) {
         if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN) break;   // мало места — вернёмся позже
         if (ring_count() > 0) {
@@ -403,70 +423,101 @@ static const int16_t sin_tab[256] = {
         -11792,-11038,-10278,-9511,-8739,-7961,-7179,-6392,-5601,-4807,-4011,-3211,-2410,-1607,-804
 };
 
+// Общий вход для тона/клика: изолировать TX FIFO от CPU2-долива на время
+// вывода, обеспечить единственного писателя (core0). Возвращает 1, если
+// можно выводить.
+static int i2s_menu_begin(void) {
+    if (!g_i2s_ready) return 0;
+    // CPU2 (долив) на паузу — ждём подтверждения; пустое кольцо и DC.
+    // Если CPU2 не поднят — i2s_ring_reset() сбросит напрямую.
+    if (i2s_audio_core_active())
+        i2s_audio_cmd(AUDIO_CMD_PAUSE);
+    i2s_ring_reset();
+    return 1;
+}
+
+static void i2s_menu_end(void) {
+    // Возвращаем долив (если CPU2 жив) — FIFO снова обслуживает кольцо.
+    if (i2s_audio_core_active())
+        i2s_audio_cmd(AUDIO_CMD_RESUME);
+}
+
+// Включить усилитель на время вывода, восстановить прежнее состояние в конце.
+static int i2s_mute_push(void) {
+    int was = g_muted;
+    if (was) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    return was;
+}
+static void i2s_mute_pop(int was) {
+    if (was) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
+}
+
 void i2s_test_tone(int freq, int msec) {
-    if (!g_i2s_ready) return;
+    if (!i2s_menu_begin()) return;
     if (freq < 20) freq = 20;
     if (msec <= 0) msec = 100;
 
     uint32_t step = (uint32_t)(((uint64_t)freq << 16) / 48000u);
     uint32_t ph = 0;
     int total = 48000 * msec / 1000;
-    // r546: не гасим усилитель, если звук уже шёл (пример: клик/тон поверх
-    // игры) — запоминаем прежнее состояние и восстанавливаем в конце.
-    int was_muted = g_muted;
-    if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
+    int was = i2s_mute_push();
+    int32_t v = (g_volume_pct * 32) / 100;   // r639: один раз, вне цикла
 
-    // r615: pacиг по РЕАЛЬНОМУ времени через точный таймер (как r593), но
-    // пары пишем в КОЛЬЦО (i2s_push_sample), а не напрямую в TX FIFO.
-    // Прямой вывод с дропом при полном FIFO давал «не хватает частей»;
-    // кольцо убирает дропы, аппаратный долив задаёт честные 48 кГц.
-    // pacing: 21 мкс на пару (чуть медленнее 20.83 мкс потребления — кольцо
-    // не растёт, CPU2 успевает выводить). После тона выплескиваем остаток.
-    int cpu2 = i2s_audio_core_active();
-    uint32_t t0 = h3_hs_timer_lo_us();
-    for (int d = 0; d < total; d++) {
-        uint32_t idx = (ph >> 8) & 0xFF; ph += step;
-        int32_t s = (int32_t)sin_tab[idx] / 2;   // r582: 50% — тон не оглушает
-        i2s_push_sample((int16_t)s, (int16_t)s);
-        if (!cpu2) {
-            // без CPU2 — выводим сами, но тоже по pacing, чтобы не разом
-            i2s_flush_max(1);
+    // r639: пакетная запись. Читаем свободные слова TX FIFO, вливаем столько пар,
+    // сколько помещается, за один проход — без посемпльного ожидания (кряхтение/underrun).
+    int d = 0;
+    while (d < total) {
+        uint32_t free_words = I2S_FSTA_TXE_CNT(I2S_FIFO_STA);
+        if (free_words < I2S_TXE_MIN) {        // FIFO почти полон — ждём место
+            if (!i2s_wait_tx_room()) break;
+            free_words = I2S_FSTA_TXE_CNT(I2S_FIFO_STA);
         }
-        uint32_t next = t0 + (uint32_t)(d + 1) * I2S_PACE_UNITS;
-        while ((int32_t)(h3_hs_timer_lo_us() - next) < 0) {}
-    }
-    if (!cpu2) {
-        while (i2s_ring_level() > 0) i2s_flush_max(24);
+        int free_pairs = (int)(free_words / 2);
+        int batch = free_pairs;
+        if (d + batch > total) batch = total - d;
+        for (int p = 0; p < batch; p++, d++) {
+            int32_t s = (int32_t)sin_tab[(ph >> 8) & 0xFF] / 2;   // 50% — тон не оглушает
+            ph += step;
+            int tail = total - d;
+            if (tail <= 32)
+                s = (int32_t)((int64_t)s * tail / 32);   // fade-out — краевого щелчка нет
+            i2s_write_pair_direct_v((int16_t)s, (int16_t)s, v);
+        }
     }
 
-    if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
+    i2s_mute_pop(was);
+    i2s_menu_end();
 }
 
-// Короткий тихий щелчок при навигации в меню (~5 мс, 1.5 кГц, ~25% амплитуды).
-// Неблокирующим не делаем: 5 мс на смену пункта незаметно, зато код прост.
-// Если I2S не готов — no-op (меню не должно тормозить из-за звука).
-// r615: как и тест-тон — через кольцо (i2s_push_sample) и штатный долив,
-// НЕ напрямую в FIFO с программным таймингом (дропы/джиттер = рваный клик).
+// Короткий тихий щелчок при навигации в меню. 1.5 кГц = ровно 32 пары/период,
+// берём 8 полных периодов = 256 пар (~5.3 мс) — волна заканчивается строго в 0,
+// без щелчка-обрыва. Амплитуда ~25% (sin_tab кратен 4 → >>2 чистое деление).
+// r638: длина из 240 (5.0 мс, нецелое число периодов) → 256 (8 полных периодов).
 void i2s_click(void) {
-    if (!g_i2s_ready) return;
+    if (!i2s_menu_begin()) return;
     uint32_t step = (uint32_t)(((uint64_t)1500u << 16) / 48000u);
     uint32_t ph = 0;
-    int total = 48000 * 5 / 1000;
-    // r546: как в i2s_test_tone — восстанавливаем прежнее состояние мьюта.
-    int was_muted = g_muted;
-    if (was_muted) { g_muted = 0; H3_PIO_PORTA->DAT |= (1u << SD_PIN); }
-    int cpu2 = i2s_audio_core_active();
-    uint32_t t0 = h3_hs_timer_lo_us();
-    for (int d = 0; d < total; d++) {
-        uint32_t idx = (ph >> 8) & 0xFF; ph += step;
-        int32_t s = (int32_t)sin_tab[idx] >> 2;   // ~25%
-        i2s_push_sample((int16_t)s, (int16_t)s);
-        if (!cpu2) i2s_flush_max(1);
-        uint32_t next = t0 + (uint32_t)(d + 1) * I2S_PACE_UNITS;
-        while ((int32_t)(h3_hs_timer_lo_us() - next) < 0) {}
+    int total = 256;   // 8 полных периодов 1500 Гц (48000/1500=32 ×8)
+    int was = i2s_mute_push();
+    int32_t v = (g_volume_pct * 32) / 100;   // r639: один раз, вне цикла
+
+    // r639: пакетная запись (как в i2s_test_tone).
+    int d = 0;
+    while (d < total) {
+        uint32_t free_words = I2S_FSTA_TXE_CNT(I2S_FIFO_STA);
+        if (free_words < I2S_TXE_MIN) {
+            if (!i2s_wait_tx_room()) break;
+            free_words = I2S_FSTA_TXE_CNT(I2S_FIFO_STA);
+        }
+        int batch = (int)(free_words / 2);
+        if (d + batch > total) batch = total - d;
+        for (int p = 0; p < batch; p++, d++) {
+            int32_t s = (int32_t)sin_tab[(ph >> 8) & 0xFF] >> 2;   // ~25%
+            ph += step;
+            i2s_write_pair_direct_v((int16_t)s, (int16_t)s, v);
+        }
     }
-    if (!cpu2) {
-        while (i2s_ring_level() > 0) i2s_flush_max(24);
-    }
-    if (was_muted) { g_muted = 1; H3_PIO_PORTA->DAT &= ~(1u << SD_PIN); }
+
+    i2s_mute_pop(was);
+    i2s_menu_end();
 }

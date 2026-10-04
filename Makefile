@@ -88,7 +88,7 @@ OBJ  += $(addprefix $(BUILD)/,lynx_blip_buffer.o lynx_blip_stereo.o)
 
 # NGP
 NGP := $(TOP)h3_bare/cores/ngp
-OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o)
+OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o ngp_neopop_blip.o)
 
 # ---- PC Engine / TurboGrafx (Beetle PCE Fast / mednafen_pce_fast, HuCard) ----
 # Враппер (libretro.c) + движок vendored в h3_bare/cores/pce_fast/.
@@ -812,14 +812,19 @@ $(BUILD)/ngp_z80.o: $(TOP)h3_bare/cores/ngp/z80.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ngp_flash.o: $(TOP)h3_bare/cores/ngp/flash.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
-$(BUILD)/ngp_neopopsound.o: $(TOP)h3_bare/cores/ngp/neopopsound.cpp | $(BUILD)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ngp_neopopsound.o: $(TOP)h3_bare/cores/ngp/neopopsound.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ngp_sound.o: $(TOP)h3_bare/cores/ngp/sound.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ngp_ngpBios.o: $(TOP)h3_bare/cores/ngp/ngpBios.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ngp_input.o: $(TOP)h3_bare/cores/ngp/input.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+# NGP blip-путь (band-limited, как эталон libretro/race): Blip_Buffer из
+# PCE mednafen (та же C-версия 0.4.1). Символы Blip_Buffer_* коллизируют с PCE,
+# но линковка идёт с --allow-multiple-definition; gc-sections уберёт неиспользуемые.
+$(BUILD)/ngp_neopop_blip.o: $(TOP)h3_bare/cores/ngp/neopop_blip.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -DINLINE=inline -I$(TOP)h3_bare/cores/pce_fast/mednafen/include/blip -c -o $@ $<
 
 # ---- GBA (gpSP) ----
 GBA_CFLAGS := $(CFLAGS) -DINLINE=inline
