@@ -37,21 +37,33 @@
 
 void mmu_mark_uncached(uint32_t addr) {
     uint32_t l1_base;
-    uint32_t entry, new_entry;
+    uint32_t ref, new_entry;
     uint32_t idx;
 
     __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(l1_base));   // TTBR0
     l1_base &= ~0x3FFFu;    // выровнять на 16KB (таблица может быть 16KB)
 
     idx = (addr >> 20) & 0xFFF;                 // индекс 1MB-секции
-    entry = ((volatile uint32_t*)l1_base)[idx];
 
-    // Сохраняем base + все управляющие биты, меняем только атрибуты памяти:
-    //   TEX[18:16] = 001 (Normal), C[3]=0, B[2]=0  -> Non-cacheable
-    // AP/domain/XN/NS как было у U-Boot.
-    new_entry = (entry & ~((0x7u << 16) | (1u << 3) | (1u << 2)))
-              | (0x1u << 16)                     // TEX=001
-              | (entry & ((1u << 0) | (1u << 1)));  // сохранить valid/section
+    // r724 (КОРЕНЬ «тест через кольцо молчит / Lynx рваный»): раньше брали
+    // существующую запись U-Boot для этой секции и меняли только атрибуты
+    // (TEX/C/B), СОХРАНЯЯ биты базы [31:20]. Но запись U-Boot для секции,
+    // куда после роста BSS переехал .coherent (0x4A400000), оказалась мусором
+    // (0xFFF9FFF3 — база 0xFFF00000, а не 0x4A400000). В результате core0
+    // мапил .coherent на ФИЗИЧЕСКИЙ 0xFFF00000, а CPU2 (без MMU) работал с
+    // настоящим 0x4A400000 — ядра «не видели» друг друга: кольцо не доливалось,
+    // эмуляторный звук молчал, Lynx рвался.
+    // Фикс: строим дескриптор от АДРЕСА (база = addr), а управляющие биты
+    // (AP/domain/XN/nG/NS) берём из заведомо ВАЛИДНОЙ секции — 0x40000000, куда
+    // всегда загружен наш образ .text (она наверняка правильно настроена U-Boot).
+    ref = ((volatile uint32_t*)l1_base)[0x400];   // дескриптор секции 0x40000000
+
+    new_entry = (addr & 0xFFF00000u)             // база = физический адрес секции
+              | (ref & 0x0008DDF0u)              // сохранить: NS(19), AP(15:14,11:10), nG(12), domain(8:5), XN(4)
+              | (1u << 16)                       // TEX=001 (Normal Non-cacheable)
+              | (0u << 3) | (0u << 2)            // C=0, B=0 (uncached)
+              | 0b10u;                           // section (bits[1:0]=0b10)
+
     ((volatile uint32_t*)l1_base)[idx] = new_entry;
 
     __asm volatile("dsb" ::: "memory");

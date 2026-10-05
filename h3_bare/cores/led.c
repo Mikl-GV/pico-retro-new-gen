@@ -2,6 +2,15 @@
 // PL10 (зелёный, alive).
 // HIGH-active: зажечь = DAT=1, погасить = DAT=0 (подтверждено на железе).
 // PL10: R_PIO — включаем такт PRCM + снимаем софт-ресет, пишем CFG с барьерами.
+//
+// r706 — PA_DAT (PA10 SD-усилка, PA15 SD-LED) снова пишет core0 напрямую.
+// Откат r703: раньше регистр в рантайме применял ТОЛЬКО CPU2 (coherent-shadow),
+// а core0 через pa_dat_apply_if_core0() при «владельце CPU2» был no-op → после
+// клика/тона в меню (mute_pop опускал PA10 в 0), если CPU2 не применял shadow
+// (пауза/завис) — усилитель оставался на земле и эмуляторы/Layer-тест молчали.
+// Теперь: единственный писатель PA_DAT в рантайме — core0 (прямые |= &=, как в
+// r609, когда звук работал). CPU2 не трогает порт A вовсе. RMW-гонки между
+// ядрами по PA нет: CPU1 (TFT) после r703 PA_DAT не пишет (CS тача на PC4).
 #include <stdint.h>
 #include "h3_hs_timer.h"
 
@@ -63,7 +72,8 @@ void led_init(void) {
 // PL10 (зелёный) = «проц жив»: 1 = горит (HIGH-active). Мигалка живёт на
 // CPU1 (led_heartbeat_cpu1 вызывается из tft_core_main каждые 30 мс).
 // Вынесена на R_PIO специально: CPU1 больше НЕ пишет в PA_DAT для LED,
-// что сокращает окно RMW-гонки с Sega-падом (PA11/PA12) и тачем (PA21).
+// что сокращает окно RMW-гонки с PA10 (i2s-SD) — рантайм-PA_DAT пишет
+// только core0 (r706).
 void led_set(int on) {
     if (on) PL_DAT |= (1u << 10);
     else    PL_DAT &= ~(1u << 10);
@@ -85,59 +95,23 @@ void led_heartbeat_cpu1(void) {
     }
 }
 
+// ---- PA_DAT (порт A, рантайм-биты PA10/PA15) пишет ТОЛЬКО core0 (r706) ----
+// RMW по 32-бит регистру неатомарен между ядрами, но сейчас единственный
+// писатель в рантайме — core0; CPU1 (TFT) PA_DAT не трогает (CS тача на PC4
+// с r703), CPU2 — порт A не пишет вовсе (r706). Поэтому |= / &= безопасны.
+// Биты PA10/PA15 остальных владельцев в этих строках не имеют: PA10 (SD
+// усилителя) и PA15 (SD-LED) — наши; init TFT (PA2 RST, PA1 PENIRQ) — только
+// на этапе boot до активного звука.
+
+// Прямая установка бита порта A (core0). bit 0..31, level 0/1.
+void pa_dat_set(int bit, int level) {
+    if (bit < 0 || bit > 31) return;
+    if (level) PA_DAT |=  (1u << bit);
+    else       PA_DAT &= ~(1u << bit);
+    mb();   // dsb: запись регистра завершена (для последователей/осциллографа)
+}
+
 // PA15 (красный) = SD-активность: 1 = горит (HIGH-active).
-// r703: управление PA_DAT (весь порт A в рантайме) перенесено на CPU2. core0
-// НЕ пишет PA_DAT напрямую (была RMW-гонка с CPU1 по PA21/PA2 — с r703 порт A
-// в рантайме трогает только CPU2, гонок нет). led_sd_on/off ставят флаг в
-// coherent-shadow; CPU2 (audio_core.c, цикл звука) применяет его к регистру.
-//
-// Маска рантайм-битов порта A, которыми владеет CPU2. Остальные биты PA
-// (PA2/PA21/PA1 — TFT/тач init, PA18-20 I2S init) настраиваются core0 в init
-// ДО старта CPU2 и CPU2 не трогает (pa_dat_apply_desired сохраняет их).
-#define PA_RUNTIME_BITS  ((1u << 10) | (1u << 15))   // PA10 SD-усилка, PA15 SD-LED
-
-// Шадоу желаемого состояния рантайм-битов PA_DAT. В .coherent (uncached):
-//  - core0 пишет биты через pa_dat_request (обычный store, uncached);
-//  - CPU2 читает g_pa_shadow и применяет К РЕГИСТРУ pa_dat_apply_desired,
-//    сохраняя не-рантайм биты (читать PA_DAT, заместить только PA_RUNTIME_BITS).
-static volatile uint32_t g_pa_shadow __attribute__((section(".coherent"), aligned(4))) = 0;
-// 1 = CPU2 поднят и владеет PA_DAT (Применяет shadow в цикле звука). core0 тогда
-// не пишет регистр сам — только shadow. До старта CPU2 core0 применяет напрямую.
-// Пишется core0 (main) один раз после h3_cpu_start(2), читается core0/CPU2.
-static volatile int g_pa_cpu2_owner = 0;
-
-void pa_dat_set_owner_cpu2(int on) { g_pa_cpu2_owner = on ? 1 : 0; __asm volatile("dmb st" ::: "memory"); }
-
-// Вызывает CPU2 раз в цикле звука (audio_core.c): применяет желаемое значение
-// рантайм-битов к PA_DAT, сохраняя остальные (init TFT/I2S) не тронутыми.
-// Раз за цикл долива (~48 кГц/24) достаточно для PA15 (SD-всплески) без
-// отдельных прерываний — звук не рвётся (нет ISR в hot path долива).
-void pa_dat_apply_desired(void) {
-    uint32_t desired = g_pa_shadow & PA_RUNTIME_BITS;   // только рантайм-биты
-    uint32_t cur = PA_DAT;                              // остальные биты не трогаем
-    cur = (cur & ~PA_RUNTIME_BITS) | desired;
-    PA_DAT = cur;
-    mb();
-}
-
-// Для core0: применить shadow сейчас, если CPU2 ещё НЕ владеет PA_DAT.
-// (При владении CPU2 это делает сам в цикле — двойное применение безвредно, но
-// лишний RMW от core0 не нужен; сохраняем инвариант «в рантайме регистр пишет
-// только одна сторона».)
-int pa_dat_apply_if_core0(void) {
-    if (g_pa_cpu2_owner) return 0;
-    pa_dat_apply_desired();
-    return 1;
-}
-
-int pa_dat_request(int bit, int level) {
-    if (bit < 0 || bit > 31) return -1;
-    if (level) g_pa_shadow |=  (1u << bit);
-    else       g_pa_shadow &= ~(1u << bit);
-    // Барьер: core0 публикует shadow ДО того, как CPU2 прочитает и применит.
-    __asm volatile("dmb st" ::: "memory");
-    return 0;
-}
-void led_sd_on(void)  { pa_dat_request(15, 1); pa_dat_apply_if_core0(); }
-void led_sd_off(void) { pa_dat_request(15, 0); pa_dat_apply_if_core0(); }
-void led_sd_toggle(void){ g_pa_shadow ^= (1u << 15); __asm volatile("dmb st" ::: "memory"); pa_dat_apply_if_core0(); }
+void led_sd_on(void)  { pa_dat_set(15, 1); }
+void led_sd_off(void) { pa_dat_set(15, 0); }
+void led_sd_toggle(void){ PA_DAT ^= (1u << 15); mb(); }

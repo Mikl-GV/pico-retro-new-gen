@@ -1,4 +1,3 @@
-// led.h
 #ifndef LED_H
 #define LED_H
 
@@ -10,16 +9,11 @@ void led_sd_on(void);
 void led_sd_off(void);
 void led_sd_toggle(void);
 
-// r703: весь PA_DAT в рантайме пишет ТОЛЬКО CPU2 (см. led.c). core0 не делает
-// RMW по PA_DAT напрямую — он обновляет желаемое значение (g_pa_shadow в
-// .coherent), а CPU2 в цикле звука применяет его к регистру. pa_dat_request —
-// единственная точка изменения PA_DAT со стороны core0/инициализатора.
-int  pa_dat_request(int bit, int level);   // 1 = установить бит, 0 = снять
-void pa_dat_apply_desired(void);           // вызывает CPU2 (audio_core.c) раз в цикле
-// Один раз (main) после старта CPU2: 1 = CPU2 владеет PA_DAT, core0 не пишет регистр.
-void pa_dat_set_owner_cpu2(int on);
-// Для core0: применить shadow сейчас, если CPU2 ещё НЕ владеет PA_DAT. Возвращает
-// 1, если регистр написан (CPU2 не владеет), иначе 0 (применит CPU2).
-int  pa_dat_apply_if_core0(void);
+// r706: PA_DAT (порт A) в рантайме пишет ТОЛЬКО core0. Единственная точка
+// управления битами PA10 (SD-усилка I2S) и PA15 (SD-LED) — pa_dat_set().
+// CPU1 после r703 PA_DAT не трогает (CS тача на PC4), CPU2 порт A не пишет.
+// (Откат r703: было через coherent-shadow + владелец CPU2, из-за чего PA10
+// мог оставаться на земле после клика в меню — эмуляторы молчали.)
+int  pa_dat_set(int bit, int level);   // 1 = установить бит, 0 = снять
 
 #endif

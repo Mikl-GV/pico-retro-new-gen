@@ -234,7 +234,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r703";
+const char g_fw_version[] = "r724";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,12 +242,10 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r703\n");
+    uart_puts("build: r724\n");
 
     led_init();
     led_set(0);
-    extern void pa_dat_set_owner_cpu2(int);
-    pa_dat_set_owner_cpu2(0);   // r703: до старта CPU2 PA_DAT пишет core0
 
     h3_hs_timer_init();
 
@@ -294,6 +292,34 @@ void main(void) {
     // Пользовательский ремап клавиатуры (из /retro.cfg) — после fat_init
     if (sd_ok) { remap_load(); uart_puts("remap: loaded\n"); }
 
+    // r704 (R1 аудита): .coherent помечаем uncached ДО i2s_init(). i2s_init
+    // пишет в coherent-shadow (pa_dat_request → g_pa_shadow) и применяет его;
+    // если это происходит ПОКА секция кэшируемая (U-Boot flat 1MB write-back),
+    // dirty-строка shadow может не дойти до DRAM, и CPU2 (читает DRAM напрямую)
+    // при подъёме не увидит PA10=1 (SD-усилитель молчит до первого обращения).
+    // mmu_mark_uncached инвалидирует TLB, но НЕ чистит D-cache — поэтому
+    // переключение атрибута обязано произойти ДО первой записи в .coherent.
+    // (Историю r124/r0.198 см. ниже у старта CPU1 — там оставлен только
+    // запуск ядер; сам вызов перенесён сюда.)
+    extern void mmu_mark_uncached(uint32_t addr);
+    extern unsigned char libh3_coherent_region[];
+    mmu_mark_uncached((uint32_t)libh3_coherent_region);
+
+    // r721-TMPDIAG: контроль MMU-разметки .coherent. Печатаем TTBR0 (базу
+    // таблицы страниц) и L1-атрибут секции 0x4A400000 (биты TEX/C/B).
+    // Если TTBR0 попадает ВНУТРЬ .coherent-окна (0x4A400000+1МБ) — таблица
+    // страниц перезаписывается нашим кольцом/маркерами = порча MMU =
+    // «нестабильность/зависания» + «канал .coherent рвётся». Это диагноз.
+    {
+        uint32_t ttbr0;
+        __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(ttbr0));
+        uint32_t l1 = ((volatile uint32_t*)(ttbr0 & ~0x3FFFu))[((0x4A400000u >> 20) & 0xFFF)];
+        printf("MMU: TTBR0=0x%08X coherent_l1=0x%08X (TEX=%u C=%u B=%u)\n",
+               (unsigned)ttbr0, (unsigned)l1,
+               (unsigned)((l1 >> 16) & 7), (unsigned)((l1 >> 3) & 1),
+               (unsigned)((l1 >> 2) & 1));
+    }
+
     // Аудио (I2S0 + MAX98357A): r503 — инициализируем при старте, звук
     // эмуляторов подключается пошагово; для тестов готово сразу.
     i2s_init();
@@ -306,18 +332,9 @@ void main(void) {
     { extern int btn_pad_dbg_init(void); btn_pad_dbg_init(); }
 
     // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
-    // r124: когерентность .coherent включаем ЯВНО, не полагаясь на USB —
-    // mmu_mark_uncached() звался только из usb_ohci_init(), а если USB не
-    // инициализирован (нет клавиатуры), межъядерная связь через .coherent
-    // не работала. SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
-    extern void mmu_mark_uncached(uint32_t addr);
-    // r0.198: адрес брали жёстко (0x43800000), но после r180 (*(.bss.*) в linker.ld)
-    // .bss вырос, _bend1 перешёл через 0x42000000, и .coherent сдвинулся на 1 МБ
-    // (nm: _coherent_start=0x43900000). Жёсткий адрес помечал ЧУЖУЮ секцию (хвост
-    // gb-пула), оставляя реальный .coherent кэшируемым. Берём символ линкера —
-    // он всегда совпадает с началом 1МБ-области (как H3_MEM_COHERENT_REGION).
-    extern unsigned char libh3_coherent_region[];
-    mmu_mark_uncached((uint32_t)libh3_coherent_region);
+    // r124: когерентность .coherent включаем ЯВНО (см. r704 выше — вызов
+    // mmu_mark_uncached теперь ДО i2s_init); здесь остаётся только запуск.
+    // SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
     if (h3_cpu_start(1, cpu1_entry) == 1)
@@ -335,10 +352,6 @@ void main(void) {
     extern void cpu2_entry(void);
     if (h3_cpu_start(2, cpu2_entry) == 1) {
         uart_puts("smp: CPU2 started (audio core)\n");
-        // r703: с подъёма CPU2 весь PA_DAT в рантайме пишет CPU2 (через
-        // coherent-shadow, led.c). core0 больше не делает RMW по порту A.
-        extern void pa_dat_set_owner_cpu2(int);
-        pa_dat_set_owner_cpu2(1);
     } else
         uart_puts("smp: CPU2 FAILED to start (audio stays on core0)\n");
 

@@ -63,25 +63,15 @@ void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames);
 // синтезирует звук и кладёт в кольцо; CPU2 выводит кольцо в TX FIFO с
 // честным темпом 48 кГц. Почта — в .coherent.
 int      i2s_audio_core_active(void);  // 1 = CPU2 в цикле
-uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент)
-uint32_t i2s_audio_pairs(void);         // пар вывел CPU2 (диагностика)
-uint32_t i2s_audio_ring(void);          // уровень кольца от CPU2 (диагностика)
-// r702-DIAG: маркер местонахождения CPU2 + локальный счётчик (для отлова
-// зависания аудио-ядра). CPU2 пишет trace на стадиях цикла; core0 печатает.
-uint32_t i2s_audio_trace(void);
-uint32_t i2s_audio_live(void);
+uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент; liveness C4)
 void     i2s_audio_cmd(uint32_t cmd);  // послать команду CPU2 (0=нет)
 // CPU2 (audio_core.c): обработать одну команду из почты (вызывается в цикле).
 void i2s_audio_poll_cmd(void);
-// Сеттеры — вызывает ТОЛЬКО CPU2 (audio_core.c): отметить активность,
-// heartbeat, диагностику. Поля static в i2s.c (секция .coherent).
+// Сеттеры — вызывает ТОЛЬКО CPU2 (audio_core.c): активность и heartbeat.
+// Поля static в i2s.c (секция .coherent). r705: diag-сеттеры
+// (set_pairs/set_ring/set_trace/set_live) удалены — засоряли горячий путь.
 void i2s_audio_set_state(int on);
 void i2s_audio_set_beat(uint32_t b);
-void i2s_audio_set_ring(uint32_t r);
-void i2s_audio_set_pairs(uint32_t p);
-// r702-DIAG: см. геттеры выше.
-void i2s_audio_set_trace(uint32_t t);
-void i2s_audio_set_live(uint32_t l);
 
 // Команды аудио-ядра.
 enum {

@@ -5,8 +5,8 @@
 // драйвер (BurnDrvGetIndex по короткому имени игры), задаёт BurnExtLoadRom
 // (чтение ROM-сета) и крутит цикл: BurnDrvFrame() → кадр RGB565 384×224
 // (pBurnDraw) → прямой ресайз в HDMI FB 1024×600 (как bk_host).
-// Звук ОТКЛЮЧЁН (nBurnSoundRate = 0, pBurnSoundOut не выделяется —
-// драйверы CPS рендерят звук только при pBurnSoundOut).
+// Звук FBNeo на I2S (r607): nBurnSoundRate=48000, pBurnSoundOut=cps_snd —
+// драйверы рендерят звук только при pBurnSoundOut не NULL (см. run_cps).
 //
 // ROM-сет: /roms/cps1/<игра>/, /roms/cps2/<игра>/ или /roms/neogeo/<игра>/
 // (папка с сырыми дампами чипов — приоритет)
@@ -961,7 +961,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
            g_zip_parent_data ? "+parent" : "");
     // r0.385: манифест звуковых ядер сборки (звук НЕ задействован — только
     // инвентаризация чипов для дальнейшего послойного подключения).
-    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=stub, sound OFF)\n",
+    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=stub)\n",
            game);
     // Отладочная строка для проверки ядер: платформа (корень) + короткое имя
     // рома + название системы драйвера из FBNeo.

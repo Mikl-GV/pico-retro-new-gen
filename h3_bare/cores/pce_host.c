@@ -6,7 +6,8 @@
 // libretro-frontend'ом — определяет retro_* callbacks + environment,
 // вызывает враппер (retro_init / retro_load_game / retro_run), а кадр RGB565
 // из retro_video_refresh переносит в EMU_FB (320x240) -> emu_scale().
-// Звук ОТКЛЮЧЁН (audio_batch_cb игнорирует сэмплы).
+// Звук PCE на I2S (r606): host_audio_sample_batch ресемплит 44100→48000 и
+// пушит в кольцо (см. ниже).
 // CD не поддерживается (HuCard only): ROM подаётся буфером через
 // RETRO_ENVIRONMENT_GET_GAME_INFO_EXT — файловой работы нет.
 //
