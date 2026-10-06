@@ -35,12 +35,12 @@ void gic_dispatch(uint32_t intid) {
     // Неизвестное прерывание — молча гасим (уже заакed в EOIR ассемблером).
 }
 
-// Инициализация: distributor (SGI/PPI/SPI в Group0, все disable, target CPU2
-// для аудио-SPI, приоритеты), CPUIF (PMR=0xFF, enable). Вызывается на CPU2.
-// Основной путь — core0 затактировал GIC до подъёма CPU2 (BUS_CLK_GATING1
-// bit22 = SPINLOCK? НЕТ: GIC тактируется всегда, см. H3 CCU — GIC не в
-// гейтах; distributor/CPUIF на своих шинах). Настройку делаем на CPU2.
-void gic_init(void) {
+// r765: Инициализация ОБЩЕГО Distributor — ВЫЗЫВАЕТСЯ ТОЛЬКО core0 ОДИН РАЗ,
+// до старта вторичных ядер (main.c). Вторичные ядра (CPU1/CPU2) НЕ трогают
+// Distributor (общий ресурс) — только свой CPU Interface (gic_cpu_enable).
+// Это исключает гонку/затирание настроек, когда core0 уже поднял I2S/DMA,
+// а CPU2 массово переписывает GICD.
+void gic_dist_init(void) {
     uint32_t i;
 
     // --- Distributor: выключить, сбросить конфиг ---
@@ -59,20 +59,9 @@ void gic_init(void) {
     for (i = 0; i < GIC_MAX_INTID; i++)
         GICD_IPRIORITYR[i] = 0xA0;
 
-    // Target: CPU2 (0x04) для аудио-SPI 114 (и вообще для всех SPI → CPU2,
-    // т.к. только CPU2 будет обрабатывать; core0/CPU1 IRQ держат запрещёнными).
-    for (i = 32; i < GIC_MAX_INTID && i < 32 + 96; i++)
-        GICD_ITARGETSR[i] = GIC_CPU_MASK_CPU2;
-
-    // Аудио-DMA: INTID 114 (SPI 82). Приоритет 0x80, target уже CPU2.
+    // Target: аудио-SPI 114 (SPI 82) → CPU2 (0x04). Остальные SPI не трогаем.
+    GICD_ITARGETSR[114] = GIC_CPU_MASK_CPU2;
     GICD_IPRIORITYR[114] = 0x80;
-
-    // --- CPU Interface ---
-    GICC_PMR = 0xFFu;          // приоритетный маска: всё
-    GICC_BPR = 0;              // групповой приоритет по умолчанию
-    __asm volatile("dsb" ::: "memory");
-    GICC_CTLR = GICC_CTLR_ENABLE;
-    __asm volatile("dsb" ::: "memory");
 
     // Включить distributor.
     GICD_CTLR = GICD_CTLR_ENABLE | GICD_CTLR_ENABLE_GRP1;
@@ -81,6 +70,17 @@ void gic_init(void) {
 
     // Включить конкретно аудио-INTID (114) в distributor.
     GICD_ISENABLER0 = (1u << (114u & 31u));
+    __asm volatile("dsb" ::: "memory");
+    __asm volatile("isb" ::: "memory");
+}
+
+// r765: Включение CPU Interface — вызывает ТОЛЬКО ядро, принимающее IRQ (CPU2),
+// в своём контексте (audio_core). Distributor уже настроен core0.
+void gic_cpu_enable(void) {
+    GICC_PMR = 0xFFu;          // приоритетный маска: всё
+    GICC_BPR = 0;              // групповой приоритет по умолчанию
+    __asm volatile("dsb" ::: "memory");
+    GICC_CTLR = GICC_CTLR_ENABLE;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 }

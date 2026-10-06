@@ -36,15 +36,6 @@ void h3_dma_audio_stop(void);
 // последняя позиция. None 0 при неактивном канале.
 uint32_t h3_dma_audio_cur_pos(void);
 
-// Канал занят (DMA_STA bit)? 1 = busy, 0 = idle.
-int  h3_dma_audio_busy(void);
-
-// r763: сброс DMA_IRQ_PEND (write-1-clear). H3 DMA в cyclic-режиме взводит
-// PKG/HALF pending после каждого пакета и замирает, пока pending не очищен
-// (linux: writel(status, IRQ_STAT) в ISR). IRQ мы не используем — зовём из
-// flush_max (CPU2) с rate-limit, чтобы канал не вставал.
-void h3_dma_audio_pend_clear(void);
-
 // r764 (прерывания): INTID аудио-DMA (SPI 82 → 114) для регистрации в GIC.
 uint32_t h3_dma_audio_intid(void);
 
@@ -52,16 +43,8 @@ uint32_t h3_dma_audio_intid(void);
 // счётчика завершённых пакетов. Возвращает новый счётчик.
 uint32_t h3_dma_audio_pkg_isr(void);
 
-// r764: позиция DMA в парах по счётчику PKG (БЕЗ чтения CUR_SRC — конвейер
-// шины может отдать мусор во время передачи). played = pkg*half_pairs mod size.
-uint32_t h3_dma_audio_played_pairs(void);
-
 // r764: сброс счётчика PKG (вызывает core0 при ring_reset/init).
 void h3_dma_audio_pkg_reset(void);
-
-// r742-ДИАГ: доступ к регистрам канала (EN/LLI/CUR_SRC/PKG_NUM) для
-// стендового замера. PKG растёт = DMA передаёт; CUR_SRC движется = канал жив.
-void h3_dma_audio_diag(int* en, uint32_t* lli, uint32_t* cur_src, uint32_t* pkg);
 
 #ifdef __cplusplus
 }

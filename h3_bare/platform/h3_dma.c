@@ -165,13 +165,6 @@ uint32_t h3_dma_audio_pkg_isr(void) {
     return ++g_pkg_cnt;
 }
 
-// Сколько пар DMA уже сыграл (для SPSC-позиции). Без чтения CUR_SRC:
-// played_pairs = pkg_cnt * half_pairs (mod DMA_BUF_PAIRS). half=32768 байт.
-// g_buf_bytes = 64КБ → DMA_BUF_PAIRS = 8192, half_pairs = 4096.
-uint32_t h3_dma_audio_played_pairs(void) {
-    return (g_pkg_cnt * (g_buf_bytes / 16u)) & (uint32_t)((g_buf_bytes / 8u) - 1u);
-}
-
 // Сброс счётчика (при ring_reset/init). Вызывает core0.
 void h3_dma_audio_pkg_reset(void) {
     g_pkg_cnt = 0;
@@ -204,30 +197,4 @@ void h3_dma_audio_stop(void) {
 uint32_t h3_dma_audio_cur_pos(void) {
     if (g_ch < 0) return 0;
     return CH_CUR_SRC(g_ch);
-}
-
-int h3_dma_audio_busy(void) {
-    if (g_ch < 0) return 0;
-    return (DMA_STA & (1u << g_ch)) ? 1 : 0;
-}
-
-// r763: сброс DMA_IRQ_PEND (write-1-clear). H3 DMA в cyclic-режиме взводит
-// PKG/HALF pending ПОСЛЕ КАЖДОГО пакета и замирает, пока pending не очищен
-// (linux делает это в ISR: writel(status, IRQ_STAT)). Мы IRQ не используем —
-// вызываем из flush_max (CPU2) с rate-limit, чтобы канал не вставал.
-void h3_dma_audio_pend_clear(void) {
-    if (g_ch < 0) return;
-    DMA_IRQ_PEND = 0xFFFFFFFFu;   // write-1-clear всех бит
-    __asm volatile("dsb" ::: "memory");
-}
-
-// r742-ДИАГ: доступ к регистрам канала для стендового замера (печатает core0).
-// EN/LLI/CUR_SRC/PKG + STA канала. Через них видно, жив ли DMA (PKG растёт),
-// куда указывает LLI, движется ли CUR_SRC, не завис ли канал.
-void h3_dma_audio_diag(int* en, uint32_t* lli, uint32_t* cur_src, uint32_t* pkg) {
-    if (g_ch < 0) { if(en)*en=0; if(lli)*lli=0; if(cur_src)*cur_src=0; if(pkg)*pkg=0; return; }
-    if (en)      *en      = CH_EN(g_ch);
-    if (lli)     *lli     = CH_LLI(g_ch);
-    if (cur_src) *cur_src = CH_CUR_SRC(g_ch);
-    if (pkg)     *pkg     = DMA_PKG_NUM;   // 0x130: счётчик завершённых пакетов
 }

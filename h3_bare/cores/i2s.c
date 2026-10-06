@@ -267,7 +267,7 @@ void i2s_audio_cmd(uint32_t cmd) {
     uint32_t nseq = g_audio_seq + 1;
     if (nseq == 0) nseq = 1;
     g_audio_seq = nseq;
-    if (cmd == AUDIO_CMD_PAUSE || cmd == AUDIO_CMD_RING_RESET) {
+    if (cmd == AUDIO_CMD_PAUSE) {
         for (uint32_t t = 0; t < 100000 && g_audio_ack != nseq; t++) {
 #if defined(__GNUC__)
             __asm__ volatile("nop; nop; nop; nop");
@@ -282,15 +282,10 @@ void i2s_audio_poll_cmd(void) {
     if (seq == ack) return;
     __asm volatile("dmb sy" ::: "memory");
     uint32_t cmd = g_audio_cmd;
-    if (cmd == AUDIO_CMD_RING_RESET) {
-        // CPU2 сам сбрасывает DMA-буфер и свой индекс (владелец g_dma_wr).
-        dma_buf_clear();
-        // r756 (SND-1): индекс = НАЧАЛО буфера (DMA стартует с lli[0] после
-        // рестарта), а не замер CUR_SRC до останова — иначе «фиктивное
-        // заполнение» и затык (см. i2s_ring_reset).
-        g_dma_wr = 0;
-        g_dma_drop_cnt = 0;
-    } else if (cmd == AUDIO_CMD_PAUSE) {
+    // r766 (D3): ветка AUDIO_CMD_RING_RESET удалена — команду никто не шлёт
+    // (сброс делает i2s_ring_reset() на core0). CPU2 обрабатывает только
+    // PAUSE/RESUME, которые реально используются (тон/клик/меню).
+    if (cmd == AUDIO_CMD_PAUSE) {
         g_audio_paused_f = 1;
     } else if (cmd == AUDIO_CMD_RESUME) {
         g_audio_paused_f = 0;
@@ -385,6 +380,13 @@ void i2s_ring_reset(void) {
     __asm volatile("dmb sy" ::: "memory");
     // r761: зафиксировать позицию DMA для CPU2 (.coherent) после рестарта.
     dma_curpos_update();
+    // r766 (D1): сброс счётчика пакетов DMA и позиции в ноль при сбросе.
+    // Без этого g_pkg_cnt (и, как следствие, g_dma_curpos из ISR) не
+    // обнулялся между играми — следующая игра стартовала с «хвоста» позиции
+    // (мусор/скачки при перезаходах).
+    h3_dma_audio_pkg_reset();
+    g_dma_curpos = 0;
+    __asm volatile("dmb sy" ::: "memory");
     // r748: ВОЗВРАТ CPU2 В РАБОТУ — он должен сразу выпивать кольцо
     // (меню/клик/тон/тест/игра — всё через кольцо).
     if (g_audio_state) {
@@ -547,6 +549,11 @@ int i2s_init(void) {
     }
     // r761: зафиксировать стартовую позицию DMA для CPU2 (.coherent).
     dma_curpos_update();
+    // r766 (D1): сброс счётчика пакетов DMA и позиции при инициализации —
+    // чтобы первый запуск после boot не начинался с «хвоста» позиции.
+    h3_dma_audio_pkg_reset();
+    g_dma_curpos = 0;
+    __asm volatile("dmb sy" ::: "memory");
     // r764: регистрация ISR аудио-DMA (INTID 114) в GIC. Сам GIC инициализирует
     // audio_core (CPU2) — но ISR можно зарегистрировать и здесь (таблица в
     // .data, ядро Secure, видно обоим). Регистрируем на CPU2 в audio_core,
@@ -672,11 +679,10 @@ void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
 // горячего пути CPU2). Читаем ЖИВОЙ регистр CH_CUR_SRC напрямую, чтобы SLT
 // показывал реальное движение DMA, а не замороженную g_dma_curpos.
 void i2s_dma_diag_get(uint32_t* played, uint32_t* free_pairs) {
-    uint32_t base = (uint32_t)(uintptr_t)_dma_buf_start;
-    uint32_t pos  = h3_dma_audio_cur_pos();
-    uint32_t cur  = 0;
-    if (pos >= base && pos < base + DMA_BUF_SIZE_BYTES)
-        cur = (pos - base) / 8;
+    // r767 (D8): позиция — из g_dma_curpos (обновляет ISR по счётчику PKG),
+    // НЕ из MMIO CH_CUR_SRC: во время активной передачи чтение CUR_SRC может
+    // вернуть мусор (конвейер шины). Так SLT видит ту же позицию, что CPU2.
+    uint32_t cur = g_dma_curpos;
     if (played)     *played    = cur;
     if (free_pairs) *free_pairs = (DMA_BUF_PAIRS - 1) - ((g_dma_wr - cur) & (DMA_BUF_PAIRS - 1));
 }
@@ -686,7 +692,6 @@ void i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint3
     if (skipfull) *skipfull = g_flush_skip_full;
     if (dummy)    *dummy    = 0;
 }
-uint32_t i2s_cpu2_flush_cnt(void) { return g_flush_enter; }
 void i2s_cpu2_pairs_written_get(uint32_t* v) { if (v) *v = g_flush_written; }
 void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex) {
     if (st) *st = g_cpu2_stage;
@@ -694,17 +699,9 @@ void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex) {
     if (ex) *ex = g_flush_exit;
 }
 void i2s_ring_wr_rd_get(uint32_t* w, uint32_t* r) { if(w)*w=g_ring_wr; if(r)*r=g_ring_rd; }
-uint32_t i2s_ring_fill(void) { return (uint32_t)(g_ring_wr - g_ring_rd); }
 void i2s_flush_diag_get(uint32_t* nempty, uint32_t* nempty_full) {
     // r754: живые индикаторы: nempty = всего входов, nempty_full = выходов по
     // полному DMA-буферу (CPU2 быстрее DMA). Раньше были заглушки.
     if (nempty)      *nempty      = g_flush_enter;
     if (nempty_full) *nempty_full = g_flush_skip_full;
-}
-void i2s_flush_sub_get(uint32_t* sub) { if (sub) *sub = g_cpu2_stage; }
-void i2s_cpu2_view_get(uint32_t* a, uint32_t* b, uint32_t* c) {
-    // r754: вместо мёртвых w/r/ret — живое: wr, rd, fill кольца.
-    if (a) *a = g_ring_wr;
-    if (b) *b = g_ring_rd;
-    if (c) *c = (uint32_t)(g_ring_wr - g_ring_rd);
 }

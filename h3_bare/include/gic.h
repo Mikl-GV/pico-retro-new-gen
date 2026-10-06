@@ -34,9 +34,14 @@
 // буфера по типу прерывания (HALF=lli[0] готов, PKG=lli[1] готов).
 typedef void (*gic_isr_t)(uint32_t intid);
 
-// Инициализация GIC (distributor + CPUIF). Вызвать на ядре, которое будет
-// принимать аудио-IRQ (CPU2). Направляет SPI на CPU_MASK, включает.
-void gic_init(void);
+// r765: инициализация ОБЩЕГО Distributor (GICD_CTLR, disable/enable всех,
+// target/приоритет аудио-SPI 114 → CPU2). ВЫЗЫВАЕТ ТОЛЬКО core0 ОДИН РАЗ
+// до старта вторичных ядер (main.c). Вторичные ядра Distributor НЕ трогают.
+void gic_dist_init(void);
+
+// r765: включение CPU Interface — единственное, что делает ядро, принимающее
+// IRQ (CPU2): PMR/BPR/CTLR. Вызывать в контексте CPU2 (audio_core).
+void gic_cpu_enable(void);
 
 // Зарегистрировать обработчик IRQ (intid = 32 + SPI). NULL — снять.
 void gic_register_isr(uint32_t intid, gic_isr_t isr);

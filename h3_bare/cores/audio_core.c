@@ -29,9 +29,9 @@
 #include "led.h"
 
 void cpu2_audio_entry(void) {
-    // r764: GIC — аудио-DMA (INTID 114) будет приходить СЮДА (CPU2). Ядро
-    // Secure (sec=0x0), регистры GIC доступны. Разрешаем IRQ (CPSR.I=0).
-    gic_init();
+    // r765: GIC Distributor настроил core0 (gic_dist_init в main.c, один раз).
+    // CPU2 включает только свой CPU Interface (PMR/BPR/CTLR) и разрешает IRQ.
+    gic_cpu_enable();
     __asm volatile("cpsie i" ::: "memory");
     // Сердце: пометить себя активным, затем вечный цикл долива кольца в
     // DMA-буфер. Темп задаёт аппаратный DMA (48 кГц), CPU2 лишь следует за

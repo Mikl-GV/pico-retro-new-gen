@@ -70,12 +70,11 @@ void i2s_audio_poll_cmd(void);
 void i2s_audio_set_state(int on);
 void i2s_audio_set_beat(uint32_t b);
 
-// Команды аудио-ядра.
+// Команды аудио-ядра (шлёт core0 через i2s_audio_cmd).
 enum {
     AUDIO_CMD_NONE = 0,
-    AUDIO_CMD_RING_RESET = 1,   // сбросить кольцо + DMA-буфер (смена системы)
-    AUDIO_CMD_PAUSE = 2,        // CPU2 замирает (не трогает DMA-буфер) — для тона/клика
-    AUDIO_CMD_RESUME = 3,       // CPU2 снова доливает
+    AUDIO_CMD_PAUSE = 1,        // CPU2 замирает (не трогает DMA-буфер) — для тона/клика
+    AUDIO_CMD_RESUME = 2,       // CPU2 снова доливает
 };
 
 // r739: i2s_write_pair_direct УДАЛЁН — прямого вывода в TX FIFO мимо кольца
@@ -101,8 +100,6 @@ uint32_t i2s_drop_cnt(void);
 //   written  — пар реально записано в DMA-буфер;
 //   skipfull — выходов из flush_max по полному DMA-буферу (CPU2 обогнал DMA).
 void i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint32_t* dummy);
-// r735: liveness CPU2 по числу входов в flush_max (виден core0).
-uint32_t i2s_cpu2_flush_cnt(void);
 // r735-ДИАГ: сколько пар CPU2 реально записал в DMA-буфер.
 void i2s_cpu2_pairs_written_get(uint32_t* v);
 // r737-ДИАГ: стадия цикла CPU2 (0=idle, 1=poll, 2=внутри flush_max) +
@@ -111,16 +108,10 @@ void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex);
 // r738-ДИАГ: снимок индексов кольца (wr — продюсер core0, rd — потребитель CPU2).
 // Если wr растёт, а rd стоит — CPU2 не потребляет кольцо (не видит его / завис).
 void i2s_ring_wr_rd_get(uint32_t* wr, uint32_t* rd);
-// r738-ДИАГ: наполненность кольца (wr-rd) — сколько пар ждут вывода.
-uint32_t i2s_ring_fill(void);
 // r738-ДИАГ: диагностика flush_max (nempty = всего входов;
 // nempty_full = выходов по полному DMA-буферу). Растёт nempty_full при
 // живом CPU2 → DMA не освобождает буфер (не играет 48к).
 void i2s_flush_diag_get(uint32_t* nempty, uint32_t* nempty_full);
-// r740-ДИАГ: суб-фаза внутри i2s_flush_max (0=вне, 1..5 — шаги цикла).
-void i2s_flush_sub_get(uint32_t* sub);
-// r740-ДИАГ: взгляд CPU2 на кольцо: wr, rd и fill (wr-rd) на момент снятия.
-void i2s_cpu2_view_get(uint32_t* wr, uint32_t* rd, uint32_t* fill);
 
 // r740: диагностика DMA-звука — позиция DMA (пар сыграно) и свободно пар
 // в DMA-буфере (CPU2 не должен обгонять DMA). Читает core0 из SLT-теста.
