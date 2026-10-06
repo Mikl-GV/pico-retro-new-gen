@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #include "libretro.h"
 
@@ -27,6 +28,7 @@
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
+#include "uart.h"
 
 // fuse_retro_* — переименованный враппер (fuse_rename.sh)
 void fuse_retro_set_environment(retro_environment_t);
@@ -253,7 +255,9 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
 
 static void host_log(enum retro_log_level level, const char* fmt, ...)
 {
-    (void)level; (void)fmt;   // тихий лог (UART не спамим)
+    // r0.417: тихий лог (UART не спамим). Диагностика «загрузки ROM» (r735)
+    // снята — подтверждено на стенде: .z80/.sna/.tap/.dsk грузятся штатно.
+    (void)level; (void)fmt;
 }
 
 static bool host_environment(unsigned cmd, void* data)

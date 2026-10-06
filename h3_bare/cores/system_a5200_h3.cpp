@@ -170,7 +170,8 @@ extern "C" void a5200_run_frame(void) {
 
     // r602: звук A5200 на I2S. HAS_SND=1 включает POKEYSND_Init(48000, BIT16)
     // в ядре → POKEYSND_Process_ptr = pokeysnd_process_16 (моно int16 48к).
-    // 48000/60 = 800 сэмплов/кадр.
+    // 48000/60 = 800 сэмплов/кадр. r735: overlap 8→16 починен внутри
+    // pokeysnd_process_16 (временный байтовый буфер), host не менялся.
     {
         extern void (*POKEYSND_Process_ptr)(void *sndbuffer, int sndn);
         static int16_t a5buf[1024];

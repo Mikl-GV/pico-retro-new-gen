@@ -79,6 +79,7 @@ static void host_update_input(void)
     if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_B);      // B      -> II
     if (sp & 0x0080) j |= (1u << RETRO_DEVICE_ID_JOYPAD_START);  // Start  -> Run
     if (sp & 0x0100) j |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT); // X      -> Select
+    if (sp & 0x0800) j |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT); // Mode/плата Select -> Select (r731)
 
     g_joy = j;
 }

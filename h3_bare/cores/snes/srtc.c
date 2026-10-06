@@ -274,7 +274,10 @@ void S9xSetSRTC(uint8_t data, uint16_t Address)
 
    if (rtc.mode == MODE_LOAD_RTC)
    {
-      if ((rtc.index >= 0) || (rtc.index < MAX_RTC_INDEX))
+      /* r735: было `(index >= 0) || (index < MAX_RTC_INDEX)` — всегда true;
+       * после 13-го байта (day-of-week) index==13 и следующая запись уходила
+       * за rtc.data[13]. Требуем оба условия (0 <= index < MAX_RTC_INDEX). */
+      if ((rtc.index >= 0) && (rtc.index < MAX_RTC_INDEX))
       {
          rtc.data[rtc.index++] = data;
 

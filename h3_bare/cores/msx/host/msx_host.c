@@ -60,6 +60,7 @@ static char g_cart_name[48];   // r0.392: имя ROM для сообщений (
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 extern uint16_t emu_period_us;   // r0.210: для MSX ставим 50 Гц (PAL)
@@ -119,10 +120,15 @@ void PlayAllSound(int uSec) {
     RenderAndPlayAudio((unsigned int)-1);   // все доступные сэмплы
 }
 
-// ---- WriteAudio — заглушка: звук отключён ----
-// fMSX рендерит стерео int16_t, Length — число сэмплов (не байт!).
+// ---- WriteAudio — звук MSX на I2S (r735) ----
+// fMSX рендерит МОНО int16_t 48000 Гц (RenderAudio/PlayAudio, см.
+// EMULib/Sound.c: Buf[I]=D — один сэмпл на канал), Length — число сэмплов.
+// Раньше была заглушка: PSG/YM2413 синтезировались, но в I2S не уходили.
 unsigned int WriteAudio(int16_t *Data, unsigned int Length) {
-    (void)Data;
+    if (!Data || Length == 0) return Length;
+    if (Length > 2048) Length = 2048;
+    for (unsigned int i = 0; i < Length; i++)
+        i2s_push_sample(Data[i], Data[i]);   // моно → стерео
     return Length;   // «всё записано»
 }
 
@@ -183,6 +189,24 @@ uint8_t DiskWrite(uint8_t ID, const uint8_t *Buf, int N) { (void)ID; (void)Buf; 
 
 // ---- public API ----
 
+// r735: выбор модели MSX (порт fMSX целиком, не только Yamaha).
+// Устанавливается из подменю перед запуском (main.c / диспетчер).
+//   0 = MSX1  (TMS9918), 1 = MSX2 (V9938), 2 = MSX2+ (V9958), 3 = Yamaha YIS-503III
+static int g_msx_model = 1;   // дефолт MSX2
+void msx_set_model(int m) { g_msx_model = m; }
+int  msx_get_model(void) { return g_msx_model; }
+
+// Имя модели для подменю/логов.
+const char* msx_model_name(int m) {
+    switch (m) {
+    case 0: return "MSX1 (TMS9918)";
+    case 1: return "MSX2 (V9938)";
+    case 2: return "MSX2+ (V9958)";
+    case 3: return "Yamaha YIS-503III";
+    default: return "MSX2 (V9938)";
+    }
+}
+
 int msx_init_game(const uint8_t* rom, uint32_t size) {
     printf("MSX: init size=%u\n", (unsigned)size);
     g_loaded = 0;
@@ -199,11 +223,30 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     UPeriod  = 100;   // 100% кадра — рисуем всегда
     ExitNow  = 0;
 
-    // MSX_MSXDOS2: ядро попытается загрузить MSXDOS2.ROM (с SD /roms/msx/bios/).
-    // Если файла нет — LoadCart вернёт 0, и это не страшно (остаёмся в BASIC).
-    int NewMode = MSX_MSX2 | MSX_PAL | MSX_MSXDOS2 | MSX_GUESSA | MSX_GUESSB;   // Ямаха YIS-503II — PAL (Европа, 50 Гц, 313 строк)
-    int RAMpg = 4;    // 128 КБ
-    int VRAMpg = 4;   // 128 КБ VRAM (V9938)
+    // r735: модель из подменю. Для MSX1 — 64K RAM/32K VRAM (минимум),
+    // MSX2/2+/503 — 128K RAM/128K VRAM (как раньше). Регион: PAL (Европа).
+    int model = g_msx_model;
+    int NewMode;
+    int RAMpg, VRAMpg;
+    switch (model) {
+    case 0:  // MSX1
+        NewMode = MSX_MSX1 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        RAMpg = 4; VRAMpg = 2;   // 64K RAM, 32K VRAM
+        break;
+    case 2:  // MSX2+
+        NewMode = MSX_MSX2P | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        RAMpg = 8; VRAMpg = 8;   // 128K RAM, 128K VRAM
+        break;
+    case 3:  // Yamaha YIS-503III (MSX2, Европа)
+        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        RAMpg = 4; VRAMpg = 4;
+        break;
+    default: // MSX2
+        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        RAMpg = 4; VRAMpg = 4;
+        break;
+    }
+    printf("MSX: model=%d (%s)\n", model, msx_model_name(model));
 
     // Устанавливаем режим, грузим BIOS из встроенных дампов
     if (!StartMSX(NewMode, RAMpg, VRAMpg)) {
@@ -218,30 +261,15 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     SETJOYTYPE(0, JOY_STICK);
     SETJOYTYPE(1, JOY_STICK);
 
-    // r0.392: YIS-503III — встроенные картриджи «СЕТЬ» (NET.ROM) и «СПМ»
-    // = CP/M (CPM.ROM) лежат во внутренних слотах настоящей Ямахи.
-    // Грузим их как картриджи до пользовательского слота.
-    // r0.400: ПОСЛЕ загрузки ResetMSX() БОЛЬШЕ НЕ делаем — повторный reset
-    // после StartMSX вывешивал машину (BIOS RESET сканирует слоты, init-хок
-    // NET-картриджа «СЕТЬ» уводил в чёрный экран/цикл). В BASIC-режиме
-    // картриджи лежат в слотах «молча»; их инициализация понадобится только
-    // когда сделаем меню «СПМ» по запросу.
-    //
-    // r0.415 (Б1): НЕ грузим CPM/NET — они НЕ нужны для загрузки BIOS/BASIC
-    // (нужны только MSX2.ROM+MSX2EXT.ROM). Проверяем гипотезу «внутренние
-    // картриджи мешают тесту видеопамяти»: если MSX дойдёт до BASIC с
-    // выключенными CPM/NET — виноваты они, если нет — дефект V9938 (Б1).
-    // Вернуть одним переключателем после диагностики.
-#if 1
+    // r735 (порт fMSX целиком):
+    //   CPM.ROM — картридж CP/M: НЕ грузим при старте (нужен только по команде
+    //   пользователя, как на железе). Грузится по запросу.
+    //   NET.ROM — сетевой BIOS: на реальной Ямахе стартует ПОСЛЕ основного
+    //   BIOS. У нас пока НЕ грузится автоматически (init-хок уводил в цикл,
+    //   r0.400) — включать отдельной опцией.
     int net_lr = 0, cpm_lr = 0;
     (void)net_lr; (void)cpm_lr;
-    printf("MSX: builtin carts — CPM/NET отключены (r0.415, диагноз Б1)\n");
-#else
-    int net_lr = LoadCart("NET.ROM", 3, 0);
-    int cpm_lr = LoadCart("CPM.ROM", 2, 0);
-    printf("MSX: builtin carts -> CPM.ROM (СПМ) slot2 lr=%d, NET.ROM (СЕТЬ) slot3 lr=%d\n",
-           cpm_lr, net_lr);
-#endif
+    printf("MSX: CPM/NET картриджи при старте не грузятся (r735)\n");
 
     // Если был передан образ картриджа — загружаем в слот A.
     // LoadCart() в ядре делает rfopen("CARTA.ROM"), поэтому даём стабу
@@ -524,7 +552,10 @@ void msx_run_frame(void) {
 
     // PutImage вызывается внутри LoopZ80 на VBlank (когда UCount>=100).
     // После возврата кадр готов к копированию в EMU_FB.
-    (void)0;
+    // r735: рендер звука — как в эталоне fmsx-libretro (libretro.c: retro_run
+    // вызывает RenderAndPlayAudio() после RunZ80). Без этого PSG/OPLL (NukeYKT)
+    // синтезируются, но сэмплы в WriteAudio не попадают — звук MSX молчит.
+    RenderAndPlayAudio(SND_RATE / 50);   // PAL 50 Гц: ~960 сэмплов/кадр
 }
 
 void msx_stop(void) {

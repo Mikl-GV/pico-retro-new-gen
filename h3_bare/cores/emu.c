@@ -35,7 +35,12 @@ void emu_set_border_color(uint32_t rgb888) {
 // Функция остаётся точкой интеграции: при включении bk/vecx пишут в back buffer,
 // а emu_hdmi_flip() меняет H3_DE2_MUX0_UI->CFG[0].BOT_LADDR (см. h3_de2.h).
 #define CONFIG_HDMI_DOUBLE_BUF 0   // 0 = выкл. (безопасно), 1 = вкл. (только со стендом)
-#define FB_ADDR_BACK 0x5FB40000u   // второй FB для direct-писателей (1 МБ ниже стека CPU2)
+// P0 (r725): второй FB для direct-писателей. Прежний 0x5FB40000 пересекался со
+// стеками CPU2: FB 1024×600×4 = 0x25C000 → занято 0x5FB40000..0x5FD9C000, а SVC-
+// стек CPU2 живёт на 0x5FC01000 (вниз) с банками исключений 0x5FBFD000..0x5FC00000.
+// Новый адрес 0x5F400000: конец буфера 0x5F660000 — ниже EMU_FB (0x5F800000),
+// ниже HDMI FB (0x5F900000+2.46МБ) и ниже стеков CPU2/CPU1 — пересечений нет.
+#define FB_ADDR_BACK 0x5F400000u   // второй FB для direct-писателей (до EMU_FB)
 
 void emu_hdmi_flip(void) {
 #if CONFIG_HDMI_DOUBLE_BUF
@@ -333,7 +338,14 @@ int emu_esc_hold(void) {
     // Выход по ESC x3 — для Low-Speed донгла (I8 Pro), где длинное удержание
     // ненадёжно. Срабатывает от фронтов, «доезд» залипшей ESC не сгенерирует
     // (повторов не бывает), поэтому арм-предохранитель обходим сознательно.
-    if (usb_kbd_esc3_pressed()) { i2s_ring_reset(); return 1; }
+    if (usb_kbd_esc3_pressed()) {
+        i2s_ring_reset();
+        // r735 (P1-2): ring_reset ставит CPU2 на PAUSE (r702, без авто-RESUME);
+        // здесь возвращаем долив явно — иначе после выхода по ESC×3 аудио-ядро
+        // оставалось в паузе до следующего emu_prepare (фон меню молчал).
+        if (i2s_audio_core_active()) i2s_audio_cmd(AUDIO_CMD_RESUME);
+        return 1;
+    }
 
     uint8_t raw_keys[6];
     // r0.221: НИ ОДНОГО нового USB-чтения здесь! Два usb_kbd_get_raw за кадр
@@ -449,7 +461,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -469,7 +481,7 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -489,7 +501,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -508,7 +520,7 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -525,7 +537,7 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -547,6 +559,7 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         fc++;
     }
     fb_clear(); fb_flush();
+    i2s_ring_reset();   // r735: выходим из Portfolio — сброс звукового состояния
 }
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -567,7 +580,7 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -599,7 +612,7 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; fb_clear(); fb_flush();
+exit: emu_period_us = 16667; i2s_ring_reset(); fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -614,11 +627,12 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     // r511: рефреш Lynx ~75 Гц (48000/75 = 640 сэмплов/кадр), а не 60 Гц.
     // Период кадра считаем от фактического числа сэмплов (пара = 21 мкс).
-    // r548 пробовал адаптивный период (T_emu + p*21) — в лёгких играх fps
-    // просел до ~55 даже при быстрой эмуляции; r550 вернул 75 Гц: с
-    // неблокирующим pump'ом (r549) звук не требует busy-wait и не дрейфует,
-    // кольцо разгружается в течение кадра и в throttle.
+    // r727 (синхронизация кольца): стартовый период СРАЗУ 13333 мкс (75 Гц),
+    // а не 16667 с EMA-сходимостью за ~8 кадров. Пока EMA сходилась, кольцо
+    // пустело (продюсер медленнее железа) и CPU2 заливал тишину, затем
+    // переполнялось — стартовый дрейф/плавание задержки в первые секунды.
     uint16_t saved_period = emu_period_us;
+    emu_period_us = 13333;   // 75 Гц (48000/640 пар)
     for (;;) {
         lynx_run_frame();
         // r645: период кадра от ФАКТИЧЕСКОГО числа пар звука за кадр
@@ -667,5 +681,6 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 exit:
     emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
+    i2s_ring_reset();   // r735: сброс звука при выходе
     fb_clear(); fb_flush();
 }

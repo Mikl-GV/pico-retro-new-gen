@@ -21,11 +21,13 @@
 #include "fake86_src/sermouse.h"
 #include "fake86_src/timing.h"
 #include "fake86_src/input.h"
+#include "fake86_src/audio.h"   // r735: audbuf для звука PC-спикера
 
 #include "emu.h"
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -233,9 +235,38 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
 }
 
 // ---- точка входа из rom_browser (emu.h) ----
+// r735: звук МС1504 (PC-спикер) в I2S. Генерация — m15_tick_audio() в shim
+    // (не fake86/audio.c — он не в MS1504_BONES). Формат: m15_audbuf — s8,
+    // частота usesamplerate (44100). Ресемплим 44100→48000, моно→стерео.
+    static void ms1504_audio_flush(void) {
+        extern void m15_tick_audio(int n);
+        extern int8_t m15_audbuf[96000];
+        extern int32_t m15_audbufptr;
+        static uint32_t rs_phase = 0;
+        m15_tick_audio(735);   // 44100/60 ≈ 735 сэмплов за кадр
+        int n = m15_audbufptr;
+        if (n > 2048) n = 2048;
+        static int16_t out[2048];
+        /* s8 → s16 */
+        for (int i = 0; i < n; i++)
+            out[i] = (int16_t)((int)m15_audbuf[i] << 8);
+        /* линейный upsampler 44100→48000 */
+        for (uint32_t i = 0; (long)i < (long)n - 1;) {
+            uint32_t f = rs_phase & 0xFFFFu;
+            int32_t s = (int32_t)out[i] + (int32_t)(((int64_t)(out[i+1] - out[i]) * (int32_t)f) >> 16);
+            if (s > 32767) s = 32767;
+            if (s < -32768) s = -32768;
+            i2s_push_sample((int16_t)s, (int16_t)s);
+            rs_phase += 60211u;
+            uint32_t adv = rs_phase >> 16;
+            if (adv) { i += adv; rs_phase &= 0xFFFF; }
+        }
+        m15_audbufptr = 0;
+    }
+
 void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("ms1504", "none");
+    snd_manifest("ms1504", "spkr");
     if (!ms1504_init_game(rom, size)) return;
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
@@ -248,6 +279,7 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
         exec86(120000);
         // INT10 (видеопорти/спецрежимы) обрабатывает сам загруженный BIOS
         ms1504_video_flush();
+        ms1504_audio_flush();   // r735: PC-спикер → I2S
         emu_scale(MS1504_SCR_W, MS1504_SCR_H);   // EMU_FB -> HDMI FB 1024x600
         fb_flush();
         emu_throttle();

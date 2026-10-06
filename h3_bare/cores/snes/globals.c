@@ -69,9 +69,9 @@ uint32_t even_low[4][16];
 
 SCheatData Cheat;
 
-#ifdef LAGFIX
+// finishedFrame используется и БЕЗ LAGFIX: safety-код r175 (cpuexec.c,
+// g_s9x_guard > 50000000) форсит его, чтобы S9xMainLoop вернул управление.
 bool finishedFrame = false;
-#endif
 
 #ifndef USE_BLARGG_APU
 SoundStatus so;

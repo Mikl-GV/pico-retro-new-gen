@@ -303,7 +303,11 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
    PCEFast_PSG_Update(psg, timestamp);
 
-   ch = &psg->channel[psg->select];
+   /* r735: `ch = &channel[select]` вычислялся ДО проверки select>5, поэтому
+    * при невалидном select (запись в регистр с select>5, битые картриджи)
+    * происходило разыменование за массивом channel[6]. Перенесли внутрь
+    * switch после guard'ов — теперь доступ только при валидном select. */
+   ch = NULL;
 
    switch(A)
    {
@@ -316,6 +320,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x02: /* Channel frequency (LSB) */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
 
                ch->frequency = (ch->frequency & 0x0F00) | V;
                PCEFast_PSG_RecalcFreqCache(psg, psg->select);
@@ -324,6 +329,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x03: /* Channel frequency (MSB) */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
 
                ch->frequency = (ch->frequency & 0x00FF) | ((V & 0x0F) << 8);
                PCEFast_PSG_RecalcFreqCache(psg, psg->select);
@@ -332,6 +338,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x04: /* Channel enable, DDA, volume */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
 
                if((ch->control & 0x40) && !(V & 0x40))
                {
@@ -358,6 +365,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x05: /* Channel balance */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
                ch->balance = V;
 
                psg->vol_pending = true;
@@ -365,6 +373,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x06: /* Channel waveform data */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
                V &= 0x1F;
 
                if(!(ch->control & 0x40))
@@ -388,6 +397,7 @@ void PCEFast_PSG_Write(PCEFast_PSG *psg, int32 timestamp, uint8 A, uint8 V)
 
       case 0x07: /* Noise enable and frequency */
                if(psg->select > 5) return; /* no more than 6 channels, silly game. */
+               ch = &psg->channel[psg->select];
                if(psg->select >= 4)
                {
                   ch->noisectrl = V;

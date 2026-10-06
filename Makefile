@@ -50,12 +50,22 @@ CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics
 # Пер-ядровые флаги
 FCEUMM_CFLAGS := $(CFLAGS) -DFRONTEND_SUPPORTS_RGB565 -DFCEU_VERSION_NUMERIC=9900
 GBFLAGS       := $(CFLAGS) -std=gnu99 -DPRIu64=\"llu\" -DPRIx64=\"llx\" -DPRId64=\"lld\"
-SNES_CFLAGS   := $(CFLAGS) -DLOAD_FROM_MEMORY -DHAVE_NO_LANGEXTRA -DLAGFIX -Wno-incompatible-pointer-types
+# SNES (Snes9x2005): LAGFIX — ОПЦИЯ, дефолт ВЫКЛ (как в эталоне libretro-snes9x2005).
+# При LAGFIX-выходе (finishedFrame) пропускаются S9xPackStatus()/S9xAPUPackStatus()
+# — статусы не пакетируются, неточность SPC700-звука/HDMA-таймингов.
+# Не-LAGFIX ветка выдаёт ровно один кадр за S9xMainLoop() (выход по SCAN_KEYS_FLAG
+# на последнем сканлайне), host на это и рассчитан (snes_host.cpp).
+# Включить: make SNES_LAGFIX=1
+SNES_LAGFIX ?= 0
+SNES_CFLAGS := $(CFLAGS) -DLOAD_FROM_MEMORY -DHAVE_NO_LANGEXTRA -Wno-incompatible-pointer-types
+ifeq ($(SNES_LAGFIX),1)
+SNES_CFLAGS += -DLAGFIX
+endif
 GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=16777216 -DUSE_16BPP_RENDERING -DFRONTEND_SUPPORTS_RGB565
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s audio_core tft_drv))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s audio_core tft_drv sound_layer_test))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
@@ -311,7 +321,7 @@ MSX_RENAME := $(OBJCOPY) \
 	--redefine-sym strcasestr=msx_strcasestr \
 	--redefine-sym chdir=msx_chdir \
 	--redefine-sym getcwd=msx_getcwd
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data msx503_cpm_data msx503_net_data))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data msx2p_rom_data msx2pext_rom_data msx_rom_data msx503_cpm_data msx503_net_data msx_carts_sha_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_MSX msx_V9938 msx_Sound msx_SHA1 msx_Floppy msx_FDIDisk msx_MCF msx_Z80 msx_I8255 msx_YM2413 msx_AY8910 msx_SCC msx_WD1793 msx_opll msx_WrapNukeYKT))
 
 $(BUILD)/msx_host.o: $(MSX)/host/msx_host.c | $(BUILD)
@@ -329,10 +339,22 @@ $(BUILD)/msx2_rom_data.o: $(MSX)/host/msx2_rom_data.c | $(BUILD)
 $(BUILD)/msx2ext_rom_data.o: $(MSX)/host/msx2ext_rom_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx2p_rom_data.o: $(MSX)/host/msx2p_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx2pext_rom_data.o: $(MSX)/host/msx2pext_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_rom_data.o: $(MSX)/host/msx_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx503_cpm_data.o: $(MSX)/host/msx503_cpm_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx503_net_data.o: $(MSX)/host/msx503_net_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_carts_sha_data.o: $(MSX)/host/msx_carts_sha_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx_MSX.o: $(MSX)/fMSX/MSX.c | $(BUILD)
@@ -718,6 +740,8 @@ $(BUILD)/btn_pad.o: $(TOP)h3_bare/cores/btn_pad.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/settings.o: $(TOP)h3_bare/cores/settings.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<
+$(BUILD)/sound_layer_test.o: $(TOP)h3_bare/cores/sound_layer_test.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/sd.o: $(TOP)h3_bare/cores/sd.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/fat.o: $(TOP)h3_bare/cores/fat.c | $(BUILD)
@@ -826,6 +850,15 @@ $(BUILD)/ngp_input.o: $(TOP)h3_bare/cores/ngp/input.cpp | $(BUILD)
 $(BUILD)/ngp_neopop_blip.o: $(TOP)h3_bare/cores/ngp/neopop_blip.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -DINLINE=inline -I$(TOP)h3_bare/cores/pce_fast/mednafen/include/blip -c -o $@ $<
 
+# r725: sound_init/sound_update в NGP (RACE) имеют ДРУГУЮ сигнатуру, чем в GPGX
+# (см. ngp_rename.sh). После сборки ВСЕХ ngp-объектов батч-переименователь
+# переименовывает их в ngp_sound_init/ngp_sound_update (согласованно: определения
+# neopopsound и ссылки ngp_host) — убирает коллизию с Genesis Plus GX.
+NGP_OBJS := $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o ngp_neopop_blip.o)
+$(BUILD)/ngp_renamed.stamp: $(NGP_OBJS)
+	$(TOP)h3_bare/cores/ngp_rename.sh $(NGP_OBJS)
+	touch $@
+
 # ---- GBA (gpSP) ----
 GBA_CFLAGS := $(CFLAGS) -DINLINE=inline
 GBA_INC    := $(INCLUDES)
@@ -931,7 +964,7 @@ WINPATH = $1
 else
 WINPATH = $(shell cygpath -m $1)
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp
 	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(call WINPATH,$(o)))) > $(BUILD)/linker.rsp
 	printf -- '-lstdc++ -lgcc -lc -lm -lgcc\n' >> $(BUILD)/linker.rsp
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
@@ -949,16 +982,22 @@ $(BIN): $(ELF) $(BUILD)/linkcheck.stamp
 # переименований (gc-blargg/msx/bk/gba/cps1): повторное определение одних и тех же
 # blargg-символов (Blip_Buffer и т.п. БЕЗ суффикса _gc) означало бы, что gc-объект
 # не был переименован и склеился с Lynx-версией (краш Coleco, r0.193).
-$(BUILD)/linkcheck.stamp: $(ELF)
-	@echo "linkcheck: undefined symbols + blargg-коллизии..."
+$(BUILD)/linkcheck.stamp: $(ELF) $(OBJ)
+	@echo "linkcheck: undefined symbols + межобъектные дубли глобалов..."
 	@if arm-none-eabi-nm $(ELF) | awk '$$1=="U" || $$1=="w" || $$1=="v" {print}' | grep -q .; then \
 	    echo "ОШИБКА: в h3_bare.elf есть неразрешённые символы:"; \
 	    arm-none-eabi-nm $(ELF) | awk '$$1=="U" || $$1=="w" || $$1=="v" {print "  "$$0}'; \
 	    exit 1; \
 	fi
-	@if arm-none-eabi-nm $(ELF) | awk '$$2=="T"||$$2=="t"||$$2=="D"||$$2=="d"||$$2=="B"||$$2=="b"' | awk '{print $$3}' | grep -E '(_Z|^)Blip_|Effects_Buffer|Multi_Buffer|Stereo_Buffer|Silent_Blip_Buffer' | grep -v '_gc$$' | sort | uniq -d | grep -q .; then \
-	    echo "ОШИБКА: коллизия blargg-символов (gc-объект не переименован?):"; \
-	    arm-none-eabi-nm $(ELF) | awk '$$2=="T"||$$2=="t"||$$2=="D"||$$2=="d"||$$2=="B"||$$2=="b"' | awk '{print $$3}' | grep -E '(_Z|^)Blip_|Effects_Buffer|Multi_Buffer|Stereo_Buffer|Silent_Blip_Buffer' | grep -v '_gc$$' | sort | uniq -d | while read s; do echo "  дубль: $$s"; done; \
+	@if printf '%s\n' $(OBJ) | xargs -n 1 arm-none-eabi-nm 2>/dev/null | \
+	    awk '$$2=="T"||$$2=="D"||$$2=="B" {print $$3}' | sort | uniq -d | \
+	    grep -vE '^(emu_sndInit|BurnYM2612UpdateRequest|emu_sndPlaySound|emu_sndPlayBuzz|emu_FileRead|SndSave_|_Z18system18_io_chip_r[ij]$$|_Z18system18_io_chip_w[ij]t$$|_Z19HamawayGfxBankWritejt$$|_Z20System18GfxBankWritejt$$)$$' | \
+	    grep -q .; then \
+	    echo "ОШИБКА: межобъектные дубли глобальных символов (T/D/B, >1 .o):"; \
+	    printf '%s\n' $(OBJ) | xargs -n 1 arm-none-eabi-nm 2>/dev/null | \
+	        awk '$$2=="T"||$$2=="D"||$$2=="B" {print $$3}' | sort | uniq -d | \
+	        grep -vE '^(emu_sndInit|BurnYM2612UpdateRequest|emu_sndPlaySound|emu_sndPlayBuzz|emu_FileRead|SndSave_|_Z18system18_io_chip_r[ij]$$|_Z18system18_io_chip_w[ij]t$$|_Z19HamawayGfxBankWritejt$$|_Z20System18GfxBankWritejt$$)$$' | \
+	        while read s; do echo "  дубль: $$s"; done; \
 	    exit 1; \
 	fi
 	@touch $@

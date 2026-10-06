@@ -27,6 +27,7 @@
 #include "fb_text.h"
 #include "emu.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -172,8 +173,39 @@ void osint_render(void) {
 }
 
 void vecx_snd_push(unsigned samps) {
-    // Звук отключён (без I2S): ядро по-прежнему пишет сэмплы в буферы — игнорируем
-    (void)samps;
+    // r735: звук Vectrex на I2S. Ядро пишет моно-сэмплы PSG (vecx_psg_exec,
+    // каждые 8 циклов MPU ≈ 187500 Гц) и DAC (via_ora<<8, та же сетка).
+    // `samps` — число PSG-сэмплов за кадр (dacsamps совпадает по счётчику).
+    // Микшируем PSG+DAC и ресемплим 187500→48000 (линейный, фаза 16.16).
+    extern int16_t vx_dacbuf[SIZE_ABUF];
+    (void)vx_dacbuf;   // объявлен выше (vx_dacbuf)
+    if (!samps || samps > SIZE_ABUF) samps = SIZE_ABUF;
+
+    static uint32_t rs_phase = 0;
+    static int16_t out[2048];
+    unsigned o = 0;
+    const unsigned in_n = samps;
+    while (o < 2048) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= in_n) break;
+        uint32_t fr = rs_phase & 0xFFFFu;
+        int32_t m0 = (int32_t)vx_psgbuf[i] + (int32_t)vx_dacbuf[i];
+        int32_t m1 = (int32_t)vx_psgbuf[i + 1] + (int32_t)vx_dacbuf[i + 1];
+        int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)fr) >> 16);
+        // PSG vtable до 4096, DAC до 0xFF00 (via_ora<<8) — сумма до ~0x10F00.
+        // Нормируем на s16 (>>3) — PSG-баланс ~1/8 от полной шкалы (как ориг).
+        s >>= 3;
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        out[o++] = (int16_t)s;
+        rs_phase += 256000u;   // (187500<<16)/48000
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (unsigned k = 0; k < o; k++)
+        i2s_push_sample(out[k], out[k]);   // моно → стерео
 }
 
 // ---- Ввод ----
@@ -263,7 +295,7 @@ void vecx_render_frame(void) {
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
     fb_clear(); fb_flush();
-    snd_manifest("vectrex", "none");
+    snd_manifest("vectrex", "psg dac");
     if (vecx_init_game(rom, size) != 1) {
         printf("Vectrex: init failed\n");
         return;

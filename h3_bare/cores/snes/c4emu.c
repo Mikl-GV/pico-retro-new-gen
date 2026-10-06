@@ -195,7 +195,15 @@ static void C4DoScaleRotate(int32_t row_padding)
    h = Memory.C4RAM[0x1f8c] & ~7;
 
    /* Clear the output RAM */
-   memset(Memory.C4RAM, 0, (w + row_padding / 4)*h / 2);
+   /* r735: `(w + row_padding/4)*h/2` при w,h до 0xF8 может превысить
+    * C4RAM (FillRAM+0x6000, лимит 0x2000): (0xF8+16)*0xF8/2 ≈ 0x7A10 —
+    * запись за буфер в соседние структуры Memory. Клампим к 0x2000. */
+   {
+      uint32_t c4_clear = (uint32_t)((w + row_padding / 4) * h / 2);
+      if (c4_clear > 0x2000u)
+         c4_clear = 0x2000u;
+      memset(Memory.C4RAM, 0, c4_clear);
+   }
 
    Cx = (int16_t)READ_WORD(Memory.C4RAM + 0x1f83);
    Cy = (int16_t)READ_WORD(Memory.C4RAM + 0x1f86);

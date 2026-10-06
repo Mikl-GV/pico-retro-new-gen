@@ -1304,15 +1304,22 @@ void POKEYSND_SetVolume(int vol)
 static void pokeysnd_process_16(void *sndbuffer, int sndn)
 {
 	short *buffer = (UWORD *) sndbuffer;
+	unsigned char tmp[2048];	/* r735: промежуточный байтовый буфер */
 	int i;
 
-	pokeysnd_process_8(buffer, sndn);
+	/* r735: прежний код звал pokeysnd_process_8(buffer, sndn) прямо в буфер,
+	 * затем читал ((UBYTE*)buffer)[i] и переписывал short[i] на месте —
+	 * чётные байты (адреса 2*k) уже перезаписывались short[k] до чтения,
+	 * половина сэмплов искажалась. Теперь 8-битная генерация идёт в tmp,
+	 * конверсия — из неповреждённых байтов. */
+	if (sndn > 2048) sndn = 2048;
+	pokeysnd_process_8(tmp, sndn);
 
 	for (i = sndn - 1; i >= 0; i--) {
 #ifndef POKEYSND_SIGNED_SAMPLES
-		int smp = ((int) (((UBYTE *) buffer)[i]) - 0x80) * POKEYSND_volume;
+		int smp = ((int) (tmp[i]) - 0x80) * POKEYSND_volume;
 #else
-		int smp = ((int) ((SBYTE *) buffer)[i]) * POKEYSND_volume;
+		int smp = ((int) ((SBYTE) tmp[i])) * POKEYSND_volume;
 #endif
 		if (smp > 32767)
 			smp = 32767;

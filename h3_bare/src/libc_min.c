@@ -180,12 +180,13 @@ int abs(int x) { return x < 0 ? -x : x; }
 // освобождается при перезапуске эмулятора (g_brk сбрасывается в emu_prepare).
 
 // r0.417 (H2 аудита): куча newlib РАЗМЕЩЕНА ПОСЛЕ uncached-области .coherent
-// (USB/OHCI: ED/TD/HCCA, 1 МБ), а не сразу за _hend. Прежний вариант рос от
+// (USB/OHCI: ED/TD/HCCA, 1 МБ), а не сразу за _hend — прежний вариант рос от
 // _hend вверх и через ~451 КБ наезжал на .coherent → тихая порча структур
 // OHCI (отвал клавиатуры/тача) при накоплении выделений между запусками игр.
-// Старт = libh3_coherent_region + 1 МБ (после uncached-окна), лимит =
-// _menu_arena (0x4F000000): за ним ROM_BUF (0x50000000) и EMU_FB (0x5F800000).
-// При переполнении возвращаем (void*)-1, как стандартный sbrk.
+// r725 (уточнение): старт = libh3_coherent_region + 1 МБ (после uncached-окна
+// и L1-таблицы 0x4A40C000..0x4A410000), лимит = _menu_arena (0x4F000000):
+// за ним ROM_BUF (0x50000000) и EMU_FB (0x5F800000). При переполнении
+// возвращаем (void*)-1, как стандартный sbrk.
 extern unsigned char libh3_coherent_region[];
 #define SBRK_START ((char*)libh3_coherent_region + (1 * 1024 * 1024))
 #define SBRK_LIMIT 0x4F000000u

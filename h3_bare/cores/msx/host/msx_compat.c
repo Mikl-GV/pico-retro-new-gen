@@ -32,6 +32,17 @@ extern unsigned char fMSX_ROMs_CPM_ROM[];      // CPM.ROM (16384) — «СПМ»
 extern unsigned int  fMSX_ROMs_CPM_ROM_len;
 extern unsigned char fMSX_ROMs_NET_ROM[];      // NET.ROM (32768) — картридж «СЕТЬ» YIS-503III
 extern unsigned int  fMSX_ROMs_NET_ROM_len;
+// r735: добавлены BIOS для MSX1 / MSX2+ (порт fMSX целиком, не только Yamaha)
+extern unsigned char fMSX_ROMs_MSX_ROM[];      // MSX.ROM    (32768) — MSX1 BIOS+BASIC (TMS9918)
+extern unsigned int  fMSX_ROMs_MSX_ROM_len;
+extern unsigned char fMSX_ROMs_MSX2P_ROM[];    // MSX2P.ROM  (32768) — MSX2+ BIOS (V9958)
+extern unsigned int  fMSX_ROMs_MSX2P_ROM_len;
+extern unsigned char fMSX_ROMs_MSX2PEXT_ROM[]; // MSX2PEXT.ROM (16384) — MSX2+ SubROM
+extern unsigned int  fMSX_ROMs_MSX2PEXT_ROM_len;
+// r735: CARTS.SHA — база SHA1 известных картриджей (для точного определения
+// маппера в GuessROM). Вшита как данные, rfopen("CARTS.SHA","rb") отдаёт её.
+extern unsigned char fMSX_ROMs_CARTS_SHA[];
+extern unsigned int  fMSX_ROMs_CARTS_SHA_len;
 
 #define MAX_OPEN_FILES 16
 typedef struct {
@@ -58,6 +69,14 @@ static const msx_bios_t g_bios[] = {
     { "MSX2EXT.ROM", fMSX_ROMs_MSX2EXT_ROM, 16384 },
     { "CPM.ROM",     fMSX_ROMs_CPM_ROM,     16384 },
     { "NET.ROM",     fMSX_ROMs_NET_ROM,     32768 },
+    // r735: MSX1 / MSX2+ (порт fMSX целиком)
+    { "MSX.ROM",     fMSX_ROMs_MSX_ROM,     32768 },
+    { "MSX2P.ROM",   fMSX_ROMs_MSX2P_ROM,   32768 },
+    { "MSX2PEXT.ROM",fMSX_ROMs_MSX2PEXT_ROM,16384 },
+    // r735: CARTS.SHA — база мапперов известных картриджей (GuessROM).
+    // Размер захардкожен (33152 байт, как в fMSX/ROMs/CARTS.SHA) — g_bios[]
+    // статический массив требует констант.
+    { "CARTS.SHA",   fMSX_ROMs_CARTS_SHA,   33152 },
     { 0, 0, 0 }
 };
 

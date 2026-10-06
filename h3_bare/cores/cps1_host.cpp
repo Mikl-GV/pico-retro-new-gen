@@ -631,6 +631,7 @@ static void host_update_input(void)
     if (sp & SP_C)     p1.c      = 1;
     if (sp & SP_START) p1.start  = 1;
     if (sp & SP_X)     p1.select = 1;   // Coin
+    if (sp & 0x0800) p1.select = 1;   // Mode/плата Select -> Coin (r731: 8-кноп. плата даёт Select на 0x800)
     if (sp & SP_Y)     p1.kick1  = 1;
     if (sp & SP_Z)     p1.kick2  = 1;
 

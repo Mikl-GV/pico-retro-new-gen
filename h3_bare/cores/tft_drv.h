@@ -36,18 +36,9 @@ void tft_help_show(const char* sys_id);
 // r124: код ушёл в SRAM-почту (TFT_BTN=0x64) — см. tft_drv.c.
 // 0 = нет запроса, -2 = Settings, -4 = About (коды как в menu_run).
 
-// ---- Тач-отладка (P3/P4): CPU1 пишет, core0 выводит в UART ----
-// Драки за UART нет: CPU1 printf не зовёт, только кладёт данные сюда.
-extern volatile uint16_t g_ts_rx;        // сырой X TSC2046I (0x90)
-extern volatile uint16_t g_ts_ry;        // сырой Y TSC2046I (0xD0)
-extern volatile int16_t  g_ts_px;        // масштабированный x (0..TFT_W-1)
-extern volatile int16_t  g_ts_py;        // масштабированный y (0..TFT_H-1)
-extern volatile uint32_t g_ts_seq;       // растёт на КАЖДОМ событии (P4: повтор при удержании)
-extern volatile uint8_t  g_ts_pressed;   // 1 = сейчас нажат
-
-// r53: диагностика зажатого CS
-extern volatile uint32_t g_ts_dbg_flag;
-extern volatile uint32_t g_ts_dbg_data[8];
+// r726: глобалы тача g_ts_rx/ry/px/py/seq/pressed/dbg_* УДАЛЕНЫ — их никто не
+// читал (CPU1 передаёт попадание в иконку через SRAM-почту TFT_BTN, калибровку —
+// через g_cal_*/g_touch_*).
 
 // ---- TFT core (CPU1) ----
 // Зацикленный процессор TFT: init дисплея + справка + тач.

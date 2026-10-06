@@ -175,6 +175,43 @@ static int bk_model_dialog(void) {
     }
 }
 
+// r735: выбор модели MSX (порт fMSX целиком, не только Yamaha).
+//   0=MSX1, 1=MSX2, 2=MSX2+, 3=Yamaha 503III. Возвращает индекс или -1 (ESC).
+extern const char* msx_model_name(int);
+static const char* msx_model_short(int m) {
+    switch (m) {
+    case 0: return "MSX1"; case 1: return "MSX2";
+    case 2: return "MSX2+"; case 3: return "Yamaha 503III";
+    default: return "MSX2";
+    }
+}
+static int msx_model_dialog(void) {
+    int sel = 0, dirty = 1;
+    const int count = 4;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "MSX model", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            for (int i = 0; i < count; i++) {
+                int y = 140 + i * 32;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 3, 500, 26, 0x00222222);
+                fb_puts_s(70, y, msx_model_short(i), 1, clr);
+            }
+            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < count - 1) sel++; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
 // 1 = ROM (браузер /roms/bk0010), 2 = BASIC, 0 = назад
 static int bk_source_dialog(void) {
     int sel = 0, dirty = 1;
@@ -234,7 +271,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r724";
+const char g_fw_version[] = "r735";
 
 void main(void) {
     int sd_ok = 0;
@@ -242,7 +279,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r724\n");
+    uart_puts("build: r735\n");
 
     led_init();
     led_set(0);
@@ -405,6 +442,15 @@ void main(void) {
         //   2. Load cartridge from SD (если /roms/msx есть)
         if (strcmp(id, "msx") == 0) {
             extern void emu_run_msx(const uint8_t*, uint32_t, const char*);
+            extern void msx_set_model(int);
+            extern const char* msx_model_name(int);
+
+            // r735: сначала выбор модели (MSX1/MSX2/MSX2+/Yamaha 503III)
+            // msx_model_dialog определён выше (static) — виден из main без extern
+            int mdl = msx_model_dialog();
+            if (mdl < 0) continue;   // ESC — назад в меню
+            msx_set_model(mdl);
+
             // проверяем наличие папки /roms/msx
             int has_dir = 0;
             fat_entry_t* list = fat_scratch();

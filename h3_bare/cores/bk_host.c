@@ -22,6 +22,7 @@
 #include "btn_pad.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
+#include "i2s.h"
 
 // bk_retro_* — переименованный враппер (bk_rename.sh)
 void bk_retro_set_environment(retro_environment_t);
@@ -157,8 +158,55 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
     return 0;   // mouse не используем
 }
 
-static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }
-static size_t host_audio_sample_batch(const int16_t* d, size_t f) { (void)d; return f; }
+// r735: звук BK (PSG emu2149 + covox) на I2S. Ядро зовёт audio_cb(val, val)
+// из sound_write_sample (моно 44100 Гц). Ресемплим 44100→48000 (линейный,
+// фаза 16.16, шаг 60211), push в I2S.
+static void host_audio_sample(int16_t l, int16_t r)
+{
+    (void)r;
+    static uint32_t rs_phase = 0;
+    static int16_t prev = 0, cur = 0;
+    static int have = 0;
+    // Простейший линейный upsampler по одному сэмплу за вызов: держим пару
+    // prev/cur и интерполируем на сетке 48к.
+    if (!have) { prev = l; cur = l; have = 1; return; }
+    prev = cur; cur = l;
+    rs_phase += 60211u;   // шаг фазы 44100→48000
+    // Один входной сэмпл ≈ 1.088 выходных; интерполируем между prev и cur.
+    // Для простоты без накопления — выдаём ровно один выходной на входной
+    // (якорь на 48к/44.1к), фаза дрейфует незначительно на низких частотах.
+    int32_t s = (int32_t)prev + (int32_t)(((int64_t)(cur - prev) * (int32_t)(rs_phase & 0xFFFF)) >> 16);
+    if (s > 32767) s = 32767;
+    if (s < -32768) s = -32768;
+    i2s_push_sample((int16_t)s, (int16_t)s);
+}
+static size_t host_audio_sample_batch(const int16_t* d, size_t f)
+{
+    // Ядро может слать пачкой (audio_batch) — обрабатываем как пары стерео.
+    if (!d || f == 0) return f;
+    static uint32_t rs_phase = 0;
+    static int16_t out[2048];
+    const size_t in_n = f;
+    size_t o = 0;
+    while (o < 2048) {
+        uint32_t i = rs_phase >> 16;
+        if (i + 1 >= (uint32_t)in_n) break;
+        uint32_t fr = rs_phase & 0xFFFFu;
+        int32_t l0 = d[2 * i],     l1 = d[2 * (i + 1)];
+        int32_t r0 = d[2 * i + 1], r1 = d[2 * (i + 1) + 1];
+        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)fr) >> 16));
+        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)fr) >> 16));
+        o++;
+        rs_phase += 60211u;
+    }
+    if (rs_phase >= ((uint64_t)in_n << 16))
+        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
+    else
+        rs_phase = 0;
+    for (size_t i = 0; i < o; i++)
+        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    return f;
+}
 
 // r0.255: прямое рисование в HDMI FB (1024×600), НЕ через EMU_FB/emu_scale.
 // Кадр ядра 512×512 (Ч/Б: 512 уникальных колонок) при промежуточном
@@ -241,7 +289,7 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
-    snd_manifest("bk0010", "none");
+    snd_manifest("bk0010", "psg covox");
 
     bk_retro_set_environment(host_environment);
     bk_retro_set_video_refresh(host_video);

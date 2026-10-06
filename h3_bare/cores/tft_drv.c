@@ -227,15 +227,12 @@ static int g_tft_ready = 0;
 // вся межъядерная связь в SRAM-почте (0x34..0x70). Флаг «кадр готов» не
 // имел потребителя (зеркало HDMI отложено).
 
-// --- Буфер тача: CPU1 пишет, core0 печатает (драки за UART нет) ---
-volatile uint16_t g_ts_rx __attribute__((section(".coherent"), aligned(4)));   // сырой X (0x90)
-volatile uint16_t g_ts_ry __attribute__((section(".coherent"), aligned(4)));   // сырой Y (0xD0)
-volatile int16_t  g_ts_px __attribute__((section(".coherent"), aligned(4)));   // масштабированный x
-volatile int16_t  g_ts_py __attribute__((section(".coherent"), aligned(4)));   // масштабированный y
-volatile uint32_t g_ts_seq __attribute__((section(".coherent"), aligned(4)));  // растёт на каждом событии
-volatile uint8_t  g_ts_pressed __attribute__((section(".coherent"), aligned(4))); // 1 = сейчас нажат
-volatile uint32_t g_ts_dbg_flag __attribute__((section(".coherent"), aligned(4)));
-volatile uint32_t g_ts_dbg_data[8] __attribute__((section(".coherent"), aligned(4)));
+// r726: мёртвые глобалы тача g_ts_rx/ry/px/py/seq/pressed/dbg_* УДАЛЕНЫ.
+// Они лежали в .coherent штучно (aligned(4), без 64-байтных линий), но их
+// НИКТО не читал: CPU1 передаёт попадание в иконку через SRAM-почту TFT_BTN,
+// калибровку — через g_cal_*/g_touch_* (+TFT_CAL*), а raw-координаты — в
+// локальных переменных tft_touch_scan. Удаление сокращает .coherent и убирает
+// «мину» для будущего межъядерного протокола без барьеров.
 
 // r115: применяемые границы (сканер использует их). Значения НЕ
 // инициализировать в объявлении: .coherent не копируется из .data,
@@ -862,7 +859,7 @@ int rx4 = (int)(rx >> 4), ry4 = (int)(ry >> 4), rz4 = (int)(rz >> 4);
     //   rx4 2401(лево)..3920(право) — горизонталь  sx
     //   ry4 3664(верх)..2496(низ)    — вертикаль инвертирована: sy = 319 - ...
     // Диапазоны узкие: X 2350..3950, Y 2450..3700. Z1-порог 2140.
-    if (rz4 < 2140) { g_ts_pressed = 0; return 0; }
+    if (rz4 < 2140) return 0;   // r726: g_ts_pressed удалён (никто не читал)
     // r180: guard деления — испорченная калибровка (xmax==xmin) не должна
     // давать div-by-0 (UNDEF) в тач-цикле CPU1.
     int xr = (int)g_touch_xmax - (int)g_touch_xmin; if (xr <= 0) xr = 1;
@@ -875,14 +872,12 @@ int rx4 = (int)(rx >> 4), ry4 = (int)(ry >> 4), rz4 = (int)(rz >> 4);
     if (sy < 0) sy = 0;
     if (sy >= TFT_H) sy = TFT_H - 1;
     *px = sx; *py = sy;
-    g_ts_pressed = 1;
     return 1;
 ts_wd:
     printf("TSTOUCH watchdog: reset SPI\n");   // r129: единственный printf из тач-цикла
     SPI0_FCR = (1u << 31) | (1u << 15);   // сброс TX/RX FIFO
     SPI0_TCR = 0x0;                         // вернуть Mode 0 (дисплей)
     SPI0_CCR = save;
-    g_ts_pressed = 0;
     return 0;
 }
 

@@ -93,28 +93,10 @@ static int g_muted = 1;
 // blip. r560 поднял срез до ~480 Гц (DC_SHIFT=4) — но на стенде звук стал
 // «режущим» (бедный бас) по сравнению с оригиналом (retrogpSP без такого
 // фильтра). r572: возвращён DC_SHIFT=5 (~240 Гц) — низ восстановлен.
-// r585 (Ф1): dc_l/dc_r — в .coherent: их пишет core0 (i2s_push_sample) и
-// обнуляет CPU2 (i2s_audio_poll_cmd при RING_RESET); без uncached core0
-// читал бы своё старое значение из write-back кэша после сброса.
-// r715: ВАЖНО — поля, которые в горячем пути пишут РАЗНЫЕ ядра (core0 —
-// g_ring_wr/dc_l/dc_r; CPU2 — g_ring_rd/hold_l/hold_r/fade_left/beat), разнесены
-// по ОТДЕЛЬНЫМ 64-байтным кэш-линиям (aligned(64)). Причина: wr, rd, dc, hold,
-// fade, beat лежали в одной 32-байтной uncached-линии .coherent; два ядра
-// долбили её десятками тысяч раз/с (core0 → wr 48к/с, CPU2 → rd/beat) → гонка
-// за захват линии на шине H3 → CPU2 замирал (не аборт — потому F1..F6 не
-// печатались). Теперь каждое поле — в своей линии, конкуренции нет.
-// dc_l/dc_r — пишет core0 (push_sample) и обнуляет CPU2 (RING_RESET) — держим
-// их вместе, но в ОТДЕЛЬНОЙ линии от wr/rd (переписываются редко, не в потоке).
-static int32_t dc_l __attribute__((section(".coherent"), aligned(64))) = 0;
-static int32_t dc_r __attribute__((section(".coherent"), aligned(64))) = 0;
-// r590: DC_SHIFT — переменная (не #define): для разных систем свой срез.
-//   GBA (пачки с паузами тишины) — 6 (~120 Гц): r591 вернул низ после того, как
-//   5 (~240 Гц) резал бас/давал «провал»; щелчки на стыках пачек уходят
-//   мягким лимитером ниже. (Хосты GBA вызывают i2s_dc_shift_set(6) — см. gba_host.c.)
-//   Lynx (непрерывный поток) — 6 (~120 Гц): по стенду ровнее, ближе к оригиналу.
-// Задают хосты через i2s_dc_shift_set(); только core0 пишет (push_sample),
-// в .coherent не нужно.
-static int g_dc_shift = 5;   // по умолчанию ~240 Гц (безопасно для всех)
+// r734 (P2-1): DC-блокер УДАЛЁН ещё в r642 из горячего пути (эмуляторы сами
+// центрируют сигнал). Статические dc_l/dc_r/g_dc_shift оставались МЁРТВЫМИ
+// (write-only) и грузили шину uncached-записями. Удалены. Публичный API
+// i2s_dc_shift_set() сохранён как no-op (хосты продолжают его звать).
 
 // r635: hold/fade из i2s_flush_max вынесены в файловые статики (сбрасываются в
 // i2s_ring_reset/AUDIO_CMD_RING_RESET) — иначе при смене игры flush_max «затухал»
@@ -125,26 +107,53 @@ static int g_dc_shift = 5;   // по умолчанию ~240 Гц (безопа�
 // RESUME читал старый пик удержания/счётчик затухания → «треск на старте» игры.
 // r715: hold/fade — свои отдельные 64-байтные линии (пишет CPU2 в flush_max,
 // обнуляет core0 в ring_reset; не мешать с wr/rd/beat).
+#define I2S_HOLD_FADE_PAIRS 48   // ~1 мс затухания/атаки при 48 кГц (r729: используется и для fade-in)
+// r730+r732: амплитудный порог «тишины» для атаки.
+// ВАЖНО (r732): проверяется сэмпл УЖЕ ПОСЛЕ масштабирования громкостью
+// (в кольце лежит сэмпл × vol%). При громкости 20% (дефолт) «тихая музыка»
+// ядра 4000..8000 (−18..−12 дБ) даёт в кольце 800..1600 — порог 1024 считал
+// её тишиной → fade-in взводился → звук приглушался («ватный», зацеп r730).
+// Порог снижен до 128 (≈ −48 дБ): тишиной считается ТОЛЬКО настоящая тишина
+// (нули/микро-хвост), тихий сигнал атаку НЕ вызывает.
+#define I2S_SILENCE_LEVEL 128
+#define I2S_ATTACK_SILENCE 48
+// r732+ОТКАТ (r733): trim на CPU2 УБРАН — жёсткий скачок g_ring_rd при каждом
+// переполнении давал «жевание»/треск на непрерывном тоне (пользователь, стенд,
+// Lynx). Кольцо возвращено к r730-поведению: продюсер НЕ пишет rd, при полном
+// буфере просто дропает новые пары (ring_should_drop), единственный писатель
+// rd — CPU2 (SPSC). Контроль задержки (который давал старый trim) — отдельной
+// задачей, НЕ жёстким скачком.
 static int16_t hold_l __attribute__((section(".coherent"), aligned(64))) = 0;
 static int16_t hold_r __attribute__((section(".coherent"), aligned(64))) = 0;
 static int fade_left __attribute__((section(".coherent"), aligned(64))) = 0;
+// r729: счётчик АТАКИ (fade-in). Устанавливается CPU2 при ПЕРЕХОДЕ в полную
+// тишину (fade_left==0 → пишем 0), расходуется при первом появлении данных —
+// плавное нарастание амплитуды от 0 к полной за ~1 мс. Убирает ступеньку
+// «тишина → первый сэмпл» = щелчок на старте игры, после тихой сцены и при
+// перезаходе (раньше был ТОЛЬКО fade-out, fade-in не было).
+// Обнуляется core0 в ring_reset и в AUDIO_CMD_RING_RESET (как hold/fade).
+static int attack_left __attribute__((section(".coherent"), aligned(64))) = 0;
+// r730: счётчик тихих пар ПОДРЯД (silence detector) — в .coherent, т.к. пишет
+// CPU2 (flush_max) и обнуляет core0 (ring_reset). Атака взводится только после
+// I2S_ATTACK_SILENCE пар подряд с амплитудой < I2S_SILENCE_LEVEL — тихий сигнал
+// (музыка на низкой громкости) не режется.
+static int silent_run __attribute__((section(".coherent"), aligned(64))) = 0;
 
 void i2s_dc_shift_set(int shift) {
-    if (shift < 1) shift = 1;
-    if (shift > 12) shift = 12;
-    g_dc_shift = shift;
-    dc_l = 0; dc_r = 0;   // сброс истории — иначе блокер «помнит» старый срез
+    // r734 (P2-1): DC-блокер удалён (r642) — API сохранён для совместимости
+    // хостов. Параметр не используется.
+    (void)shift;
 }
 
 // ---- кольцо потока эмулятора (объявлено раньше геттеров — их использует) ----
 #define AUDIO_RING_SIZE 8192
-// D-audio: мягкий целевой уровень кольца (пар), до которого продюсер срезает
-// при переполнении (i2s_push_sample → i2s_ring_trim при достижении HIGH).
-// 1600 пар ≈ 33 мс по 48 кГц — больше, чем способен накопить один кадр
-// (~800), поэтому срез срабатывает только на устойчивый дрифт производства
-// выше железа, а не вырезает пачку целиком.
-#define AUDIO_RING_TRIM_HIGH 7000u
-#define AUDIO_RING_TRIM_TARGET 1600u
+// r727 (синхронизация кольца): пороги TRIM_HIGH/TRIM_TARGET и функция
+// i2s_ring_trim() УДАЛЕНЫ. Продюсер больше не срезает историю записью
+// g_ring_rd (это был data race с ring_rd_advance() CPU2 — индекс откатывался,
+// долив рвался). Вместо трима — ring_should_drop(): при полном буфере
+// продюсер дропает новые пары, единственный писатель rd — CPU2 (SPSC).
+// Задержка кольца ограничена размером (8192 пар ≈ 170 мс максимум), не
+// плавает скачками от среза.
 // r584 (Ф0): кольцо и индексы — в .coherent (uncached, 1МБ область). Продюсер
 // (core0, i2s_push_sample) и потребитель (core2, audio_core_main) — РАЗНЫЕ
 // ядра, у core0 D-cache write-back: без uncached CPU2 читал бы stale-линии.
@@ -156,9 +165,6 @@ static int16_t g_ring_l[AUDIO_RING_SIZE] __attribute__((section(".coherent"), al
 static int16_t g_ring_r[AUDIO_RING_SIZE] __attribute__((section(".coherent"), aligned(8)));
 static volatile uint32_t g_ring_wr __attribute__((section(".coherent"), aligned(64))) = 0;
 static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(64))) = 0;
-// W: фаза watermark-предбуферизации. Пишет сброс (core0, i2s_ring_reset) и
-// потребитель (CPU2, flush_max) — оба ядра, поэтому в .coherent (uncached).
-static volatile uint32_t g_ring_watermark_active __attribute__((section(".coherent"), aligned(4))) = 0;
 
 // ---- Почта core0↔CPU2 (аудио-ядро) в .coherent (uncached) ----
 // core0 (эмулятор) пишет команды и читает состояние; CPU2 (долив) обрабатывает
@@ -235,11 +241,19 @@ void i2s_audio_poll_cmd(void) {
     uint32_t seq = g_audio_seq;
     uint32_t ack = g_audio_ack;
     if (seq == ack) return;              // новой команды нет
+    // P0 (r725): барьер между чтением seq и cmd. Продюсер (i2s_audio_cmd)
+    // публикует `store(cmd); dmb; store(seq)`. Без dmb на стороне чтения CPU2
+    // мог увидеть НОВЫЙ seq при ещё СТАРОЙ (обнулённой после прошлой команды)
+    // cmd — зеркальная гонка записи: команда терялась, ack подтверждался, а
+    // RING_RESET/PAUSE не исполнялись (хвост старой игры, наложение, треск).
+    // dmb упорядочивает оба load'а: когда seq уже новый, cmd гарантированно новая.
+    __asm volatile("dmb sy" ::: "memory");
     uint32_t cmd = g_audio_cmd;
     if (cmd == AUDIO_CMD_RING_RESET) {
-        g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+        g_ring_wr = 0; g_ring_rd = 0;
         hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade (накопительный треск)
-        g_ring_watermark_active = 0;             // W: рестарт watermark (новая игра)
+        attack_left = I2S_HOLD_FADE_PAIRS;       // r729: старт с атаки (fade-in) — нет щелчка на входе
+        silent_run = 0;                          // r730: сброс счётчика тишины
     } else if (cmd == AUDIO_CMD_PAUSE) {
         g_audio_paused_f = 1;   // подтвердить паузу
     } else if (cmd == AUDIO_CMD_RESUME) {
@@ -313,9 +327,10 @@ void i2s_ring_reset(void) {
     if (g_audio_state) {
         i2s_audio_cmd(AUDIO_CMD_PAUSE);      // CPU2 встал, подтвердил ack
     }
-    g_ring_wr = 0; g_ring_rd = 0; dc_l = 0; dc_r = 0;
+    g_ring_wr = 0; g_ring_rd = 0;
     hold_l = 0; hold_r = 0; fade_left = 0;   // r635: сброс hold/fade
-    g_ring_watermark_active = 0;             // W: рестарт watermark (новая игра)
+    attack_left = I2S_HOLD_FADE_PAIRS;       // r729: старт с атаки (fade-in) — нет щелчка на входе
+    silent_run = 0;                          // r730: сброс счётчика тишины
     // r644: очистка аппаратного TX FIFO — иначе после выхода из игры хвост
     // из FIFO ещё играется в меню (программный сброс кольца его не трогает).
     I2S_FIFO_CTL |= (1u << 25);
@@ -389,51 +404,33 @@ int i2s_init(void) {
 
 // ---- приём/перенос потока эмулятора ----
 static inline uint32_t ring_count(void) { return (uint32_t)(g_ring_wr - g_ring_rd); }
-int i2s_ring_level(void) { return (int)ring_count(); }   // r522: для диагностики
 
-// r557: срезать накопленную историю — оставить только keep_pairs самых
-// СВЕЖИХ (двигаем rd к wr, самые старые пар дропаются). Нужно, когда темп
-// железа чуть ниже производства и кольцо «застряло» полным (задержка ~170мс
-// + дропы) — мгновенно убирает отставание, дальше период стабилизируется.
-// D-audio: раньше trim вызывался на CPU2 (consummer) конкурентно с push/rd,
-// обновляя g_ring_rd неатомарной записью и сбрасывая dc (который пишет core0
-// и читает CPU2) → data-race и «хвосты/наложения». Теперь:
-//   - вызов ТОЛЬКО из продюсера (i2s_push_sample / i2s_ring_trim), где кольцо
-//     и dc принадлежат этому же потоку — гонки нет;
-//   - индексы двигаются атомарно (LDREX/STREX), чтобы CPU2-читатель никогда
-//     не увидел «рваный» rd/yровень = срезу посреди чтения.
-// r707 (C2-fix): срез продюсера — ПРОСТОЙ store, без LDREX/STREX.
-// r703 перевёл trim на CAS «чтобы CPU2 не увидел рваный rd». Это дало
-// live-lock CPU2 (см. ring_rd_advance): эксклюзивный монитор сбрасывается
-// непрерывными обычными store core0 в ту же кэш-линию (wr/rd соседние),
-// CPU2 бесконечно retry'ит CAS → кольцо не доливается.
-// SPSC: trim вызывается только продюсером (тот же поток, что wr). Гонка
-// «trim пишет rd, пока CPU2 читает» — редкая (только при переполнении),
-// последствия: пара лишних/пропущенных сэмплов на срезе — незаметно.
-static int ring_trim(uint32_t keep_pairs) {
-    if (keep_pairs >= AUDIO_RING_SIZE) keep_pairs = AUDIO_RING_SIZE - 1;
-    uint32_t wr = g_ring_wr;
-    uint32_t rd = g_ring_rd;
-    if (wr - rd <= keep_pairs) return 0;
-    g_ring_rd = wr - keep_pairs;
-    // dmb: публикация нового rd (освободившихся слотов) для CPU2-читателя.
-    __asm volatile("dmb sy" ::: "memory");
-    return 1;
-}
-
-void i2s_ring_trim(uint32_t keep_pairs) {
-    if (ring_trim(keep_pairs)) {
-        // r575 (Д-4): дропнутые старые пары не должны влиять на DC-оценку.
-        // Здесь мы на продюсере тредом, владеющим dc — сброс без гонки.
-        dc_l = 0;
-        dc_r = 0;
-    }
+// r727 (синхронизация кольца): продюсер БОЛЬШЕ НЕ пишет g_ring_rd.
+// ПРОШЛОЕ (data race): ring_trim() (core0) делал `g_ring_rd = wr - keep_pairs`
+// (i2s.c:425), одновременно CPU2 в ring_rd_advance() делал `g_ring_rd++`
+// (i2s.c:499). g_ring_rd — ОБЩИЙ индекс, его писали ДВА ядра без атомарности:
+// интерливинг «CPU2 прочитал rd=4000 → core0 записал rd=5000 → CPU2 записал
+// обратно 4001» ОТКАТЫВАЛ индекс, CPU2 перечитывал уже съеденные пары →
+// задвоение/разрыв долива (щелчок/срыв именно при переполнении, когда и
+// случается trim). Это нарушало SPSC-инвариант «rd пишет только потребитель».
+// НОВОЕ: SPSC честный. Продюсер при переполнении НЕ двигает rd, а ДРОПАЕТ
+// новые пары, пока буфер полон (wr не обгоняет rd более чем на SIZE-1).
+// Единственный писатель rd — CPU2 (ring_rd_advance). trim как «сброс истории»
+// больше не нужен — вместо него продюсер просто не переполняет буфер.
+static int ring_should_drop(void) {
+    return (uint32_t)(g_ring_wr - g_ring_rd) >= (AUDIO_RING_SIZE - 1);
 }
 
 // Приём сэмпла: НЕБЛОКИРУЮЩИЙ. r642: DC-блокер УБРАН из этого слоя.
 // Эмуляторы (NGP fast, SNES, Lynx, GB...) уже центрируют сигнал на своём слое
 // (у NGP есть DC-блокер в neopopsound.c). Повторное центрирование здесь — двойной
 // DC = шум при появлении/динамике звука (симптом владельца). Оставляем громкость+кламп.
+// r735: счётчик дропнутых пар (диагностика слоя). Читается тестом/логом.
+// Объявлен ДО i2s_push_sample (используется в нём); доступ — core0 (продюсер).
+static volatile uint32_t g_drop_cnt = 0;
+void i2s_drop_cnt_reset(void) { g_drop_cnt = 0; }
+uint32_t i2s_drop_cnt(void) { return g_drop_cnt; }
+
 void i2s_push_sample(int16_t left, int16_t right) {
     if (!g_i2s_ready) return;
     // r706: PA10 (SD-усилка) пишет core0 напрямую (pa_dat_set). При нулевой
@@ -442,13 +439,18 @@ void i2s_push_sample(int16_t left, int16_t right) {
         g_muted = 0;
         pa_dat_set(SD_PIN, g_volume_pct > 0 ? 1 : 0);
     }
-    // D-audio: drop-on-high. Уровень кольца контролируется у продюсера
-    // (единственного потока, которому безопасно срезать и сбрасывать dc).
-    // При достижении высокого порога срезаем хвост до целевого — кольцо не
-    // растёт в бесконечность, срез идёт в этом же потоке без гонки с CPU2.
-    uint32_t lvl = ring_count();
-    if (lvl >= AUDIO_RING_TRIM_HIGH) { i2s_ring_trim(AUDIO_RING_TRIM_TARGET); return; }
-
+    // r727 (синхронизация кольца): SPSC — продюсер НЕ пишет g_ring_rd и НЕ
+    // тримит. При полном буфере (wr обогнал rd на SIZE-1) просто дропаем новую
+    // пару — не переполняем, не откатываем индекс потребителя (см. ring_should_drop).
+    // Единственный писатель rd — CPU2 (ring_rd_advance). Задержка кольца при
+    // этом ограничена размером (8192 пар ≈ 170 мс максимум), а не плавает от
+    // трима (было: срез до 1600 при накоплении 7000 = скачок задержки).
+    // r735: drop-счётчик для диагностики (Layer-тест: если дропов много —
+    // продюсер быстрее CPU2, звук рвётся). Сбрасывается в i2s_ring_reset.
+    if (ring_should_drop()) {
+        g_drop_cnt++;
+        return;
+    }
     int32_t v = (g_volume_pct * 32) / 100;
     int32_t L = (int32_t)left  * v / 32;
     int32_t R = (int32_t)right * v / 32;
@@ -506,7 +508,7 @@ static inline void ring_rd_advance(void) {
 // отставании эмуляции кольцо пустеет между пачками; на стыке скачок от
 // удержанного пика к новому сэмплу). Затухание убирает и громкий hold-тон,
 // и стыковочный скачок; «песок» (скачок в 0) не возвращается.
-#define I2S_HOLD_FADE_PAIRS 48   // ~1 мс затухания при 48 кГц
+// (I2S_HOLD_FADE_PAIRS определён выше, у hold/fade — используется и в ring_reset.)
 
 // r635: hold/fade — файловые статики (см. объявление выше): сбрасываются при
 // смене системы/перезаходе (i2s_ring_reset/AUDIO_CMD_RING_RESET).
@@ -532,12 +534,44 @@ int i2s_flush_max(int max_pairs) {
         if (I2S_FSTA_TXE_CNT(I2S_FIFO_STA) < I2S_TXE_MIN)
             break;   // мало места — вернёмся позже (FIFO сам играет 48 кГц)
         if (ring_count() > 0) {
+            // r733 (откат r732): никакого жёсткого trim — он давал «жевание»/
+            // треск (скачок rd на 100 мс). Продюсер сам следит за переполнением
+            // (ring_should_drop), единственный писатель rd — CPU2.
             uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
-            hold_l = g_ring_l[r];
-            hold_r = g_ring_r[r];
+            int32_t a_l = g_ring_l[r];
+            int32_t a_r = g_ring_r[r];
+            hold_l = (int16_t)a_l;
+            hold_r = (int16_t)a_r;
             fade_left = I2S_HOLD_FADE_PAIRS;   // следующий голод начнёт затухать от нового уровня
-            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_l << 16;
-            I2S_FIFO_TX = (uint32_t)(uint16_t)hold_r << 16;
+            // r729/r730: АТАКА (fade-in) — плавный вход из ТИШИНЫ. Взводится:
+            //   1) ring_reset / AUDIO_CMD_RING_RESET (перезаход, старт игры);
+            //   2) опустевшее кольцо (verbose: fade_left==0) ;
+            //   3) ТИХАЯ СЦЕНА: продюсер продолжает лить НУЛИ — кольцо не пустеет,
+            //      поэтому амплитудный порог держит атаку взведённой, а первая
+            //      ГРОМКАЯ пара нарастает от 0 (нет ступеньки 0→громко).
+            //      Без этого «пауза, где нет звука» давала щелчок на возврате.
+            int lvl_l = a_l < 0 ? -a_l : a_l;
+            int lvl_r = a_r < 0 ? -a_r : a_r;
+            if (lvl_l >= I2S_SILENCE_LEVEL || lvl_r >= I2S_SILENCE_LEVEL) {
+                // Звук есть: сбрасываем счётчик тишины, применяем атаку (fade-in).
+                silent_run = 0;
+                if (attack_left > 0) {
+                    attack_left--;
+                    uint32_t g = I2S_HOLD_FADE_PAIRS - (uint32_t)attack_left;
+                    a_l = (int32_t)hold_l * (int32_t)g / I2S_HOLD_FADE_PAIRS;
+                    a_r = (int32_t)hold_r * (int32_t)g / I2S_HOLD_FADE_PAIRS;
+                }
+            } else {
+                // Тихая пара: копим. После длительной тишины (I2S_ATTACK_SILENCE
+                // пар подряд ≈ 1 мс) взводим атаку — первый ГРОМКИЙ сэмпл будет
+                // нарастать от 0 (нет щелчка на возврате звука после паузы/тихой
+                // сцены). Тихий непрерывный сигнал (ниже порога) НЕ режется:
+                // атака взводится только на ДЛИТЕЛЬНОЙ тишине, не на каждой паре.
+                if (++silent_run >= I2S_ATTACK_SILENCE)
+                    attack_left = I2S_HOLD_FADE_PAIRS;
+            }
+            I2S_FIFO_TX = (uint32_t)(uint16_t)a_l << 16;
+            I2S_FIFO_TX = (uint32_t)(uint16_t)a_r << 16;
             // r707 (C2-fix): простой инкремент (без CAS — см. ring_rd_advance).
             // Барьер ДО инкремента: прочитанные сэмплы и записи в FIFO
             // завершились, прежде чем пинок индекса освобождает слот
@@ -554,6 +588,9 @@ int i2s_flush_max(int max_pairs) {
                 I2S_FIFO_TX = (uint32_t)(uint16_t)l << 16;
                 I2S_FIFO_TX = (uint32_t)(uint16_t)r << 16;
             } else {
+                // r729: достигли полной тишины — следующий появл. звука начнёт
+                // с АТАКИ (fade-in), чтобы не было ступеньки 0 → сэмпл.
+                attack_left = I2S_HOLD_FADE_PAIRS;
                 I2S_FIFO_TX = 0;
                 I2S_FIFO_TX = 0;
             }
@@ -677,10 +714,12 @@ void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
     if (pairs_per_frame < 16) pairs_per_frame = 16;
     if (frames <= 0) frames = 60;
 
-    // r715: тест — ЧИСТЫЙ продюсер (пачка → udelay до кадра), как эмулятор.
+    // r735: тест — ЧИСТЫЙ продюсер (пачка → udelay до кадра), как эмулятор.
     // Доливает ТОЛЬКО CPU2 (без core0-fallback, без emu_throttle) — проверяем
-    // ровно тот слой, что работает в играх. r722: диагностика удалена.
+    // ровно тот слой, что работает в играх. Счётчик дропов обнуляем заранее,
+    // чтобы после теста сказать, сколько пар потеряно (продюсер быстрее CPU2?).
     i2s_ring_reset();
+    i2s_drop_cnt_reset();
     if (g_audio_state) i2s_audio_cmd(AUDIO_CMD_RESUME);
     if (g_muted) {
         g_muted = 0;
@@ -692,6 +731,14 @@ void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
     uint32_t ph = 0;
     uint32_t t0 = 0;
 
+    // r735: реальные пачки (проверено по коду эмуляторов):
+    //   GBA:  ~804 пар/кадр (32768→48000 ресемпл, см. gba_host.c)
+    //   Lynx: 640 пар/кадр (48000/75, см. lynx_host.c / emu.c:627)
+    //   SNES: 800-1000 пар/кадр (48000/60, snes_host.c)
+    //   Прочие (MD/SMS/GB/NGP/PCE/A2600/A5200/A7800): 800 пар/кадр (48000/60)
+    // Пачки 1600/3200 (старые настройки) в 2-4 раза превышали пропускную
+    // способность CPU2 → ring_should_drop() дропал большинство пар → «тест
+    // не работает» (тишина/рвань). Теперь пачки реалистичные.
     for (int f = 0; f < frames; f++) {
         // Пачка тона (моно → стерео), как sound_read_samples→i2s_push_sample.
         for (int p = 0; p < pairs_per_frame; p++) {
@@ -709,6 +756,9 @@ void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
     }
     // Доиграть хвост (что успело накопиться) — короткая пауза.
     udelay(30000);
+    // r735: диагностика — сколько пар дропнуто (0 = слой здоров).
+    printf("I2S layer test: pairs/frame=%d frames=%d dropped=%lu\n",
+           pairs_per_frame, frames, (unsigned long)i2s_drop_cnt());
     i2s_ring_reset();
     if (g_audio_state) i2s_audio_cmd(AUDIO_CMD_RESUME);   // вернуть меню в норму
 }

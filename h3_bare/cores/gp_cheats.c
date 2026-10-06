@@ -36,6 +36,8 @@ typedef struct {
     int  enabled;
     int  is_rom;       // 1 = ROM-патч (8/16-bit GG или 16-bit AR в ROM), 0 = RAM
     uint8_t *prev;     // указатель на запатченную байтовую ячейку (для 8-bit GG)
+    uint8_t orig;      // r735: оригинальный байт до патча (для GG-8, когда compare==0)
+    int  has_orig;
 } gp_patch_t;
 
 static gp_patch_t g_patches[GP_MAX_PATCHES];
@@ -210,8 +212,11 @@ static void apply_rom_cheat(gp_patch_t* p) {
     // GG-код даёт адрес как есть; если он >= 0x8000 — не ROM-область Z80
     if (p->addr < 0x8000) {
         uint8_t* ptr = &z80_readmap[p->addr >> 10][p->addr & 0x3FF];
-        // проверяем compare (old) против текущего содержимого банка
-        if (p->old == *ptr || !p->old) {
+        // r735: для GG-8 p->old = compare. При compare==0 патч ставится без
+        // проверки, и прежний unapply восстанавливал бы 0 вместо оригинала.
+        // Сохраняем оригинал отдельно при первом применении.
+        if (p->old == *ptr || (!p->old && !p->has_orig)) {
+            if (!p->has_orig) { p->orig = *ptr; p->has_orig = 1; }
             *ptr = (uint8_t)p->data;
             p->prev = ptr;
         }
@@ -229,7 +234,9 @@ static void unapply_rom_cheat(gp_patch_t* p) {
         return;
     }
     if (p->prev) {
-        *p->prev = (uint8_t)p->old;
+        // r735: для GG-8 при compare==0 восстанавливаем сохранённый оригинал,
+        // иначе unapply писал бы 0 (compare) вместо исходного байта.
+        *p->prev = p->has_orig ? p->orig : (uint8_t)p->old;
         p->prev = NULL;
     }
 }

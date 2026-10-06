@@ -56,7 +56,41 @@ struct ms1504_pix_fmt *sdl_pixfmt = &sdl_fmt;
 
 /* ---- speaker.h ---- */
 uint8_t speakerenabled = 0;
-int16_t speakergensample ( void ) { return 0; }
+/* r735: PC-спикер — «квадрат» по частоте PIT канала 2 (i8253.chandata[2]).
+ * fake86_src/audio.c НЕ собирается (нет в MS1504_BONES), поэтому генерация
+ * и буфер живут здесь (shim), host читает m15_audbuf. */
+static int16_t speaker_ph = 0;
+static int64_t speaker_acc = 0;
+int16_t speakergensample ( void ) {
+    extern struct i8253_s i8253;   // fake86_src/i8253.h
+    if (!speakerenabled) return 0;
+    uint16_t div = (uint16_t)(i8253.chandata[2] ? i8253.chandata[2] : 1);
+    speaker_acc += div;
+    if (speaker_acc >= 1193182) {   /* ~1 сек (округлённо по 1.19 МГц) */
+        speaker_acc -= 1193182;
+        speaker_ph = (int16_t)(speaker_ph ? 0 : 12000);
+    }
+    return speaker_ph;
+}
+
+/* r735: буфер PC-спикера (генерирует host-цикл, не audio.c) */
+int8_t m15_audbuf[96000];
+int32_t m15_audbufptr;
+void m15_tick_audio(int n) {
+    /* заполнить n сэмплов квадратом по текущей частоте (44100 Гц) */
+    extern struct i8253_s i8253;
+    uint16_t div = (uint16_t)(i8253.chandata[2] ? i8253.chandata[2] : 1);
+    if (n > 96000) n = 96000;
+    for (int i = 0; i < n; i++) {
+        speaker_acc += div;
+        if (speaker_acc >= 1193182) {
+            speaker_acc -= 1193182;
+            speaker_ph = (int16_t)(speaker_ph ? 0 : 12000);
+        }
+        m15_audbuf[i] = (int8_t)((speakerenabled ? speaker_ph : 0) >> 8);
+    }
+    m15_audbufptr = n;
+}
 
 /* ---- timing: реальная генерация IRQ0 (PIT канал 0) и статуса CGA ----
    Стоковый timing.c привязан к SDL-часам и аудио. У нас единственные часы

@@ -220,9 +220,10 @@ extern SSettings Settings;
 extern SCPUState CPU;
 extern char String [513];
 
-#ifdef LAGFIX
+// finishedFrame используется и БЕЗ LAGFIX: safety-код r175 (cpuexec.c,
+// g_s9x_guard > 50000000) форсит его, чтобы S9xMainLoop вернул управление.
+// Определение — globals.c:73.
 extern bool finishedFrame;
-#endif
 
 void S9xSetPause(uint32_t mask);
 void S9xClearPause(uint32_t mask);
