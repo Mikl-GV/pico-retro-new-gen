@@ -91,6 +91,15 @@ SECTIONS
     _coherent_start = .;
     *(.coherent)
     _coherent_end = .;
+    /* r740: после .coherent-объектов (до L1-таблицы в 0x4A40C000) —
+     * uncached DMA-буфер звука. Выравнен 64К, размер 64К (32К стереопар).
+     * Продуцирует core0 (i2s_push_sample → dma_buf), читает DMA напрямую
+     * (физические адреса, без кэшей). .dma_buf лежит в .libh3_coherent —
+     * попадает под mmu_mark_uncached (main.c), т.е. uncached для core0 тоже. */
+    . = ALIGN(0x10000);
+    _dma_buf_start = .;
+    . = . + (64 * 1024);
+    _dma_buf_end = .;
     . = ALIGN(4);
     . = . + (1 * 1024 * 1024);
   }

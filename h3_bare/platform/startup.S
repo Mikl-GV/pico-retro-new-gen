@@ -19,7 +19,7 @@ _vectors:
     ldr pc, =_prefetch        /* 0x0C Prefetch Abort */
     ldr pc, =_dataabort       /* 0x10 Data Abort */
     nop
-    ldr pc, =_hang            /* 0x18 IRQ */
+    ldr pc, =_irq_entry       /* 0x18 IRQ (r764: DMA-аудио) */
     ldr pc, =_hang            /* 0x1C FIQ */
 
 /* ===== Вспомогательная функция: вывод буквы в UART0 THR =====
@@ -58,12 +58,25 @@ uart_dbg:
 .endm
 
 /* Обработчик Undefined: 'U' + hang */
-.global _undef
-_undef:
-    exc_once 9f
-    mov r0, #'U'
-    bl uart_dbg
-9:  b 9b
+ .global _undef
+ _undef:
+     /* r736-ДИАГ: счётчик Undefined в SRAM 0x884 + MPIDR(0x898)/LR_und(0x89C).
+      * Адреса 0x880..0x8A8 — вне почты CPU0<->CPU1 (0x18..0x8C) и вне
+      * трамплина (0x00..0x14); обнуляются в _start (счётчик = «с бут-а»).
+      * r735 писал в 0x28 рядом с почтой — перенесено сюда же блоком. */
+1:   ldr  r3, =0x880
+     ldr  r2, [r3, #4]
+     add  r2, r2, #1
+     str  r2, [r3, #4]
+     mrc  p15, 0, r2, c0, c0, 5    /* MPIDR — какое ядро упало */
+     str  r2, [r3, #24]
+     mov  r2, lr                   /* LR_und (фолтящая инструкция ≈ lr-4..8) */
+     str  r2, [r3, #28]
+     dsb
+     exc_once 9f
+     mov r0, #'U'
+     bl uart_dbg
+ 9:  b 9b
 
 /* Обработчик Prefetch Abort: 'P:' + IFAR + ':' + IFSR + hang */
 .global _prefetch
@@ -135,8 +148,25 @@ _prefetch:
  *   F6 <SCTLR>  08 hex
  * Затем hang (exc_once печатает только первый вход). */
 .global _dataabort
-_dataabort:
-    exc_once 9f
+ _dataabort:
+     /* r736-ДИАГ: счётчик Data Abort в SRAM 0x880 + MPIDR(0x888)/DFAR(0x88C)/
+      * LR_abt(0x890)/DFSR(0x894) — см. блок в _undef. Данные сохраняем ДО
+      * exc_once (иначе повторные аборты на том же состоянии их затирают).
+      * r735 писал в 0x24 (конфликт со статусом CPU1) — перенесено. */
+1:   ldr  r3, =0x880
+     ldr  r2, [r3]
+     add  r2, r2, #1
+     str  r2, [r3]
+     mrc  p15, 0, r2, c0, c0, 5    /* MPIDR */
+     str  r2, [r3, #8]
+     mrc  p15, 0, r2, c6, c0, 0    /* DFAR */
+     str  r2, [r3, #12]
+     mov  r2, lr                   /* LR_abt */
+     str  r2, [r3, #16]
+     mrc  p15, 0, r2, c5, c0, 0    /* DFSR */
+     str  r2, [r3, #20]
+     dsb
+     exc_once 9f
     push {r0-r3, lr}
     /* F1 = DFAR */
     mov r0, #'F'
@@ -273,6 +303,16 @@ _start:
     mov r1, #0x18
     mov r2, #0
     str r2, [r1]
+    dsb
+    /* r736-ДИАГ: обнуляем блок счётчиков исключений 0x880..0x8A8 (8 слов).
+     * SRAM не zero-инициализируется — без этого значения «с прошлого бут-а»
+     * (мусор) искажали бы диагностику. exc_once (0x18) тоже входит в очистку. */
+    ldr r1, =0x880
+    ldr r4, =0x8A8
+    mov r2, #0
+3:  str r2, [r1], #4
+    cmp r1, r4
+    blo 3b
     dsb
 
     /* VBAR = наша таблица векторов (0x40000000) */
@@ -453,6 +493,41 @@ _start:
 _hang:
     b _hang
 
+/* ---- r764: IRQ-диспетчер (GIC-400, DMA-аудио на CPU2) ----
+ * Эталонная реализация (внешний аудит): srsdb/rfeia + выравнивание стека 8
+ * (AAPCS) + spurious 1023 + EOI сразу в asm (мин. лаг, не зависит от C).
+ * gic_dispatch(intid) — C-обработчик в gic.c (r0 = INTID).
+ */
+.section .text
+.align 5
+.global _irq_entry
+_irq_entry:
+    sub     lr, lr, #4              /* IRQ: LR = PC+8 → минус 4 = адрес возврата */
+    srsdb   sp!, #0x12              /* сохранить SPSR_irq и LR_irq на сп. IRQ */
+    push    {r0-r3, r12}            /* scratch-регистры */
+    mov     r0, sp
+    and     r1, r0, #4
+    sub     sp, sp, r1              /* выравнивание стека по 8 (AAPCS) */
+    push    {r1, lr}
+
+    ldr     r0, =0x01C82000         /* GIC CPUIF */
+    ldr     r1, [r0, #0x0C]         /* GICC_IAR = INTID */
+    ldr     r2, =1023
+    cmp     r1, r2
+    beq     _irq_spurious           /* ложное прерывание — не обрабатывать */
+
+    mov     r0, r1                  /* r0 = INTID → C-диспетчеру */
+    bl      gic_dispatch
+
+    ldr     r0, =0x01C82000
+    str     r1, [r0, #0x10]         /* GICC_EOIR = INTID (тот же ID!) */
+
+_irq_spurious:
+    pop     {r1, lr}
+    add     sp, sp, r1              /* вернуть выравнивание */
+    pop     {r0-r3, r12}
+    rfeia   sp!                     /* восстановить SPSR+PC, вернуться */
+
 /* ---- Точка входа CPU1 (TFT core) ----
  * Запускается h3_cpu_start(1, cpu1_entry):
  *  1) ядро выходит из сброса с выключенными MMU/кэшами
@@ -558,6 +633,13 @@ cpu2_entry:
      * в 0x20 ПОСЛЕ release — записываем тот же magic 0x13579BDF. */
     mov r2, #0x20
     ldr r3, =0x13579BDF
+    str r3, [r2]
+    /* Статус аудио-ядра — СВОЯ ячейка 0x90 (SRAM A1, uncached), чтобы не
+     * пересекаться со статусом CPU1 (0x24, TFT_STAT). Значение 0xA2 —
+     * «CPU2 в трамплине, иду в cpu2_audio_entry». Диагностика: core0 может
+     * читать 0x90 как признак успешного подъёма аудио-ядра. */
+    mov r2, #0x90
+    mov r3, #0xA2
     str r3, [r2]
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0

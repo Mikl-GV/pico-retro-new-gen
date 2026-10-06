@@ -375,12 +375,13 @@ enum {
     // r500 (П1 сессии): TV-режим A2600 добавлен В КОНЕЦ enum — порядок первых
     // пунктов совпадает с TFT-меню (tft_drv.c items[]), сдвигать индексы нельзя.
     SET_A2600_TV,
-    // r503/r504: громкость + тесты звука (I2S/MAX98357A) — тоже в конец,
+    // r503/r504: громкость + тест слоя (I2S/MAX98357A) — тоже в конец,
     // TFT-индексы не трогаем.
     SET_AUDIO_VOLUME,
-    SET_AUDIO_T440,
-    SET_AUDIO_T1000,
-    SET_AUDIO_T3000,
+    // r741: пункты «Audio test N Hz» (SET_AUDIO_T440/T1000/T3000) УДАЛЕНЫ —
+    // это были тесты ПРЯМОЙ записи в TX FIFO (i2s_test_tone исторически писал
+    // напрямую). С r740 весь звук идёт через кольцо→CPU2→DMA, прямого пути в
+    // FIFO нет, а тоны покрывает «Layer tests (emu)».
     // r702: тест слоя — тон пачками за кадр (как реальный эмулятор), разный
     // размер «пачки»: GBA ~549, Lynx ~640, крупная (SNES/тяжёлые) ~2400.
     SET_LAYER_EMU,
@@ -400,10 +401,7 @@ static const char* const set_labels[SET_COUNT] = {
     "ROM partition info",
     "Atari 2600 TV mode",
     "Audio volume",
-    "Audio test 440 Hz",
-    "Audio test 1000 Hz",
-    "Audio test 3000 Hz",
-    "Layer tests (эмуляторы)",
+    "Layer tests (emu)",
 };
 
 // Рисуем меню настроек с курсором и вертикальным скроллом.
@@ -677,15 +675,8 @@ void settings_run(void) {
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
                 break;
-            case SET_AUDIO_T440:
-                i2s_test_tone(440, 2000);
-                break;
-            case SET_AUDIO_T1000:
-                i2s_test_tone(1000, 2000);
-                break;
-            case SET_AUDIO_T3000:
-                i2s_test_tone(3000, 2000);
-                break;
+            // r741: пункты «Audio test N Hz» удалены — прямого вывода в FIFO нет
+            // (весь звук через кольцо→CPU2→DMA); тоны покрывает Layer tests.
             // r702: тест слоя — тон пачками за кадр (как реальный эмулятор). Пачки
     // сбалансированы под 60 Гц (не проседают): 800/кадр = ровно 48000 пар/с,
     // 1600 и 3200 — крупнее (нагрузка на кольцо/watermark). Если слой рвётся

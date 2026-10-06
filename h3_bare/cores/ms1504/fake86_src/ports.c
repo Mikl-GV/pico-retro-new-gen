@@ -93,10 +93,13 @@ void portout (uint16_t portnum, uint8_t value)
 	//if (verbose) printf("portout(0x%X, 0x%02X);\n", portnum, value);
 	switch (portnum) {
 		case 0x61:
-			if ((value & 3) == 3)
-				speakerenabled = 1;
-			else
-				speakerenabled = 0;
+			/* r752: включение спикера — по биту 1 (SPKR data), как на реальном
+			 * PC/XT (OSDev: «when bit 1 is set, speaker is controlled by
+			 * timer 2 output»). Бит 0 (TIM2GATE) — только запуск таймера,
+			 * для тона не обязателен. Стоковый код требовал (value&3)==3
+			 * (оба бита) — BIOS МС1504 пишет в 0x61 обычно только бит1,
+			 * поэтому звук «не работал никогда». */
+			speakerenabled = (value & 0x02) ? 1 : 0;
 			return;
 	}
 	port_write_callback[portnum](portnum, value);

@@ -235,9 +235,10 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
 }
 
 // ---- точка входа из rom_browser (emu.h) ----
-// r735: звук МС1504 (PC-спикер) в I2S. Генерация — m15_tick_audio() в shim
-    // (не fake86/audio.c — он не в MS1504_BONES). Формат: m15_audbuf — s8,
-    // частота usesamplerate (44100). Ресемплим 44100→48000, моно→стерео.
+// r735/r754: звук МС1504 (PC-спикер) в I2S. Генерация — m15_tick_audio() в
+// shim (не fake86/audio.c — его нет в MS1504_BONES, стоковые глобалы
+// usesamplerate/audbuf/… не существуют в сборке). Формат: m15_audbuf — s8,
+// фиксированные 44100 Гц (генерит shim). Ресемплим 44100→48000, моно→стерео.
     static void ms1504_audio_flush(void) {
         extern void m15_tick_audio(int n);
         extern int8_t m15_audbuf[96000];

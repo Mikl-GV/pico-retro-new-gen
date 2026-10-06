@@ -271,7 +271,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r735";
+const char g_fw_version[] = "r764";
 
 void main(void) {
     int sd_ok = 0;
@@ -279,7 +279,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r735\n");
+    uart_puts("build: r764\n");
 
     led_init();
     led_set(0);
@@ -342,19 +342,21 @@ void main(void) {
     extern unsigned char libh3_coherent_region[];
     mmu_mark_uncached((uint32_t)libh3_coherent_region);
 
-    // r721-TMPDIAG: контроль MMU-разметки .coherent. Печатаем TTBR0 (базу
-    // таблицы страниц) и L1-атрибут секции 0x4A400000 (биты TEX/C/B).
-    // Если TTBR0 попадает ВНУТРЬ .coherent-окна (0x4A400000+1МБ) — таблица
-    // страниц перезаписывается нашим кольцом/маркерами = порча MMU =
-    // «нестабильность/зависания» + «канал .coherent рвётся». Это диагноз.
+    // r735 (FIX «act0/0 beat+0»): mmu_mark_uncached инвалидирует TLB, но НЕ
+    // чистит D-cache. Если какая-то строка .coherent ПОПАЛА в D-cache ДО
+    // переключения атрибута (например g_audio_state/g_audio_beat читались
+    // при раннем старте/stb), core0 продолжит читать stale-значение из кэша,
+    // хотя память стала uncached — получаем «state=0, beat+0» при живом CPU2.
+    // Clean+invalidate всего окна выкидывает pre-закэшированные строки, чтобы
+    // следующие доступы шли напрямую в DRAM (где CPU2 реально пишет).
     {
-        uint32_t ttbr0;
-        __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(ttbr0));
-        uint32_t l1 = ((volatile uint32_t*)(ttbr0 & ~0x3FFFu))[((0x4A400000u >> 20) & 0xFFF)];
-        printf("MMU: TTBR0=0x%08X coherent_l1=0x%08X (TEX=%u C=%u B=%u)\n",
-               (unsigned)ttbr0, (unsigned)l1,
-               (unsigned)((l1 >> 16) & 7), (unsigned)((l1 >> 3) & 1),
-               (unsigned)((l1 >> 2) & 1));
+        extern unsigned char _coherent_start[];
+        extern unsigned char _coherent_end[];
+        uint32_t a = (uint32_t)_coherent_start & ~0x1Fu;
+        uint32_t e = (uint32_t)_coherent_end;
+        for (; a < e; a += 32)
+            __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a)); // DCCIMVAC
+        __asm volatile("dsb" ::: "memory");
     }
 
     // Аудио (I2S0 + MAX98357A): r503 — инициализируем при старте, звук
@@ -379,18 +381,15 @@ void main(void) {
     else
         uart_puts("smp: CPU1 FAILED to start\n");
 
-    // Ф1 (r585): аудио-ядро на CPU2 — долив кольца I2S в TX FIFO. CPU2
-    // обслуживает звук с честным темпом 48 кГц, освобождая core0 от
-    // busy-wait в emu_throttle. Кольцо/почта в .coherent (r584) — оба ядра
-    // видят актуальное состояние. Печатает в UART0 по-прежнему core0.
-    // ВАЖНО: стартуем ЧЕРЕЗ asm cpu2_entry (startup.S) — он ставит СВОЙ стек
-    // и включает VFP/NEON до C-кода; прямой старт C-функции дал бы стек CPU1
-    // и Undefined (совпадает с моделью CPU1/TFT).
+    // Аудио-ядро CPU2 (r585 + r740): звук обслуживает CPU2 — переносит кольцо
+    // в DMA-буфер, а в TX FIFO пишет ЖЕЛЕЗНЫЙ DMA (по DRQ). Раньше CPU2 писал
+    // в TX FIFO руками — запись в полный FIFO вешала AHB (залипание). Теперь
+    // CPU2 пишет в обычную RAM (не может залипнуть), в FIFO — только железо.
     extern void cpu2_entry(void);
     if (h3_cpu_start(2, cpu2_entry) == 1) {
-        uart_puts("smp: CPU2 started (audio core)\n");
+        uart_puts("smp: CPU2 started (audio core -> DMA)\n");
     } else
-        uart_puts("smp: CPU2 FAILED to start (audio stays on core0)\n");
+        uart_puts("smp: CPU2 FAILED to start\n");
 
 // Меню на HDMI — обычная работа core0; справка на TFT.
     // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может

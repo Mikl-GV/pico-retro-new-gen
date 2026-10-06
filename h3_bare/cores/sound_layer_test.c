@@ -226,7 +226,7 @@ static void slt_run(int type, int freq) {
     static int16_t syn[1600];      // синтез (моно, на fsynth)
     static int16_t rs[1600 * 2];   // ресемплер (стерео, 48к)
 
-    // Вход как в эмулятор.
+    // Вход как в эмулятор: сброс кольца + RESUME (CPU2 в долив).
     i2s_ring_reset();
     i2s_drop_cnt_reset();
     slt_gba_phase = 0; slt_lin_phase = 0;
@@ -234,8 +234,18 @@ static void slt_run(int type, int freq) {
     if (i2s_ready() && i2s_volume_pct() > 0) i2s_mute(0);
     emu_throttle_reset();
 
+    // r735-ДИАГ: состояние CPU2 до теста. i2s_audio_paused()/active()/beat —
+    // геттеры из i2s.h.
+    int cpu2_active0 = i2s_audio_core_active();
+    int cpu2_paused0 = i2s_audio_paused();
+    uint32_t beat0 = i2s_audio_beat();
+    // r740-ДИАГ: снимок ДО теста — индексы кольца и счётчики (для динамики).
+    uint32_t w0=0, r0=0, p0=0, ne0=0, nf0=0;
+    i2s_ring_wr_rd_get(&w0, &r0);
+    i2s_cpu2_pairs_written_get(&p0);
+    i2s_flush_diag_get(&ne0, &nf0);
+
     uint32_t ph = 0;
-    uint32_t t0 = 0;
     for (int f = 0; f < frames; f++) {
         // 1) синтез тона на частоте синтеза эмулятора
         for (uint32_t p = 0; p < pairs_per_frame; p++) {
@@ -256,19 +266,81 @@ static void slt_run(int type, int freq) {
         // 3) в кольцо
         for (uint32_t i = 0; i < np; i++)
             i2s_push_sample(rs[2*i], rs[2*i+1]);
-        // 4) «кадр» — долив как в эмуляторе
-        if (!t0) t0 = h3_hs_timer_lo_us();
-        else {
-            uint32_t el = (uint32_t)(h3_hs_timer_lo_us() - t0);
-            if (el < 16667u) { udelay(16667u - el); t0 = h3_hs_timer_lo_us(); }
-            else t0 = h3_hs_timer_lo_us();
-        }
+        // 4) «кадр» — РОВНО как эмулятор: run_frame → emu_throttle().
+        //    emu_throttle ждёт до границы 60 Гц и доливает (CPU2 активен,
+        //    при его зависании >250 мс — fallback core0). Это отлаживает
+        //    именно цепь: продюсер (core0) → кольцо → CPU2 → FIFO.
         emu_throttle();
     }
     udelay(30000);
-    printf("SLT: %s %d Hz synth=%u %u/fr %d fr dropped=%lu\n",
-           slt_type_name[type], freq, (unsigned)fsynth,
-           (unsigned)pairs_per_frame, frames, (unsigned long)i2s_drop_cnt());
+    // r735-ДИАГ: состояние CPU2 после теста + прирост heartbeat.
+    int cpu2_active1 = i2s_audio_core_active();
+    int cpu2_paused1 = i2s_audio_paused();
+    uint32_t beat1 = i2s_audio_beat();
+    // r754: живые счётчики CPU2 (вместо мёртвых заглушек): flush = входов в
+    // per-frame промотку кольца→DMA, written = пар реально записано в DMA-буфер,
+    // skipfull = выходов по полному DMA-буферу (CPU2 обогнал DMA).
+    uint32_t c2_flush = 0, c2_pairs = 0, c2_skipfull = 0;
+    i2s_cpu2_diag(&c2_flush, &c2_pairs, &c2_skipfull, NULL);
+    // r737-ДИАГ: стадия цикла CPU2 (где стоит) + счётчики входа/выхода flush_max.
+    uint32_t c2_st = 0, c2_en = 0, c2_ex = 0;
+    i2s_cpu2_stage_get(&c2_st, &c2_en, &c2_ex);
+    // r754: индексы кольца (wr — продюсер core0, rd — потребитель CPU2).
+    uint32_t ring_wr = 0, ring_rd = 0;
+    i2s_ring_wr_rd_get(&ring_wr, &ring_rd);
+    // r740: позиция DMA и заполненность DMA-буфера (живое).
+    uint32_t dma_played = 0, dma_free = 0;
+    i2s_dma_diag_get(&dma_played, &dma_free);
+    // r736-ДИАГ: блок исключений в SRAM 0x880..0x8A4 (вне почты 0x18..0x8C,
+    // обнуляется в _start — счётчики «с бут-а»). Пишут _dataabort/_undef
+    // (startup.S): любой CPU, без кэшей.
+    //   0x880 Data Abort счётчик | 0x888 MPIDR | 0x88C DFAR | 0x890 LR |
+    //   0x894 DFSR | 0x898 Undefined счётчик | 0x89C MPIDR_und | 0x8A0 LR_und
+    volatile uint32_t* x = (volatile uint32_t*)0x880u;
+    uint32_t e_abt  = *(x + 0);
+    uint32_t e_abt_mpidr = *(x + 2);
+    uint32_t e_abt_dfar  = *(x + 3);
+    uint32_t e_abt_lr    = *(x + 4);
+    uint32_t e_abt_dfsr  = *(x + 5);
+    uint32_t e_und  = *(x + 6);
+    uint32_t e_und_mpidr = *(x + 7);
+    uint32_t e_und_lr    = *(x + 8);
+    // r737-ДИАГ: состояние контроллера I2S в момент снятия — CTRL(0x00),
+    // FSTA(0x18: TXE_CNT свободных слов), TX_CNT(0x28: сыграно, кумул.).
+    // Если TX FIFO полон (TXE_CNT<8) при живом CPU2 — контроллер не играет
+    // (не освобождает FIFO) → звук «застревает» в кольце, core0 дропает.
+    volatile uint32_t* i2s_base = (volatile uint32_t*)0x01C22000u;
+    uint32_t i2s_ctrl = i2s_base[0x00 / 4];
+    uint32_t i2s_fsta = i2s_base[0x18 / 4];
+    uint32_t i2s_tx_cnt = i2s_base[0x28 / 4];
+    uint32_t i2s_int  = i2s_base[0x1C / 4];
+    uint32_t i2s_fctl = i2s_base[0x14 / 4];
+    uint32_t i2s_ista = i2s_base[0x0C / 4];   // r757: статус underrun/overrun/empty
+    // r741-ДИАГ: регистры DMA-канала 0 (0x01C02000 + 0x100):
+    //   EN(0x100) LLI(0x108) CUR_SRC(0x110) PKG_NUM(0x130); DMA_STA(0x30).
+    // Если PKG_NUM не растёт — DMA мёртв (тактирование/LLI/EN). Если растёт,
+    // а TXCNT стоит — DMA пишет не туда (адрес FIFO/DRQ). PKG_NUM = счётчик
+    // завершённых пакетов — ЛУЧШИЙ индикатор живой передачи.
+    volatile uint32_t* dma = (volatile uint32_t*)0x01C02000u;
+    uint32_t dma_sta  = dma[0x30 / 4];
+    uint32_t dma_en   = dma[0x100 / 4];
+    uint32_t dma_lli  = dma[0x108 / 4];
+    uint32_t dma_src  = dma[0x110 / 4];
+    uint32_t dma_pkg  = dma[0x130 / 4];
+    // r762: DMA IRQ_EN(0x00) и IRQ_PEND(0x10). H3 DMA в cyclic-режиме после
+    // каждого пакета взводит PKG/HALF в PEND; без обработки (ISR/очистки
+    // write-1-clear) канал ЗАМИРАЕТ. Мы IRQ не используем — если PEND висит,
+    // это и есть «DMA сделал 34 пакета и встал». Снимаем для диагностики.
+    uint32_t dma_irqen = dma[0x00 / 4];
+    uint32_t dma_irqpend = dma[0x10 / 4];
+    printf("SLT: %s %d Hz dropped=%lu beat+%lu wr=%lu rd=%lu written=%lu free=%lu TXCNT=%lu ISTA=%08X DMA:EN=%08X SRC=%08X PKG=%lu IRQEN=%08X IRQPEND=%08X STA=%08X\n",
+           slt_type_name[type], freq, (unsigned long)i2s_drop_cnt(),
+           (unsigned long)(beat1 - beat0),
+           (unsigned long)ring_wr, (unsigned long)ring_rd,
+           (unsigned long)c2_pairs, (unsigned long)dma_free,
+           (unsigned long)i2s_tx_cnt, (unsigned)i2s_ista,
+           (unsigned)dma_en, (unsigned)dma_src, (unsigned long)dma_pkg,
+           (unsigned)dma_irqen, (unsigned)dma_irqpend, (unsigned)dma_sta);
     i2s_ring_reset();
     if (i2s_audio_core_active()) i2s_audio_cmd(AUDIO_CMD_RESUME);
 }

@@ -118,5 +118,12 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
     }
 
     printf("smp: direct R_CPUCFG boot (sram tramp 0x0)\n");
-    return h3_secondary_start(cpu, ep);
+    int ok = h3_secondary_start(cpu, ep);
+    /* r749: статус аудио-ядра — своя ячейка 0x90 (SRAM A1, uncached),
+     * пишет cpu2_entry (startup.S, значение 0xA2). Не путать со статусом
+     * CPU1 (0x24, TFT_STAT) — они разведены. */
+    if (cpu == 2)
+        printf("smp: CPU2 STAT(0x90)=0x%X\n",
+               *(volatile uint32_t*)0x90u);
+    return ok;
 }

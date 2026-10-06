@@ -232,9 +232,10 @@ static int32_t  emu_debt = 0;     // переработка [мкс], вычте
 // перестал расти, аудио-ядро зависло (напр. на I2S_FIFO_STA-спине) при том, что
 // g_audio_core_active() всё ещё =1. Нужен явный detection + fallback на долив core0,
 // иначе зависший CPU2 = вечная тишина без возврата к штатному выводу.
-#define CPU2_HANG_MS 250   // через сколько «затишья» beat считаем ядро зависшим
-static uint32_t emu_cpu2_last_beat = 0;
-static uint32_t emu_cpu2_stall_t  = 0;   // 0 = не в состоянии «завис»
+// r739 (ОТКАТ fallback): hang-детект с доливом core0 УДАЛЁН — он создавал
+// ВТОРОГО писателя TX FIFO (см. ниже). Единственный писатель FIFO = CPU2 (или
+// DMA). Мониторинг живости CPU2 остаётся инструментом диагностики (Шаг 4 плана),
+// но НЕ должен включать долив core0, пока CPU2 жив.
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
     // ЯДРО 1 (led_heartbeat_cpu1), чтобы core0 не писал в PA_DAT (гонка с PA21/CS).
@@ -248,42 +249,17 @@ void emu_throttle(void) {
     emu_debt = 0;
 
     if (elapsed < period) {
-        // В уложились: ждём остаток периода. Активный CPU2 — просто спим
-        // (звук на железе); fallback — старый долив в throttle.
+        // В уложились: ждём остаток периода. ЕДИНСТВЕННЫЙ писатель TX FIFO —
+        // CPU2 (или DMA). core0 ТОЛЬКО синтезирует и льёт в кольцо (i2s_push_sample),
+        // FIFO НЕ трогает НИКОГДА.
+        // r739: fallback-долив core0 УДАЛЁН. Раньше при ложном hang-детекте
+        // (stale-чтение flush_cnt) core0 включал i2s_flush_max → ДВА писателя FIFO
+        // (core0 + живой CPU2) → FIFO наглухо полон, долив CPU2 мёртв, кольцо
+        // переполняется (dropped), звук «песок/рваный». Если CPU2 реально завис —
+        // звук молчит до перезапуска/восстановления ядра (отдельная задача Шаг 4),
+        // но второго писателя НЕ создаём.
         uint32_t wait = period - elapsed;
-        // r703 (C4): liveness CPU2 — не полагаемся на «поднялся хоть раз».
-        // Сравниваем прирост heartbeat внутри переданного периода.
-        int cpu2_hung = 0;
-        if (i2s_audio_core_active()) {
-            uint32_t b = i2s_audio_beat();
-            if (b != emu_cpu2_last_beat) {
-                emu_cpu2_last_beat = b;
-                emu_cpu2_stall_t = 0;   // beat растёт — CPU2 жив
-            } else {
-                if (!emu_cpu2_stall_t) emu_cpu2_stall_t = now;
-                else if ((uint32_t)(now - emu_cpu2_stall_t) > (CPU2_HANG_MS * 1000u)) {
-                    cpu2_hung = 1;      // beat стоит > 250 мс — ядро зависло
-                }
-            }
-        } else {
-            emu_cpu2_stall_t = 0;
-        }
-
-        if (i2s_audio_core_active() && !cpu2_hung) {
-            udelay(wait);
-        } else if (i2s_ready()) {
-            // fallback: CPU2 не поднялся / завис — долив на core0 (как до Ф1)
-            uint32_t left = wait;
-            while (left > 0) {
-                i2s_flush_max(24);
-                uint32_t step = (left > 500) ? 500 : left;
-                udelay(step);
-                left -= step;
-            }
-            i2s_flush_max(24);
-        } else {
-            udelay(wait);
-        }
+        udelay(wait);
         // База сдвигается ровно на один период от СТАРОЙ границы:
         // переработка (если она была) «догоняется» здесь, а не теряется.
         emu_ts0 += period;
@@ -293,18 +269,13 @@ void emu_throttle(void) {
         emu_debt = (int32_t)(elapsed - period);
         if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3); // кап: не уходить в минус надолго
         emu_ts0 += period;   // граница всё равно сдвинута на период
-        if (i2s_audio_core_active() == 0) {
-            // fallback: хотя бы долить накопившееся, чтобы FIFO не проседал
-            i2s_flush_max(24);
-        }
+        // r739: fallback долива убран — см. выше (единственный писатель FIFO = CPU2).
     }
 }
 
 void emu_throttle_reset(void) {
     emu_ts0 = 0;
     emu_debt = 0;
-    emu_cpu2_last_beat = 0;   // r703: сброс liveness-детектора CPU2 на новом цикле кадров
-    emu_cpu2_stall_t = 0;
 }
 
 // ---- единый выход из эмулятора: удержание ~0.9 с ----

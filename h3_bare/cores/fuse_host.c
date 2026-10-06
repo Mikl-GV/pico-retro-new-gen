@@ -44,6 +44,9 @@ void fuse_retro_unload_game(void);
 void fuse_retro_deinit(void);
 /* r0.392: результат загрузки контента (см. libretro.c) */
 extern int fuse_content_load_ok;
+/* r750: сброс накопленного виртуального сна Fuse между сессиями
+ * (compat/timer.c: slept_ms). Дрейф времени при повторных запусках ZX. */
+extern void fuse_timer_reset(void);
 
 #define EMU_FB_ADDR 0x5F800000u
 #define EMU_FB_W    320
@@ -424,6 +427,8 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     fuse_retro_set_audio_sample_batch(host_audio_sample_batch);
     fuse_retro_set_input_poll(host_input_poll);
     fuse_retro_set_input_state(host_input_state);
+
+    fuse_timer_reset();   // r750: сброс виртуального сна перед новой сессией
 
     fuse_retro_init();
 

@@ -36,3 +36,13 @@ void compat_timer_sleep(int ms)
 {
    slept_ms += ms;
 }
+
+/* r750: сброс накопленного виртуального сна между сессиями. Fuse держит
+ * «реальное» время как (total_time_ms + slept_ms)/1000 — sleep добавляет
+ * ms, но никогда не сбрасывается. При повторных запусках ZX дрейф времени
+ * копится (документ 5.10, риск №2). Host-слой зовёт fuse_timer_reset()
+ * перед каждой новой сессией (emu_run_fuse). */
+void fuse_timer_reset(void)
+{
+   slept_ms = 0;
+}

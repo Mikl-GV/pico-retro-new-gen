@@ -32,8 +32,9 @@ void i2s_mute(int mute);
 // Запись одного стерео-сэмпла в кольцевой буфер (неблокирующая).
 void i2s_push_sample(int16_t left, int16_t right);
 
-// Вытолкнуть накопленные сэмплы из кольцевого буфера в I2S FIFO.
-// Вызывать раз в кадр (из emu_throttle или после run_frame).
+// Вытолкнуть накопленные сэмплы из кольцевого буфера через CPU2 в DMA-буфер
+// (фактически — вызов i2s_flush_max(24)).
+// Вызывается раз в кадр (из emu_throttle или после run_frame).
 void i2s_flush(void);
 
 // Вытолкнуть НЕ БОЛЕЕ max_pairs пар (лимит за один вызов — не блокирует
@@ -54,42 +55,76 @@ void i2s_click(void);
 // pairs_per_frame — размер пачки (GBA ~549, Lynx ~640), frames — число кадров.
 void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames);
 
-// ---- Аудио-ядро CPU2 (Ф1, r585) ----
-// Долив кольца I2S обслуживает CPU2 (audio_core.c), а не core0. core0
-// синтезирует звук и кладёт в кольцо; CPU2 выводит кольцо в TX FIFO с
-// честным темпом 48 кГц. Почта — в .coherent.
+// ---- Аудио-ядро CPU2 (Ф1, r585; r740 — вывод через DMA) ----
+// Долив кольца I2S обслуживает CPU2 (audio_core.c). core0 синтезирует и
+// кладёт в кольцо (i2s_push_sample); CPU2 переносит кольцо в DMA-буфер
+// (i2s_flush_max), а в I2S TX FIFO пишет ЖЕЛЕЗНЫЙ DMA (h3_dma.c).
+// Почта core0↔CPU2 — в .coherent.
 int      i2s_audio_core_active(void);  // 1 = CPU2 в цикле
-uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент; liveness C4)
+uint32_t i2s_audio_beat(void);         // heartbeat CPU2 (инкремент; liveness)
 void     i2s_audio_cmd(uint32_t cmd);  // послать команду CPU2 (0=нет)
 // CPU2 (audio_core.c): обработать одну команду из почты (вызывается в цикле).
 void i2s_audio_poll_cmd(void);
 // Сеттеры — вызывает ТОЛЬКО CPU2 (audio_core.c): активность и heartbeat.
-// Поля static в i2s.c (секция .coherent). r705: diag-сеттеры
-// (set_pairs/set_ring/set_trace/set_live) удалены — засоряли горячий путь.
+// Поля static в i2s.c (секция .coherent).
 void i2s_audio_set_state(int on);
 void i2s_audio_set_beat(uint32_t b);
 
 // Команды аудио-ядра.
 enum {
     AUDIO_CMD_NONE = 0,
-    AUDIO_CMD_RING_RESET = 1,   // сбросить кольцо + DC (смена системы)
-    AUDIO_CMD_PAUSE = 2,        // CPU2 замирает (не трогает FIFO) — для тона/клика
+    AUDIO_CMD_RING_RESET = 1,   // сбросить кольцо + DMA-буфер (смена системы)
+    AUDIO_CMD_PAUSE = 2,        // CPU2 замирает (не трогает DMA-буфер) — для тона/клика
     AUDIO_CMD_RESUME = 3,       // CPU2 снова доливает
 };
+
+// r739: i2s_write_pair_direct УДАЛЁН — прямого вывода в TX FIFO мимо кольца
+// больше нет. После r740 в TX FIFO пишет ТОЛЬКО железный DMA; CPU2 льёт
+// кольцо → DMA-буфер. core0 — только i2s_push_sample. Клик/тон меню тоже
+// идут через кольцо.
+
 // Пауза CPU2 активна? (геттер для core0, чтобы знать, встал ли CPU2)
 int i2s_audio_paused(void);
-// r588: вывод одной пары НАПРЯМУЮ в TX FIFO (мимо кольца) — для тест-тона/
-// клика, когда CPU2 на паузе. Уважает место в FIFO.
-void i2s_write_pair_direct(int16_t l, int16_t r);
 
-// r590: задать срез DC-блокера по системе (5 ≈ 240 Гц, 6 ≈ 120 Гц).
-// GBA — 5 (пачки, медленный блокер даёт щелчки), Lynx — 6 (непрерывный поток).
+// r734: DC-блокер УДАЛЁН (r642). API сохранён как no-op — хосты
+// (GBA/Lynx/NGP/GPGX/GB/MSX/...) продолжают его звать. Параметр игнорируется.
 void i2s_dc_shift_set(int shift);
 
 // r735: счётчик дропнутых пар кольца (диагностика слоя; продюсер дропает
 // новые пары, когда кольцо полное — CPU2 не успевает доливать).
 void     i2s_drop_cnt_reset(void);
 uint32_t i2s_drop_cnt(void);
+
+// ---- Диагностика (r754: оживлена после r740/DMA) ----
+// r735-ДИАГ: счётчики CPU2 (пишет flush_max на CPU2, читает core0 из SLT):
+//   flush    — число входов в i2s_flush_max (сколько раз CPU2 промотал кольцо→DMA);
+//   written  — пар реально записано в DMA-буфер;
+//   skipfull — выходов из flush_max по полному DMA-буферу (CPU2 обогнал DMA).
+void i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint32_t* dummy);
+// r735: liveness CPU2 по числу входов в flush_max (виден core0).
+uint32_t i2s_cpu2_flush_cnt(void);
+// r735-ДИАГ: сколько пар CPU2 реально записал в DMA-буфер.
+void i2s_cpu2_pairs_written_get(uint32_t* v);
+// r737-ДИАГ: стадия цикла CPU2 (0=idle, 1=poll, 2=внутри flush_max) +
+// счётчики входов/выходов flush_max. Пишет flush_max на CPU2.
+void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex);
+// r738-ДИАГ: снимок индексов кольца (wr — продюсер core0, rd — потребитель CPU2).
+// Если wr растёт, а rd стоит — CPU2 не потребляет кольцо (не видит его / завис).
+void i2s_ring_wr_rd_get(uint32_t* wr, uint32_t* rd);
+// r738-ДИАГ: наполненность кольца (wr-rd) — сколько пар ждут вывода.
+uint32_t i2s_ring_fill(void);
+// r738-ДИАГ: диагностика flush_max (nempty = всего входов;
+// nempty_full = выходов по полному DMA-буферу). Растёт nempty_full при
+// живом CPU2 → DMA не освобождает буфер (не играет 48к).
+void i2s_flush_diag_get(uint32_t* nempty, uint32_t* nempty_full);
+// r740-ДИАГ: суб-фаза внутри i2s_flush_max (0=вне, 1..5 — шаги цикла).
+void i2s_flush_sub_get(uint32_t* sub);
+// r740-ДИАГ: взгляд CPU2 на кольцо: wr, rd и fill (wr-rd) на момент снятия.
+void i2s_cpu2_view_get(uint32_t* wr, uint32_t* rd, uint32_t* fill);
+
+// r740: диагностика DMA-звука — позиция DMA (пар сыграно) и свободно пар
+// в DMA-буфере (CPU2 не должен обгонять DMA). Читает core0 из SLT-теста.
+void i2s_dma_diag_get(uint32_t* played, uint32_t* free_pairs);
 
 #ifdef __cplusplus
 }
