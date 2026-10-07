@@ -1,70 +1,42 @@
-// audio_core.c — аудио-ядро на CPU2: перенос кольца I2S → DMA-буфер.
+// audio_core.c — аудио-ядро на CPU2: долив кольца → I2S TX FIFO поллингом.
 //
-// АРХИТЕКТУРА (решение владельца, r561 + r740): звук обслуживает CPU2,
-// в TX FIFO пишет ЖЕЛЕЗНЫЙ DMA.
+// АРХИТЕКТУРА (r773, решение владельца): БЕЗ прерываний и БЕЗ DMA. GIC-доставка
+// на CPU2 не работает (INTID не доходит), DMA вставал на 34 пакетах из-за
+// нечищенного pending — обе проблемы убраны из уравнения выбором пути.
 //   core0 (эмулятор) --i2s_push_sample--> кольцо (.coherent)
-//   CPU2 (audio_core) --i2s_flush_max--> DMA-буфер (.dma_buf, обычная RAM)
-//   DMA (h3_dma.c)    --по DRQ-->        I2S0_TX_FIFO (0x01C22020)
+//   CPU2 (audio_core) --i2s_poll_fill--> I2S0_TX_FIFO (0x01C22020)
 //
-// Зачем это отличие от r585-r739 (когда CPU2 писал в TX FIFO руками):
-// запись в полностью заполненный TX FIFO вешала AHB-шину — CPU2 залипал
-// внутри flush_max без исключений (ST:2 EN=EX+1, ABT:0). Теперь CPU2 пишет в
-// ОБЫЧНУЮ RAM (DMA-буфер) — такая запись не может залипнуть; в FIFO пишет
-// только DMA по аппаратному DRQ, когда в FIFO есть место. CPU2 остаётся
-// единственным хозяином потока: темп задаёт DMA (48 кГц железом), а CPU2
-// просто следит за кольцом и DMA-буфером.
+// Это эталон uli/allwinner-bare-metal (audio_i2s.c, тот же H3): CPU2 крутит
+// цикл, пишет пары в TX FIFO, пока TXE_CNT > 2. Запись в полный FIFO
+// невозможна (проверка места), задержка = FIFO (~1.3 мс), единый такт = I2S.
 //
 // Детали:
 //   - кольцо и индексы — в .coherent (uncached, r584): CPU2 видит актуальное
 //     состояние без кэш-когерентности (MMU у CPU2 выключен);
-//   - почта (cmd/ack/seq) — для PAUSE/RING_RESET; heartbeat — liveness;
-//   - UART: CPU2 НЕ пишет — состояние числом кладёт в .coherent.
-//
-// r722: CPU2 не пишет в SRAM A1 и не ставит маркеры — только heartbeat.
+//   - почта (cmd/ack/seq) — для PAUSE/RESUME; heartbeat — liveness;
+//   - UART: CPU2 НЕ пишет — состояние числом кладёт в .coherent;
+//   - GIC/IRQ не используются: cpsie i НЕ выполняется, вектор 0x18 не активен.
 #include <stdint.h>
 #include "h3.h"
 #include "i2s.h"
-#include "h3_dma.h"
-#include "gic.h"
 #include "led.h"
 
 void cpu2_audio_entry(void) {
-    // r765: GIC Distributor настроил core0 (gic_dist_init в main.c, один раз).
-    // CPU2 включает только свой CPU Interface (PMR/BPR/CTLR) и разрешает IRQ.
-    gic_cpu_enable();
-    __asm volatile("cpsie i" ::: "memory");
-    // Сердце: пометить себя активным, затем вечный цикл долива кольца в
-    // DMA-буфер. Темп задаёт аппаратный DMA (48 кГц), CPU2 лишь следует за
-    // позицией DMA (dma_free_pairs в flush_max) — залипание исключено.
+    // Прерывания НЕ включаем (GIC не инициализирован, IRQ на CPU2 не нужны —
+    // долив поллингом). Просто помечаем себя активным и крутим цикл.
     i2s_audio_set_state(1);
     i2s_audio_set_beat(0);
 
     uint32_t beat = 0;
     for (;;) {
-        // 1) команда от core0 (сброс кольца/DMA-буфера, пауза для тона/клика)
+        // 1) команда от core0 (пауза для тона/клика/сброса)
         i2s_audio_poll_cmd();
 
-        // 2) если core0 поставил паузу — не наполняем DMA-буфер
-        //    (тест-тон/клик/ring_reset пишут через кольцо после RESUME).
-        if (i2s_audio_paused())
-            continue;
+        // 2) если core0 поставил паузу — не доливаем (тон/клик пишут сами)
+        if (!i2s_audio_paused())
+            i2s_poll_fill();
 
-        // 3) долив: переносим пары из кольца в DMA-буфер порциями.
-        //    flush_max сам выйдет, если DMA-буфер полон (CPU2 обогнал DMA)
-        //    или кольцо пусто (тогда пишет тишину — поток непрерывен).
-        //    r755: если flush_max вернул 0 (DMA-буфер полон / тишина —
-        //    ничего не записано), выдыхаем NOP-backoff — иначе цикл вплотную
-        //    читает CH_CUR_SRC регистра периферии, забивая AHB-шинy.
-        {
-            int wrote = i2s_flush_max(24);
-            if (wrote == 0) {
-#if defined(__GNUC__)
-                __asm__ volatile("nop; nop; nop; nop; nop; nop; nop; nop");
-#endif
-            }
-        }
-
-        // 4) heartbeat — liveness CPU2 (мониторинг, не fallback)
+        // 3) heartbeat — liveness CPU2 (мониторинг, не fallback)
         beat++;
         i2s_audio_set_beat(beat);
     }

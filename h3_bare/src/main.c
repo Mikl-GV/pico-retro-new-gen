@@ -40,7 +40,7 @@ static int msx_launch_dialog(int has_dir) {
         if (dirty) {
             fb_clear();
             fb_draw_stars();
-            fb_puts_s(60, 80, "MSX / Yamaha YIS-503II", 2, 0x00FFAA00);
+            fb_puts_s(60, 80, "MSX / Yamaha YIS-503III", 2, 0x00FFAA00);
             fb_fill_rect(60, 120, 300, 2, 0x00FFFFFF);
 
             const char* opts[2];
@@ -272,7 +272,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r768";
+const char g_fw_version[] = "r776";
 
 void main(void) {
     int sd_ok = 0;
@@ -280,7 +280,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r768\n");
+    uart_puts("build: r776\n");
 
     led_init();
     led_set(0);
@@ -382,16 +382,11 @@ void main(void) {
     else
         uart_puts("smp: CPU1 FAILED to start\n");
 
-    // Аудио-ядро CPU2 (r585 + r740): звук обслуживает CPU2 — переносит кольцо
-    // в DMA-буфер, а в TX FIFO пишет ЖЕЛЕЗНЫЙ DMA (по DRQ). Раньше CPU2 писал
-    // в TX FIFO руками — запись в полный FIFO вешала AHB (залипание). Теперь
-    // CPU2 пишет в обычную RAM (не может залипнуть), в FIFO — только железо.
+    // Аудио-ядро CPU2 (r773): звук обслуживает CPU2 — долив кольца в I2S TX
+    // FIFO поллингом (без DMA и без прерываний; GIC на CPU2 не работает).
     extern void cpu2_entry(void);
-    // r765: GIC Distributor инициализирует ТОЛЬКО core0 (один раз), до
-    // старта CPU2 — вторичные ядра Distributor не трогают (гонка/затирание).
-    gic_dist_init();
     if (h3_cpu_start(2, cpu2_entry) == 1) {
-        uart_puts("smp: CPU2 started (audio core -> DMA)\n");
+        uart_puts("smp: CPU2 started (audio core, poll-fill)\n");
     } else
         uart_puts("smp: CPU2 FAILED to start\n");
 

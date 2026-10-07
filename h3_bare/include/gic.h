@@ -7,16 +7,23 @@
 #define GIC_DIST_BASE    0x01C81000u
 #define GIC_CPU_BASE     0x01C82000u
 
+// r772: аудио-вывод H3 переведён с DMA на прерывание самого I2S0
+// (TX FIFO Empty Interrupt — TXEI_EN, бит4 I2S_INT). По даташиту и эталону
+// uli/allwinner-bare-metal это единственный рабочий bare-metal путь.
+// I2S0 = SPI 13 → INTID 45 (DTS sun8i-h3: i2s@1c22000 interrupts=<0x00 0x0d 0x04>).
+#define GIC_AUDIO_INTID     45u
+
 // Distributor offsets (GIC-400 / ARM GIC v2).
 #define GICD_CTLR        (*(volatile uint32_t*)(GIC_DIST_BASE + 0x000u))
 #define GICD_TYPER       (*(volatile uint32_t*)(GIC_DIST_BASE + 0x004u))
-#define GICD_ISENABLER0  (*(volatile uint32_t*)(GIC_DIST_BASE + 0x100u))
-#define GICD_ICENABLER0  (*(volatile uint32_t*)(GIC_DIST_BASE + 0x180u))
-#define GICD_ICPENDR0    (*(volatile uint32_t*)(GIC_DIST_BASE + 0x280u))
+// r770: ISENABLERn — регистр n (n = INTID/32), бит = INTID%32.
+#define GICD_ISENABLER(n) (*(volatile uint32_t*)(GIC_DIST_BASE + 0x100u + (n) * 4u))
+#define GICD_ICENABLER(n) (*(volatile uint32_t*)(GIC_DIST_BASE + 0x180u + (n) * 4u))
+#define GICD_ICPENDR(n)   (*(volatile uint32_t*)(GIC_DIST_BASE + 0x280u + (n) * 4u))
 #define GICD_IPRIORITYR  ((volatile uint8_t*)(GIC_DIST_BASE + 0x400u))
 #define GICD_ITARGETSR   ((volatile uint8_t*)(GIC_DIST_BASE + 0x800u))
 #define GICD_ICFGR       ((volatile uint32_t*)(GIC_DIST_BASE + 0xC00u))
-#define GICD_IGROUPR0    (*(volatile uint32_t*)(GIC_DIST_BASE + 0x080u))
+#define GICD_IGROUPR(n)  (*(volatile uint32_t*)(GIC_DIST_BASE + 0x080u + (n) * 4u))
 
 // CPU Interface offsets.
 #define GICC_CTLR        (*(volatile uint32_t*)(GIC_CPU_BASE + 0x000u))
@@ -35,7 +42,7 @@
 typedef void (*gic_isr_t)(uint32_t intid);
 
 // r765: инициализация ОБЩЕГО Distributor (GICD_CTLR, disable/enable всех,
-// target/приоритет аудио-SPI 114 → CPU2). ВЫЗЫВАЕТ ТОЛЬКО core0 ОДИН РАЗ
+// target/приоритет аудио-DMA INTID 82 → CPU2). ВЫЗЫВАЕТ ТОЛЬКО core0 ОДИН РАЗ
 // до старта вторичных ядер (main.c). Вторичные ядра Distributor НЕ трогают.
 void gic_dist_init(void);
 

@@ -1,23 +1,22 @@
 // i2s.c — I2S0 H3 (0x01C22000) для MAX98357A, 48 кГц стерео 16-бит.
 //
-// АРХИТЕКТУРА (решение владельца): звук обслуживает CPU2 (аудио-ядро),
-// в FIFO пишет ЖЕЛЕЗНЫЙ DMA.
+// АРХИТЕКТУРА (r773): звук выводит CPU2 поллингом TX FIFO, без прерываний
+// и без DMA.
 //   core0 (эмулятор) --i2s_push_sample--> кольцо (.coherent)
-//   CPU2 (audio_core) --i2s_flush_max--> DMA-буфер (.dma_buf)
-//   DMA (h3_dma.c)    --по DRQ-->        I2S0_TX_FIFO (0x01C22020)
+//   CPU2 (audio_core) --i2s_poll_fill-->  I2S0_TX_FIFO (0x01C22020)
 //
-// Зачем DMA вместо ручного вывода CPU2 в FIFO (r740): запись в полностью
-// заполненный TX FIFO вешала AHB-шину (CPU2 залипал внутри flush_max без
-// исключений: ST:2 EN=EX+1, ABT:0). Теперь CPU2 пишет в ОБЫЧНУЮ RAM
-// (DMA-буфер) — такая запись не может залипнуть; в FIFO пишет только DMA по
-// аппаратному DRQ, когда в FIFO есть место. Залипание исключено, CPU2
-// остаётся единственным хозяином потока.
+// Почему не DMA (r740..r771): 30 версий DMA-пути (LLI/DRQ/ISR) не дали
+// стабильного звука — DMA замирал на ~34 пакетах (pending), звук рвался.
+// Почему не прерывание I2S (r772): GIC-доставка IRQ на CPU2 не работает
+// (INTID не доходит), любая ISR-схема мертва. Добавлено: CPU2 пишет в полный
+// FIFO невозможность исключена проверкой места перед записью (TXE_CNT>2).
+// Эталон uli/allwinner-bare-metal (audio_i2s.c, тот же H3) — поллинг FIFO.
+// Задержка = FIFO (~1.3 мс), единый такт = аппаратный I2S (48 кГц).
 //
 // Хост-API (i2s_push_sample и т.д.) не изменился — эмуляторы не знают, где
 // именно крутится звук. Тон/клик меню — через кольцо, как эмуляторы.
 //
-// Референс DMA: drivers/dma/sun6i-dma.c (sun8i_h3) + H3 Datasheet V1.2 4.11.
-// Драйвер — platform/h3_dma.c, заголовок include/h3_dma.h.
+// Референс: H3 Datasheet V1.2 §8.6.7 (I2S/PCM) + uli/allwinner-bare-metal.
 #include <stdint.h>
 #include <string.h>
 #include "h3.h"
@@ -26,8 +25,6 @@
 #include "i2s.h"
 #include "led.h"
 #include "emu.h"
-#include "h3_dma.h"
-#include "gic.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -88,7 +85,11 @@ static void pll_audio_enable(void) {
     else printf("I2S: PLL LOCK TIMEOUT\n");
 }
 
-static int g_i2s_ready = 0;
+// r773 (КОРЕНЬ тишины/трелей): g_i2s_ready обязан лежать в .coherent
+// (uncached). Раньше был в обычном BSS — core0 писал 1, но запись оседала
+// в D-cache core0, а CPU2 (MMU выключен) читал физическую DRAM и видел 0
+// (тишина) либо 0/1 случайно при вытеснении строки кэша (трели/метроном).
+static int g_i2s_ready __attribute__((section(".coherent"), aligned(64))) = 0;
 static int g_volume_pct = 20;
 static int g_muted = 1;
 
@@ -125,6 +126,13 @@ static int16_t g_ring_r[AUDIO_RING_SIZE] __attribute__((section(".coherent"), al
 static volatile uint32_t g_ring_wr __attribute__((section(".coherent"), aligned(64))) = 0;
 static volatile uint32_t g_ring_rd __attribute__((section(".coherent"), aligned(64))) = 0;
 
+// r593: барьер ДО инкремента rd (сэмплы видны раньше сдвига).
+static inline void ring_rd_advance(void) {
+    __asm volatile("dmb sy" ::: "memory");
+    g_ring_rd++;
+    __asm volatile("dmb sy" ::: "memory");
+}
+
 // ---- Почта core0↔CPU2 (аудио-ядро) в .coherent ----
 static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(64))) = 0;
 static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(64))) = 0;
@@ -133,14 +141,9 @@ static volatile uint32_t g_audio_ack    __attribute__((section(".coherent"), ali
 static volatile uint32_t g_audio_beat   __attribute__((section(".coherent"), aligned(64))) = 0;
 static volatile uint32_t g_audio_paused_f __attribute__((section(".coherent"), aligned(64))) = 0;
 
-// ---- DMA-буфер звука (.dma_buf, uncached) — пишет CPU2, читает DMA ----
-// ФОРМАТ = формат TX FIFO: 32-битные слова, сэмпл в СТАРШИХ битах (TXIM=0).
-// Пара = ДВА слова: [L<<16][R<<16]. 64 КБ = 8192 пары ≈ 170 мс @48к.
-#define DMA_BUF_SIZE_BYTES (64 * 1024)
-#define DMA_BUF_WORDS      (DMA_BUF_SIZE_BYTES / 4)
-#define DMA_BUF_PAIRS      (DMA_BUF_SIZE_BYTES / 8)
-extern unsigned char _dma_buf_start[];
-static volatile uint32_t* g_dma_buf = (volatile uint32_t*)(uintptr_t)_dma_buf_start;
+// r772/r773: DMA-буфер и весь DMA-слой УДАЛЕНЫ. Вывод — поллинг TX FIFO на
+// CPU2 (i2s_poll_fill): единый такт = аппаратный I2S (48 кГц), задержка =
+// FIFO (~1.3 мс), никакого DMA/LLI/прерываний/поллинга регистров DMA.
 
 // Диагностика: дропнутые пары кольца (продюсер быстрее CPU2).
 static uint32_t g_drop_cnt = 0;
@@ -151,106 +154,100 @@ uint32_t i2s_drop_cnt(void) { return g_drop_cnt; }
 // При пустом кольце (пауза между кадровыми пачками) НЕ пишем резкий 0 —
 // ступенька на стыке «пачка→тишина→пачка» давала щелчки/шум. Вместо этого
 // последняя пара затухает к 0 за ~1 мс (I2S_HOLD_FADE_PAIRS пар). hold/fade
-// пишет CPU2 (flush_max), сбрасывает core0 (ring_reset) → в .coherent.
+// пишет CPU2 (долив), сбрасывает core0 (ring_reset) → в .coherent.
 #define I2S_HOLD_FADE_PAIRS 48   // ~1 мс затухания при 48 кГц
 static int16_t hold_l __attribute__((section(".coherent"), aligned(64))) = 0;
 static int16_t hold_r __attribute__((section(".coherent"), aligned(64))) = 0;
 static int fade_left __attribute__((section(".coherent"), aligned(64))) = 0;
-// r755: fade-in/атака ВОЗВРАЩЕНЫ (потерялись при переходе на DMA в r740).
-// Атака: плавный вход из тишины. Взводится ring_reset/командой RING_RESET и
-// длительной тихой сценой (silent_run); первый ГРОМКИЙ сэмпл нарастает от 0 —
-// нет ступеньки 0→громко (щелчок на входе в игру/после паузы).
+// r755: fade-in/атака ВОЗВРАЩЕНЫ. Атака: плавный вход из тишины — первый
+// ГРОМКИЙ сэмпл нарастает от 0 (нет ступеньки 0→громко).
 #define I2S_SILENCE_LEVEL 128
 #define I2S_ATTACK_SILENCE 48
 static int attack_left __attribute__((section(".coherent"), aligned(64))) = 0;
 static int silent_run __attribute__((section(".coherent"), aligned(64))) = 0;
 
-// r740 (ДМА): счётчик дропнутых пар DMA-буфера (CPU2 быстрее DMA).
-static uint32_t g_dma_drop_cnt = 0;
+// r776 (P0-5 аудита): владелец fade-полей — ОДИН. hold/fade/attack/silent_run
+// пишет либо CPU2 (в i2s_poll_fill), либо core0 (в i2s_ring_reset), но НЕ оба
+// одновременно. Флаг выставляет ТОЛЬКО core0 перед сбросом ring_reset и
+// снимает после; пока флаг установлен, CPU2 в i2s_poll_fill долив не делает
+// и fade-поля не трогает. Устраняет формальный data race (RMW одного
+// uncached-слова с двух ядер без владельца).
+static volatile uint32_t g_audio_reset __attribute__((section(".coherent"), aligned(64))) = 0;
 
-// r754: диагностика CPU2 (раньше — мёртвые заглушки). Пишутся в flush_max
-// (CPU2), читаются геттерами из SLT (core0). ВАЖНО: в .coherent (uncached) —
-// CPU2 пишет физически, core0 читает без кэша; в обычном BSS core0 видел бы
-// stale из D-кэша (symptom: ex>en, мусор в flush/written).
-static volatile uint32_t g_cpu2_stage     __attribute__((section(".coherent"), aligned(64))) = 0; // 0=вне flush_max 2=внутри
-static volatile uint32_t g_flush_enter    __attribute__((section(".coherent"), aligned(64))) = 0; // входов в flush_max
-static volatile uint32_t g_flush_exit     __attribute__((section(".coherent"), aligned(64))) = 0; // выходов из flush_max
-static volatile uint32_t g_flush_written  __attribute__((section(".coherent"), aligned(64))) = 0; // пар записано в DMA-буфер
-static volatile uint32_t g_flush_skip_full __attribute__((section(".coherent"), aligned(64))) = 0; // выходов по полному DMA-буферу
-// r763: DMA_IRQ_PEND сбрасывается БЕЗУСЛОВНО в цикле CPU2 (audio_core.c),
-// как linux sun8i-dma в ISR (writel(status, IRQ_STAT) на каждый пакет).
-// Rate-limit был ошибкой: при затыке канал вставал быстрее, чем раз в 256,
-// и снова замирал. Одна MMIO-запись на проход CPU2 — дёшево и всегда успевает.
+// r754: диагностика CPU2. Пишутся в доливе (CPU2), читаются из SLT (core0).
+// В .coherent (uncached) — чтобы core0 не видел stale из D-кэша.
+static volatile uint32_t g_cpu2_stage     __attribute__((section(".coherent"), aligned(64))) = 0; // 0=вне долива 2=внутри
+static volatile uint32_t g_flush_enter    __attribute__((section(".coherent"), aligned(64))) = 0; // входов в долив
+static volatile uint32_t g_flush_exit     __attribute__((section(".coherent"), aligned(64))) = 0; // выходов из долива
+static volatile uint32_t g_flush_written  __attribute__((section(".coherent"), aligned(64))) = 0; // пар записано в TX FIFO
+static volatile uint32_t g_flush_skip_full __attribute__((section(".coherent"), aligned(64))) = 0; // выходов по полному FIFO
 
-// Индекс пары, куда CPU2 пишет в DMA-буфер [0, DMA_BUF_PAIRS). SPSC с DMA:
-// fill = (dma_wr - played) & mask; DMA-позиция берётся из CUR_SRC (регистр).
-// Пишет ТОЛЬКО CPU2 (flush_max) и core0-диагностика читает; поле в .coherent.
-static volatile uint32_t g_dma_wr __attribute__((section(".coherent"), aligned(64))) = 0;
-
-// r761: позиция DMA (в парах, [0, DMA_BUF_PAIRS)) для CPU2 в .coherent.
-// ПИШЕТ core0 (i2s_init/i2s_ring_reset — там, где он и так трогает DMA;
-// читает CH_CUR_SRC один раз). ЧИТАЕТ CPU2 (dma_played_pairs).
-// Это убирает у CPU2 (MMU off) доступ к MMIO CH_CUR_SRC и к кэшируемой
-// глобальной g_ch (h3_dma.c, обычный BSS) — оба могли давать мусор/0
-// (отсюда «free=0 навсегда», deadlock кольца: rd=0, written не растёт).
-static volatile uint32_t g_dma_curpos __attribute__((section(".coherent"), aligned(64))) = 0;
-
-// Обновить g_dma_curpos из аппаратного регистра. Вызывает ТОЛЬКО core0
-// (редко: инициализация/ring_reset), когда DMA остановлен/только стартовал.
-static inline void dma_curpos_update(void) {
-    uint32_t base = (uint32_t)(uintptr_t)_dma_buf_start;
-    uint32_t pos  = h3_dma_audio_cur_pos();
-    uint32_t cur  = 0;
-    if (pos >= base && pos < base + DMA_BUF_SIZE_BYTES)
-        cur = (pos - base) / 8;
-    g_dma_curpos = cur;
-    __asm volatile("dmb sy" ::: "memory");
-}
-
-// Позиция DMA (пар от начала) — [0, DMA_BUF_PAIRS). Чтение .coherent-копии,
-// БЕЗ MMIO и БЕЗ g_ch. Для CPU2 и core0 одинаково.
-static inline uint32_t dma_played_pairs(void) {
-    return g_dma_curpos;
-}
-
-// Счётчик пришедших аудио-IRQ (диагностика, читает core0 из SLT).
-static volatile uint32_t g_irq_cnt __attribute__((section(".coherent"), aligned(64))) = 0;
-uint32_t i2s_audio_irq_cnt(void) { return g_irq_cnt; }
-
-// r764: ISR аудио-DMA (CPU2, INTID 114). Вызывается из gic_dispatch при
-// каждом PKG-прерывании (DMA завершил LLI-пакет и запросил обслуживание).
-// ДЕЛАЕТ: сброс DMA_IRQ_PEND (иначе канал замирает) + обновление позиции
-// из счётчика пакетов (БЕЗ чтения CUR_SRC — конвейер шины может отдать
-// мусор). Это размораживает g_dma_curpos: CPU2 в flush_max видит, что DMA
-// продвинулся, и продолжает писать (rd/written растут, нет deadlock-а).
-static void i2s_dma_isr(uint32_t intid) {
-    (void)intid;
-    uint32_t n = h3_dma_audio_pkg_isr();   // сброс pending + счётчик
-    // Позиция = (n пакетов × half). g_buf=64КБ → half=4096 пар, уже в парах.
-    g_dma_curpos = (n * (DMA_BUF_PAIRS / 2)) & (DMA_BUF_PAIRS - 1);
-    // Прирост счётчика (для диагностики SLT — «сколько IRQ пришло»).
-    g_irq_cnt = n;
-    __asm volatile("dmb sy" ::: "memory");
-}
-static inline uint32_t dma_fill(void) {
-    return (g_dma_wr - dma_played_pairs()) & (DMA_BUF_PAIRS - 1);
-}
-static inline uint32_t dma_free_pairs(void) {
-    return (DMA_BUF_PAIRS - 1) - dma_fill();
-}
-
-// Запись пары в DMA-буфер (2 слова: L<<16, R<<16). Только CPU2.
-static inline void dma_write_pair(uint32_t idx, int16_t l, int16_t r) {
-    uint32_t w = (idx & (DMA_BUF_PAIRS - 1)) * 2;
-    g_dma_buf[w]     = (uint32_t)(uint16_t)l << 16;
-    g_dma_buf[w + 1] = (uint32_t)(uint16_t)r << 16;
-}
-
-// Занулить DMA-буфер (тишина) — вызывается при сбросе, иначе «доезд».
-static void dma_buf_clear(void) {
-    for (uint32_t i = 0; i < DMA_BUF_WORDS; i++)
-        g_dma_buf[i] = 0;
-    __asm volatile("dsb" ::: "memory");
+// r773: ДОЛИВ БЕЗ ПРЕРЫВАНИЙ — поллинг TX FIFO в цикле CPU2 (эталон
+// uli/allwinner-bare-metal audio_i2s.c). Вызывается из audio_core (CPU2):
+// пишем пары из кольца в I2S TX FIFO, пока там есть место (TXE_CNT > 2).
+// Никакого GIC/DMA/LLI/когерентности. Если кольцо пусто — плавный fade к 0.
+int i2s_poll_fill(void) {
+    if (!g_i2s_ready) return 0;
+    // r776 (P0-5): во время i2s_ring_reset (core0) fade-поля и кольцо
+    // принадлежат core0 — CPU2 не доливает и не трогает их (иначе RMW-гонка).
+    if (g_audio_reset) return 0;
+    g_cpu2_stage = 2;
+    g_flush_enter++;
+    // Сколько пар можно записать, пока в FIFO есть место (> 2 слов).
+    uint32_t room = (I2S_FIFO_STA >> 16) & 0xFF;   // TXE_CNT [23:16]
+    if (room <= 2) {
+        // FIFO полон — I2S не освобождает место (нет вывода/такта).
+        g_flush_skip_full++;   // диагностика: выход по полному FIFO
+    }
+    int n = 0;
+    while (n < 24 && room > 2) {
+        if ((uint32_t)(g_ring_wr - g_ring_rd) > 0) {
+            // r776 (P0-4 аудита): барьер между чтением wr и данными слота.
+            // Продюсер (core0) публикует: store g_ring_l/r; dmb; store g_ring_wr++.
+            // Потребитель (CPU2) обязан упорядочить свои load — иначе на слабой
+            // модели Cortex-A7 store-сторона могла бы быть переупорядочена
+            // относительно wr, и CPU2 прочёл бы данные раньше их публикации.
+            __asm volatile("dmb sy" ::: "memory");
+            uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
+            int32_t L = g_ring_l[r];
+            int32_t R = g_ring_r[r];
+            hold_l = (int16_t)L; hold_r = (int16_t)R;
+            fade_left = I2S_HOLD_FADE_PAIRS;
+            int lvl_l = L < 0 ? -L : L;
+            int lvl_r = R < 0 ? -R : R;
+            if (lvl_l >= I2S_SILENCE_LEVEL || lvl_r >= I2S_SILENCE_LEVEL) {
+                silent_run = 0;
+                if (attack_left > 0) {
+                    attack_left--;
+                    uint32_t g = I2S_HOLD_FADE_PAIRS - (uint32_t)attack_left;
+                    L = (int32_t)hold_l * (int32_t)g / I2S_HOLD_FADE_PAIRS;
+                    R = (int32_t)hold_r * (int32_t)g / I2S_HOLD_FADE_PAIRS;
+                }
+            } else {
+                if (++silent_run >= I2S_ATTACK_SILENCE)
+                    attack_left = I2S_HOLD_FADE_PAIRS;
+            }
+            // TX FIFO, формат 32 бита: L в старших 16 (TXIM=0).
+            I2S_FIFO_TX = ((uint32_t)(uint16_t)L << 16) | (uint32_t)(uint16_t)R;
+            g_flush_written++;
+            ring_rd_advance();
+        } else {
+            // Кольцо пусто: плавно гасим (fade) — иначе ступенька на стыке.
+            if (fade_left > 0) {
+                fade_left--;
+                int32_t l = (int32_t)hold_l * fade_left / I2S_HOLD_FADE_PAIRS;
+                int32_t r = (int32_t)hold_r * fade_left / I2S_HOLD_FADE_PAIRS;
+                I2S_FIFO_TX = ((uint32_t)(uint16_t)l << 16) | (uint32_t)(uint16_t)r;
+            } else {
+                I2S_FIFO_TX = 0;   // тишина
+            }
+        }
+        n++;
+        room = (I2S_FIFO_STA >> 16) & 0xFF;
+    }
+g_flush_exit++;
+    g_cpu2_stage = 0;
+    return n;
 }
 
 // ---- Аудио-почта core0↔CPU2 (N1: cmd+ack+seq) ----
@@ -321,33 +318,28 @@ void i2s_push_sample(int16_t left, int16_t right) {
     g_ring_wr++;
 }
 
-// r593: барьер ДО инкремента rd (сэмплы видны раньше сдвига).
-static inline void ring_rd_advance(void) {
-    __asm volatile("dmb sy" ::: "memory");
-    g_ring_rd++;
-    __asm volatile("dmb sy" ::: "memory");
-}
-
 // ---- Полный сброс звука (смена игры / выход в меню / перед кликом-тоном) ----
+// r773: DMA/ISR слоёв нет — остаётся flush TX FIFO + сброс кольца. Долив
+// делает CPU2 (i2s_poll_fill) всегда, так что после сброса звук продолжится
+// с тишины (кольцо пусто) автоматически.
 void i2s_ring_reset(void) {
     if (!g_i2s_ready) return;
-    // r748 (СИНХРОНИЗАЦИЯ): ring_reset ОБЯЗАН вернуть CPU2 в RESUME. Раньше
-    // (r745/r746) мы ставили PAUSE и НЕ снимали — CPU2 замирал, кольцо не
-    // выпивалось (dropped=134729, тишина тестов, клики «песок»), а после
-    // выхода из меню выплёскивал весь накопленный мусор («шум как ТВ»).
-    // С DMA единственный писатель DMA-буфера — CPU2, поэтому он должен быть
-    // активен ВСЕГДА (и в меню, и в тестах): прямого вывода в FIFO нет.
+    // r776 (P0-5): core0 забирает владение fade-полями на время сброса.
+    // CPU2 (i2s_poll_fill) проверяет флаг и не доливает, пока он установлен.
+    g_audio_reset = 1;
+    __asm volatile("dmb sy" ::: "memory");
+    // r748 (СИНХРОНИЗАЦИЯ): возвращаем CPU2 в RESUME — долив не зависит
+    // от паузы, но почта должна остаться консистентной (клики/тоны ждут ack).
     if (g_audio_state) {
-        i2s_audio_cmd(AUDIO_CMD_PAUSE);   // CPU2 встал (не пишет в буфер)
+        i2s_audio_cmd(AUDIO_CMD_PAUSE);   // CPU2 отметит паузу (почта)
     }
-    h3_dma_audio_stop();                  // DMA остановлен — старый поток рвётся
-    // r764 (по рекомендации внешнего аудита): жёсткий перезапуск TX-блока I2S.
-    // Если контроллер «залип» в underflow (ISTA=0x40) — простой flush FIFO не
-    // выводит его из ступора; обязателен TX_EN off → flush+статус → TX_EN on.
+    // r764: жёсткий перезапуск TX-блока I2S. Если контроллер «залип» в
+    // underflow (ISTA=0x40) — простой flush FIFO не выводит из ступора;
+    // обязателен TX_EN off → flush+статус → TX_EN on.
     I2S_CTRL &= ~I2S_CTRL_TX_EN;
     __asm volatile("dsb" ::: "memory");
     udelay(2);
-    // hold/fade-сброс (обновляются в flush_max, совм. с core0/CPU2)
+    // hold/fade-сброс (обновляются в доливе CPU2, совм. с core0)
     hold_l = 0; hold_r = 0; fade_left = 0;
     // r755: атака (fade-in) взводится на входе — первый сэмпл после reset
     // нарастает от 0 (нет щелчка при старте игры/клика/тона).
@@ -361,117 +353,26 @@ void i2s_ring_reset(void) {
     I2S_FIFO_CTL &= ~(1u << 25);
     I2S_TX_CNT = 0;
     // r757: сброс статусных флагов I2S (TXU/TXO/TXE и др.) write-1-to-clear.
-    // Без этого зависший underrun/overrun запирает DRQ к DMA навсегда —
-    // после выхода из игры «хвост», «пульсирующий шум», «стык шалит».
     I2S_ISTA = 0x7F;
     udelay(10);
-    // r768 (ФИКС r764-бага): TX_EN вернуть ОБРАТНО! Выше (по рекомендации
-    // внешнего аудита) сняли TX_EN для «перезапуска» TX-блока, но после
-    // чистки его НЕ выставили — после первого же ring_reset передатчик
-    // оставался выключен навсегда: TXCNT=0, ISTA=0, нет DRQ, DMA стоит,
-    // полная тишина (r764-симптом). Включаем до старта DMA.
+    // r768: TX_EN вернуть ОБРАТНО (после перезапуска TX-блока).
     I2S_CTRL |= I2S_CTRL_TX_EN;
     __asm volatile("dsb" ::: "memory");
-    dma_buf_clear();                      // буфер в тишину
-    g_dma_drop_cnt = 0;
-    h3_dma_audio_start();                 // DMA играет тишину
-    // r756 (SND-1): g_dma_wr = НАЧАЛО буфера, а не dma_played_pairs().
-    // h3_dma_audio_start() ставит CH_LLI=&lli[0] → DMA после рестарта начинает
-    // С НАЧАЛА буфера (0x4A410000), а не с CUR_SRC, который замерялся ДО
-    // останова (в произвольной позиции внутри 32КБ LLI). Раньше g_dma_wr
-    // указывал на середину, DMA играл с начала → «фиктивное заполнение»
-    // (free=0), CPU2 вставал (st=2), кольцо забивалось, звук молчал в SLT,
-    // при выходе из игры — хвост/пульсирующий шум/стык. dmb — чтобы запись
-    // g_dma_wr=0 была видна CPU2 до его чтения в flush_max.
-    g_dma_wr = 0;
-    __asm volatile("dmb sy" ::: "memory");
-    // r761: зафиксировать позицию DMA для CPU2 (.coherent) после рестарта.
-    dma_curpos_update();
-    // r766 (D1): сброс счётчика пакетов DMA и позиции в ноль при сбросе.
-    // Без этого g_pkg_cnt (и, как следствие, g_dma_curpos из ISR) не
-    // обнулялся между играми — следующая игра стартовала с «хвоста» позиции
-    // (мусор/скачки при перезаходах).
-    h3_dma_audio_pkg_reset();
-    g_dma_curpos = 0;
-    __asm volatile("dmb sy" ::: "memory");
-    // r748: ВОЗВРАТ CPU2 В РАБОТУ — он должен сразу выпивать кольцо
-    // (меню/клик/тон/тест/игра — всё через кольцо).
+    // r748: ВОЗВРАТ CPU2 В РАБОТУ (почта консистентна).
     if (g_audio_state) {
         i2s_audio_cmd(AUDIO_CMD_RESUME);
     }
+    // r776 (P0-5): core0 отдаёт владение fade-полями обратно CPU2. dmb ДО
+    // снятия флага гарантирует, что записи fade-полей/кольца видны CPU2
+    // раньше, чем он снова начнёт долив (публикация до снятия замка).
+    __asm volatile("dmb sy" ::: "memory");
+    g_audio_reset = 0;
 }
 
-// ---- CPU2 (audio_core.c): перенос кольца → DMA-буфер ----
-// Громкость уже применена в push_sample (в кольце лежат готовые пары).
-// Порция: 24 пары (как раньше). Если кольцо пусто — пишем тишину в буфер,
-// чтобы DMA не играл старое (непрерывный поток 48к).
-#define I2S_FLUSH_BURST 24
-int i2s_flush_max(int max_pairs) {
-    if (!g_i2s_ready) return 0;
-    if (max_pairs > I2S_FLUSH_BURST) max_pairs = I2S_FLUSH_BURST;
-    // r760: НЕ сбрасывать I2S_ISTA здесь! r759 ставил запись в каждый вход
-    // flush_max — при затыке (кольцо полно, буфер полон) flush_max вызывается
-    // МИЛЛИОНЫ раз/сек, и миллионы MMIO-записей в I2S по AHB (общая шина с
-    // DMA) давали «трактор», писк ~2.5кГц, треск в тишине, хвосты. Сброс ISTA
-    // делается только в i2s_init и i2s_ring_reset (редко, дёшево).
-    g_cpu2_stage = 2;          // внутри flush_max (диагностика)
-    g_flush_enter++;           // вход в flush_max
-    int n = 0;
-    while (n < max_pairs) {
-        if (dma_free_pairs() == 0) {
-            g_dma_drop_cnt++;   // CPU2 быстрее DMA (буфер полон)
-            g_flush_skip_full++;
-            break;
-        }
-        if ((uint32_t)(g_ring_wr - g_ring_rd) > 0) {
-            uint32_t r = g_ring_rd & (AUDIO_RING_SIZE - 1);
-            int32_t L = g_ring_l[r];
-            int32_t R = g_ring_r[r];
-            // Обновляем hold — следующий голод затухнет от нового уровня.
-            hold_l = (int16_t)L; hold_r = (int16_t)R;
-            fade_left = I2S_HOLD_FADE_PAIRS;
-            // r755: fade-in/атака (как в r735): первый ГРОМКИЙ сэмпл после
-            // тишины нарастает от 0 — нет щелчка на входе/после паузы.
-            int lvl_l = L < 0 ? -L : L;
-            int lvl_r = R < 0 ? -R : R;
-            if (lvl_l >= I2S_SILENCE_LEVEL || lvl_r >= I2S_SILENCE_LEVEL) {
-                silent_run = 0;
-                if (attack_left > 0) {
-                    attack_left--;
-                    uint32_t g = I2S_HOLD_FADE_PAIRS - (uint32_t)attack_left;
-                    L = (int32_t)hold_l * (int32_t)g / I2S_HOLD_FADE_PAIRS;
-                    R = (int32_t)hold_r * (int32_t)g / I2S_HOLD_FADE_PAIRS;
-                }
-            } else {
-                if (++silent_run >= I2S_ATTACK_SILENCE)
-                    attack_left = I2S_HOLD_FADE_PAIRS;
-            }
-            dma_write_pair(g_dma_wr, (int16_t)L, (int16_t)R);
-            __asm volatile("dmb sy" ::: "memory");
-            g_dma_wr++;
-            g_flush_written++;   // реально записано пар в DMA-буфер
-            ring_rd_advance();
-        } else {
-            // Кольцо пусто (пауза между пачками): плавно гасим уровень до 0.
-            // Резкий break/0 давали «помехи на тишине» (ступенька на стыке).
-            if (fade_left > 0) {
-                fade_left--;
-                int32_t l = (int32_t)hold_l * fade_left / I2S_HOLD_FADE_PAIRS;
-                int32_t r = (int32_t)hold_r * fade_left / I2S_HOLD_FADE_PAIRS;
-                dma_write_pair(g_dma_wr, (int16_t)l, (int16_t)r);
-            } else {
-                dma_write_pair(g_dma_wr, 0, 0);
-            }
-            __asm volatile("dmb sy" ::: "memory");
-            g_dma_wr++;
-        }
-        n++;
-    }
-    g_flush_exit++;            // выход из flush_max (диагностика)
-    g_cpu2_stage = 0;          // вне flush_max
-    return n;
-}
-void i2s_flush(void) { i2s_flush_max(24); }
+// ---- Долив кольца → TX FIFO (вызывает ТОЛЬКО CPU2, audio_core.c) ----
+// r772: i2s_flush_max/i2s_flush (DMA-эпоха) УДАЛЕНЫ — долив теперь
+// единственный: i2s_poll_fill в цикле CPU2. Эмуляторы зовут i2s_push_sample
+// (в кольцо), CPU2 сам выпивает кольцо в TX FIFO.
 
 // ---- Инициализация I2S + DMA ----
 int i2s_init(void) {
@@ -531,44 +432,19 @@ int i2s_init(void) {
     I2S_TX_CSEL = (3u << 4) | I2S_TX_CHAN_OFF(1) | 1;
     I2S_CHAN_CFG = I2S_CHAN_TXSLOT(2) | I2S_CHAN_RXSLOT(2);
 
-    // TX FIFO Empty DRQ Enable (I2S_INT bit7): разрешаем DMA-запросы в FIFO.
-    // r759 (ЭТАЛОН linux sun8i-h3-i2s): TXTL (FCTL[18:12]) оставляем дефолтным
-    // 0x40=64 (linux его не трогает). Даташит: «IRQ/DRQ Generated when
-    // WLEVEL ≤ TXTL» — при TXTL=64 DMA-запрос держится почти всегда (FIFO
-    // считается «пустым», пока в нём ≤64 слов), подлив непрерывный.
-    // Раньше TXTL=16: DRQ молчал при 17..64 словах в FIFO → подлив порциями,
-    // FIFO успевал уйти в 0 → underrun (ISTA=0x40) → «тиканье» и затыки.
-    I2S_FIFO_CTL = (I2S_FIFO_CTL & ~((0x7Fu) << 12)) | (0x40u << 12);   // TXTL=64 (дефолт)
-    I2S_INT = (1u << 7);   // TX_DRQ=1
+    // r772/r773: прерывания НЕ используем (GIC не работает на CPU2).
+    // TXEI_EN/DRQ не включаем — долив поллингом (i2s_poll_fill). TXTL=64
+    // дефолт: порог для поллинга не критичен, оставляем как есть.
+
+    I2S_FIFO_CTL = (I2S_FIFO_CTL & ~((0x7Fu) << 12)) | (0x40u << 12);   // TXTL=64
+    I2S_INT = 0;   // без прерываний и DRQ — чистый поллинг
 
     I2S_CTRL = I2S_CTRL_BCLK_OUT | I2S_CTRL_LRCK_OUT | (1u << 4)
              | I2S_CTRL_TX_EN | I2S_CTRL_SDO_EN0 | I2S_CTRL_GL_EN;
     udelay(1000);
 
-    // DMA: циклически читает .dma_buf → I2S0_TX_FIFO. Стартуем сразу (буфер
-    // пуст = тишина), CPU2 начнёт наполнять после подъёма. Канал 0 свободен.
-    dma_buf_clear();
-    g_dma_wr = 0;
-    uint32_t buf = (uint32_t)(uintptr_t)_dma_buf_start;
-    if (h3_dma_audio_init(0, buf, DMA_BUF_SIZE_BYTES) != 0) {
-        printf("I2S: DMA init FAILED — звук отключён\n");
-        return -1;
-    }
-    // r761: зафиксировать стартовую позицию DMA для CPU2 (.coherent).
-    dma_curpos_update();
-    // r766 (D1): сброс счётчика пакетов DMA и позиции при инициализации —
-    // чтобы первый запуск после boot не начинался с «хвоста» позиции.
-    h3_dma_audio_pkg_reset();
-    g_dma_curpos = 0;
-    __asm volatile("dmb sy" ::: "memory");
-    // r764: регистрация ISR аудио-DMA (INTID 114) в GIC. Сам GIC инициализирует
-    // audio_core (CPU2) — но ISR можно зарегистрировать и здесь (таблица в
-    // .data, ядро Secure, видно обоим). Регистрируем на CPU2 в audio_core,
-    // здесь — страховка, если таблица gic уже есть.
-    gic_register_isr(h3_dma_audio_intid(), i2s_dma_isr);
-
     g_i2s_ready = 1;
-    printf("I2S: ready (48000 Hz, DMA + CPU2, vol=%d%%)\n", g_volume_pct);
+    printf("I2S: ready (48000 Hz, poll-fill path, vol=%d%%)\n", g_volume_pct);
     return 0;
 }
 
@@ -592,50 +468,12 @@ static const int16_t sin_tab[256] = {
         -11792,-11038,-10278,-9511,-8739,-7961,-7179,-6392,-5601,-4807,-4011,-3211,-2410,-1607,-804
 };
 
-void i2s_test_tone(int freq, int msec) {
-    if (!g_i2s_ready) return;
-    if (freq < 20) freq = 20;
-    if (msec <= 0) msec = 100;
-
-    int was_muted = g_muted;
-    i2s_ring_reset();        // r746: очистить очередь DMA-буфера/кольца, чтобы
-                             // тон шёл СРАЗУ, а не после ~170 мс тишины (размаз)
-    if (was_muted) i2s_mute(0);   // после ring_reset mute=1 — снять
-    uint32_t step = (uint32_t)(((uint64_t)freq << 16) / 48000u);
-    uint32_t ph = 0;
-    int total = 48000 * msec / 1000;
-    int d = 0;
-    uint32_t t0 = 0;
-    while (d < total) {
-        int batch = total - d;
-        if (batch > 800) batch = 800;
-        for (int p = 0; p < batch; p++, d++) {
-            int32_t s = (int32_t)sin_tab[(ph >> 8) & 0xFF] / 2;
-            ph += step;
-            int tail = total - d;
-            if (tail <= 32)
-                s = (int32_t)((int64_t)s * tail / 32);
-            i2s_push_sample((int16_t)s, (int16_t)s);
-        }
-        // Кадровая пауза — CPU2/DMA выведут накопленное.
-        if (!t0) t0 = h3_hs_timer_lo_us();
-        else {
-            uint32_t el = (uint32_t)(h3_hs_timer_lo_us() - t0);
-            if (el < 16667u) udelay(16667u - el);
-            t0 = h3_hs_timer_lo_us();
-        }
-    }
-    udelay(30000);
-    if (was_muted) i2s_mute(1);
-}
-
 void i2s_click(void) {
     if (!g_i2s_ready) return;
     int was_muted = g_muted;
     // r746: очистить очередь ДО клика — иначе клик слышится через ~170 мс
-    // задержки DMA-буфера («размазанные клики»). ring_reset: стоп DMA +
-    // flush FIFO + clear буфера + рестарт (тишина), позиции выровнены —
-    // клик прозвучит сразу и чётко.
+    // задержки буфера («размазанные клики»). ring_reset: flush FIFO + сброс
+    // кольца — клик прозвучит сразу и чётко.
     i2s_ring_reset();
     if (was_muted) i2s_mute(0);
     uint32_t step = (uint32_t)(((uint64_t)1500u << 16) / 48000u);
@@ -650,54 +488,19 @@ void i2s_click(void) {
     if (was_muted) i2s_mute(1);
 }
 
-void i2s_tone_burst_test(int freq, int pairs_per_frame, int frames) {
-    if (!g_i2s_ready) return;
-    if (freq < 20) freq = 20;
-    if (pairs_per_frame < 16) pairs_per_frame = 16;
-    if (frames <= 0) frames = 60;
-
-    i2s_ring_reset();
-    i2s_drop_cnt_reset();
-    if (g_muted) i2s_mute(0);
-
-    const uint32_t step = (uint32_t)(((uint64_t)freq << 16) / 48000u);
-    uint32_t ph = 0;
-    for (int f = 0; f < frames; f++) {
-        for (int p = 0; p < pairs_per_frame; p++) {
-            int32_t s = (int32_t)sin_tab[(ph >> 8) & 0xFF] / 2;
-            ph += step;
-            i2s_push_sample((int16_t)s, (int16_t)s);
-        }
-        udelay(1667);
-    }
-    udelay(30000);
-    printf("I2S layer test: pairs/frame=%d frames=%d dropped=%lu\n",
-           pairs_per_frame, frames, (unsigned long)i2s_drop_cnt());
-    i2s_ring_reset();
-}
-
 // ---- Диагностика (SLT-тест) ----
-// ВНИМАНИЕ (r754): эти геттеры писались ДО внедрения DMA (r740), когда CPU2
-// лил прямо в TX FIFO, и после перехода на DMA остались ЗАГЛУШКАМИ — в SLT
-// уходили нули, отладка врала. Теперь возвращаем ЖИВЫЕ счётчики/стадии
-// (объявлены выше, пишутся в flush_max на CPU2).
+// r772/r773: DMA-слой удалён — возвращаем живые счётчики poll-долива:
+//   flushed = входов в i2s_poll_fill (сколько раз CPU2 долил)
+//   written = пар реально записано в TX FIFO
+//   skipfull = выходов по полному FIFO (нет места)
 
-// Позиция DMA и заполненность DMA-буфера — для ДИАГНОСТИКИ (core0, вне
-// горячего пути CPU2). Читаем ЖИВОЙ регистр CH_CUR_SRC напрямую, чтобы SLT
-// показывал реальное движение DMA, а не замороженную g_dma_curpos.
-void i2s_dma_diag_get(uint32_t* played, uint32_t* free_pairs) {
-    // r767 (D8): позиция — из g_dma_curpos (обновляет ISR по счётчику PKG),
-    // НЕ из MMIO CH_CUR_SRC: во время активной передачи чтение CUR_SRC может
-    // вернуть мусор (конвейер шины). Так SLT видит ту же позицию, что CPU2.
-    uint32_t cur = g_dma_curpos;
-    if (played)     *played    = cur;
-    if (free_pairs) *free_pairs = (DMA_BUF_PAIRS - 1) - ((g_dma_wr - cur) & (DMA_BUF_PAIRS - 1));
-}
+// r772: живые счётчики поллинг-долива:
+
 void i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint32_t* dummy) {
+    (void)dummy;
     if (flush)    *flush    = g_flush_enter;
     if (written)  *written  = g_flush_written;
     if (skipfull) *skipfull = g_flush_skip_full;
-    if (dummy)    *dummy    = 0;
 }
 void i2s_cpu2_pairs_written_get(uint32_t* v) { if (v) *v = g_flush_written; }
 void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex) {
@@ -707,8 +510,6 @@ void i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex) {
 }
 void i2s_ring_wr_rd_get(uint32_t* w, uint32_t* r) { if(w)*w=g_ring_wr; if(r)*r=g_ring_rd; }
 void i2s_flush_diag_get(uint32_t* nempty, uint32_t* nempty_full) {
-    // r754: живые индикаторы: nempty = всего входов, nempty_full = выходов по
-    // полному DMA-буферу (CPU2 быстрее DMA). Раньше были заглушки.
     if (nempty)      *nempty      = g_flush_enter;
     if (nempty_full) *nempty_full = g_flush_skip_full;
 }

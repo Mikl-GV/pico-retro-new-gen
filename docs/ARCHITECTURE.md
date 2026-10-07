@@ -346,26 +346,27 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (r502, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (актуально r776, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
-| 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
+| 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → `.noinit_fbn` |
-| 0x40000000..0x4073F160 | `.text` + init_array (код ≈ 7.4 МБ, r502); векторы `_vectors`=0x40000000, `_prefetch`=0x40000084, `_dataabort`=0x40000164, `_start`=0x400002F8 |
-| 0x4073F160..0x40A37728 | `.rodata` (≈ 2.9 МБ) |
-| 0x40A37728..0x40CE4DC0 | `.data` (≈ 2.7 МБ, копируется из образа) |
-| 0x40CE4DC0..0x42B95558 | `.bss` (`_bstart1.._bend1`, ≈ 30.7 МБ, обнуляется в `startup.S` NEON-магазинами) |
-| 0x42B95558..0x48B95558 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
-| 0x48B95560..0x4A395560 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x4A395560 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх от `libh3_coherent_region + 1 МБ` до лимита `SBRK_LIMIT=0x4F000000` (newlib-куча размещена ПОСЛЕ uncached-окна, не пересекает его) |
-| 0x4A400000..0x4A500000 | `.libh3_coherent` (резерв 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_ts_*`/`g_cal_*`. Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`), выровнен по 1 МБ |
+| 0x40000000..0x40742740 | `.text` + init_array (код ≈ 7.4 МБ); векторы `_vectors`=0x40000000, `_prefetch`=0x400000B4, `_dataabort`=0x40000194, `_start`=0x4000035C |
+| 0x40742740..0x40A38200 | `.rodata` (≈ 2.9 МБ) |
+| 0x40A38200..0x40A3BAAC | `.ARM.extab/.exidx` |
+| 0x40A3BAA8..0x40D05300 | `.data` (≈ 2.8 МБ, копируется из образа) |
+| 0x40D05300..0x42BD3748 | `.bss` (`_bstart1.._bend1`, ≈ 30.7 МБ, обнуляется в `startup.S` NEON-магазинами) |
+| 0x42BD3748..0x48BD3748 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
+| 0x48BD3760..0x4A3D3760 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x4A3D3760 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх от `libh3_coherent_region + 1 МБ` до лимита `SBRK_LIMIT=0x4F000000` (newlib-куча размещена ПОСЛЕ uncached-окна, не пересекает его) |
+| 0x4A400000..0x4A408E80 | `.libh3_coherent` (резерв до 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`/кольцо/почта аудио (`g_ring_*`, `g_audio_*`, LLI-структуры), L1-таблица страниц (0x4A40C000, startup.S r722). Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`) |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000..0x5FB58000 | HDMI framebuffer (1024×600 XRGB8888) |
 | 0x5FDFD000..0x5FE01000 | стеки CPU1 (исключения + SVC, TFT-ядро) |
-| 0x5FF00000..0x5FF03000 | стеки исключений core0 |
+| 0x5FF00000..0x5FF04000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
 Пересечений нет. `_hend` вычисляется линкером сразу после резерва кучи
@@ -373,9 +374,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r502, `arm-none-eabi-readelf -SW`):** `.text` 0x73F150 (≈7.4 МБ),
-`.rodata` 0x2F4D20 (≈2.9 МБ), `.data` 0x2AD664 (≈2.7 МБ), `.bss` 0x1EB0798 (≈30.7 МБ),
-`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), образ `h3_bare.bin` 13 520 268 Б.
+**Числа-размеры (r776, `arm-none-eabi-readelf -SW`):** `.text` 0x742730 (≈7.3 МБ),
+`.rodata` 0x2F5AC0 (≈2.9 МБ), `.data` 0x2C9824 (≈2.8 МБ), `.bss` 0x1ECE448 (≈30.9 МБ),
+`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), образ `h3_bare.bin` ≈13.65 МБ.
 
 ## Загрузочная карта памяти (r502)
 
@@ -398,13 +399,13 @@ SD/MMC: U-Boot SPL -> U-Boot (SPL в SRAM, U-Boot в DRAM)
 |---|---|---|
 | U-Boot SPL | SRAM 0x0000xxxx | минимальный загрузчик из MBR SD |
 | U-Boot | DRAM (низкие адреса, вне образа) | fatload/go, потом НЕ трогаем |
-| Образ | 0x40000000..0x40005400(+размер) | h3_bare.bin целиком: .text/.rodata/.data (BSS/.noinit_fbn — NOBITS, не в файле) |
+| Образ | 0x40000000..0x40D05300 | h3_bare.bin целиком: .text/.rodata/.data (BSS/.noinit_fbn — NOBITS, не в файле); bin ≈ 13.65 МБ |
 | Векторы CPU | 0x40000000 (VBAR) | startup.S, хранится в .text |
-| SRAM A1 | 0x00000000..0x00006000 | межъядерная почта: гейт `0x18`, SMP `0x20/0x24`, пробы `0x28..0x30`, настройки `0x34..0x8C`, diff `0x70`, флаг «игра» `0x74` |
-| Куча эмуляторов | 0x48B94E20..0x4A394E20 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
-| Пулы FBNeo/gpgx | 0x42B94E08..0x48B94E08 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом) |
+| SRAM A1 | 0x00000000..0x00006000 | межъядерная почта: гейт `0x18`, SMP `0x20/0x24/0x90`, пробы `0x28..0x30`, настройки `0x34..0x8C`, diff `0x70`, флаг «игра» `0x74` |
+| Куча эмуляторов | 0x48BD3760..0x4A3D3760 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
+| Пулы FBNeo/gpgx | 0x42BD3748..0x48BD3748 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом) |
 | sbrk-арена (newlib) | 0x4A400000+1МБ..0x4F000000 | растёт вверх ПОСЛЕ uncached-окна (куча не пересекает `.coherent`) |
-| coherent (uncached) | 0x4A400000 (1 МБ, выровнено) | OHCI ED/TD/HCCA, USB-отчёты клавиатуры/тача, `g_ts_*`/`g_cal_*` — DMA-буферы, недоступные кэшу |
+| coherent (uncached) | 0x4A400000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, кольцо/почта аудио, L1-таблица (0x4A40C000) — недоступно кэшу |
 | Меню | 0x4F000000 | `_menu_arena` |
 | SAT ROM | 0x50000000..0x51800000 | `ROM_BUF` — образы ROM с SD (24 МБ) |
 | Видео | 0x5F800000 (EMU_FB 150 КБ), 0x5F900000 (HDMI 2.4 МБ) | кадр эмулятора 320×240 RGB565 -> апскейл 1024×600 XRGB8888 |
@@ -450,14 +451,14 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   C64, Enterprise, Atari 8-bit (atari800 собран в OBJ? — НЕТ, a8-объекты не
   линкуются в прошивку, в меню статус PLANNED).
 
-### Звук (актуально, r609)
+### Звук (актуально, r776)
 
-I2S (MAX98357A, 48 кГц): подключены **15 систем** (продюсеры → `i2s_push_sample` в коде, всё через кольцо + CPU2-долив r585):
-Lynx (`lynx_host.cpp:202`), GBA (`gba_host.c:282`, полифаз 32768→48000), GB/GBC (`gameboy_host.cpp:171`), NGP (`ngp_host.cpp:158`, 44100→48000), MD/SMS/GG (`system_gpgx_h3.c:292`), NES (`nes_host_fceumm.cpp:242`), SNES (`snes_host.cpp:278`), A2600 (`system_atari_h3.cpp:234`), A5200 (`system_a5200_h3.cpp:180`), A7800 (`system_a7800_h3.cpp:199`, 31440→48000), Coleco (`coleco_host.cpp:189`), PCE (`pce_host.c:131`, 44100→48000), ZX Spectrum (`fuse_host.c:227`, 44100→48000), аркады FBNeo (`cps1_host.cpp:1011`).
+I2S (MAX98357A, 48 кГц): долив кольца в TX FIFO — CPU2 (поллинг, r773), core0 — продюсер
+(`i2s_push_sample` → кольцо в `.coherent`). Подключены: Lynx, GBA, GB/GBC, NGP,
+MD/SMS/GG, NES, SNES, A2600, A5200, A7800, Coleco, PCE, ZX Spectrum, BK-0010,
+MS1504 (PC-спикер), аркады FBNeo, MSX (r735), Vectrex (r735), Portfolio — звук по слоям.
 
-НЕ подключены (звук только в ядрах, без I2S): MSX, Vectrex, BK-0010, Portfolio, MS1504.
-
-Карта и истории подключения — docs/CODE-REVIEW-2026-10-01.md (Д-12..Д-41 Lynx/GBA, Д-59..Д-73 SGG/GB/NGP/NES/SNES/A2600/A5200/A7800/Coleco/PCE/ZX/аркады), docs/HANDOVER.md r594..r609.
+Карта и истории подключения — docs/HANDOVER.md r594..r776.
 
 ### Архитектура CPU2 — аудио-ядро (Ф1, r585)
 

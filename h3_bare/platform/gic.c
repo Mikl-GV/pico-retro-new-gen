@@ -1,4 +1,4 @@
-// gic.c — GIC-400 v2 (Cortex-A7, H3). Аудио-DMA (SPI 82 → INTID 114) на CPU2.
+// gic.c — GIC-400 v2 (Cortex-A7, H3). Аудио I2S0 (SPI 13 → INTID 45) на CPU2.
 // Ядро Secure (sec=0x0) — регистры distributor/CPUIF доступны напрямую.
 // _irq_entry (startup.S) читает IAR, зовёт gic_dispatch(intid), пишет EOIR.
 #include <stdint.h>
@@ -14,7 +14,7 @@ extern int printf(const char* fmt, ...);
 #define GICD_CTLR_ENABLE_GRP1 (1u << 1)
 #define GICC_CTLR_ENABLE    (1u << 0)
 
-// Таблица ISR. INTID 0..159 → слот. Для аудио нужен только 114.
+// Таблица ISR. INTID 0..159 → слот. Для аудио нужен только 45 (GIC_AUDIO_INTID).
 // В .coherent (uncached): регистрирует core0 (i2s_init), читает CPU2 (ISR) —
 // без кэш-когерентности запись core0 не была бы видна CPU2.
 static gic_isr_t g_isr[GIC_MAX_INTID] __attribute__((section(".coherent"), aligned(64)));
@@ -66,17 +66,22 @@ void gic_dist_init(void) {
     for (i = 0; i < GIC_MAX_INTID; i++)
         GICD_IPRIORITYR[i] = 0xA0;
 
-    // Target: аудио-SPI 114 (SPI 82) → CPU2 (0x04). Остальные SPI не трогаем.
-    GICD_ITARGETSR[114] = GIC_CPU_MASK_CPU2;
-    GICD_IPRIORITYR[114] = 0x80;
+    // r772: аудио-I2S0 = SPI 13 → INTID 45 (по DTS sun8i-h3: i2s@1c22000
+    // interrupts=<0x00 0x0d 0x04>). Назначаем на CPU2 (0x04).
+    const uint32_t audio_intid = GIC_AUDIO_INTID;   // 45
+    GICD_ITARGETSR[audio_intid] = GIC_CPU_MASK_CPU2;
+    GICD_IPRIORITYR[audio_intid] = 0x80;
 
     // Включить distributor.
     GICD_CTLR = GICD_CTLR_ENABLE | GICD_CTLR_ENABLE_GRP1;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 
-    // Включить конкретно аудио-INTID (114) в distributor.
-    GICD_ISENABLER0 = (1u << (114u & 31u));
+    // Включить конкретно аудио-INTID (I2S0, 45) в distributor.
+    // r770/r772: для INTID ≥32 регистр ISENABLERn = 0x100 + (id/32)*4, бит = id%32.
+    // Раньше писали ISENABLER0 = (1 << (id&31)) — это INTID<32, DMA не включался.
+    *(volatile uint32_t*)(GIC_DIST_BASE + 0x100u + (audio_intid / 32u) * 4u)
+        = (1u << (audio_intid & 31u));
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 }
@@ -92,5 +97,5 @@ void gic_cpu_enable(void) {
     __asm volatile("isb" ::: "memory");
 }
 
-// Аудио-SPI 82 → INTID 114. Быстрый хелпер для h3_dma.c.
-uint32_t gic_audio_intid(void) { return GIC_SPI_BASE + 82u; }
+// r772: хелперы DMA-эпохи удалены — аудио-INTID теперь единый макрос
+// GIC_AUDIO_INTID (45, I2S0) в gic.h.

@@ -1,114 +1,55 @@
 # План разработки (Roadmap)
 
-> Ретроконсоль pico-retro-new-gen (Orange Pi Lite, H3, bare-metal, без ОС).
+Ретроконсоль pico-retro-new-gen (Orange Pi Lite, H3, bare-metal, без ОС).
+Актуальный статус систем (источник истины) — `h3_bare/cores/systems.h`;
+меню читает его напрямую. Таблица ниже — документирование.
 
 ## Статус систем
 
-| # | Система | CPU | Статус | Ядро |
-|--|---------|-----|--------|------|
-| 1 | Atari 2600 | 6502 | ✅ работает | MCUME |
-| 2 | Atari 5200 | 6502 | ✅ работает | pico5200 (Atari800-derived) |
-| 3 | Atari 7800 | 6502 | ✅ работает | ProSystem |
-| 4 | NES / Famicom (Dendy) | 6502 | ✅ работает (мапперы FCEUmm) | FCEUmm |
-| 5 | Sega Master System | Z80 | ✅ работает | Genesis Plus GX |
-| 6 | Game Boy / Game Boy Color | Z80 | ✅ работает | binjgb |
-| 7 | Atari Portfolio | 8088 | ✅ работает (builtin, без ROM) | Fake86 |
-| 8 | Game Gear | Z80 | ✅ работает | Genesis Plus GX |
-| 9 | Sega Mega Drive / Genesis | 68000 | ✅ работает | Genesis Plus GX |
-| 10 | Atari Lynx | 6502 | ✅ работает | Handy |
-| 11 | Neo Geo Pocket / Pocket Color | TLCS900H+Z80 | ✅ работает | RACE |
-| 12 | SNES | 65816 | ✅ работает | Snes9x 2005 |
-| 13 | MSX / MSX2 (Yamaha YIS-503III) | Z80 | ✅ работает (BIOS+SubROM вшиты; машина YIS-503III) | fMSX 6.0 |
-| 14 | ColecoVision | Z80 | ✅ работает | Gearcoleco |
-| 15 | ZX Spectrum | Z80 | ✅ работает (48K..TS2068, ввод/печать, model→ROM/BASIC, ESC) | fuse-libretro |
-| 16 | PC Engine / TurboGrafx | HuC6280 | ✅ работает (r0.202; без звука) | Beetle PCE Fast (HuCard) |
-| 17 | Аркады CPS-1/2, NEOGEO/MVS, Toaplan, Cave, Sega System 16, FB Neo | 68000/Z80/… | ✅ работают (r0.37x–r0.41x; без звука) | FinalBurn Neo (порт, `h3_bare/cores/cps1/`) |
-| 18 | GCE Vectrex | 6809 | ✅ **реализован** (host vecx_host.c:263, systems.h:60 READY; исторически «отложен» r0.200 из-за изображения на стенде — статус поднять после прогона) | libretro-vecx |
-| 19 | Game Boy Advance | ARM7TDMI | ✅ работает | gpSP |
-| 20 | БК-0010 / БК-0011М | К1801ВМ1 | ✅ работает (r0.243–r0.259; вшито; палитра/ввод реализованы) | libretro-bk |
-| 21 | **МС 1504** | 8086 | ✅ работает (r0.398–r0.404; BIOS PK300 вшит; HLT-боль Б2 см. AUDIT) | Fake86 (`h3_bare/cores/ms1504/`) |
-| 22 | **Atari 8-bit (400/800/XL/XE)** | 6502 | 🔲 **этап 1** готов (ядро компилируется), этап 2 (host) — план | libretro-atari800 (`h3_bare/cores/atari800/`) |
-| 23 | Радио-86РК, Amstrad CPC, C64, Enterprise | — | 🔲 план | см. ниже |
+| Группа | Системы (READY) |
+|--------|-----------------|
+| Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (gpSP), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
+| Консоли | Atari 2600 (MCUME), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), GCE Vectrex (vecx) |
+| Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
+| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), БК-0010/0011М (libretro-bk), Atari Portfolio (Fake86), МС 1504 (Fake86) |
 
-**Легенда:** ✅ готово · 🚧 в работе · 🔲 в плане
+Планируются (PLANNED в systems.h): Радио-86РК, Amstrad CPC, Atari 8-bit
+(400/800/XL/XE), Commodore 64, Enterprise 64/128.
 
-> Важно: список и статусы систем живут в `h3_bare/cores/systems.h` — меню читает их оттуда. Таблица выше — только документирование.
-
-## Готовые механики (добавлено в этой серии)
-
-- **Sega-геймпад 6-button** через PCF8574@0x20 (TWI0, PA11/PA12): бит-бэнг I2C ~400 кГц,
-  8-шаговый классический протокол Sega (Цикл1 TH=1/TH=0 → 3 холостых цикла → Цикл4 TH=1
-  для X/Y/Z/Mode), маска пада 16-бит (UP…MODE). Встроен в меню и во все эмуляторы,
-  включая Atari 2600/5200/7800 (A=Fire, B=Fire(2600)/Pause(5200)/B(7800), Start=Reset/Start,
-  Mode=Select(2600/7800)/keypad-«#»(5200); Start нигде не даёт Mode);
-  Atari Portfolio — клавиатурный компьютер, геймпад не подключается.
-- **Читы (выбор из базы libretro + ручной ввод):** ⏸️ **ОТЛОЖЕНО (r500, решение
-  владельца)** — реализация приостановлена до стабилизации задуманных эмуляторов;
-  в прошивке r500 читы выключены (`cheats_reset()` в `emu_prepare`, список всегда
-  пуст). Код-основа остаётся (`cheatdb.c/h`, `gp_cheats.c`, декодеры в host-слоях).
-  План (при реализации): менеджер `cheatdb.c/h` (парсер `.cht`,
-  поиск по имени ROM в `/cheats/<система>/`), в списке ROM: клавиша **S** или геймпад
-  **Mode** открывают меню (в нём A/Mode — отметить, Start — запустить).
-  Применение читов:
-  - GPGX (MD/SMS/GG) — `gp_cheats.c` (декодеры Game Genie 8/16-бит, Action Replay;
-    ROM-патчи через `z80_readmap`, RAM-патчи раз в кадр)
-  - NES (FCEUmm) — `FCEUI_DecodeGG/PAR` + `FCEUI_AddCheat`
-  - SNES (Snes9x) — `S9xGameGenieToRaw/ProActionReplayToRaw` + `S9xAddCheat`
-  - Game Boy (binjgb) — декодер Game Genie GB в `gameboy_host.cpp` (патч всех банков ROM)
+Легенда: ✅ READY · 🔲 PLANNED
 
 ## Очередь работ
 
-1. **БК-0010 / БК-0011М** (К1801ВМ1, PDP-11-подобный) — **ядро встроено и запускается на стенде (r0.243–r0.253)**. `h3_bare/cores/bk/` (libretro-bk/BK-Terak-Emu), host `bk_host.c` (модель→ROM(.bin/.img)/BASIC как у Спектрума), ROM вшиты (`bk_roms.c`: MONIT10/BASIC10/FOCAL10/DISK_327/B11M_BOS/EXT/BAS11M_0/1/TERAK), звук off, ESC-выход, линейный ввод. Модель→ядро: «BK-0010» → MONIT10+FOCAL10, «BK-0010.01» → MONIT10+BASIC10, «+FDD» → MONIT10+DISK_327, «BK-0011M»/«Terak» → B11M_*. **Ввод с Sega-пада реализован** (`bk_host.c:133 pad_scan_combined`), TFT-справка — есть. Палитра/текст подтверждены (r0.255: BW + прямой рендер в HDMI; r0.257: сброс машины и выбор рендера под модель — 11М без «мусора»). r0.256 — вход любого эмулятора сбрасывает память (`emu_prepare`); r0.258 — safety-timeout от зависания на мусорных ROM; r0.259 — валидация файла-программы БК (`[addr][len]`, чётный addr). Многогастовые игры (`.OVL`) и Terak — в перспективе (п.7–8). Временная диагностика `BKLOG:`/`BKTRAP` и метки стадий `BK:` пока остаются (см. AUDIT, раздел И).
-2. **Atari Jaguar** — ~~ref: virtualjaguar-libretro~~ **ОТКЛОНЕНО** (68000+JRISC для Cortex-A7 слишком тяжело; исходники изучены, ядро не вносилось)
-3. **Тач-экран** (USB HID) — в коде есть interrupt-IN мышь/тачпад через OHCI (`usb_kbd.c`: g_pad boot-mouse 0603:0002, `usb_ohci_intr_in_*`); «чистый» GT911 0eef:0005 как отдельная сущность НЕ реализован. TFT-тач (Settings/About) — резистивный SPI-тач TSC2046I (tft_drv.c), не USB. Управление меню/эмулятором с USB-тача — в очереди.
-4. **Z80-системы** (ZX Spectrum, Coleco, MSX) — готовы: ZX (Fuse), Coleco (Gearcoleco), MSX (fMSX)
-5. **PC Engine / TurboGrafx** — готово (r0.202): Beetle PCE Fast, host `pce_host.c`, HuCard only, звук отключён, CD заглушен. Осталось: звук (PSG/Blip → I2S), CD, TFT-справка.
-6. **WiFi (RTL8189FTV)** — SDIO-стек, firmware, TCP/IP — отдельная большая задача
-7. **MSX: большие ROM (мэпперы / >128K)** — часть картриджей не распознаётся ядром (`MSX: LoadCart -> 0`): разобраться с мэпперами MegaROM/ASCII, размером и заголовками. Проверять по строке `LoadCart` в UART.
-8. **Capcom CPS-1 (аркада) — СДЕЛАНО (r0.260, стенд — осталось).** Ядро — порт **FinalBurn Neo** под CPS-1: `m68k` + `z80` + звук (`ym2151`/`ay8910`/`msm6295`) + устройства (`eeprom`/`timekpr`) + общий код `cps*.cpp` + `d_cps1` + `ps*` (защита/дешифровка); символические конфликты (m68k против Genesis Plus GX, YM2612 против gpgx sound) — objcopy-переименование `cps1_rename.sh` (`m68k*`→`c1m68k*`, `YM2612*`→`c1YM2612*`). Звук на первом этапе — off (`pBurnSoundOut` не выделяется).
-   **ROM-формат:** `/roms/cps1/<игра>/` — папка с **сырыми дампами чипов** (имена как в MAME-сете, e.g. `tk2-1m.3a…`, `tk2e_22c.7f`, + protection PLD `bprg1.11d`…), **либо** `/roms/cps1/<игра>.zip` (распаковка через zlib из Fuse); приоритет — папке (быстрее, без распаковки), zip — запасной. Имена не менять.
-   **Сделано (r0.260):** (1) вендор в `h3_bare/cores/cps1/` (несколько но вне OBJ); (2) host-слой `cps1_host.cpp`: FAT-чтение папки или zip-инфлейт (`ZipExtract`), выбор драйвера по короткому имени (`BurnDrvGetIndex`), цикл `BurnDrvFrame`, кадр RGB565 384×224 → прямой ресайз в HDMI FB 1024×600, ввод: P1 (ремап-платформа `REMAP_PLAT_CPS1` — стрелки+Z/X/C, Enter/1=Start, 5=Coin) + Sega-пад (A/B/C, X=Coin), P2 хардкод (WASD+J/K/L, 2/6); ESC-выход, 60 Гц; (3) меню «CPS-1» (READY) → браузер `/roms/cps1/*` (папки и zip); (4) генерация `m68kops.c/h` нативным m68kmake в `build/` на сборке. `m68kops` не в git.
-   **Осталось:** звук (PSG/YM2151/QSound → I2S), Sega System 2/16 — отдельно. NEOGEO — сделано (r0.32x), Toaplan — сделано (r0.36x), Cave-68K — сделано (r0.377-378: donpachi/esprade/guwange и т.д.). См. `docs/ARCADES-PLAN.md`.
-9. **Аркады: порт семейств плат из FBNeo** — см. отдельный план в `docs/ARCADES-PLAN.md`. Порядок: Sega System 16 → Taito 68K → Data East 68K → Psikyo/Midway; новые CPU (6809/6502) — отдельная веха (откроет Konami/Namco/Capcom-ранние). Текущий статус — см. ARCADES-PLAN (следующий: Taito 68K).
-10. **Компьютеры (II очередь)** — добавить в systems.h/README (запланированы, PLANNED):
-    - **МС 1504** — советский офисный ПК (К580ВМ80А/К1801ВМ1-класс); ядро — по аналогии с бэкапов (поиск libretro-порта при старте)
-    - **Радио-86РК** — К580ВМ80А, монитор-ПЗУ + RAM; ядро-кандидат: libretro `rk86` (порт эмулятора Радио-86РК)
-    - **Amstrad CPC** — Z80 (+CRTC); ядро libretro **cap32** (как Fuse, порт на bare-metal)
-    - **Atari 8-bit (400/800/XL/XE)** — 6502; ядро libretro **atari800** (у нас уже есть референс для A2600/5200/7800)
-    - **Commodore 64** — 6510; ядро libretro **vice_x64** (большое) или облегчённый **frodo** — требует оценки
-    - **Enterprise 64/128** — Z80; ядро libretro **ep128emu** (маленькое, подходит по паттерну)
-    Порядок внедрения: Atari 8-bit → Amstrad CPC → Enterprise → Радио-86РК → МС 1504 → C64
+1. **Atari 8-bit (400/800/XL/XE)** — ядро libretro-atari800 компилируется
+   (этап 1), host-включение в прошивку — этап 2 (в дереве `h3_bare/cores/atari800/`,
+   в OBJ не входит).
+2. **Радио-86РК, Amstrad CPC, C64, Enterprise** — порт ядер (кандидаты: rk86,
+   cap32, frodo/vice, ep128emu), после Atari 8-bit.
+3. **Vectrex** — реализован (host `vecx_host.c`, systems.h READY, звук на I2S
+   r735); стендовое подтверждение картинки — у владельца.
+4. **PC Engine** — HuCard готов; CD (заглушен), PSG-качество — по потребности.
+5. **WiFi (RTL8189FTV)** — SDIO-стек + firmware + TCP/IP — отдельная большая задача (не начата).
+6. **Звук**: все системы подключены к I2S (r735..r776); тонкая настройка АЧХ/гейна — по стенду.
 
-## Перспективы (идеи, не начаты)
+## Отложено / перспективы
 
-1. **WiFi на ESP8266/ESP32** — альтернатива RTL8189FTV: модуль ESP через UART/USB, AT-команды, без SDIO-стека
-2. **RAM-патч движок читов для Atari 2600/5200/7800 + Lynx** — формат базы libretro: address/value/
-   bit_position/repeat (это RAM-патчи, не коды Game Genie); применить к памяти каждого ядра
-   (MCUME / Atari800 / ProSystem / Handy) раз в кадр, аналогично `RAMCheatUpdate` в GPGX
-3. **Звук на TDA1378 (или TDA1543/DAC)** — сейчас звук заглушен во всех ядрах (нет DAC-вывода); нужен I2S/PWM-выход на усилитель
-4. **Сохранение настроек в память** (сложность A2600) — сбрасываются при перезагрузке; вариант — конфиг-файл на SD или EEPROM-сектор
-5. **Выбор «клавиатура или джойстик» для Dendy/NES в меню настроек** — для игр с SuborKB и без; переключатель, какой порт ввода активен
-6. **Расширенные бордюры (рамки с паттернами/логотипами)** — сейчас простые цветные поля; в перспективе — тематические PNG-рамки для каждой системы
-7. **Terak 8510/a (модель ядра БК-0010) — консольный рендер.** Сейчас экран чёрный: Terak выводит текст в консольный порт (`tcons`/MBD, регистры `0177564`/`0177764`), а не в VRAM, которую рисует `host_video`. Нужно перехватывать символы консоли Terak и рисовать их шрифтом (аналог текстового рендера) в кадр эмулятора. Модель в меню оставлена; до доработки — black screen.
-8. **БК-0010: многогастовые игры (оверлеи `.OVL`/`.GMS`).** Такие игры во время исполнения подгружают оверлеи с ленты/диска; у нас эмуляция ленты отключена (`fake_tape`), поэтому игра «висит» на ожидании загрузки. Нужна поддержка образа ленты/диска либо авто-подгрузка `.OVL` по имени (`.BIN` + одноимённый `.OVL`). Модель `… + FDD` для дисковых образов — там же.
+- **Читы** — отключены по решению владельца (r500); код-основа остаётся
+  (`cheatdb.c`, `gp_cheats.c`). Включение — послойно, после стабилизации.
+- **GBA** — интерпретатор gpSP; для полноценных 60 fps нужен dynarec (ARMv7 JIT)
+  либо -O3 на gba_cpu.o; открытый вопрос производительности.
+- **WiFi/ESP** через UART — альтернатива RTL8189FTV.
+- **Тематические рамки (бордюры)** для систем — низкий приоритет.
+- **БК-0010: оверлеи `.OVL`/`.GMS`** — эмуляция ленты отключена; нужна подгрузка
+  образов ленты/диска.
+- **Terak 8510/a (модель БК)** — консольный рендер (текст в порт 0177564/0177764),
+  до доработки — чёрный экран.
+- **Сейвы/EEPROM** — переживают ли перезагрузку: конфиг на SD (/retro.cfg уже есть
+  для ремапа) — перспектива.
 
 ## Каркас (готово)
 
-- Меню с группами (Portable/Consoles/Arcade/Computers/Other), прокрутка, сортировка, статусы READY/PLANNED
-- Браузер ROM на SD (FAT32), автозапуск эмулятора по sys_id, удаление ROM (с двойным подтверждением), меню читов по S
-- USB-клавиатура (boot protocol), автоповтор, HID-раскладки
-- Sega-геймпад 6-button через PCF8574@0x20 (меню + игры)
-- HDMI 1024×600 @ 60 Гц
-- UART-отладка 115200 8N1
-- ≈27 эмуляторов со статусом READY в одном бинаре (r609; считая аркады FBNeo/CPS-1/2/NeoGeo/Toaplan/Cave/Sega16, БК, МС1504) — историческая цифра r0.259 «19 / 8.54 МБ» устарела
-- GPT/поддержка нескольких FAT-разделов, авто-поиск /roms
-## Отложено на последний этап отладки
-
-1. **GBA (gpSP): ускорить до полноценных 60 fps.** Замер r158: `run/s==sim/s`, `avg` 8–24 мс — логика кадра корректна; узкое место — **интерпретатор gpSP** (в тяжёлых сценах 33–55 fps, нужен <16.7 мс/кадр). **dynarec отсутствует** (в gpSP есть только объявление `execute_arm_translate`, реализация не портирована). Пути:
-   - **Порт dynarec gpSP (ARMv7 JIT)**: эмиттеры `arm/thm.c` + `dynarec.c`, JIT-кэш, flush на самомодифицирующийся код, W^X — даст **2–5×**; большая работа.
-   - `-O3 -fno-strict-aliasing -fwrapv` только для `gba_cpu.o`/`gba_video.o` (+5–15%, обязателен прогон игр — в gpSP есть UB/strict-aliasing риск; асмовских вставок в gba_sp **нет**).
-   - Объединение `gba_render_frame`+`emu_scale_int` (host, ядро нетронуто, ~0.5–1 мс).
-   - Frameskip (снижает нагрузку рендера, не ускоряет эмуляцию).
-   - Разгон CPUX H3 (1.3–1.4 ГГц, риск стабильности).
-
-2. **GCE Vectrex — реализован (host vecx_host.c:263, systems.h READY).** Историческая заметка (r0.200): «изображение не собирается, пропадают строки» — тогда не решено; диагностика r0.197/r0.198: рендер-математика корректна (эквивалентна libretro.c), аудио-буферы не переполняются, ввод P1. Нерешённое на тот момент: вероятно tearing без vsync + фазовое скольжение 50↔60 Гц, либо застой на экране BIOS. **Код и точка входа есть; стендовый прогон/подтверждение картинки — в работе владельца.**
+- Меню с группами (Portable/Consoles/Arcade/Computers/Other), прокрутка, статусы.
+- Браузер ROM (FAT32), автозапуск по sys_id, удаление ROM с подтверждением.
+- USB-клавиатура (boot), автоповтор; Sega-геймпад 6-button; кнопочный пад.
+- HDMI 1024×600 @ 60 Гц; SPI TFT (справка/тач) на CPU1; UART 115200.
+- Звук: I2S0 + CPU2-долив (см. docs/AUDIO_SUBSYSTEM_PLAN.md).
