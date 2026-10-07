@@ -45,6 +45,8 @@ void gic_cpu_enable(void);
 
 // Зарегистрировать обработчик IRQ (intid = 32 + SPI). NULL — снять.
 void gic_register_isr(uint32_t intid, gic_isr_t isr);
+// Геттер: текущий обработчик INTID (NULL, если не зарегистрирован).
+gic_isr_t gic_get_isr(uint32_t intid);
 
 // Диспетчер: вызывается из _irq_entry (startup.S) с r0 = INTID. Читает IAR,
 // зовёт ISR; EOI пишет ассемблер (минимизация лага).

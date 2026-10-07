@@ -24,6 +24,13 @@ void gic_register_isr(uint32_t intid, gic_isr_t isr) {
         g_isr[intid] = isr;
 }
 
+// Геттер: текущий обработчик INTID (для временной подмены тестами и
+// восстановления). NULL, если не зарегистрирован.
+gic_isr_t gic_get_isr(uint32_t intid) {
+    if (intid >= GIC_MAX_INTID) return 0;
+    return g_isr[intid];
+}
+
 // Диспетчер: вызывается из _irq_entry (startup.S) с r0 = INTID.
 // Сам вызов ISR; EOI уже сделал ассемблер (минимизация лага).
 void gic_dispatch(uint32_t intid) {

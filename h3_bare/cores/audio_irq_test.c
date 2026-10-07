@@ -57,28 +57,31 @@ static const int16_t aiq_sin[256] = {
     2042,1754,1465,1174,882,589,295,0
 };
 
-static uint32_t aiq_phase = 0;
-static uint32_t aiq_pkgs  = 0;
+static volatile uint32_t aiq_phase = 0;
+static volatile uint32_t aiq_pkgs  = 0;
 
 // Долив одного полубуфера (4096 пар) синусом от текущей фазы.
 static void aiq_fill_half(uint32_t which) {
     volatile uint32_t* buf = (volatile uint32_t*)((uint32_t)_dma_buf_start + which * AIQ_HALF);
     uint32_t step = (uint32_t)(((uint64_t)AIQ_FREQ << 16) / AIQ_RATE);
+    uint32_t ph = aiq_phase;
     for (uint32_t i = 0; i < AIQ_HALF_PAIRS; i++) {
-        int32_t s = aiq_sin[(aiq_phase >> 8) & 0xFF];
+        int32_t s = aiq_sin[(ph >> 8) & 0xFF];
         buf[2 * i]     = (uint32_t)(uint16_t)s << 16;   // L: старшие 16 бит
         buf[2 * i + 1] = (uint32_t)(uint16_t)s << 16;   // R
-        aiq_phase += step;
+        ph += step;
     }
+    aiq_phase = ph;
     __asm volatile("dmb sy" ::: "memory");
 }
 
 // ISR: прерывание DMA PKG. Сброс pending + долив освободившегося полубуфера.
 // Вызывается на CPU2 (GIC target). НЕ читает CUR_SRC (конвейер — мусор).
+// n-й PKG = завершился LLI[(n-1)&1]: при n=1 закончился lli[0] (half 0).
 static void aiq_isr(uint32_t intid) {
     (void)intid;
-    uint32_t n = h3_dma_audio_pkg_isr();   // сброс pending + счётчик
-    aiq_fill_half(n & 1u);                 // чётный PKG → lli[0], нечётный → lli[1]
+    uint32_t n = h3_dma_audio_pkg_isr();        // сброс pending + счётчик
+    aiq_fill_half((n - 1u) & 1u);               // долить освободившийся полубуфер
     aiq_pkgs = n;
 }
 
@@ -107,10 +110,9 @@ int audio_irq_test(int seconds) {
     aiq_pkgs = 0;
 
     // Включаем DMA (LLI-кольцо уже настроено h3_dma_audio_init на _dma_buf).
-    // Форсируем LLI на начало + EN, сброс pending.
+    // Сброс pending, затем старт (он ставит CH_LLI=&lli[0], CH_EN=1).
     AIQ_IRQ_PEND = 0xFFFFFFFFu;
     __asm volatile("dsb" ::: "memory");
-    AIQ_CH_LLI = (uint32_t)(uintptr_t)_dma_buf_start;   // заглушка-право: реальный LLI в h3_dma
     h3_dma_audio_start();
 
     printf("AIQ: start %d s, buf=0x%08X, I2S_CTRL=0x%08X, DMA_EN=0x%08X\n",
@@ -120,8 +122,8 @@ int audio_irq_test(int seconds) {
     for (int t = 0; t < seconds * 2; t++) {
         extern void udelay(unsigned long);
         udelay(500000);   // 0.5 c
-        printf("AIQ: t=%.1f TXCNT=%lu PKG=%lu CURSRC=0x%08X IRQPEND=%08X ISTA=%08X STA=%08X\n",
-               (double)(t + 1) * 0.5,
+        printf("AIQ: t=%u.%u TXCNT=%lu PKG=%lu CURSRC=0x%08X IRQPEND=%08X ISTA=%08X STA=%08X\n",
+               (unsigned)(t / 2), (unsigned)((t % 2) * 5),
                (unsigned long)AIQ_I2S_TXCNT, (unsigned long)AIQ_PKG_NUM,
                (unsigned)AIQ_CH_CURSRC, (unsigned)AIQ_IRQ_PEND,
                (unsigned)AIQ_I2S_ISTA, (unsigned)AIQ_DMA_STA);
