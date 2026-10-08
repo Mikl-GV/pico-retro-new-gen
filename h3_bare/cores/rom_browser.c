@@ -8,7 +8,6 @@
 #include "emu.h"
 #include "cheatdb.h"
 #include "sega_pad.h"
-#include "i2s.h"
 #include "h3.h"
 #include "h3_hs_timer.h"
 
@@ -138,6 +137,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_segasys(rom, size, sel_name);   // Sega System 16 — /roms/segasys (r0.383)
     else if (strcmp(sys_id, "fbneo") == 0)
         emu_run_fbneo(rom, size, sel_name);     // общий FBNeo-корень
+    else if (strcmp(sys_id, "atari800") == 0)
+        emu_run_atari800(rom, size, sel_name);  // Atari 8-bit (400/800/XL/XE) — /roms/atari800 (r778)
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -265,7 +266,6 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             // двусторонний скролл: курсор всегда в видимой области
             if (cursor < scroll) scroll = cursor;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
-            i2s_click();   // r589: щелчок при навигации в браузере ROM
             dirty = 1;
         } else if (k == 81) {   // Down — по кольцу
             if (n <= 1) { dirty = 1; }
@@ -273,7 +273,6 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             // двусторонний скролл
             if (cursor < scroll) scroll = cursor;
             if (cursor >= scroll + max_rows) scroll = cursor - max_rows + 1;
-            i2s_click();   // r589
             dirty = 1;
         } else if (k >= 4 && k <= 29) {
             // Поиск по первой букве (HID-сканкоды A=4..Z=29). Регистронезависимо.

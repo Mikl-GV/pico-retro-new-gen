@@ -65,7 +65,7 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s audio_core tft_drv sound_layer_test))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
@@ -434,9 +434,8 @@ $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 	touch $@
 
 # ---- Atari 8-bit (400/800/XL/XE): libretro-core atari800 (вендор) ----
-# Ядро компилируется (итерация 1); host-слой (env/vfs/ввод/рендер) и
-# включение в прошивку — следующая итерация (система atari800 в systems.h —
-# PLANNED, в OBJ набора нет).
+# r778: ядро в прошивке (host a8_host.c + файловый слой a8_fs.c). ROM-буфер
+# регистрируется в a8_fs; системные OS-ROM вшиты (EMUOS_ALTIRRA).
 A8 := $(TOP)h3_bare/cores/atari800
 A8_INC := -I$(A8) -I$(A8)/shim -I$(A8)/atari800/src -I$(A8)/libretro \
 	-I$(A8)/libretro/libretro-common/include -I$(A8)/deps/zlib
@@ -458,6 +457,8 @@ A8_OBJS := $(addprefix $(BUILD)/a8c_,$(addsuffix .o,$(A8C))) \
 	$(addprefix $(BUILD)/a8m_,$(addsuffix .o,$(A8M))) \
 	$(addprefix $(BUILD)/a8r_,$(addsuffix .o,$(A8R))) \
 	$(addprefix $(BUILD)/a8z_,$(addsuffix .o,$(A8Z)))
+# r778: ядро + host + файловый слой идут в прошивку.
+OBJ += $(A8_OBJS) $(BUILD)/a8_host.o $(BUILD)/a8_fs.o
 
 $(BUILD)/a8c_%.o: $(A8)/atari800/src/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
@@ -487,10 +488,21 @@ $(BUILD)/a8r_%.o: $(A8)/atari800/src/roms/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
 $(BUILD)/a8z_%.o: $(A8)/deps/zlib/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
-# Батч-ренейм глобалов в a8_* (как ms1504): после сборки, перед линком.
+# Батч-ренейм глобалов ядра в a8_* (как ms1504): после сборки, перед линком.
+# Host/файловый слой (a8_host.o/a8_fs.o) НЕ входят в набор — они держат
+# внешние имена (emu_run_atari800, fopen/fread/...) и зовут a8_retro_*.
+# r778: BSS ядра atari800 вынесен в .a8_bss (NOLOAD, 0x52000000) — иначе
+# ~1.9 МБ BSS сдвигают _hend/.coherent/L1-таблицу (ASSERT-ошибка линковки).
+# Переименование секции — на каждом объекте ДО батч-ренейма символов.
 $(BUILD)/a8_renamed.stamp: $(A8_OBJS)
+	for o in $(A8_OBJS); do arm-none-eabi-objcopy --rename-section .bss=.a8_bss "$$o" "$$o" || exit 1; done
 	$(TOP)h3_bare/cores/a8_rename.sh $(A8_OBJS)
 	touch $@
+# r778: host-слой и файловый слой atari800 — как у других ядер (не вендор):
+$(BUILD)/a8_host.o: $(A8)/a8_host.c | $(BUILD)
+	$(CC) $(A8_CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
+$(BUILD)/a8_fs.o: $(A8)/a8_fs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
 
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
 # Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
@@ -740,8 +752,6 @@ $(BUILD)/btn_pad.o: $(TOP)h3_bare/cores/btn_pad.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/settings.o: $(TOP)h3_bare/cores/settings.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<
-$(BUILD)/sound_layer_test.o: $(TOP)h3_bare/cores/sound_layer_test.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/sd.o: $(TOP)h3_bare/cores/sd.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/fat.o: $(TOP)h3_bare/cores/fat.c | $(BUILD)
@@ -759,8 +769,6 @@ $(BUILD)/emu.o: $(TOP)h3_bare/cores/emu.c | $(BUILD)
 $(BUILD)/remap.o: $(TOP)h3_bare/cores/remap.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/i2s.o: $(TOP)h3_bare/cores/i2s.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
-$(BUILD)/audio_core.o: $(TOP)h3_bare/cores/audio_core.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/tft_drv.o: $(TOP)h3_bare/cores/tft_drv.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<   # r58: вернул -O2 (r57 -O0 тормозил дисплей)
@@ -964,7 +972,7 @@ WINPATH = $1
 else
 WINPATH = $(shell cygpath -m $1)
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp
 	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(call WINPATH,$(o)))) > $(BUILD)/linker.rsp
 	printf -- '-lstdc++ -lgcc -lc -lm -lgcc\n' >> $(BUILD)/linker.rsp
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \

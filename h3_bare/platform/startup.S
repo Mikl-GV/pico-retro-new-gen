@@ -448,6 +448,18 @@ _start:
     b 1b
 5:
 
+    /* r778: Zero-init .a8_bss (NOLOAD, ядро Atari 800 на 0x52000000) —
+     * BSS-цикл её не покрывает (отдельная секция, как .coherent). */
+    ldr r0, =_a8_bss_start
+    ldr r1, =_a8_bss_end
+    cmp r0, r1
+    beq 8f
+7:  cmp r0, r1
+    bhs 8f
+    str r2, [r0], #4
+    b 7b
+8:
+
     /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
      * не покрывает). Идёт ПОСЛЕ кучи, но до main. */
     ldr r0, =_coherent_start

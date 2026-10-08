@@ -188,7 +188,10 @@ int abs(int x) { return x < 0 ? -x : x; }
 // за ним ROM_BUF (0x50000000) и EMU_FB (0x5F800000). При переполнении
 // возвращаем (void*)-1, как стандартный sbrk.
 extern unsigned char libh3_coherent_region[];
-#define SBRK_START ((char*)libh3_coherent_region + (1 * 1024 * 1024))
+// r779: куча эмуляторов вынесена ЗА uncached-зону (linker.ld: .gb_heap 0x4A700000).
+// sbrk стартует сразу над кучей (0x4AC00000), лимит — _menu_arena (0x4F000000).
+extern unsigned char _gb_heap_end[];
+#define SBRK_START ((char*)_gb_heap_end)
 #define SBRK_LIMIT 0x4F000000u
 
 static char* g_brk = 0;

@@ -240,6 +240,33 @@ static int bk_source_dialog(void) {
     }
 }
 
+// 1 = BASIC (вшитый), 2 = ROM (браузер /roms/atari800/), 0 = назад
+static int a8_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Atari 8-bit: load", 2, 0x00FFAA00);
+            const char* opts[2] = { "1. BASIC (built-in)", "2. ROM (.xex/.car/.atr)" };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 600, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return sel + 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // 1 = программы с SD (/roms/ms1504/), 2 = встроенное ПО (BIOS вшит), 0 = назад
 static int ms1504_source_dialog(void) {
     int sel = 0, dirty = 1;
@@ -272,7 +299,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r776";
+const char g_fw_version[] = "r779";
 
 void main(void) {
     int sd_ok = 0;
@@ -280,7 +307,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r776\n");
+    uart_puts("build: r779\n");
 
     led_init();
     led_set(0);
@@ -360,9 +387,8 @@ void main(void) {
         __asm volatile("dsb" ::: "memory");
     }
 
-    // Аудио (I2S0 + MAX98357A): r503 — инициализируем при старте, звук
-    // эмуляторов подключается пошагово; для тестов готово сразу.
-    i2s_init();
+    // r777: звуковой слой вывода УДАЛЁН (решение владельца). i2s_init() не
+    // вызывается — аппаратный I2S не трогаем, no-op стабы в i2s.c.
 
     // I2C (TWI0 PA11/PA12): Sega-геймпад@0x20 (если подключён).
     // r0.411: печать инициализации возвращена в boot-лог (было тихо с r0.397):
@@ -372,8 +398,7 @@ void main(void) {
     { extern int btn_pad_dbg_init(void); btn_pad_dbg_init(); }
 
     // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
-    // r124: когерентность .coherent включаем ЯВНО (см. r704 выше — вызов
-    // mmu_mark_uncached теперь ДО i2s_init); здесь остаётся только запуск.
+    // r124: когерентность .coherent включаем ЯВНО (см. r704 выше).
     // SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
@@ -382,11 +407,10 @@ void main(void) {
     else
         uart_puts("smp: CPU1 FAILED to start\n");
 
-    // Аудио-ядро CPU2 (r773): звук обслуживает CPU2 — долив кольца в I2S TX
-    // FIFO поллингом (без DMA и без прерываний; GIC на CPU2 не работает).
+    // CPU2: стартует как раньше (r777: без звуковой роли — no-op цикл в i2s.c).
     extern void cpu2_entry(void);
     if (h3_cpu_start(2, cpu2_entry) == 1) {
-        uart_puts("smp: CPU2 started (audio core, poll-fill)\n");
+        uart_puts("smp: CPU2 started (idle)\n");
     } else
         uart_puts("smp: CPU2 FAILED to start\n");
 
@@ -545,6 +569,28 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // программы с SD (0x74 ставит run_emulator)
                 rom_browser_run("ms1504", name, "ms1504");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // Atari 8-bit: вшитый BASIC или ROM с SD (r779)
+        if (strcmp(id, "atari800") == 0) {
+            extern void emu_run_atari800(const uint8_t*, uint32_t, const char*);
+            int src = a8_source_dialog();   // 1=BASIC, 2=ROM
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("atari800");
+            if (src == 1) {                  // BASIC (вшитый)
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_atari800(NULL, 0, "basic");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // ROM через браузер
+                rom_browser_run("atari800", name, "atari800");
             }
             sega_pad_init();
             continue;

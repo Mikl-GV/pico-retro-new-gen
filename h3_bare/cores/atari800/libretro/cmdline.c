@@ -14,14 +14,10 @@ void parse_cmdline( const char *argv );
 
 void Add_Option(const char* option)
 {
-   static int first=0;
-
-   if(first==0)
-   {
-      PARAMCOUNT=0;	
-      first++;
-   }
-
+   /* r779: PARAMCOUNT сбрасывается в pre_main() при каждом запуске ядра —
+    * раньше тут был static first из-за которого при ПОВТОРНОМ старте
+    * (BASIC -> .atr) argv дописывался к мусору прошлого запуска, и ядро
+    * падало с "Failed to initialise!" и "-directmouse". */
    sprintf(XARGV[PARAMCOUNT++],"%s", option);
 }
 
@@ -46,6 +42,14 @@ int pre_main(const char *argv)
 {
    int i;
    bool Only1Arg;
+
+   /* r779: сбрасываем argv-буферы при КАЖДОМ запуске ядра (не только первом).
+    * Иначе после BASIC -> .atr в XARGV остаётся мусор прошлого запуска,
+    * PARAMCOUNT растёт, и skel_main() разбирает битые аргументы
+    * (симптом: "Failed to initialise!", "-directmouse", "Error opening \"П▒\""). */
+   PARAMCOUNT = 0;
+   ARGUC = 0;
+   for (i = 0; i < 64; i++) { ARGUV[i][0] = 0; XARGV[i][0] = 0; }
 
    parse_cmdline(argv);
 
@@ -94,7 +98,8 @@ int pre_main(const char *argv)
 
    skel_main(PARAMCOUNT,( char **)xargv_cmd); 
 
-   xargv_cmd[PARAMCOUNT - 2] = NULL;
+   if (PARAMCOUNT >= 2)
+      xargv_cmd[PARAMCOUNT - 2] = NULL;
 
    return 0;
 }

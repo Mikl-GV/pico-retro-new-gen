@@ -9,7 +9,6 @@
 #include "btn_pad.h"
 #include "h3_hs_timer.h"
 #include "led.h"
-#include "i2s.h"
 #include "settings.h"
 
 extern int printf(const char* fmt, ...);
@@ -196,27 +195,16 @@ void emu_prepare(void) {
     emu_period_us = 16667;   // r622: сброс периода в дефолт — иначе «протечка»
                              // между системами (напр. NGP ставил 16200, а выход
                              // возвращал saved_period от прошлого, не 16667).
-    i2s_ring_reset();   // r506: кольцо I2S не должно нести сэмплы предыдущей системы
-    // r702: ring_reset больше НЕ делает auto-RESUME (чтобы тест-тон/клик,
-    // пишущие напрямую в FIFO, держали CPU2 в паузе). Эмулятору долив нужен —
-    // возвращаем CPU2 в работу явно (watermark накопит запас, CPU2 заиграет).
-    //
-    // r773: прямого вывода в FIFO больше нет — клик/тон идут через кольцо,
-    // единственный писатель TX FIFO — CPU2 (i2s_poll_fill).
-    i2s_audio_cmd(AUDIO_CMD_RESUME);
+    // r777: звуковой слой вывода удалён — i2s_ring_reset()/RESUME больше не нужны.
     emu_clear_fb();
     fb_clear();
     fb_flush();
 }
 
-// r0.385: манифест звуковых ядер системы — только лог для послойного
-// подключения звука. Сами ядра линкуются, звук НЕ задействован.
+// r777: звуковой слой вывода удалён — snd_manifest оставлен no-op,
+// т.к. host-слои эмуляторов продолжают его звать (их не трогаем).
 void snd_manifest(const char* sys, const char* cores) {
-    // r631(лог): строка «(sound OFF)» устарела — звук подключён у большинства
-    // систем (r623+). Печатаем только список звуковых ядер системы.
-    if (!sys) sys = "?";
-    if (!cores || !cores[0]) cores = "(none)";
-    printf("SND %s cores: %s\n", sys, cores);
+    (void)sys; (void)cores;
 }
 
 // ---- throttle ----
@@ -302,11 +290,6 @@ int emu_esc_hold(void) {
     // ненадёжно. Срабатывает от фронтов, «доезд» залипшей ESC не сгенерирует
     // (повторов не бывает), поэтому арм-предохранитель обходим сознательно.
     if (usb_kbd_esc3_pressed()) {
-        i2s_ring_reset();
-        // r735 (P1-2): ring_reset ставит CPU2 на PAUSE (r702, без авто-RESUME);
-        // здесь возвращаем долив явно — иначе после выхода по ESC×3 аудио-ядро
-        // оставалось в паузе до следующего emu_prepare (фон меню молчал).
-        if (i2s_audio_core_active()) i2s_audio_cmd(AUDIO_CMD_RESUME);
         return 1;
     }
 
@@ -350,7 +333,7 @@ int emu_esc_hold(void) {
             if (!g_esc_armed) return 0;
         }
         if (!g_esc_hold_us) { g_esc_hold_us = now; g_esc_hold_from_pad = pad_start; }
-        else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; i2s_ring_reset(); return 1; }
+        else if (now - g_esc_hold_us > 900000) { g_esc_hold_us = 0; return 1; }
     } else {
         g_esc_arm_t = 0;
         g_esc_hold_from_pad = 0;   // Start отпущен — любое накопление недействительно
@@ -412,7 +395,6 @@ extern void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_na
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("a7800", "psg pokey");
     if (a7800_init_game(rom, size) != 1) {
         printf("A7800: init failed\n"); return;
     }
@@ -424,12 +406,11 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("a5200", "pokey");
     if (a5200_init_game(rom, size) != 1) {
         printf("A5200: init failed\n"); return;
     }
@@ -444,12 +425,11 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("sms", "psg sn76496");
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }
@@ -464,7 +444,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -483,12 +463,11 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("a2600", "tia");
     atari2600_init(rom, size);
     atari2600_set_difficulty(a2600_diff_expert);
     printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
@@ -500,12 +479,11 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("portfolio", "none");
     if (portfolio_init_game(rom, size) != 1) {
         printf("Portfolio: init failed\n"); return;
     }
@@ -522,12 +500,11 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         fc++;
     }
     fb_clear(); fb_flush();
-    i2s_ring_reset();   // r735: выходим из Portfolio — сброс звукового состояния
+    // r777: звук удалён
 }
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("gameboy", "apu");
     if (gb_init_game(rom, size) != 1) {
         printf("GameBoy: init failed\n"); return;
     }
@@ -543,12 +520,11 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: i2s_ring_reset(); fb_clear(); fb_flush();
+exit: fb_clear(); fb_flush();
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("gba", "psg");
     if (gba_init_game(rom, size) != 1) {
         printf("GBA: init failed\n"); return;
     }
@@ -575,12 +551,11 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; i2s_ring_reset(); fb_clear(); fb_flush();
+exit: emu_period_us = 16667; fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("lynx", "i2s");
     if (lynx_init_game(rom, size) != 1) {
         printf("Lynx: init failed\n"); return;
     }
@@ -616,12 +591,11 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; i2s_ring_reset(); fb_clear(); fb_flush();
+exit: emu_period_us = 16667; fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
-    snd_manifest("ngp", "psg dac");
     if (ngp_init_game(rom, size) != 1) {
         printf("NGP: init failed\n"); return;
     }
@@ -644,6 +618,6 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 exit:
     emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
-    i2s_ring_reset();   // r735: сброс звука при выходе
+    // r777: звук удалён
     fb_clear(); fb_flush();
 }

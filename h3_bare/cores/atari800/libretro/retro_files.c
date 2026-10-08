@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-void path_join(char* out, const char* basedir, const char* filename)
-{
-	snprintf(out, RETRO_PATH_MAX, "%s%s%s", basedir, RETRO_PATH_SEPARATOR, filename);
-}	
+/* r779: path_join определён и корректно работает в retro_utils.c (его
+ * использует retro_disk_control.c через path_join_dup). Здесь (retro_files.c)
+ * было дублирующее определение — удалено, чтобы не было дубля символа
+ * (linkcheck ловил a8_path_join из двух объектов ядра). */	
