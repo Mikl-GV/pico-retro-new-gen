@@ -1,6 +1,13 @@
 // gic.c — GIC-400 v2 (Cortex-A7, H3). Аудио I2S0 (SPI 13 → INTID 45) на CPU2.
 // Ядро Secure (sec=0x0) — регистры distributor/CPUIF доступны напрямую.
 // _irq_entry (startup.S) читает IAR, зовёт gic_dispatch(intid), пишет EOIR.
+//
+// !!! r780: СЛОЙ НЕАКТИВЕН С r777 (звуковой вывод снят). Эти функции
+// НИГДЕ не вызываются; не включать прерывания и не «оживлять» путь без
+// полного аудита GIC-групп/приоритетов (см. AUDIT r780, P0-3).
+// Защитно: GICD_CTLR НЕ включает группу 1 (иначе INTID уходит в Secure/FIQ,
+// а _irq_entry ждёт группу 0 — зависание). Если слой понадобится —
+// сначала вернуть GRP1 вместе с корректной конфигурацией банков FIQ.
 #include <stdint.h>
 #include "gic.h"
 
@@ -72,8 +79,9 @@ void gic_dist_init(void) {
     GICD_ITARGETSR[audio_intid] = GIC_CPU_MASK_CPU2;
     GICD_IPRIORITYR[audio_intid] = 0x80;
 
-    // Включить distributor.
-    GICD_CTLR = GICD_CTLR_ENABLE | GICD_CTLR_ENABLE_GRP1;
+    // Включить distributor. r780: ТОЛЬКО группа 0 (IRQ). Группа 1 = Secure
+    // (FIQ) — её включение без банков FIQ увело бы INTID в «слепую» зону.
+    GICD_CTLR = GICD_CTLR_ENABLE;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 

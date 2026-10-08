@@ -51,7 +51,14 @@ inline static uint32_t h3_hs_timer_lo_us() {
 		uint32_t hi2 = H3_HS_TIMER->CURNT_HI;
 		if (hi2 == c.w.hi) break;      // не поймали перенос HI→LO между чтениями
 	}
-	return (uint32_t)(~(c.u64) / HSTMR_MHZ);
+	// r780: счётчик HSTMR считает ВНИЗ от 0x00FFFFFFFFFFFFFFFF (reload в
+	// h3_hs_timer_init). Прошедшее время = INIT - CURNT. Старый код брал
+	// ~c = 0xFF00000000000000 + elapsed и в 32-битном результате давал
+	// константный сдвиг ~1.36e9 «мкс» (абсолютный таймстамп врал, wrap
+	// наступал через ~37 мин и был «рваным», а не плавным через 0).
+	// Теперь lo_us монотонно растёт от 0, wrap — ровно через 2^32 мкс
+	// (~71 мин), все разностные потребители не меняются.
+	return (uint32_t)((0x00FFFFFFFFFFFFFFFFull - c.u64) / HSTMR_MHZ);
 }
 
 inline static void h3_hs_timer_delay(uint32_t d) {

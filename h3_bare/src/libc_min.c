@@ -192,7 +192,10 @@ extern unsigned char libh3_coherent_region[];
 // sbrk стартует сразу над кучей (0x4AC00000), лимит — _menu_arena (0x4F000000).
 extern unsigned char _gb_heap_end[];
 #define SBRK_START ((char*)_gb_heap_end)
-#define SBRK_LIMIT 0x4F000000u
+// r780: лимит кучи — НЕ 0x4F000000 (это НАЧАЛО _menu_arena, linker.ld).
+// Резервируем 1 МБ под арену меню, чтобы переполнение newlib-кучи не
+// затирало g_items/g_dir_names (арена меню лежит там же в DRAM).
+#define SBRK_LIMIT 0x4EF00000u
 
 static char* g_brk = 0;
 
