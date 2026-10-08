@@ -240,6 +240,40 @@ static int bk_source_dialog(void) {
     }
 }
 
+// r787: выбор машины Atari 8-bit (как MSX/ZX/BK). Индексы совпадают с
+// a8_machine_variants в a8_host.c. Возвращает индекс или -1 (ESC).
+extern int a8_machine_count(void);
+extern const char* a8_machine_label(int idx);
+extern void a8_set_machine(int idx);
+static int a8_machine_dialog(void) {
+    int sel = 1;   // дефолт — 800XL (как ядро)
+    int dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "Atari 8-bit: machine", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            int n = a8_machine_count();
+            int y = 130;
+            for (int i = 0; i < n; i++) {
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 3, 520, 24, 0x00222222);
+                fb_puts_s(70, y, a8_machine_label(i), 1, clr);
+                y += 30;
+            }
+            fb_puts(60, 520, "  ^v: machine   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < a8_machine_count() - 1) sel++; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
 // 1 = BASIC (вшитый), 2 = ROM (браузер /roms/atari800/), 0 = назад
 static int a8_source_dialog(void) {
     int sel = 0, dirty = 1;
@@ -299,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r780";
+const char g_fw_version[] = "r787";
 
 void main(void) {
     int sd_ok = 0;
@@ -307,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r780\n");
+    uart_puts("build: r787\n");
 
     led_init();
     led_set(0);
@@ -574,23 +608,34 @@ void main(void) {
             continue;
         }
 
-        // Atari 8-bit: вшитый BASIC или ROM с SD (r779)
+        // Atari 8-bit: выбор машины -> вшитый BASIC или ROM с SD
         if (strcmp(id, "atari800") == 0) {
             extern void emu_run_atari800(const uint8_t*, uint32_t, const char*);
-            int src = a8_source_dialog();   // 1=BASIC, 2=ROM
-            if (src == 0) continue;
-            sega_pad_init();
-            tft_help_show("atari800");
-            if (src == 1) {                  // BASIC (вшитый)
-                *(volatile uint32_t*)0x74u = 1;
-                __asm volatile("dsb st" ::: "memory");
-                emu_run_atari800(NULL, 0, "basic");
-                usb_wait_release_all();
-                usb_kbd_restart_intr();
-                *(volatile uint32_t*)0x74u = 0;
-                __asm volatile("dsb st" ::: "memory");
-            } else {                         // ROM через браузер
-                rom_browser_run("atari800", name, "atari800");
+            // r787: цикл выбора A8 — после выхода из эмулятора возвращаемся
+            // в меню выбора этой же системы (машина -> BASIC/ROM), а не в
+            // главное меню (как у других систем, r625).
+            for (;;) {
+                // r787: сначала выбор машины (400/800 / 800XL / 130XE / XEGS / 320K)
+                int am = a8_machine_dialog();
+                if (am < 0) break;      // ESC — назад в главное меню
+                a8_set_machine(am);
+                int src = a8_source_dialog();   // 1=BASIC, 2=ROM
+                if (src == 0) break;    // ESC — назад в главное меню
+                sega_pad_init();
+                tft_help_show("atari800");
+                if (src == 1) {         // BASIC (вшитый)
+                    *(volatile uint32_t*)0x74u = 1;
+                    __asm volatile("dsb st" ::: "memory");
+                    emu_run_atari800(NULL, 0, "basic");
+                    usb_wait_release_all();
+                    usb_kbd_restart_intr();
+                    *(volatile uint32_t*)0x74u = 0;
+                    __asm volatile("dsb st" ::: "memory");
+                    continue;           // вернуться в меню выбора A8
+                } else {                // ROM через браузер (сам возвращается сюда)
+                    rom_browser_run("atari800", name, "atari800");
+                    continue;
+                }
             }
             sega_pad_init();
             continue;

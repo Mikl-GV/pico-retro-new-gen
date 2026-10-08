@@ -185,8 +185,18 @@ void emu_clear_fb(void) {
 extern void gb_heap_reset(void);
 extern void newlib_heap_reset(void);
 extern void cheats_reset(void);
+
+// r786: Atari 800 (ядро atari800) КЭШИРУЕТ указатели на bump-пул между
+// запусками (Screen_atari, atarixe_memory, POKEYSND_process_buffer, FILTER_*,
+// ...) и на повторном входе продолжает их использовать. gb_heap_reset()
+// обнуляет позицию пула → старые указатели указывают в перезаписанную чужую
+// память → чёрный экран/мусор при перезаходе (лечилось только перезагрузкой).
+// Хост A8 ставит флаг до emu_prepare: пул для A8 НЕ сбрасывается (растёт
+// медленно, лимит 24 МБ; остальные системы сбрасывают при своём emu_prepare).
+int g_emu_keep_heap = 0;
+
 void emu_prepare(void) {
-    gb_heap_reset();
+    if (!g_emu_keep_heap) gb_heap_reset();
     newlib_heap_reset();   // r0.417 (H2): newlib-куча (_sbrk) не растёт между запусками игр
     // r0.417 (M14/M15): читы ОТКЛЮЧЕНЫ до послойной доработки — список всегда
     // пуст на входе в любой эмулятор (включая builtin; rom_browser сбрасывал

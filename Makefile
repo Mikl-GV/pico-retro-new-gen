@@ -440,7 +440,7 @@ A8 := $(TOP)h3_bare/cores/atari800
 A8_INC := -I$(A8) -I$(A8)/shim -I$(A8)/atari800/src -I$(A8)/libretro \
 	-I$(A8)/libretro/libretro-common/include -I$(A8)/deps/zlib
 A8_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
-	-O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
 	$(A8_INC) -D__LIBRETRO__ -D__STDC_FORMAT_MACROS \
 	-Wno-unused -Wno-unused-parameter -Wno-parentheses -Wno-sign-compare \
 	-Wno-array-bounds
@@ -466,6 +466,10 @@ $(BUILD)/a8c_atari_ntsc.o: $(A8)/atari800/src/atari_ntsc/atari_ntsc.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
 $(BUILD)/a8l_%.o: $(A8)/libretro/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
+# r782: cmdline.c включается (#include) в libretro-core.c — обязаны
+# пересобирать libretro-core.o при правке cmdline.c (Makefile не
+# трекает зависимости от включённых файлов).
+$(BUILD)/a8l_libretro-core.o: $(A8)/libretro/cmdline.c
 $(BUILD)/a8m_%.o: $(A8)/libretro/libretro-common/streams/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
 $(BUILD)/a8m_compat_strl.o: $(A8)/libretro/libretro-common/compat/compat_strl.c | $(BUILD)

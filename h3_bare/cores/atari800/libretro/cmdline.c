@@ -81,7 +81,11 @@ int pre_main(const char *argv)
       }
       else
       {
-         Add_Option(RPATH/*ARGUV[0]*/);
+         // r781: BASIC-режим — RPATH пуст («»), НЕ добавляем его в argv,
+         // иначе skel_main/atari.c попытается автостартовать файл с пустым
+         // именем ("Error opening \"\"" / мусор). Только "prg".
+         if (RPATH[0] != 0)
+            Add_Option(RPATH);
       }
    }
    else

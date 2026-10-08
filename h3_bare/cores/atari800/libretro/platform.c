@@ -144,7 +144,13 @@ int PLATFORM_Initialise(int *argc, char *argv[])
 	retro_InitGraphics();
 
 	Devices_enable_h_patch = FALSE;
-	INPUT_direct_mouse = TRUE;
+	/* r782: НЕ ставить INPUT_direct_mouse=TRUE без опции -mouse pad|touch|koala —
+	 * input.c:298-303 отвергает direct_mouse без подходящего mouse-режима
+	 * ("-directmouse only valid with -mouse pad|touch|koala") и валит
+	 * Atari800_Initialise() → "Failed to initialise!". Убираем и сбрасываем
+	 * глобал (иначе он «протекает» в следующий запуск ядра). */
+	INPUT_direct_mouse = 0;
+	INPUT_mouse_mode = INPUT_MOUSE_OFF;
 
 	return TRUE;
 }

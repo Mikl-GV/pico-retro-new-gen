@@ -56,6 +56,30 @@ void a8_fs_register(const char* path, const void* data, uint32_t size);
 static char     g_path[128] = "game.xex";
 static uint16_t g_joy = 0;                    // биты RETRO_DEVICE_ID_JOYPAD
 
+// ---- r785: выбор машины Atari 8-bit (из меню, как MSX/ZX/BK) ----
+// Индекс -> строка ядра (ключ "atari800_system", libretro-core.c update_variables).
+// Значения обязаны совпадать с ядром посимвольно (strcmp).
+static const char* const a8_machine_variants[] = {
+    "400/800 (OS B)",          // 0: 400/800, 48K, OS B, без встроенного BASIC
+    "800XL (64K)",             // 1: 800XL, 64K, BASIC (дефолт)
+    "130XE (128K)",            // 2: 130XE, 128K, BASIC
+    "XEGS",                    // 3: XEGS, 64K, BASIC + встроенная игра
+    "Modern XL/XE(320K CS)",   // 4: XL/XE 320K Compy Shop
+};
+#define A8_MACHINE_COUNT ((int)(sizeof(a8_machine_variants)/sizeof(a8_machine_variants[0])))
+static int g_a8_machine = 1;   // дефолт — 800XL (как ядро: Atari800_machine_type=XLXE)
+
+int a8_machine_count(void) { return A8_MACHINE_COUNT; }
+
+const char* a8_machine_label(int idx) {
+    if (idx < 0 || idx >= A8_MACHINE_COUNT) idx = 1;
+    return a8_machine_variants[idx];
+}
+
+void a8_set_machine(int idx) {
+    if (idx >= 0 && idx < A8_MACHINE_COUNT) g_a8_machine = idx;
+}
+
 // ---- ввод: HID-сканкод -> RETROK (тот же маппинг, что в fuse/bk) ----
 static uint16_t hid_to_retrok(uint8_t sc)
 {
@@ -187,9 +211,35 @@ static bool host_environment(unsigned cmd, void* data)
         // без обрезания, а emu_scale(320,240) растягивает по высоте экрана.
         // Без этого retrow/retroh остаются 400x300 и кадр режется в host_video.
         struct retro_variable* v = (struct retro_variable*)data;
-        if (v && v->key && strcmp(v->key, "atari800_resolution") == 0) {
-            v->value = "320x240";
-            return true;
+        if (v && v->key) {
+            if (strcmp(v->key, "atari800_resolution") == 0) {
+                // r779: отдаём ядру «внутреннее разрешение» 320x240 — ядро само
+                // центрирует ANTIC-кадр (384x240) в 320x240, host_video копирует
+                // 1:1 без обрезания, а emu_scale(320,240) растягивает по высоте.
+                v->value = "320x240";
+                return true;
+            }
+            if (strcmp(v->key, "atari800_system") == 0) {
+                // r785: машина Atari 8-bit выбрана в меню (a8_set_machine).
+                // Иначе — идёт дефолт ядра (XLXE, 800XL 64K).
+                v->value = a8_machine_variants[g_a8_machine];
+                return true;
+            }
+            if (strcmp(v->key, "atari800_internalbasic") == 0) {
+                // r786: БЕЗ этого ответа ядро оставляет Atari800_disable_basic=TRUE
+                // (дефолт atari.c:182) и на 800XL при загрузке крутит SIO-анимацию
+                // «вставьте диск» вместо READY. Включаем вшитый BASIC явно.
+                v->value = "enabled";
+                return true;
+            }
+            if (strcmp(v->key, "external_palette") == 0) {
+                // r786: эталонная внешняя палитра (RetroArch по умолчанию:
+                // "default" -> external_palette=1 -> default_palette) вместо
+                // генерации NTSC/PAL на наших setup-настройках. Убирает
+                // зависимость от COLOURS_*_setup и даёт референсные цвета.
+                v->value = "default";
+                return true;
+            }
         }
         return false;   // остальные опции — дефолты ядра
     }
@@ -216,7 +266,17 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
+    // r786: ядро atari800 КЭШИРУЕТ указатели на bump-пул между запусками
+    // (Screen_atari, atarixe_memory, POKEYSND_process_buffer, ...). Если
+    // emu_prepare() сбросит пул (gb_heap_reset), на повторном входе эти
+    // указатели укажут в перезаписанную чужую память → чёрный экран при
+    // перезаходе (лечилось только перезагрузкой). Ставим флаг ДО emu_prepare:
+    // пул для A8 не сбрасывается (растёт медленно; остальные системы
+    // сбрасывают при своём emu_prepare).
+    extern int g_emu_keep_heap;
+    g_emu_keep_heap = 1;
     emu_prepare();
+    g_emu_keep_heap = 0;
     snd_manifest("atari800", "pokey");
 
     // BASIC-режим: rom==NULL → запускаем ядро без картриджа (вшитый OS+Basic).
@@ -247,7 +307,11 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));
-    info.path = (g_path[0] ? g_path : NULL);
+    // r781: В BASIC-режиме g_path="" (не NULL!). Враппер retro_load_game()
+    // зовёт strendswith(full_path,...) БЕЗ проверки на NULL — при NULL
+    // читался SRAM по адресу 0 (трамплин: 04 D0 9F E5 = "П▒") и мусор
+    // уходил в RPATH/argv ("Error opening \"П▒\"").
+    info.path = g_path;
     info.data = (void*)rom;   // ядро игнорирует data, но оставим для порядка
     info.size = size;
 
@@ -256,6 +320,14 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
         a8_retro_deinit();
         return;
     }
+    // r787: retro_unload_game() (с прошлого входа) оставляет pauseg=-1, а
+    // retro_run() рисует кадр ТОЛЬКО при pauseg==0 → на повторном входе ядро
+    // молчало (Retro_Screen оставался чёрным). Сбрасываем pauseg и SHOWKEY
+    // (чтобы виртуальная клавиатура не «протекала» в следующий запуск).
+    extern int a8_pauseg;
+    extern int a8_SHOWKEY;
+    a8_pauseg = 0;
+    a8_SHOWKEY = -1;
     printf("A8: started (%s, %u bytes)\n", g_path[0] ? g_path : "BASIC", (unsigned)size);
 
     emu_set_border_color(0x00061428);   // тёмно-синий (A8)
@@ -272,6 +344,17 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     a8_retro_unload_game();
     a8_retro_deinit();
+    // r783: на выходе сбрасываем кэшированные ядром указатели на bump-кучу.
+    // emu_prepare() (gb_heap_reset) обнуляет позицию пула, но Screen_atari
+    // (screen.c) и palette (platform.c) продолжают указывать в старые адреса,
+    // которые при повторном входе перезаписываются чужими аллокациями —
+    // «палитра = мусор из кадра» (розовый/белый) и перезаход невозможен.
+    // retro_ExitGraphics() освобождает и обнуляет palette; Screen_atari = 0
+    // заставит screen.c пересоздать буфер (if (Screen_atari == NULL)).
+    extern void a8_retro_ExitGraphics(void);
+    extern void* a8_Screen_atari;
+    a8_retro_ExitGraphics();
+    a8_Screen_atari = 0;
     fb_clear(); fb_flush();
 }
 
