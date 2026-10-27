@@ -23,4 +23,12 @@ int  usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
                             uint8_t* buf, uint16_t len, int slot);
 int  usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot);
 
+// r788: bulk-передачи через OHCI (для USB Mass Storage, FS/LS-флешка).
+int  usb_ohci_bulk_out(uint32_t base, uint8_t addr, uint8_t ep,
+                       const uint8_t* data, uint32_t len, uint16_t mps);
+int  usb_ohci_bulk_in(uint32_t base, uint8_t addr, uint8_t ep,
+                      uint8_t* data, uint32_t len, uint16_t mps);
+void usb_ohci_bulk_toggle_reset(uint32_t base);
+void usb_ohci_bot_recover(uint32_t base);
+
 #endif

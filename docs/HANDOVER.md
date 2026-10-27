@@ -1,4 +1,4 @@
-# HANDOVER — промт для нового чата (точка сохранения r776)
+# HANDOVER — промт для нового чата (точка сохранения r807)
 
 > Скопируй этот файл целиком в новый чат в качестве первого сообщения.
 > Обновляй после каждой новой значимой дельты (метки, адреса, фиксы, решения).
@@ -20,7 +20,7 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 - `build.sh` / `build.ps1` — только тонкие обёртки над `make` (all/clean/sd/fel).
 - ПОСЛЕ ЛЮБОЙ правки ЛЮБОГО .h — обязателен `make clean && make` (Makefile НЕ
   отслеживает зависимости от заголовков; иначе соберётся со старыми константами).
-- Версии: нумерация с r500. Текущая точка сохранения — **r776**. Версия
+- Версии: нумерация с r500. Текущая точка сохранения — **r807**. Версия
   присваивается на КАЖДОЕ изменение/компиляцию. Обновляй `g_fw_version` и
   строку `build:` в h3_bare/src/main.c И синхронизируй docs/ (HANDOVER, реестр
   дельт) — «r537/r521/r502 одновременно» недопустимо.
@@ -804,3 +804,222 @@ Bust — зависала после старта. Диагностика тре
   `_irq_entry`/GIC-путь НЕ активен (cpsie i нигде не выполняется) — это
   осознанная архитектура r773; прерывания вернутся только с новой системой.
 - Версия: r769 → r776 (g_fw_version + build:). Точка сохранения r776.
+
+## r777 — фиксы аудита DMA/refill + полный снятие WDT
+- ПКГ-фаза refill в `i2s.c`: ISR наполняет полубуфер `(n-1)&1`, НЕ `n&1`
+  (счётчик после сброса 0, первый PKG = освобождение lli[0]).
+- H3 DMAC: 12 каналов, 2 банка IRQ по 8 — EN0=0x00/EN1=0x04, STAT0=0x10/STAT1=0x14;
+  банк = ch>>3, сдвиг (ch&7)*4.
+- `.dma_buf` стартует ровно в 0x4A410000 (ALIGN(64K) от конца .coherent ≤0x4A40C000),
+  ASSERT в linker.ld: _dma_buf_start≥0x4A410000, _dma_buf_end≤0x4A500000.
+- WDT (r775) ПОЛНОСТЬЮ СНЯТ по решению владельца: h3_wdt.c/h удалены
+  (ключ 0xA57<<16 невалиден — QEMU: 0xA57<<1, U-Boot: 0x16AA<<1; feed не работал бы).
+
+## r778…r787 — приведение к origin/main + подготовка USB-флешки
+- Локальная копия приведена к origin/main (git reset --hard; локальные r776/r777 —
+  в stash@{0}); сборка чистая.
+- `fat.c/h`: `fat_set_block_source` (SD по умолчанию, USB — переназначением).
+- `usb_msd.c/h`: BOT (CBW/CSW), READ10/WRITE10, bounce-буфер, `usb_msd_get_eps`.
+- `usb_hc.c`: EHCI + пуск OHCI, `usb_ohci_enumerate_flash()` (полный re-enum с
+  port reset), `usb_hc_bot_recover`.
+- `usb_ohci.c`: bulk-путь (FS/LS, g_bulk_ed/g_bulk_td в .coherent), control-путь
+  из рабочего прототипа (явный старт списка ctrlhead/ctrlcur/CLF).
+- `main.c`: выбор источника ROM (SD по умолчанию, USB при вставке флешки).
+
+## r788…r793 — итерации USB-флешки (клавиатура + SanDisk Cruzer Blade)
+- Серия отладки enum/BOT на стенде; mps=64 ставится перед MSD (глобальный g_mps).
+- В r793 работали клавиатура и флешка (FS на EHCI → OHCI bulk с re-enum).
+
+## r794 — ВРЕДНЫЙ фикс (эталонному OHCI) → откат в r800
+- По эталону Bare_linux добавлены CLE-off и ожидание `ctrlcur==0` перед каждой
+  control-передачей. После r794 клавиатура и флешка перестали enum'иться:
+  `get_dev_desc @0 fail` на ОБОИХ портах. Причина: наш OHCI работает БЕЗ HCR,
+  ctrlcur остаётся ненулевым от U-Boot, ожидание его обнуления ломало ПЕРВУЮ
+  контрольную передачу. Откат — в r800.
+
+## r795…r798 — WiFi-слой RTL8189FTV + TCP/FTP
+- `h3_sdc.c/h`: SDIO Wi-Fi (порт из Bare_linux, 4-bit HS 50MHz), `fw_nic.bin` +
+  `fw_blob.S` (вшит), `h3_wifi_get_ip`.
+- `wifi_net.c`, `wifi_layer.c/h`, `wpa_crypto.c/h`: DHCP/ARP/ICMP, join WPA2,
+  `net_dhcp_get_ip`; предустановленные пароли A05s/MTS_GPON_9290e0.
+- `net_tcp.c/h` (2 слота, SYN/ACK/PSH/FIN), `net_ftp.c/h` (LIST/NLST/RETR/STOR/DELE/
+  MKD/PASV через FAT-слой = SD/USB); FTP-сервер в фоне главного цикла.
+- `settings.c`: экран «Настройки → WiFi Transfer (FTP)»: список AP, курсор,
+  Enter=join, R=rescan, после DHCP — IP + статус FTP.
+
+## r799 — ЗАЛИТ на стенд: WiFi работает, USB сломан (см. r794)
+- WiFi: 7 сетей найдено, join A05s (WPA2, 4-way handshake), DHCP ACK →
+  IP 10.233.48.37, mask 255.255.255.0, gw 10.233.48.2; FTP :21 поднят;
+  ARP-ответы идут (пингуется с ПК). Сетевая часть полностью рабочая.
+- USB: НЕ работает из-за r794 — `get_dev_desc @0 fail` на обоих портах,
+  даже клавиатура не энумерируется.
+
+## r800 — откат r794: возврат control-пути r793
+- `usb_ohci_ctrl_transfer`: УБРАНЫ CLE-off и ожидание `ctrlcur==0`
+  (наш OHCI без HCR; список стартует явно ctrlhead/ctrlcur/CLF — рабочий путь
+  r793, на котором enum клавиатуры и флешки работал).
+- Цель: вернуть enum USB; проверка на стенде: `USB kbd ready`, `MBR sig=0x55AA —
+  flash OK`, `ROM source: USB flash`.
+- Версия: r776 → r800 (g_fw_version + build:). Точка сохранения r800.
+
+## r801 — USB: снятие блокеров U-Boot + правильный OHCI-init (владелец)
+Владелец: «Проверяй весь механизм USB, начни с инициализации, проверь, снимаем ли
+мы блокеры регистров, которые заблокированы U-Boot; конфигурацию регистров делай
+маской, не меняя не нужные биты».
+
+Ошибка r800: `usb-ohci: flash re-enum` → `port after reset=0x100` → `device gone`.
+Причина: (1) EHCI после `usb_ehci_hc_reset`+CONFIGFLAG=1+port_reset остался
+ВЛАДЕЛЬЦЕМ PHY-порта (PortOwner=0) — OHCI-компаньон видит CCS=0; (2) init OHCI
+НЕ снимал блокеры U-Boot: не делал HCR и не чистил ctrlhead/ctrlcur/bulkhead/
+donehead — HC продолжал обходить ЧУЖИЕ ED U-Boot'а в освобождённой памяти.
+
+Что сделано (по эталону Bare_linux/src/usb_ohci.c):
+- `usb_ohci_init`: добавлен **HCR** + зануление ВСЕХ указателей списков
+  (ctrlhead/ctrlcur/bulkhead/bulkcur/peried/donehead + g_hcca.donehead) +
+  W1C `intrstatus=0xFFFFFFFF` (снять «залипший» WDH). HCFS=Operational и
+  CLE+BLE ставятся **маской** (`ctrl = (ctrl & ~(3<<6)) | (2<<6) | (1<<4) |
+  (1<<5)`) — не меняем не нужные биты (требование владельца).
+- `usb_port_hw_init`: CCU/PHY биты СВОЕГО порта сбрасываются/ставятся маской
+  (не трогаем чужие биты U-Boot); ICR (AHB burst) — регистры конфигурации.
+- `usb_ohci_ctrl_transfer`: ВОЗВРАЩЁН CLE-gating (CLE off + ждём ctrlcur==0)
+  из эталона — теперь он РАБОТАЕТ, т.к. init снимает блокеры (в r794/799
+  ожидание висело именно из-за чужого ctrlcur U-Boot'а).
+- `usb_hc.c/usb_ohci_enumerate_flash`: перед re-enum отдаём порт компаньону
+  OHCI: `PORTSC |= (1<<13)` (PO=1, эталон usb_hc.c:805) + dsb + 50ms.
+- Цель: enum флешки (SanDisk Cruzer Blade, FS на EHCI → OHCI-bulk) + клавиатура
+  одновременно. Проверка на стенде: `USB kbd ready`, `usb-ohci: MBR sig=0x55AA —
+  flash OK`, `ROM source: USB flash`.
+- Версия: r800 → r801 (g_fw_version + build:). Точка сохранения r801.
+
+## r802 — USB ctrl: включение CLE перед CLF + чистка done-очереди
+Лог r801: порты видят устройства (`port after reset=0x103` CCS+PES) — блокеры
+U-Boot сняты, EHCI-порт отдан OHCI. НО `get_dev_desc @0 fail`: control-передача
+НЕ стартует (TD вечно NotAccessed). Причина — в r801 при возврате CLE-gating
+забыли: (1) ВКЛЮЧИТЬ CLE обратно (`ctrl |= 1<<4`) перед CLF — HC игнорирует
+control-список при CLE=0; (2) очистить done-очередь (HCCA.donehead/регистр +
+W1C WDH) перед запуском — иначе HC не продвигает списки.
+
+Что сделано в `usb_ohci_ctrl_transfer` (по эталону Bare_linux/src/usb_ohci.c:493-504):
+- инвалидация HCCA → обнуление g_hcca.donehead → cache_clean → donehead=0 → dsb
+  → W1C `intrstatus=1<<1` (WDH);
+- `ctrlhead/ctrlcur = ed`, затем `ctrl |= (1<<4)` (CLE ВКЛ) + dsb → CLF;
+- таймаут теперь печатает `cmd=0x%X cur=0x%X cc=%u/%u` (как эталон) — следующий
+  лог сразу укажет, где застревает HC.
+- Версия: r801 → r802 (g_fw_version + build:). Точка сохранения r802.
+
+## r803 — USB ctrl: обслуживание done-очереди в цикле ожидания (корень)
+Лог r802: enum прошёл ПЕРВЫМ проходом (`SanDisk vid=0781 mps=64`), но re-enum
+флешки упал на 3-й control: `ctrl TIMEOUT a=1 len=18 cmd=0x0 cur=0x0 cc=0/15`
+(setup cc=0 — выполнен; status cc=15 NOTACC; cur=0 — список опустошён).
+
+Корень — эталон Bare_linux/src/usb_ohci.c:661-701: «пока HcDoneHead != 0, HC
+считает done-очередь неполной: берёт наш ED в current и СРАЗУ отпускает, TD
+остаётся NotAccessed, WDH висит постоянно». В r802 я чистил done-очередь
+ТОЛЬКО перед CLF, но НЕ внутри цикла ожидания. После первых передач TD ложатся
+в done-очередь, HC не продвигает список → следующий control с 18-байтным
+IN-буфером застревает (status TD не тронут).
+
+Что сделано в `usb_ohci_ctrl_transfer` (по эталону 665-701):
+- ЧИСТКА done-очереди ВНУТРИ цикла ожидания: invalidate HCCA → если
+  g_hcca.donehead или ohci->donehead != 0 → обнулить ОБА + cache_clean + dsb +
+  W1C `intrstatus=1<<1` (WDH);
+- В gating-блоке (после CLE-off и ожидания ctrlcur==0) — та же дочистка
+  зависшей очереди перед переписыванием ED;
+- `int pi = ohci_idx(base)` поднят в начало функции (используется в gating);
+- TIMEOUT теперь печатает `cmd/cur/isr/cc=setup/data/status` — видно, какая
+  фаза недоступна.
+- Версия: r802 → r803 (g_fw_version + build:). Точка сохранения r803.
+
+## r804 — USB bulk: порядок BLE→done→WDH→BLF как в эталоне
+Лог r803: control-путь ПОЛНОСТЬЮ ожил — enum с первого раза (`vid=0x0781
+pid=0x5567`), BOT recovery done. Но первый bulk (CBW OUT ep=2 len=31) виснет:
+`ohci-bulk: TIMEOUT d=0 ep=2 len=31 cmd=0x0 isr=0x44` на КАЖДОЙ команде MSD
+(INQUIRY 0x12, TUR 0x00, READ CAPACITY 0x25, READ10 0x28) → «CBW fail» → MBR
+read fail.
+
+Причина — порядок перед BLF отличался от эталона (usb_ohci.c:648-701):
+- БЫЛО (наш): done-очередь → W1C WDH → **потом** BLE → BLF;
+- СТАЛО (эталон): **BLE → done-очередь → W1C WDH → BLF**.
+
+Эталон включает BLE ПЕРВЫМ, затем чистит done-очередь (HCCA.DoneHead +
+HcDoneHead регистр, с invalidate) и снимает WDH, и только потом BLF. Наш
+прежний порядок снимал WDH ДО BLE — HC успевал прочитать старый ED и виснул.
+
+Что сделано в `usb_ohci_bulk`:
+- порядок запуска приведён к эталону: `bulkhead/bulkcur=ed` → `ctrl|=1<<5`
+  (BLE) → done-очередь → `intrstatus=1<<1` (WDH) → `cmdstatus=1<<2` (BLF);
+- TIMEOUT печатает расширенное состояние: `edcfg/ctl/cmd/isr/bh/bcur/td/hcca/
+  fr/intr0` (как эталон 706-741) — следующий лог покажет, где HC виснет.
+- Версия: r803 → r804 (g_fw_version + build:). Точка сохранения r804.
+
+## r805 — USB: D-cache L1+L2 (PL310) для ED/TD — КОРЕНЬ bulk fail
+Лог r804 (с расширенной диагностикой):
+```
+ohci-bulk: TIMEOUT d=0 ep=2 len=31 edcfg=0x400101 ctl=0xB0 cmd=0x0 isr=0x44
+  bh=0x4A400000 bcur=0x0 td=0xF2080000 hcca=0x4A400200 fr=2724 intr0=0x0
+```
+- `bh=0x4A400000` = g_bulk_ed, `hcca=0x4A400200`, `fr` растёт — HC жив;
+- `bcur=0x0` — HC берёт ED и СРАЗУ отпускает (done-очередь/ED не видит);
+- **`td=0xF2080000`** — НЕ адрес нашего g_bulk_td (0x4A400040): HC читает из
+  DRAM МУСОР вместо свежих ED/TD.
+
+КОРЕНЬ (эталон h3_mmu.c:73-77): «На H3 под L1 стоит L2-кэш. cache_clean
+(DCCMVAC) сбрасывает строку лишь В L2, НЕ В DRAM. DMA-мастер (OHCI/EHCI)
+читает DRAM напрямую — без L2-операции видит УСТАРЕВШИЕ ED/TD». Наш
+cache_clean/cache_invalidate делали ТОЛЬКО L1 by MVA — ED/TD оставались в L2,
+HC читал старые значения из DRAM.
+
+Что сделано в `usb_ohci.c` (перенос эталона h3_mmu.c:101-138):
+- `cache_clean` = L1 DCCIMVAC (by MVA) + L2 PL310 CLEAN_INV_PA (by PA) с
+  `pl310_sync()`;
+- `cache_invalidate` = L2 CLEAN_INV_PA + L1 DCIMVAC;
+- PL310 @ 0x01C43000, детект наличия по CACHE_ID (0x410000xx, rev>=8) —
+  не трогаем чужую периферию, если контроллера нет.
+- Версия: r804 → r805 (g_fw_version + build:). Точка сохранения r805.
+
+## r806 — USB control: САМОЗАМКНУТЫЙ dummy (терминатор не работает на H3)
+Лог r805 (после L2-фикса): control снова активен, но enum упал на полном
+дескрипторе:
+```
+usb: ctrl TIMEOUT a=1 len=18 cmd=0x0 cur=0x0 isr=0x44 cc=0/8/15
+```
+cc=0 (SETUP ок), cc=8 (DataUnderrun на DATA IN — короткий пакет 18 байт < mps 64,
+это НОРМАЛЬНО для полного дескриптора), cc=15 (status не выполнен).
+
+ПРичина — эталон usb_ohci.c:623-628: «На этом H3-OHCI единственный работоспособный
+паттерн — ... список с самозамкнутым dummy... **Терминатор (next=0) здесь не
+работает: HC ждёт циклического dummy, чтобы завершить TD через WDH**».
+Наш `memset(td,0,sizeof(g_td[0]))` обнулял `t_dummy->next=0` (терминатор) —
+HC не завершал status-TD (cc=15), хотя DATA IN выполнился (cc=8).
+
+Что сделано в `usb_ohci_ctrl_transfer`:
+- после построения цепочки TD явно ставим: `t_dummy->cfg = NOTACC; cbp=be=0;
+  t_dummy->next = (uint32_t)t_dummy;` (самоцикл) — как эталон (474-476);
+- для IN-передач cc=8 (DataUnderrun/ET_Data) теперь считается УСПЕХОМ в
+  DATA-фазе (короткий пакет — норма), проверяется только status.
+- Версия: r805 → r806 (g_fw_version + build:). Точка сохранения r806.
+
+## r807 — USB-флешка РАБОТАЕТ (подтверждено на стенде) + чистка
+Лог r806 (подтверждение на стенде):
+```
+usb-ohci: vid=0x0781 pid=0x5567
+usb-ohci: BOT recovery done
+usb-ohci: INQUIRY: SanDisk
+usb-ohci: block=512 last_lba=30031871
+usb-ohci: MBR sig=0xAA55 — flash OK
+ROM source: USB flash
+USB FAT ready
+ROMs:  (67 систем)
+rom_browser: /roms/LYNX n=31
+```
+USB-флешка (SanDisk Cruzer Blade, FS через OHCI-bulk) ПОЛНОСТЬЮ работает:
+enum → BOT → INQUIRY → READ CAPACITY (512, ~14.3 GB) → MBR 0xAA55 → FAT
+подключена → браузер ROM показывает каталог с флешки. Клавиатура тоже работает.
+
+Что сделано в r807 (косметика после подтверждения):
+- `usb_kbd.c` `cache_inv`: перенесён L2 (PL310) + L1 паттерн из usb_ohci.c —
+  только L1-invalidate не уводил report-буфер из L2 в DRAM (та же гонка);
+- `usb_ohci.c` control: убрана шумная печать `ctrl short IN got=X want=Y`
+  (короткие пакеты строковых дескрипторов/конфигов — норма, CC-контроль
+  остаётся);
+- Версия: r806 → r807 (g_fw_version + build:). Точка сохранения r807.

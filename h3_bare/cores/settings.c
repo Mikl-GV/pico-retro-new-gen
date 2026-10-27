@@ -9,6 +9,9 @@
 #include "sega_pad.h"
 #include "remap.h"
 #include "h3_hs_timer.h"
+#include "wifi_layer.h"
+#include "net_ftp.h"
+#include "h3_sdc.h"   /* struct h3_wifi_ap, scan_ap_get */
 extern int printf(const char* fmt, ...);
 
 // r118: SRAM A1 почта калибровки тача (определена в tft_drv.c — дублируем
@@ -373,6 +376,9 @@ enum {
     // r500 (П1 сессии): TV-режим A2600 добавлен В КОНЕЦ enum — порядок первых
     // пунктов совпадает с TFT-меню (tft_drv.c items[]), сдвигать индексы нельзя.
     SET_A2600_TV,
+    // r797: пункт WiFi-трансфера добавлен В КОНЕЦ — индексы первых пунктов
+    // совпадают с TFT-меню (tft_drv.c items[]), сдвигать нельзя.
+    SET_WIFI_TRANSFER,
     // r777: пункты аудио (громкость, тест слоя) УДАЛЕНЫ — звуковой слой вывода
     // снят полностью (владелец). TFT-индексы первых пунктов не тронуты.
     SET_COUNT,
@@ -387,6 +393,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Touch Calibration (TFT)",
     "ROM partition info",
     "Atari 2600 TV mode",
+    "WiFi Transfer (FTP)",
 };
 
 // Рисуем меню настроек с курсором и вертикальным скроллом.
@@ -528,6 +535,143 @@ static void create_folders_flow(void) {
     input_wait();
 }
 
+// r798: экран Трансфер ВиФи (FTP). Стартует WiFi-слой, показывает
+// СПИСОК найденных сетей (скан), выбор курсором, Enter = join
+// (преднастроенные пароли в wifi_layer_connect), затем IP + статус FTP.
+static void wifi_transfer_run(void) {
+    extern int wifi_layer_start(void);
+    extern int wifi_layer_started(void);
+    extern int wifi_layer_rescan(void);
+    extern int wifi_layer_connect(int index);
+    extern int wifi_layer_poll(void);
+    extern int ftp_server_active(void);
+    extern int h3_wifi_scan_ap_count(void);
+    extern int h3_wifi_scan_ap_get(int i, struct h3_wifi_ap* ap);
+
+    // 1. Старт WiFi-слоя (если ещё не запущен).
+    fb_clear();
+    fb_puts_s(60, 40, "WiFi Transfer (FTP)", 2, 0x00FFAA00);
+    fb_fill_rect(60, 70, 300, 2, 0x00FFFFFF);
+    if (!wifi_layer_started()) {
+        fb_puts_s(60, 120, "Starting WiFi...", 1, 0x00FFFFFF);
+        fb_flush();
+        if (wifi_layer_start() != 0) {
+            fb_puts_s(60, 160, "WiFi init FAILED", 1, 0x00FF4444);
+            fb_puts_s(60, 200, "UART log for details", 1, 0x00888888);
+            fb_flush();
+            input_wait();
+            return;
+        }
+    } else {
+        fb_puts_s(60, 120, "WiFi already running", 1, 0x00AAAAAA);
+        fb_flush();
+        udelay(300000);
+    }
+
+    // 2. Проверка: скан уже выполнен при старте слоя (4 сети). Если список
+    //    пуст — рескан.
+    if (h3_wifi_scan_ap_count() == 0)
+        wifi_layer_rescan();
+
+    // 3. Цикл: список сетей + курсор. Enter = join выбранной.
+    int sel = 0;
+    uint32_t t0 = h3_hs_timer_lo_us();
+    uint8_t ip[4] = {0,0,0,0};
+    int got_ip = 0;
+    int joining = 0;
+    int join_sel = -1;
+
+    for (;;) {
+        wifi_layer_poll();   // DHCP-ретраи + приём FTP
+        extern int net_dhcp_get_ip(uint8_t ip[4], uint8_t mask[4], uint8_t gw[4], int* have_ack);
+        int ack = 0;
+        uint8_t mk[4], gw[4];
+        if (!got_ip && net_dhcp_get_ip(ip, mk, gw, &ack) && ack) { got_ip = 1; }
+
+        // Перерисовка ~500 мс
+        if (h3_hs_timer_lo_us() - t0 > 500000) {
+            t0 = h3_hs_timer_lo_us();
+            fb_clear();
+            fb_puts_s(60, 40, "WiFi Transfer (FTP)", 2, 0x00FFAA00);
+            fb_fill_rect(60, 70, 300, 2, 0x00FFFFFF);
+
+            if (got_ip) {
+                // --- Показать IP/статус FTP, как прежде ---
+                char s[48];
+                snprintf(s, sizeof(s), "IP %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+                fb_puts_s(60, 120, s, 1, 0x0000FF44);
+                fb_puts_s(60, 160, "FTP: ", 1, 0x00FFFFFF);
+                fb_puts_s(110, 160, ftp_server_active() ? "ACTIVE :21  ftp://IP/roms" : "waiting",
+                          1, ftp_server_active() ? 0x0000FF44 : 0x00AAAAAA);
+                fb_puts_s(60, 200, "Open in Explorer: ftp://IP/roms", 1, 0x00AAAAAA);
+                fb_puts_s(60, FOOTER_Y, "  ^v : select net    R : rescan    ESC : back", 1, 0x00888888);
+            } else {
+                // --- Список найденных сетей + курсор ---
+                int n = h3_wifi_scan_ap_count();
+                if (n > 8) n = 8;
+                int y = 120;
+                fb_puts_s(60, 95, joining ? "Connecting..." : "Select network (Enter):", 1,
+                          joining ? 0x00FFAA00 : 0x00FFFFFF);
+                if (n == 0) {
+                    fb_puts_s(60, y, "  (no networks - press R)", 1, 0x00AAAAAA);
+                }
+                for (int i = 0; i < n; i++) {
+                    struct h3_wifi_ap ap;
+                    if (h3_wifi_scan_ap_get(i, &ap) != 0) break;
+                    int is_sel = (i == sel);
+                    if (is_sel)
+                        fb_fill_rect(50, y - 3, PHYS_W - 100, 26, 0x00181818);
+                    fb_puts_s(70, y, is_sel ? ">" : " ", 1, 0x00FFFF00);
+                    // имя сети (обрезаем по ширине)
+                    char nm[48];
+                    int nl = ap.ssid_len;
+                    if (nl > 40) nl = 40;
+                    memcpy(nm, ap.ssid, nl); nm[nl] = 0;
+                    fb_puts_s(85, y, nm, 1, is_sel ? 0x00FFFF00 : 0x00FFFFFF);
+                    // метка пароля: A05s / MTS (преднастроены) или "open"/"sec"
+                    char tag[16];
+                    if (nl >= 4 && memcmp(ap.ssid, "A05s", 4) == 0)
+                        snprintf(tag, sizeof(tag), " (key set)");
+                    else if (nl >= 14 && memcmp(ap.ssid, "MTS_GPON_9290e0", 14) == 0)
+                        snprintf(tag, sizeof(tag), " (key set)");
+                    else if (ap.rsn_len > 0)
+                        snprintf(tag, sizeof(tag), " (WPA2)");
+                    else
+                        snprintf(tag, sizeof(tag), "");
+                    fb_puts_s(48 + PHYS_W/2, y, tag, 1, 0x00AAAAAA);
+                    y += 30;
+                }
+                fb_puts_s(60, FOOTER_Y, "  ^v : select    Enter : connect    R : rescan    ESC : back", 1, 0x00888888);
+            }
+            fb_flush();
+        }
+
+        int k = usb_input_poll();
+        if (k == 82) { if (sel > 0) sel--; }            // Up
+        else if (k == 81) {                              // Down
+            int n = h3_wifi_scan_ap_count();
+            if (sel < n - 1) sel++;
+        } else if (k == 19) {                            // R — rescan
+            wifi_layer_rescan();
+            sel = 0;
+        } else if (k == 40) {                            // Enter — join
+            int n = h3_wifi_scan_ap_count();
+            if (n > 0 && sel < n && !joining) {
+                join_sel = sel;
+                joining = 1;
+                int rc = wifi_layer_connect(sel);
+                if (rc != 0) {
+                    uart_print("wifi: connect rc=");
+                    uart_print_int(rc);
+                    uart_print("\r\n");
+                }
+                joining = 0;
+            }
+        } else if (k == 41) break;                       // ESC
+        udelay(10000);
+    }
+}
+
 void settings_run(void) {
     int sel = 0;
     int scroll = 0;   // r702: вертикальный скролл
@@ -584,6 +728,9 @@ void settings_run(void) {
                 break;
             case SET_PART_INFO:
                 goto partition_info;
+            case SET_WIFI_TRANSFER:
+                wifi_transfer_run();
+                break;
             }
         }
         // клавиши 1..7 — быстрый доступ к пунктам

@@ -65,6 +65,7 @@ extern unsigned char libh3_coherent_region[1048576];
 #define H3_SPI_BASE				0x01C68000
 #define H3_GIC_BASE 			0x01C80000	///< GIC-400 v2
 #define H3_HDMI_BASE			0x01EE0000
+#define H3_SDC1_BASE			0x01C10000	///< r795: SDC1 (SDIO WiFi RTL8189, PG0-PG5)
 #define H3_RTC_BASE				0x01F00000
 #define H3_PRCM_BASE			0x01F01400
 #define H3_CPUCFG_BASE			0x01F01C00

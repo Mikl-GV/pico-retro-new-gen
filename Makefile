@@ -65,12 +65,13 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,uart printf libc_min main cxx_runtime udelay h3_hs_timer h3_ccu h3 h3_smp h3_de2 h3_hdmi dw_hdmi h3_lcd gic))
 OBJ  += $(BUILD)/coleco_bios.o
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,h3_sdc fw_blob))
 
 
 # MCUME
@@ -731,6 +732,10 @@ $(BUILD):
 $(BUILD)/startup.o: $(TOP)h3_bare/platform/startup.S | $(BUILD)
 	$(AS) $(CFLAGS) -x assembler-with-cpp -c -o $@ $<
 
+# r795: прошивка WiFi-чипа RTL8189 (вшивается через .incbin в fw_blob.S)
+$(BUILD)/fw_blob.o: $(TOP)h3_bare/platform/fw_blob.S | $(BUILD)
+	$(AS) $(CFLAGS) -x assembler-with-cpp -c -o $@ $<
+
 $(BUILD)/%.o: $(TOP)h3_bare/src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<
 
@@ -763,6 +768,20 @@ $(BUILD)/fat.o: $(TOP)h3_bare/cores/fat.c | $(BUILD)
 $(BUILD)/usb_ohci.o: $(TOP)h3_bare/cores/usb_ohci.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/usb_kbd.o: $(TOP)h3_bare/cores/usb_kbd.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/usb_msd.o: $(TOP)h3_bare/cores/usb_msd.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/usb_hc.o: $(TOP)h3_bare/cores/usb_hc.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/wifi_net.o: $(TOP)h3_bare/cores/wifi_net.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/wifi_layer.o: $(TOP)h3_bare/cores/wifi_layer.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/wpa_crypto.o: $(TOP)h3_bare/cores/wpa_crypto.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/net_tcp.o: $(TOP)h3_bare/cores/net_tcp.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/net_ftp.o: $(TOP)h3_bare/cores/net_ftp.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/fb_text.o: $(TOP)h3_bare/cores/fb_text.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<

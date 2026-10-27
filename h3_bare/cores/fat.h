@@ -32,4 +32,11 @@ int  fat_delete_file(const char* dir, const char* name);
 // Одновременно используется только один контекст (меню/браузер/FAT).
 fat_entry_t* fat_scratch(void);
 
+// r788: блочный источник. По умолчанию — SD (sd_read/sd_write_sector).
+// Вызывающий (main.c) может назначить кастомный источник (USB-флешка):
+// rd/wr — функции чтения/записи 512-байтного сектора. rd==0 → снова SD.
+typedef int (*fat_blk_read_t)(uint32_t lba, void* buf);
+typedef int (*fat_blk_write_t)(uint32_t lba, const void* buf);
+void fat_set_block_source(fat_blk_read_t rd, fat_blk_write_t wr);
+
 #endif

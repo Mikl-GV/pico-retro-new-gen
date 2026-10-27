@@ -333,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r787";
+const char g_fw_version[] = "r807";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r787\n");
+    uart_puts("build: r807\n");
 
     led_init();
     led_set(0);
@@ -371,10 +371,33 @@ void main(void) {
     if (usb_kbd_init() == 0) uart_puts("USB kbd ready\n");
     else uart_puts("USB kbd not found\n");
 
+    // r788: USB-флешка как источник ROM (для отладки без SD). EHCI-путь
+    // для HS-флешки; FS/LS — задел через OHCI-bulk. Если флешка найдена —
+    // источником FAT становится она, SD при отладке не нужна.
+    extern int usb_hc_init(void);
+    extern int usb_msd_active(void);
+    extern int usb_msd_block_read(uint32_t lba, void* buf);
+    extern int usb_msd_block_write(uint32_t lba, const void* buf);
+    extern void fat_set_block_source(fat_blk_read_t rd, fat_blk_write_t wr);
+    int usb_flash_ok = (usb_hc_init() == 0) && usb_msd_active();
+    if (usb_flash_ok) {
+        fat_set_block_source(usb_msd_block_read, usb_msd_block_write);
+        uart_puts("ROM source: USB flash\n");
+    } else {
+        uart_puts("ROM source: SD (no USB flash)\n");
+    }
+
     uart_puts("SD init...\n");
-    sd_ok = (sd_init() == 0) && (fat_init() == 0);
+    if (usb_flash_ok) {
+        // FAT через blk_read → USB-флешка; SD не трогаем.
+        sd_ok = (fat_init() == 0);
+        uart_puts("USB FAT ready\n");
+    } else {
+        sd_ok = (sd_init() == 0) && (fat_init() == 0);
+        if (sd_ok) uart_puts("SD ready\n");
+        else uart_puts("SD not available\n");
+    }
     if (sd_ok) {
-        uart_puts("SD ready\n");
         uart_puts("ROMs:\n");
         fat_entry_t* dirs = fat_scratch();
         int n = fat_list("/roms", dirs, FAT_MAX_ENTRIES);
@@ -384,8 +407,6 @@ void main(void) {
                 uart_puts(dirs[i].name);
                 uart_puts("\n");
             }
-    } else {
-        uart_puts("SD not available\n");
     }
 
     // Пользовательский ремап клавиатуры (из /retro.cfg) — после fat_init
@@ -454,6 +475,10 @@ void main(void) {
     *(volatile int32_t*)0x64u = 0;
     __asm volatile("dsb st" ::: "memory");   // r0.198: закрыть запись до чтения CPU1
     for (;;) {
+        // r797: фоновый опрос WiFi (DHCP-ретраи + приём FTP-команд/данных).
+        // Сервер продолжает работать и после выхода с экрана «WiFi Transfer».
+        extern int wifi_layer_poll(void);
+        if (wifi_layer_poll) wifi_layer_poll();
         tft_help_show(NULL);
         int sel = menu_run();
         if (sel == -2) {

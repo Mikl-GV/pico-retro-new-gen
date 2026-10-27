@@ -63,6 +63,22 @@ typedef enum H3_CCU_PLL {
 #define CCU_BUS_CLK_GATING2_AC_DIG			(1U << 0)
 #define CCU_BUS_CLK_GATING2_THS				(1U << 8)
 
+/* r795: SDMMC1 (SDIO WiFi RTL8189) — делители тактовой, как в эталоне
+ * Bare_linux include/h3_ccu.h. */
+#define H3_SDMMC1_MODE_NEW      (1u << 30)
+#define H3_SDMMC1_CLK_SRC_OSC24M   (0u << 24)
+#define H3_SDMMC1_CLK_SRC_PLLPERI0 (1u << 24)
+#define H3_SDMMC1_CLK_DIV_N(v)     ((v) << 16)
+#define H3_SDMMC1_CLK_DIV_M(v)     ((v) << 0)
+
+/* r795: регистры CCU для SDC1 (WiFi), как в эталоне. */
+#define H3_CCU_RST0         (*(volatile uint32_t *)(H3_CCU_BASE + 0x2C0))
+#define H3_CCU_GATING0      (*(volatile uint32_t *)(H3_CCU_BASE + 0x060))
+#define H3_CCU_GATE_MMC1     (1u << 9)
+#define H3_CCU_RST_MMC1      (1u << 9)
+#define H3_CCU_SDMMC1_CLK    (*(volatile uint32_t *)(H3_CCU_BASE + 0x08C))
+#define H3_SDMMC1_SCLK_GATE  (1u << 31)
+
 #define CCU_BUS_CLK_GATING3_TWI0			(1U << 0)
 #define CCU_BUS_CLK_GATING3_TWI1			(1U << 1)
 #define CCU_BUS_CLK_GATING3_UART0			(1U << 16)

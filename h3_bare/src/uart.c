@@ -70,3 +70,34 @@ int uart_rx_ready(void) {
 void uart_rx_flush(void) {
     while (uart_rx_ready()) uart->O00.RBR;
 }
+
+// r795: WiFi-драйвер эталона (h3_sdc.c/wifi_net.c) использует
+// uart_print/uart_print_int/uart_print_uint/uart_print_hex.
+void uart_print(const char* s) {
+    while (*s) uart_putc(*s++);
+}
+
+static void uart_print_u32(uint32_t v) {
+    char buf[12];
+    int i = 0;
+    if (v == 0) { uart_putc('0'); return; }
+    while (v && i < (int)sizeof(buf) - 1) { buf[i++] = (char)('0' + (v % 10)); v /= 10; }
+    while (i) uart_putc(buf[--i]);
+}
+
+void uart_print_uint(unsigned int v) { uart_print_u32(v); }
+
+void uart_print_int(int v) {
+    if (v < 0) { uart_putc('-'); uart_print_u32((uint32_t)(-(v + 1)) + 1u); }
+    else uart_print_u32((uint32_t)v);
+}
+
+void uart_print_hex(uint32_t v) {
+    static const char hexd[] = "0123456789ABCDEF";
+    for (int i = 28; i >= 0; i -= 4)
+        uart_putc(hexd[(v >> i) & 0xF]);
+}
+
+// r795: эталон вызывает uart_flush() для слива лога перед переходами.
+// У нас FIFO-вывод синхронный (uart_putc ждёт готовности) — no-op.
+void uart_flush(void) {}

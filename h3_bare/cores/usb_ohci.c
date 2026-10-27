@@ -104,6 +104,12 @@ static uint16_t    g_mps = 8;
 static ohci_ed_t   g_int_ed[2][2] __attribute__((section(".coherent"), aligned(16)));
 static ohci_td_t   g_int_td[2][2][2] __attribute__((section(".coherent"), aligned(32)));
 
+// r788: bulk-пул для FS/LS-флешки (USB Mass Storage через OHCI). [порт][направление].
+// Toggle отдельный по направлению (EP-IN и EP-OUT — независимые эндпоинты).
+static ohci_ed_t g_bulk_ed[2][2] __attribute__((section(".coherent"), aligned(16)));
+static ohci_td_t g_bulk_td[2][2][2] __attribute__((section(".coherent"), aligned(32)));
+static uint8_t   g_bulk_toggle[2][2];
+
 static int ohci_idx(uint32_t base) {
     return (base == 0x01C1B400u) ? 0 : 1;
 }
@@ -220,51 +226,90 @@ void usb_ohci_set_mps(uint16_t mps) {
     if (mps >= 8 && mps <= 64) g_mps = mps;
 }
 
-// ---- D-cache maintenance по MVA (Cortex-A7) ----
+// ---- D-cache maintenance: L1 (by MVA) + L2/PL310 (by PA) ----
 // U-Boot оставляет MMU + write-back D-cache включёнными. OHCI-DMA читает
-// физическую DRAM, а наши ED/TD пишутся через кэш — поэтому перед запуском
-// передачи чистим (clean) кэш для структур, после IN — инвалидируем кэш
-// для буфера данных.
+// физическую DRAM НАПРЯМУЮ. Критично (эталон h3_mmu.c:73-77): на H3 под L1
+// стоит L2-кэш; обычный L1-clean (DCCMVAC) сбрасывает строку ЛИШЬ в L2, НЕ в
+// DRAM. Без L2-операции (by-PA, PL310 @0x01C43000) DMA-мастер видит
+// УСТАРЕВШИЕ ED/TD (лог r804: td=0xF2080000 — мусор из DRAM, свежие данные
+// застряли в L2), bulk падает «TD NotAccessed». Поэтому clean/invalidate
+// делаем на ОБОИХ уровнях: L1 by MVA + L2 by PA.
+#define PL310_BASE        0x01C43000u
+#define PL310_CACHE_SYNC  0x730u
+#define PL310_CLEAN_INV_PA 0x7B0u
+
+static int pl310_present(void) {
+    uint32_t id = ((volatile uint32_t*)PL310_BASE)[0];   /* CACHE_ID */
+    return ((id & 0xFFFFFF00u) == 0x41000000u) && ((id & 0x0Fu) >= 8u);
+}
+
+static inline void pl310_sync(void) {
+    if (!pl310_present()) return;
+    volatile uint32_t* r = (volatile uint32_t*)PL310_BASE;
+    r[PL310_CACHE_SYNC / 4] = 0;
+    for (volatile int i = 0; i < 1000 && (r[PL310_CACHE_SYNC / 4] & 1u); i++) ;
+}
+
+// L1 clean(+invalidate) by MVA → строка уходит в L2; затем L2 clean+invalidate
+// by PA → строка уходит в DRAM. Точечно, без глобального flush.
 static inline void cache_clean(uint32_t addr, uint32_t size) {
-    addr &= ~0x1Fu;
-    uint32_t end = addr + size + 32;
-    for (; addr < end; addr += 32) {
-        __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
-    }
+    uint32_t start = addr & ~0x1Fu;
+    uint32_t end = (addr + size + 0x1Fu) & ~0x1Fu;
+    volatile uint32_t* l2 = (volatile uint32_t*)PL310_BASE;
+    for (uint32_t a = start; a < end; a += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));  /* DCCIMVAC */
+    __asm volatile("dsb" ::: "memory");
+    pl310_sync();
+    for (uint32_t a = start; a < end; a += 32)
+        l2[PL310_CLEAN_INV_PA / 4] = a;
+    pl310_sync();
     __asm volatile("dsb" ::: "memory");
 }
 
+// Сперва L2 (clean+invalidate by PA), затем L1 invalidate by MVA.
 static inline void cache_invalidate(uint32_t addr, uint32_t size) {
-    addr &= ~0x1Fu;
-    uint32_t end = addr + size + 32;
-    for (; addr < end; addr += 32) {
-        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr)); // invalidate MVA
-    }
+    uint32_t start = addr & ~0x1Fu;
+    uint32_t end = (addr + size + 0x1Fu) & ~0x1Fu;
+    volatile uint32_t* l2 = (volatile uint32_t*)PL310_BASE;
+    pl310_sync();
+    for (uint32_t a = start; a < end; a += 32)
+        l2[PL310_CLEAN_INV_PA / 4] = a;
+    pl310_sync();
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t a = start; a < end; a += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(a));  /* DCIMVAC */
     __asm volatile("dsb" ::: "memory");
 }
 
 // Полный цикл тактов/PHY (по uli reference + ICR для AHB burst)
+// r801 (по замечанию владельца): сбрасываем и ставим ТОЛЬКО свои биты (маска),
+// не трогая чужие — U-Boot мог оставить свои значения в битах PHY/USB.
 static void usb_port_hw_init(uint32_t ohci_base) {
     int port_num = (ohci_base == OHCI1_BASE) ? 1 : (ohci_base == OHCI2_BASE) ? 2 : 0;
     if (port_num == 0) return;
 
+    // e/o/phy-rst/phcal/phy-clk — биты ИМЕННО этого порта (см. h3_ccu.h)
     uint32_t e_bit = (1u << (24 + port_num));
     uint32_t o_bit = (1u << (28 + port_num));
     uint32_t phy_rst = (1u << port_num);
     uint32_t phy_cal = (1u << (8 + port_num));
     uint32_t phy_clk = (1u << (16 + port_num));
+    uint32_t mask = e_bit | o_bit | phy_rst | phy_cal | phy_clk;
 
-    H3_CCU->BUS_CLK_GATING0 &= ~(e_bit | o_bit);
+    H3_CCU->BUS_CLK_GATING0  &= ~(e_bit | o_bit);
     H3_CCU->BUS_SOFT_RESET0  &= ~(e_bit | o_bit);
-    H3_CCU->USBPHY_CFG &= ~(phy_rst | phy_cal | phy_clk);
+    H3_CCU->USBPHY_CFG &= ~mask;              /* только свои биты PHY */
     udelay(10000);
 
-    H3_CCU->BUS_CLK_GATING0 |= e_bit | o_bit;
+    H3_CCU->BUS_CLK_GATING0  |= e_bit | o_bit;
     H3_CCU->BUS_SOFT_RESET0  |= e_bit | o_bit;
-    H3_CCU->USBPHY_CFG |= phy_rst | phy_cal | phy_clk;
+    H3_CCU->USBPHY_CFG |= mask;               /* снова только свои */
     udelay(30000);
+    // (замечание владельца: при конфигурации своих регистров маской не менять
+    //  не нужные нам биты — чужие значения U-Boot сохраняются)
 
-    // ICR — AHB burst config (INCR16/8/4), base+0x800
+    // ICR — AHB burst config (INCR16/8/4), base+0x800 (EHCI того же PHY).
+    // Это регистры конфигурации (целиком, не RMW), нужны EHCI-партнёру.
     uint32_t ehci_base = (port_num == 1) ? 0x01C1B000u : 0x01C1C000u;
     volatile uint32_t* icr = (volatile uint32_t*)(ehci_base + 0x800);
     icr[0] = 0x00000701u;
@@ -298,9 +343,18 @@ int usb_ohci_init(uint32_t base) {
 
     if (ohci->rev != 0x10) { uart_puts("usb: OHCI dead\n"); return -1; }
 
-    // ---- Init attach-режим: НЕ делаем HCR, чтобы не сбрасывать
-    // head→current в 0 и не терять write-ability ctrlcur
-    // (в этой реализации OHCI ctrlcur read-only после HCR).
+    // ---- r801: снимаем блокеры U-Boot (по замечанию владельца) ----
+    // U-Boot после `usb start`/`usb scan` оставил в HcControlHeadED/
+    // HcControlCurrentED/HcBulkHeadED свои ED в уже освобождённой памяти и
+    // включённые CLE/BLE. HC продолжает обходить чужие списки — наши передачи
+    // не продвигаются (лог r794/r800: ctrlcur на чужом адресе, device gone).
+    // Эталон Bare_linux делает HCR + зануление всех указателей списков.
+    // HCR сбрасывает внутреннее состояние HC (указатели списков, тайминги),
+    // НО НЕ root port — устройство остаётся подключено.
+    ohci->cmdstatus = (1u << 0);                       /* HCR */
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t t = 0; t < 1000u && (ohci->cmdstatus & 1u); t++) udelay(10);
+    udelay(2000);
 
     ohci->intrdisable = 0xFFFFFFFFu;
 
@@ -322,17 +376,24 @@ int usb_ohci_init(uint32_t base) {
     ohci->periodstart = (fi * 9) / 10;
     ohci->lsperiod = 0x628;
 
-    // Пустые списки, но ctrlcur НЕ трогаем — U-Boot что-то там держит
+    // Списки: ВСЕ обнуляем (эталон) — HC не должен ходить по чужим ED U-Boot.
+    // При этом конфигурируем маской (сохраняем не нужные нам биты регистра).
     ohci->bulkhead = 0;
     ohci->bulkcur  = 0;
     ohci->peried   = 0;
+    ohci->ctrlhead = 0;
+    ohci->ctrlcur  = 0;
+    ohci->donehead = 0;
+    g_hcca[idx].donehead = 0;
 
-    // Не трогаем ctrlhead и ctrlcur — пусть остаются, как U-Boot оставил
-    // (U-Boot после usb stop не обязательно их чистит)
+    // OPER (маской: сохраняем биты 0..5 кроме CLE/BLE) + CLE + BLE
+    ohci->ctrl = (ohci->ctrl & ~(3u << 6)) | (2u << 6) | (1u << 4) | (1u << 5);
+    udelay(3000);
 
-    // OPER + CLE
-    ohci->ctrl = (ohci->ctrl & ~(3u << 6)) | (2u << 6) | (1u << 4);
-    udelay(1000);
+    // W1C: снять «залипший» WDH (WritebackDoneHead) и прочие флаги — иначе
+    // HC считает done-очередь не обслуженной и не продвигает списки.
+    ohci->intrstatus = 0xFFFFFFFFu;
+    __asm volatile("dsb" ::: "memory");
 
     ohci->rhstatus = (1u << 16);
     ohci->rhport[0] |= RH_PS_PPS;
@@ -392,10 +453,30 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     (void)ep_in;
     ohci_regs_t* ohci = (ohci_regs_t*)base;
     extern int uart0_printf(const char* fmt, ...);
+    int pi = ohci_idx(base);
+
+    // r801 (владелец: «проверь, снимаем ли мы блокеры»): перед переписыванием
+    // ED гасим CLE и ждём, пока HC дочитает старый ED (ctrlcur==0). Без этого
+    // контроллер застревает на старом ED и все следующие control-передачи
+    // падают. Раньше (r794) ожидание висело, потому что init НЕ чистил
+    // ctrlcur U-Boot'а (не было HCR) — теперь init снимает блокеры (HCR +
+    // обнуление списков), поэтому gating работает как в эталоне Bare_linux.
+    ohci->ctrl &= ~(1u << 4);   /* CLE off */
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t w = 0; w < 2000u && ohci->ctrlcur; w++) udelay(10);
+    // После CLE-off дочитываем зависшую done-очередь (эталон 665-678):
+    // HcDoneHead залипает, пока не снимем WDH.
+    cache_invalidate((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+    if (g_hcca[pi].donehead != 0) {
+        g_hcca[pi].donehead = 0;
+        cache_clean((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+    }
+    ohci->donehead = 0;
+    __asm volatile("dsb" ::: "memory");
+    ohci->intrstatus = (1u << 1);   /* W1C: WDH */
 
     // Используем ED/TD своего порта — у каждого порта свой пул
     // (иначе прерывания/контроль одного порта ломали бы другой).
-    int pi = ohci_idx(base);
     ohci_ed_t* ed = &g_head_ed[pi];
     ohci_td_t* td = &g_td[pi][0];
 
@@ -442,6 +523,16 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
         td_link(t_data, t_dummy);
     }
 
+    // ---- r806: САМОЗАМКНУТЫЙ dummy (эталон usb_ohci.c:474-476). ----
+    // memset обнулил t_dummy->next = 0 (терминатор). На этом H3-OHCI
+    // терминатор НЕ работает — HC ждёт циклического dummy, чтобы завершить
+    // TD через WDH (комментарий эталона в bulk, 623-628). Без самоцикла
+    // status-TD остаётся NotAccessed (лог r805: cc=0/8/15 — SETUP ок,
+    // DATA IN короткий пакет cc=8 DataUnderrun, status не выполнен).
+    t_dummy->cfg = (TD_CC_NOTACC << TD_CC_SHIFT);
+    t_dummy->cbp = t_dummy->be = 0;
+    t_dummy->next = (uint32_t)t_dummy;
+
     // ED голову на setup, хвост на dummy
     ed->head = (uint32_t)t_setup;
     ed->tail = (uint32_t)t_dummy;
@@ -466,34 +557,263 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
     // в памяти + cache_clean не заставляет HC перечитать ED.
     // Перезаписываем head + current при каждой передаче (как в рабочем
     // прототипе) — это гарантирует, что HC увидит новый ED.
+
+    // r801: ОЧИСТИТЬ DONE-ОЧЕРЕДЬ ПЕРЕД ЗАПУСКОМ CONTROL (эталон usb_ohci.c:493).
+    // Если в HCCA.DoneHead/регистре остался TD (например после сбоя bulk),
+    // HC не продвигает НИКАКОЙ список, пока очередь непуста — control висел
+    // на «cc setup=15» / BOT recovery на TIMEOUT.
+    cache_invalidate((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+    if (g_hcca[pi].donehead != 0) {
+        g_hcca[pi].donehead = 0;
+        cache_clean((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+    }
+    ohci->donehead = 0;
+    __asm volatile("dsb" ::: "memory");
+    ohci->intrstatus = (1u << 1);   /* W1C: WDH */
+
     ohci->ctrlhead = (uint32_t)ed;
     ohci->ctrlcur  = (uint32_t)ed;
+    ohci->ctrl |= (1u << 4);        /* CLE: список снова активен (выключали в gating!) */
+    __asm volatile("dsb" ::: "memory");
     ohci->cmdstatus = (1u << 1);   // CLF
 
     // Ждём, пока HC завершит передачу: проверяем CC последнего TD
     // (t_data для data_len=0 — это status phase; для data_len>0 — t_stat).
+    // r802: ОБСЛУЖИВАЕМ done-очередь ВНУТРИ цикла (эталон usb_ohci.c:689).
+    // Пока HcDoneHead/HCCA.DoneHead непусты, HC считает done-очередь неполной:
+    // берёт наш ED в current и СРАЗУ отпускает, TD остаётся NotAccessed
+    // (лог r802: ctrl TIMEOUT cur=0x0 cc=0/15). Чистим ОБА (HCCA с invalidate
+    // + регистр) и снимаем WDH (W1C).
     ohci_td_t* last = (data_len > 0) ? t_stat : t_data;
     uint32_t elapsed = 0;
-    while (1) {
+    for (;;) {
         cache_invalidate((uint32_t)td, sizeof(g_td[0]));
         if ((last->cfg >> TD_CC_SHIFT) != TD_CC_NOTACC) break;
+
+        cache_invalidate((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+        if (g_hcca[pi].donehead != 0 || ohci->donehead != 0) {
+            g_hcca[pi].donehead = 0;
+            cache_clean((uint32_t)&g_hcca[pi], sizeof(g_hcca[0]));
+            ohci->donehead = 0;
+            __asm volatile("dsb" ::: "memory");
+            ohci->intrstatus = (1u << 1);   /* W1C: WDH */
+            __asm volatile("dsb" ::: "memory");
+        }
+
         udelay(1000);
         if (++elapsed > timeout_ms) {
+            uart0_printf("usb: ctrl TIMEOUT a=%u len=%u cmd=0x%X cur=0x%X isr=0x%X cc=%u/%u/%u\n",
+                         addr, (unsigned)data_len,
+                         (unsigned)ohci->cmdstatus, (unsigned)ohci->ctrlcur,
+                         (unsigned)ohci->intrstatus,
+                         (unsigned)(t_setup->cfg >> TD_CC_SHIFT),
+                         (unsigned)(t_data->cfg >> TD_CC_SHIFT),
+                         (unsigned)(last->cfg >> TD_CC_SHIFT));
             return -1;
         }
     }
 
-    // Проверяем CC
+    // Проверяем CC — как эталон (usb_ohci.c:540-544): только setup + last.
+    // Для IN с коротким пакетом (полный дескриптор 18 байт < mps 64) DATA-фаза
+    // завершается cc=8 (DataUnderrun) — это НОРМАЛЬНЫЙ успех, не ошибка.
+    // Проверять t_data отдельно нельзя — фейлил бы все короткие IN.
     uint32_t cc;
     cc = t_setup->cfg >> TD_CC_SHIFT;
     if (cc != TD_CC_NOERR) { uart0_printf("usb: cc setup=%u addr=%u\n", cc, addr); return -1; }
-    cc = t_data->cfg >> TD_CC_SHIFT;
-    if (cc != TD_CC_NOERR) { uart0_printf("usb: cc data=%u addr=%u\n", cc, addr); return -1; }
-    cc = t_stat->cfg >> TD_CC_SHIFT;
+    cc = last->cfg >> TD_CC_SHIFT;
     if (cc != TD_CC_NOERR) { uart0_printf("usb: cc stat=%u addr=%u\n", cc, addr); return -1; }
+    // IN с коротким пакетом (строковые дескрипторы, полный конфиг) — норма;
+    // CC-контроль уже прошёл, данные инвалидируем ниже.
+    (void)t_data;
 
     // IN: инвалидируем кэш для буфера, чтобы прочитать свежие данные (записанные DMA)
     if (data_len > 0 && dir_in) cache_invalidate((uint32_t)data, data_len);
 
     return (int)data_len;
+}
+
+// ---- r788: bulk (для USB Mass Storage через OHCI, FS/LS-флешка) ----
+// Перенос отлаженного паттерна из эталона Bare_linux/src/usb_ohci.c:
+//  - ED = from-TD (направление в TD), dummy-самоцикл, BLE через RMW;
+//  - toggle раздельный по направлениям, переключается после каждой передачи
+//    по числу пакетов;
+//  - перед запуском гасим BLE и ждём bulkcur==0 (HC дочитал ED);
+//  - пауза udelay(200) перед BLE (L2-синхронизация by-PA);
+//  - HALTED сбрасываем только после того, как HC отпустил ED.
+static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
+                         const uint8_t* out, uint8_t* in,
+                         uint32_t len, uint16_t mps, int dir_in) {
+    int idx = ohci_idx(base);
+    if (idx < 0 || len == 0 || mps == 0) return -1;
+    extern int uart0_printf(const char* fmt, ...);
+    ohci_regs_t* ohci = (ohci_regs_t*)base;
+    int di = dir_in ? 1 : 0;
+    ohci_ed_t* ed  = &g_bulk_ed[idx][di];
+    ohci_td_t* td  = &g_bulk_td[idx][di][0];
+    ohci_td_t* dum = &g_bulk_td[idx][di][1];
+    uint8_t tog = g_bulk_toggle[idx][di];
+
+    // Пока HC держит список, ED переписывать нельзя: гасим BLE и ждём.
+    ohci->ctrl &= ~(1u << 5);   /* BLE off */
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
+
+    memset(&g_bulk_td[idx][di], 0, sizeof(g_bulk_td[idx][di]));
+
+    ed->cfg = (uint32_t)(addr & 0x7F)
+            | ((uint32_t)(ep & 0x0F) << 7)
+            | ED_FROM_TD
+            | ((uint32_t)mps << 16);
+    ed->next = 0;
+
+    // IN: БЕЗ TD_R — иначе завершение по первому NAK и недочитывание блока.
+    td->cfg = (TD_CC_NOTACC << TD_CC_SHIFT)
+            | (tog ? TD_T_DATA1 : TD_T_DATA0)
+            | (dir_in ? TD_DP_IN : TD_DP_OUT);
+    td->cbp = (uint32_t)(uintptr_t)(dir_in ? in : out);
+    td->be  = td->cbp + len - 1;
+    td->next = (uint32_t)(uintptr_t)dum;
+
+    dum->cfg = (TD_CC_NOTACC << TD_CC_SHIFT);
+    dum->cbp = dum->be = 0;
+    dum->next = (uint32_t)(uintptr_t)dum;   /* САМОЦИКЛ dummy — как в control-пути */
+
+    ed->cfg |= ED_SKIP;
+    cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
+    ed->head = (uint32_t)(uintptr_t)td;
+    ed->tail = (uint32_t)(uintptr_t)dum;
+    cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
+    ed->cfg &= ~ED_SKIP;
+    cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
+    cache_clean((uint32_t)(uintptr_t)&g_bulk_td[idx][di], sizeof(g_bulk_td[idx][di]));
+    if (!dir_in) cache_clean((uint32_t)(uintptr_t)out, len);
+    __asm volatile("dmb" ::: "memory");
+
+    // Пауза перед запуском списка (L2 sync + запись ED/TD в DRAM).
+    udelay(200);
+
+    /* ЗЕРКАЛЬНО control-пути: bulkhead/bulkcur = адрес ED, BLE через RMW,
+       затем done-очередь и только потом BLF (эталон usb_ohci.c:648-701).
+       Порядок ВАЖЕН: снять WDH ДО включения BLE (наш прошлый вариант) —
+       HC успевает прочитать старый ED; эталон включает BLE, потом чистит
+       done, потом BLF. */
+    ohci->bulkhead = (uint32_t)(uintptr_t)ed;
+    ohci->bulkcur  = (uint32_t)(uintptr_t)ed;
+    ohci->ctrl |= (1u << 5);        /* BLE */
+    __asm volatile("dsb" ::: "memory");
+
+    /* DONE-ОЧЕРЕДЬ ОБЯЗАТЕЛЬНА К ОБНУЛЕНИЮ ДО BLF (эталон 656-678). */
+    cache_invalidate((uint32_t)(uintptr_t)&g_hcca[idx], sizeof(g_hcca[idx]));
+    if (g_hcca[idx].donehead != 0) {
+        g_hcca[idx].donehead = 0;
+        cache_clean((uint32_t)(uintptr_t)&g_hcca[idx], sizeof(g_hcca[idx]));
+    }
+    ohci->donehead = 0;
+    __asm volatile("dsb" ::: "memory");
+    ohci->intrstatus = (1u << 1);   /* W1C: WDH */
+    __asm volatile("dsb" ::: "memory");
+    ohci->cmdstatus = (1u << 2);    /* BLF */
+    __asm volatile("dsb" ::: "memory");
+
+    uint32_t elapsed = 0;
+    for (;;) {
+        // Обслужить done-очередь (иначе HC не продвигает списки).
+        cache_invalidate((uint32_t)(uintptr_t)&g_hcca[idx], sizeof(g_hcca[idx]));
+        if (g_hcca[idx].donehead != 0 || ohci->donehead != 0) {
+            g_hcca[idx].donehead = 0;
+            cache_clean((uint32_t)(uintptr_t)&g_hcca[idx], sizeof(g_hcca[idx]));
+            ohci->donehead = 0;
+            __asm volatile("dsb" ::: "memory");
+            ohci->intrstatus = (1u << 1);
+            __asm volatile("dsb" ::: "memory");
+            ohci->cmdstatus = (1u << 2);
+            __asm volatile("dsb" ::: "memory");
+        }
+        cache_invalidate((uint32_t)(uintptr_t)td, sizeof(td[0]));
+        if (((td->cfg >> TD_CC_SHIFT) & 0xFu) != TD_CC_NOTACC) break;
+        udelay(1000);
+        if (++elapsed > 2000) {
+            uart0_printf("ohci-bulk: TIMEOUT d=%d ep=%d len=%u edcfg=0x%X ctl=0x%X cmd=0x%X isr=0x%X\n"
+                         "  bh=0x%X bcur=0x%X td=0x%X hcca=0x%X fr=%u intr0=0x%X\n",
+                         dir_in, ep, (unsigned)len,
+                         (unsigned)ed->cfg, (unsigned)ohci->ctrl,
+                         (unsigned)ohci->cmdstatus, (unsigned)ohci->intrstatus,
+                         (unsigned)ohci->bulkhead, (unsigned)ohci->bulkcur,
+                         (unsigned)td->cfg, (unsigned)ohci->hcca,
+                         (unsigned)(g_hcca[idx].framenumber & 0xFFFFu),
+                         (unsigned)g_hcca[idx].intr[0]);
+            return -1;
+        }
+    }
+    uint32_t cc = (td->cfg >> TD_CC_SHIFT) & 0xFu;
+    if (dir_in) {
+        cache_invalidate((uint32_t)(uintptr_t)td, sizeof(td[0]));
+        cache_invalidate((uint32_t)(uintptr_t)in, len);
+        uint32_t cbp = td->cbp;
+        uint32_t accepted = len;
+        if (cbp != 0 && td->be >= cbp) accepted = td->be - cbp + 1u;
+        if (cc == TD_CC_NOERR && accepted != len) {
+            uart0_printf("ohci-bulk: short IN got=%u want=%u\n", (unsigned)accepted, (unsigned)len);
+            cc = 0x08u;   /* DataUnderrun: BOT recovery на слое выше */
+        }
+    }
+    if (cc == TD_CC_NOERR) {
+        uint32_t packets = (len + mps - 1) / mps;
+        g_bulk_toggle[idx][di] = (uint8_t)(tog ^ (packets & 1u));
+    }
+    if (cc != TD_CC_NOERR) {
+        uart0_printf("ohci-bulk: fail d=%d ep=%d cc=0x%X len=%u\n", dir_in, ep, cc, (unsigned)len);
+        // Сброс HALTED только после того, как HC отпустил ED.
+        ohci->ctrl &= ~(1u << 5);   /* BLE off */
+        __asm volatile("dsb" ::: "memory");
+        for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
+        ed->head = (uint32_t)(uintptr_t)td;   /* снять Halted */
+        cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
+        g_bulk_toggle[idx][di] = 0;
+        ohci->bulkhead = 0;
+        ohci->bulkcur  = 0;
+        __asm volatile("dsb" ::: "memory");
+    }
+    return (cc == TD_CC_NOERR) ? 0 : -1;
+}
+
+int usb_ohci_bulk_out(uint32_t base, uint8_t addr, uint8_t ep,
+                      const uint8_t* data, uint32_t len, uint16_t mps) {
+    return usb_ohci_bulk(base, addr, ep, data, 0, len, mps, 0);
+}
+
+int usb_ohci_bulk_in(uint32_t base, uint8_t addr, uint8_t ep,
+                     uint8_t* data, uint32_t len, uint16_t mps) {
+    return usb_ohci_bulk(base, addr, ep, 0, data, len, mps, 1);
+}
+
+void usb_ohci_bulk_toggle_reset(uint32_t base) {
+    int idx = ohci_idx(base);
+    if (idx < 0) return;
+    g_bulk_toggle[idx][0] = 0;
+    g_bulk_toggle[idx][1] = 0;
+}
+
+// BOT Reset Recovery через OHCI (control-передачи на устройство):
+// Bulk-Only Reset (0xFF), GET_MAX_LUN, CLEAR_FEATURE(HALT) на оба bulk-EP.
+void usb_ohci_bot_recover(uint32_t base) {
+    extern int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
+                                      const uint8_t* setup, uint8_t setup_len,
+                                      uint8_t* data, uint32_t data_len, int dir_in,
+                                      uint32_t timeout_ms);
+    extern uint8_t usb_msd_get_eps(uint8_t* in, uint8_t* out);
+    uint8_t in_ep = 2, out_ep = 1;   // дефолт (типичные bulk-EP для MSD)
+    usb_msd_get_eps(&in_ep, &out_ep);
+    uint8_t s[8];
+    uint8_t lun = 0;
+
+    s[0]=0xA1; s[1]=0xFE; s[2]=0; s[3]=0; s[4]=0; s[5]=0; s[6]=1; s[7]=0;
+    usb_ohci_ctrl_transfer(base, 1, 0, s, 8, &lun, 1, 1, 1000);
+    s[0]=0x21; s[1]=0xFF; s[2]=0; s[3]=0; s[4]=0; s[5]=0; s[6]=0; s[7]=0;
+    usb_ohci_ctrl_transfer(base, 1, 0, s, 8, 0, 0, 0, 1000);
+    s[0]=0x02; s[1]=0x01; s[2]=0; s[3]=0; s[4]=out_ep; s[5]=0; s[6]=0; s[7]=0;
+    usb_ohci_ctrl_transfer(base, 1, 0, s, 8, 0, 0, 0, 1000);
+    s[4]=in_ep | 0x80;
+    usb_ohci_ctrl_transfer(base, 1, 0, s, 8, 0, 0, 0, 1000);
+    usb_ohci_bulk_toggle_reset(base);
 }

@@ -250,10 +250,20 @@ static int get_report_dev(usb_dev_t* d, uint8_t* buf, int len) {
 }
 
 static void cache_inv(uint32_t addr, uint32_t size) {
-    addr &= ~0x1Fu;
-    uint32_t end = addr + size + 32;
-    for (; addr < end; addr += 32)
-        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(addr));
+    // r807: L2 (PL310) + L1. Только L1-invalidate не уводит строку из L2 в
+    // DRAM — DMA (OHCI interrupt-IN) пишет DRAM напрямую, и без L2 чистки
+    // report-буфер мог остаться stale (та же гонка, что была в usb_ohci.c
+    // до r805: HC «не видел» ED/TD). Симметрично usb_ohci.c.
+    uint32_t start = addr & ~0x1Fu;
+    uint32_t end = (addr + size + 0x1Fu) & ~0x1Fu;
+    volatile uint32_t* l2 = (volatile uint32_t*)0x01C43000u;   /* PL310 */
+    l2[0x730u / 4] = 0;                                        /* CACHE_SYNC */
+    for (volatile int i = 0; i < 1000 && (l2[0x730u / 4] & 1u); i++) ;
+    for (uint32_t a = start; a < end; a += 32)
+        l2[0x7B0u / 4] = a;                                    /* CLEAN_INV_PA */
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t a = start; a < end; a += 32)
+        __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(a)); /* DCIMVAC */
     __asm volatile("dsb" ::: "memory");
 }
 

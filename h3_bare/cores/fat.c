@@ -1,6 +1,11 @@
-// fat.c — минимальный FAT32-ридер для SD-карты (без кэша, PIO-чтение секторов).
-// Поддерживает: корневую директорию и подпапки 1 уровня, 8.3 + LFN (UTF-16),
-// чтение файлов кластерами.
+// fat.c — минимальный FAT32-ридер/писатель (без кэша, PIO-чтение секторов).
+// Поддерживает: корневую директорию и подпапки, 8.3 + LFN (UTF-16), чтение
+// файлов кластерами.
+//
+// r788: блочный источник АБСТРАГИРОВАН (fat_set_block_source). По умолчанию —
+// SD (sd_read/sd_write_sector); кастомный источник (USB-флешка) ставится из
+// main.c. Все чтения идут через blk_read/blk_write — SD и USB неразличимы
+// для FAT. Паттерн — как в эталоне Bare_linux/src/fat.c.
 #include <string.h>
 #include "fat.h"
 #include "sd.h"
@@ -11,6 +16,24 @@ extern int printf(const char* fmt, ...);
 // forward: создание записи директории, сравнение имён (определены ниже)
 static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int is_dot);
 static int name_eq(const char* a, const char* b);
+
+// ---- Блочный источник (r788): SD по умолчанию, USB через fat_set_block_source ----
+// blk_read/blk_write — единственные точки доступа FAT к носителю. SD-вызовы
+// остались в обёртках: если кастомный источник не назначен, читаем SD.
+static fat_blk_read_t  g_blk_rd = 0;
+static fat_blk_write_t g_blk_wr = 0;
+
+static int blk_read(uint32_t lba, void* buf) {
+    return g_blk_rd ? g_blk_rd(lba, buf) : blk_read(lba, buf);
+}
+static int blk_write(uint32_t lba, const void* buf) {
+    return g_blk_wr ? g_blk_wr(lba, buf) : blk_write(lba, buf);
+}
+
+void fat_set_block_source(fat_blk_read_t rd, fat_blk_write_t wr) {
+    g_blk_rd = rd;
+    g_blk_wr = wr;
+}
 
 // ---- BPB (загрузочный сектор) ----
 typedef struct {
@@ -59,7 +82,7 @@ static uint32_t fat_next_cluster(uint32_t cl) {
     if (cl < 2) return 0x0FFFFFFF;
     uint32_t fat_off = cl * 4;
     uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
-    if (sd_read_sector(sec, g_sector) < 0) return 0x0FFFFFFF;
+    if (blk_read(sec, g_sector) < 0) return 0x0FFFFFFF;
     uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
     return v;
 }
@@ -94,7 +117,7 @@ static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t 
         uint32_t want    = len - done;
         if (want > avail) want = avail;
         while (want > 0) {
-            if (sd_read_sector(sec_off, g_sector) < 0) return done;
+            if (blk_read(sec_off, g_sector) < 0) return done;
             uint32_t n = 512 - in_sec;
             if (n > want) n = want;
             memcpy(buf + done, g_sector + in_sec, n);
@@ -199,7 +222,7 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
     while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t sec = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
-            if (sd_read_sector(sec + s, g_sector) < 0) return count;
+            if (blk_read(sec + s, g_sector) < 0) return count;
             for (int i = 0; i < 512; i += 32) {
                 const uint8_t* e = g_sector + i;
                 int r = parse_dir_entry(e, &out[count], lfn, &lfn_len);
@@ -229,7 +252,7 @@ int fat_init(void) {
     uint32_t part_lba = 0;
     int part_idx = -1;
 
-    if (sd_read_sector(0, g_sector) < 0) return -1;
+    if (blk_read(0, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
 
     // --- Сбор всех FAT32-разделов (MBR + GPT) в список ---
@@ -259,7 +282,7 @@ int fat_init(void) {
     if (mbr_is_protective) {
         uint8_t gpthdr[512];
         // GPT header в LBA 1
-        if (sd_read_sector(1, gpthdr) == 0 &&
+        if (blk_read(1, gpthdr) == 0 &&
             memcmp(gpthdr, "EFI PART", 8) == 0) {
             uint32_t tbl_lba = le32(gpthdr + 72); // partition entry array LBA
             uint32_t nentries = le32(gpthdr + 80);
@@ -277,7 +300,7 @@ uint32_t off = (e * esize) % 512;
             // стекового буфера tbl[512] — обрываем цикл.
             if ((uint32_t)off + 40 > 512) break;
             if (off == 0) {
-                if (sd_read_sector(sec, tbl) < 0) break;
+                if (blk_read(sec, tbl) < 0) break;
             }
                 // Тип GUID — FAT32 / basic data: EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
                 // LBA первое (48 бит) на offset 32 в запись
@@ -304,7 +327,7 @@ uint32_t off = (e * esize) % 512;
     // Сначала проверяем все кроме первого (системный = первый по счёту)
     for (int pi = 1; pi < part_count; pi++) {
         uint32_t lba = plt_start[pi];
-        if (sd_read_sector(lba, g_sector) < 0) continue;
+        if (blk_read(lba, g_sector) < 0) continue;
         if (le16(g_sector + 510) != 0xAA55) continue;
         if (le16(g_sector + 11) != 512) continue;
 
@@ -349,7 +372,7 @@ uint32_t off = (e * esize) % 512;
     }
 
     // Инициализируем выбранный раздел
-    if (sd_read_sector(part_lba, g_sector) < 0) return -1;
+    if (blk_read(part_lba, g_sector) < 0) return -1;
     if (le16(g_sector + 510) != 0xAA55) return -1;
     if (le16(g_sector + 11) != 512) return -1;
 
@@ -408,7 +431,7 @@ static uint32_t find_free_cluster(void) {
     for (uint32_t cl = 2; cl < 2 + g_total_clusters; cl++) {
         uint32_t fat_off = cl * 4;
         uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
-        if (sd_read_sector(sec, g_sector) < 0) return 0;
+        if (blk_read(sec, g_sector) < 0) return 0;
         uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
         if (v == 0) return cl;
     }
@@ -422,14 +445,14 @@ static int fat_set_cluster(uint32_t cl, uint32_t val) {
     uint32_t off = fat_off % 512;
     for (uint32_t copy = 0; copy < g_num_fats; copy++) {
         uint32_t s = sec + copy * g_fat_size;
-        if (sd_read_sector(s, g_sector) < 0) return -1;
+        if (blk_read(s, g_sector) < 0) return -1;
         uint32_t v = le32(g_sector + off) & 0xF0000000; // сохранить старшие 4 бита
         v |= (val & 0x0FFFFFFF);
         g_sector[off] = v & 0xFF;
         g_sector[off+1] = (v >> 8) & 0xFF;
         g_sector[off+2] = (v >> 16) & 0xFF;
         g_sector[off+3] = (v >> 24) & 0xFF;
-        if (sd_write_sector(s, g_sector) < 0) return -1;
+        if (blk_write(s, g_sector) < 0) return -1;
     }
     return 0;
 }
@@ -480,7 +503,7 @@ static void make_lfn_fragment(uint8_t* e, int seq, const char* name, int start, 
 static int find_free_entries(uint32_t cl, int count, uint32_t* first_sec, int* first_off) {
     uint32_t base = cluster_to_sector(cl);
     for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
-        if (sd_read_sector(base + s, g_sector) < 0) return -1;
+        if (blk_read(base + s, g_sector) < 0) return -1;
         for (int off = 0; off + 32 * count <= 512; off += 32) {
             int ok = 1;
             for (int j = 0; j < count; j++) {
@@ -500,7 +523,7 @@ static int find_free_entry(uint32_t cl, uint32_t* sec_out, int* off_out) {
     while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t base = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
-            if (sd_read_sector(base + s, g_sector) < 0) return -1;
+            if (blk_read(base + s, g_sector) < 0) return -1;
             for (int i = 0; i < 512; i += 32) {
                 uint8_t first = g_sector[i];
                 if (first == 0x00 || first == 0xE5) {
@@ -537,14 +560,14 @@ int fat_mkdir(const char* parent_path, const char* name) {
     make_dir_entry(zero, ".", new_cl, 1);
     // вторая ".."
     make_dir_entry(zero + 32, "..", parent.first_cluster, 2);
-    if (sd_write_sector(new_sec, zero) < 0) return -1;
+    if (blk_write(new_sec, zero) < 0) return -1;
     // остальные секторы кластера — ЧИСТЫЕ нули. Раньше сюда писался тот же
     // `zero` с ".", "..", из-за чего каждый сектор кластера выглядел как
     // начало директории и на ПК/в парсерах появлялись мусорные записи.
     uint8_t empty[512];
     memset(empty, 0, 512);
     for (uint32_t s = 1; s < g_sec_per_cluster; s++) {
-        if (sd_write_sector(new_sec + s, empty) < 0) return -1;
+        if (blk_write(new_sec + s, empty) < 0) return -1;
     }
 
     // 4. Отметить в FAT: новый кластер = END (0x0FFFFFFF)
@@ -579,7 +602,7 @@ int fat_mkdir(const char* parent_path, const char* name) {
         if (find_free_entry(parent.first_cluster, &dummy_sec, &off) < 0)
             return -1;
     }
-    if (sd_read_sector(dummy_sec, g_sector) < 0) return -1;
+    if (blk_read(dummy_sec, g_sector) < 0) return -1;
 
     // 8.3 имя (заглавное, короткое) — им же считаем checksum
     uint8_t short83[11];
@@ -601,7 +624,7 @@ int fat_mkdir(const char* parent_path, const char* name) {
     } else {
         make_dir_entry(g_sector + off, name, new_cl, 0);
     }
-    if (sd_write_sector(dummy_sec, g_sector) < 0) return -1;
+    if (blk_write(dummy_sec, g_sector) < 0) return -1;
 
     return 0;
 }
@@ -637,7 +660,7 @@ int fat_delete_file(const char* dir, const char* name) {
     while (cl && cl < 0x0FFFFFF8 && !found && walk_guard++ < clim) {
         uint32_t base = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster && !found; s++) {
-            if (sd_read_sector(base + s, g_sector) < 0) return -1;
+            if (blk_read(base + s, g_sector) < 0) return -1;
             for (int i = 0; i < 512 && !found; i += 32) {
                 uint8_t first = g_sector[i];
                 uint8_t attr = g_sector[i + 11];
@@ -720,15 +743,15 @@ int fat_delete_file(const char* dir, const char* name) {
 
     // Пометить 0xE5 все LFN-фрагменты найденного файла
     for (int k = 0; k < lfn_cnt; k++) {
-        if (sd_read_sector(lfn_lba[k], g_sector) < 0) continue;
+        if (blk_read(lfn_lba[k], g_sector) < 0) continue;
         g_sector[lfn_off[k]] = 0xE5;
-        if (sd_write_sector(lfn_lba[k], g_sector) < 0) return -1;
+        if (blk_write(lfn_lba[k], g_sector) < 0) return -1;
     }
 
     // Теперь пометить 0xE5 саму 8.3 запись (уже после LFN, чтобы не перезатереть)
-    if (sd_read_sector(entry_sec, g_sector) < 0) return -1;
+    if (blk_read(entry_sec, g_sector) < 0) return -1;
     g_sector[entry_off] = 0xE5;
-    if (sd_write_sector(entry_sec, g_sector) < 0) return -1;
+    if (blk_write(entry_sec, g_sector) < 0) return -1;
 
     // Освободить кластеры файла в обеих FAT (с защитой от цикла в цепочке)
     uint32_t fc = target_first;
@@ -834,10 +857,10 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
             if (chunk > 512) chunk = 512;
             if (chunk < 512) {
                 // последний сектор — читаем, правим хвост, пишем (сохранить остаток сектора)
-                if (sd_read_sector(sec + s, buf) < 0) return -1;
+                if (blk_read(sec + s, buf) < 0) return -1;
             }
             memcpy(buf, data + pos, chunk);
-            if (sd_write_sector(sec + s, buf) < 0) return -1;
+            if (blk_write(sec + s, buf) < 0) return -1;
             pos += chunk;
         }
         cl = fat_next_cluster(cl);
@@ -846,7 +869,7 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
     // 5. Запись в директорию (спрашиваем свободную запись: 1 = 8.3, без LFN)
     uint32_t dentry_sec; int dentry_off;
     if (find_free_entry(parent.first_cluster, &dentry_sec, &dentry_off) < 0) return -1;
-    if (sd_read_sector(dentry_sec, g_sector) < 0) return -1;
+    if (blk_read(dentry_sec, g_sector) < 0) return -1;
 
     // 8.3 имя: до 8 символов + '.' + до 3 расширение, в верхнем регистре
     uint8_t short83[11];
@@ -881,7 +904,7 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
     g_sector[dentry_off + 31] = (len >> 24) & 0xFF;
     memcpy(g_sector + dentry_off, short83, 11);
 
-    if (sd_write_sector(dentry_sec, g_sector) < 0) return -1;
+    if (blk_write(dentry_sec, g_sector) < 0) return -1;
 
     return (int)len;
 }
