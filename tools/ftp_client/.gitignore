@@ -1,0 +1,4 @@
+# Артефакты сборки PyInstaller — не коммитить
+build/
+*.spec
+__pycache__/

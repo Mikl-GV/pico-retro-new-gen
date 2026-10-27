@@ -101,6 +101,13 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                        const uint8_t* src_ip, const uint8_t* src_mac, void* ctx)
 {
     (void)src_ip; (void)src_mac; (void)ctx;
+    // r809: сигнал "TCP-connect" (data==NULL, len==0) — слать приглашение 220.
+    // Windows-проводник ждёт баннер сразу после установки соединения;
+    // без него FTP-подключение виснет (проводник молча ждёт 220).
+    if (!data || len == 0) {
+        ftp_send_ctrl("220 MultiTool FTP ready\r\n");
+        return 0;
+    }
     static char line[256];
     static uint16_t ll = 0;
     for (uint16_t i = 0; i < len; i++) {

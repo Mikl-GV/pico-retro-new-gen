@@ -25,3 +25,13 @@ emulator-refs/
 # BIOS-Р±РёРЅР°СЂРЅРёРєРё, РєРѕС‚РѕСЂС‹Рµ .S-С„Р°Р№Р»С‹ РІС€РёРІР°СЋС‚ С‡РµСЂРµР· .incbin (РЅСѓР¶РЅС‹ РґР»СЏ СЃР±РѕСЂРєРё РёР· РєР»РѕРЅР°):
 !h3_bare/cores/gba_sp/bios/open_gba_bios.bin
 !h3_bare/cores/gearcoleco/coleco_bios.bin
+
+# PyInstaller-артефакты и spec: не пушим
+*.spec
+tools/ftp_client/build/
+tools/ftp_client/dist/
+tools/ftp_client/__pycache__/
+
+
+# Локальные ярлыки
+*.lnk
