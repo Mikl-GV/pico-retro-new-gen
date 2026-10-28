@@ -50,6 +50,19 @@ def log(msg):
         pass
 
 
+def human_size(n):
+    """Размер для подписи прогресса: 512 Б / 12.3 КБ / 4.5 МБ."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 1024:
+        return f"{int(n)} Б"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} КБ"
+    return f"{n / (1024 * 1024):.2f} МБ"
+
+
 def get_local_drives():
     """Список локальных дисков Windows (C:, D:, ...)."""
     drives = []
@@ -58,6 +71,47 @@ def get_local_drives():
         if os.path.isdir(p):
             drives.append(p)
     return drives or ["C:\\"]
+
+
+def get_local_networks():
+    """Все IPv4-адреса локальных интерфейсов + их подсети /24.
+    Без жёсткой привязки к одному интерфейсу: парсим ipconfig (Windows),
+    чтобы увидеть ВСЕ адаптеры (WiFi 10.233.48.x, Ethernet 192.168.x.x ...)."""
+    import subprocess
+    nets = {}
+    try:
+        out = subprocess.check_output("ipconfig", creationflags=0x08000000,
+                                      text=True, errors="ignore")
+    except OSError:
+        out = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if "IPv4" not in line and "IP Address" not in line:
+            continue
+        # "   IPv4-адрес. . . . . . . . . . . . . : 10.233.48.92"
+        if ":" in line:
+            ip = line.split(":", 1)[1].strip()
+        else:
+            parts = line.split()
+            ip = parts[-1] if parts else ""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_link_local:
+            continue
+        nets[ip] = ipaddress.ip_network(f"{ip}/24", strict=False)
+    if not nets:
+        # fallback: UDP-socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            nets[ip] = ipaddress.ip_network(f"{ip}/24", strict=False)
+        except OSError:
+            pass
+    return list(nets.items())
 
 
 def fmt_size(n):
@@ -163,15 +217,21 @@ class FtpPanel:
     def connected(self):
         return self.ftp is not None
 
-    def connect(self, host, port=21):
+    def connect(self, host, port=21, source_ip=None):
         try:
             ftp = ftplib.FTP()
             # Проверка: при connect() ftplib читает баннер 220. Свой FTP-сервер
             # шлёт "220 MultiTool FTP ready" — по маркеру MultiTool отличаем
-            # консоль от чужого FTP.
-            ftp.connect(host, port, timeout=8)
+            # консоль от чужого FTP. source_ip — интерфейс, через который идём
+            # (иначе при нескольких сетях ответы теряются на default-маршруте).
+            ftp.connect(host, port, timeout=8,
+                        source_address=(source_ip, 0) if source_ip else None)
             ftp.login("user", "pass")
             ftp.set_pasv(True)
+            # Запись блока в FAT на консоли может занимать секунды (USB).
+            # Ставим большой таймаут, иначе клиент рвёт соединение,
+            # пока консоль ещё пишет файл.
+            ftp.timeout = 30
             self.ftp = ftp
             self.host = host
             return True, ""
@@ -252,10 +312,9 @@ class FtpPanel:
             return False, "не подключено"
         try:
             base = self.cwd.rstrip("/")
-            self.ftp.cwd(base + "/" + name.strip("/"))
-            self.cwd = self.ftp.pwd()
-            if not self.cwd.startswith("/roms"):
-                self.cwd = "/roms"
+            newpath = base + "/" + name.strip("/")
+            self.ftp.cwd(newpath)
+            self.cwd = newpath          # r818: не зависим от разбора PWD
             return self.refresh()
         except Exception as e:
             return False, f"{e}"
@@ -263,11 +322,17 @@ class FtpPanel:
     def up(self):
         if not self.ftp:
             return False, "не подключено"
+        # r818: сервер не нормализует "..", поэтому родителя считаем сами
+        # и шлём АБСОЛЮТНЫЙ путь (CWD поддерживает абсолютные).
+        cur = self.cwd.rstrip("/") or "/roms"
+        if cur == "/roms" or cur == "/":
+            return True, ""
+        parent = cur.rsplit("/", 1)[0] or "/roms"
+        if not parent.startswith("/roms"):
+            parent = "/roms"
         try:
-            self.ftp.cwd("..")
-            self.cwd = self.ftp.pwd()
-            if not self.cwd.startswith("/roms"):
-                self.cwd = "/roms"
+            self.ftp.cwd(parent)
+            self.cwd = parent
             return self.refresh()
         except Exception as e:
             return False, f"{e}"
@@ -290,14 +355,19 @@ class FtpPanel:
             return False, f"{e}"
 
 
-def find_console_worker(ip, port, found, done, open_ports):
+def find_console_worker(ip, port, found, done, open_ports, source_ip=None):
     """Проверить один адрес: открыт ли FTP и шлёт ли баннер 'MultiTool'.
     Баннер может идти с задержкой (WiFi-очередь) — читаем НЕСКОЛЬКО раз
     с накоплением до ~2 сек. Любой открытый :21 кладём в open_ports — для
-    диагностики (видно, что консоль отвечает, даже если маркер упущен)."""
+    диагностики (видно, что консоль отвечает, даже если маркер упущен).
+    source_ip — локальный IP интерфейса, через который идём к адресу
+    (DBind): если у машины несколько сетей, без бинда обратные пакеты
+    уходят через default-маршрут и теряются."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(0.8)
     try:
+        if source_ip:
+            s.bind((source_ip, 0))
         s.connect((ip, port))
         open_ports.append(ip)           # порт открыт — кандидат
         s.settimeout(1.2)
@@ -348,7 +418,7 @@ class TwinApp:
         top.pack(fill="x")
         ttk.Button(top, text="\u2315 Найти консоль", command=self.auto_find).pack(side="left")
         ttk.Label(top, text="IP консоли:").pack(side="left", padx=(10, 2))
-        self.ip_var = tk.StringVar(value="10.233.48.44")
+        self.ip_var = tk.StringVar(value="")
         ttk.Entry(top, textvariable=self.ip_var, width=16, font=self.font).pack(side="left", padx=2)
         ttk.Button(top, text="Подключить", command=self.connect_remote).pack(side="left", padx=2)
         ttk.Button(top, text="Отключить", command=self.disconnect_remote).pack(side="left", padx=2)
@@ -422,6 +492,11 @@ class TwinApp:
 
         self.progress = ttk.Progressbar(bottom, mode="determinate")
         self.progress.pack(side="right", fill="x", expand=True, padx=6)
+        # Явный индикатор завершения: прогресс-бар сам по себе не говорит,
+        # закончилась передача или встала — показываем процент/«Готово».
+        self.progress_var = tk.StringVar(value="")
+        ttk.Label(bottom, textvariable=self.progress_var, width=26,
+                  anchor="e").pack(side="right")
 
         root.bind("<Tab>", lambda e: self.switch_pane())
         root.bind("<BackSpace>", lambda e: self.go_up())
@@ -529,17 +604,26 @@ class TwinApp:
     def connect_remote(self):
         ip = self.ip_var.get().strip()
         if not ip:
+            self.set_status("Впиши IP консоли или нажми «Найти консоль»")
+            log("Подключение: поле IP пустое")
             return
         self.set_status(f"Подключение к {ip}...")
         threading.Thread(target=self._connect_worker, args=(ip,), daemon=True).start()
 
     def _connect_worker(self, ip):
-        ok, err = self.rpanel.connect(ip)
+        # Выбрать интерфейс, в подсети которого адрес консоли (иначе при
+        # нескольких сетях обратные пакеты уходят через default-маршрут)
+        source_ip = None
+        for local_ip, net in get_local_networks():
+            if ipaddress.ip_address(ip) in net:
+                source_ip = local_ip
+                break
+        ok, err = self.rpanel.connect(ip, source_ip=source_ip)
         if not ok:
             self.root.after(0, lambda: self.set_status(f"Нет консоли на {ip}: {err}"))
-            log(f"Подключение к {ip} НЕ удалось: {err}")
+            log(f"Подключение к {ip} (через {source_ip or 'default'}) НЕ удалось: {err}")
             return
-        log(f"Подключено к {ip}")
+        log(f"Подключено к {ip} (через {source_ip or 'default'})")
         self.root.after(0, self._connected)
 
     def _connected(self):
@@ -556,39 +640,41 @@ class TwinApp:
         threading.Thread(target=self._auto_find_worker, daemon=True).start()
 
     def _auto_find_worker(self):
-        # своя IP через UDP-сокет
-        ip = None
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-        except OSError:
-            ip = None
-        if not ip:
+        # Все локальные интерфейсы (не жёсткий один через UDP-сокет):
+        # консоль может быть в любой подсети (10.233.48.x / 192.168.x.x ...)
+        nets = get_local_networks()
+        if not nets:
             self.root.after(0, lambda: self.set_status("Не определил свою сеть — впиши IP консоли вручную"))
-            log("Автопоиск: не определён свой IP (нет сети?)")
+            log("Автопоиск: не определён ни один локальный IP")
             return
-        net = ipaddress.ip_network(f"{ip}/24", strict=False)
-        addrs = [str(h) for h in net.hosts()]
-        # свои адрес пропустить, но порядок: попробовать последний октет рядом
-        addrs = [a for a in addrs if a != ip]
-        addrs.sort(key=lambda a: abs(int(a.split(".")[-1]) - int(ip.split(".")[-1])))
-        addrs = addrs[:MAX_SCAN_HOSTS]
+
+        # Собираем (адрес, локальный_ip_интерфейса) из ВСЕХ подсетей
+        jobs = []   # (host, source_ip)
+        log_txt = []
+        for local_ip, net in nets:
+            addrs = [str(h) for h in net.hosts()]
+            addrs = [a for a in addrs if a != local_ip]
+            # порядок: ближайшие к себе
+            oct = int(local_ip.split(".")[-1])
+            addrs.sort(key=lambda a: abs(int(a.split(".")[-1]) - oct))
+            for a in addrs[:MAX_SCAN_HOSTS]:
+                jobs.append((a, local_ip))
+            log_txt.append(f"{net} (через {local_ip})")
         self.root.after(0, lambda: self.set_status(
-            f"Автопоиск: сканирую {net} (ищу FTP с маркером MultiTool)..."))
-        log(f"Автопоиск: свой IP {ip}, сканирую {net}, адресов={len(addrs)}")
+            f"Автопоиск: сканирую {len(jobs)} адресов в {len(nets)} подсетях..."))
+        log(f"Автопоиск: подсети {log_txt}, адресов={len(jobs)}")
 
         found = []
         open_ports = []
         done = []
-        threads = []
-        step = max(1, len(addrs) // 30)   # до 30 одновременных
-        for block in range(0, len(addrs), step):
-            batch = addrs[block:block + step]
-            for a in batch:
+        step = max(1, len(jobs) // 30)   # до 30 одновременных
+        for block in range(0, len(jobs), step):
+            batch = jobs[block:block + step]
+            threads = []
+            for a, src in batch:
                 t = threading.Thread(target=find_console_worker,
-                                     args=(a, 21, found, done, open_ports), daemon=True)
+                                     args=(a, 21, found, done, open_ports, src),
+                                     daemon=True)
                 t.start()
                 threads.append(t)
             for t in threads:
@@ -633,26 +719,62 @@ class TwinApp:
             return
         name, isd, sz = e
         self.set_status(f"Копирование {name}...")
-        threading.Thread(target=self._copy_worker, args=(src, dst, name, isd, direction), daemon=True).start()
+        self.set_progress(0, sz, "0 %")
+        threading.Thread(target=self._copy_worker,
+                         args=(src, dst, name, isd, direction, sz), daemon=True).start()
 
-    def _copy_worker(self, src, dst, name, isd, direction):
+    def _copy_worker(self, src, dst, name, isd, direction, total_hint=0):
         if isinstance(dst, FtpPanel) and isinstance(src, LocalPanel):
             # ПК -> консоль
+            path = src.full_path(name)
             try:
-                with open(src.full_path(name), "rb") as f:
-                    d = dst.ftp.storbinary("STOR " + name, f)
-                self.root.after(0, lambda: self.set_status(f"Загружено на консоль: {name}"))
+                total = os.path.getsize(path)
+            except OSError:
+                total = 0
+            done = [0]
+
+            def cb(buf):
+                done[0] += len(buf)
+                self.set_progress(done[0], total,
+                                  f"{human_size(done[0])} / {human_size(total)}")
+
+            try:
+                self.set_progress(0, total, "0 %")
+                with open(path, "rb") as f:
+                    dst.ftp.storbinary("STOR " + name, f, blocksize=8192, callback=cb)
+                fin = total or done[0]
+                self.set_progress(fin, fin, "Готово")
+                self.root.after(0, lambda: self.set_status(
+                    f"ГОТОВО: загружено на консоль — {name} ({human_size(fin)})"))
+                log(f"STOR завершён: {name} ({fin} байт)")
             except Exception as e:
+                self.set_progress(0, 0, "ошибка")
                 self.root.after(0, lambda: self.set_status(f"Ошибка загрузки: {e}"))
+                log(f"STOR ОШИБКА: {name}: {e}")
         else:
             # консоль -> ПК
+            total = total_hint or 0
+            done = [0]
+
             try:
                 path = os.path.join(dst.cwd, name)
+                self.set_progress(0, total, "0 %")
                 with open(path, "wb") as f:
-                    src.ftp.retrbinary("RETR " + name, f.write)
-                self.root.after(0, lambda: self.set_status(f"Скачано на ПК: {name}"))
+                    def cb(buf):
+                        f.write(buf)          # данные обязательно в файл
+                        done[0] += len(buf)
+                        self.set_progress(done[0], total,
+                                          f"{human_size(done[0])} / {human_size(total)}")
+                    src.ftp.retrbinary("RETR " + name, cb)
+                fin = done[0]
+                self.set_progress(fin, fin, "Готово")
+                self.root.after(0, lambda: self.set_status(
+                    f"ГОТОВО: скачано на ПК — {name} ({human_size(fin)})"))
+                log(f"RETR завершён: {name} ({fin} байт)")
             except Exception as e:
+                self.set_progress(0, 0, "ошибка")
                 self.root.after(0, lambda: self.set_status(f"Ошибка скачивания: {e}"))
+                log(f"RETR ОШИБКА: {name}: {e}")
         self.root.after(0, self.refresh_all)
 
     def delete(self):
@@ -712,6 +834,19 @@ class TwinApp:
 
     def set_status(self, s):
         self.status_var.set(s)
+
+    def set_progress(self, done, total, text=None):
+        """Бар и подпись; вызывается из рабочего потока — через after()."""
+        def _upd():
+            if total and total > 0:
+                self.progress["value"] = min(100.0, done * 100.0 / total)
+            elif text == "Готово":
+                self.progress["value"] = 100.0
+            else:
+                self.progress["value"] = 0.0
+            if text is not None:
+                self.progress_var.set(text)
+        self.root.after(0, _upd)
 
 
 def main():

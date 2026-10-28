@@ -69,6 +69,40 @@ static uint32_t g_part_lba;     // LBA начала FAT-раздела (сдви
 
 static uint32_t le16(const uint8_t* p) { return p[0] | ((uint32_t)p[1] << 8); }
 static uint32_t le32(const uint8_t* p) { return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+static void wr32(uint8_t* p, uint32_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24); }
+
+/* r828: подсказка свободного кластера. Было: find_free_cluster всегда
+   начинал с кластера 2 и линейно перебирал FAT — при STOR на флешке 30 ГБ
+   это десятки тысяч USB-чтений (запись 8 КБ шла секунды-десятки секунд).
+   Теперь старт с последнего выделенного (FSInfo.next_free, как в Windows),
+   полученное значение сохраняется обратно в FSInfo. */
+static uint32_t g_free_hint = 2;
+static uint32_t g_free_count = 0xFFFFFFFFu;
+static uint32_t g_fsinfo_sec = 0;   /* номер сектора FSInfo внутри раздела */
+
+/* Загрузить next_free/free_count из FSInfo (FAT32). Невалидный — остаёмся
+   на дефолте (поиск с кластера 2). */
+static void fsinfo_load(void) {
+    if (!g_fsinfo_sec) return;
+    uint8_t b[512];
+    if (blk_read(g_part_lba + g_fsinfo_sec, b) < 0) return;
+    if (le32(b) != 0x41615252u || le32(b + 484) != 0x61417272u) return;
+    uint32_t nf = le32(b + 492);
+    if (nf >= 2 && nf < 2 + g_total_clusters) g_free_hint = nf;
+    g_free_count = le32(b + 488);
+}
+
+/* Сохранить next_free/free_count в FSInfo. */
+static void fsinfo_store(void) {
+    if (!g_fsinfo_sec) return;
+    uint8_t b[512];
+    uint32_t sec = g_part_lba + g_fsinfo_sec;
+    if (blk_read(sec, b) < 0) return;
+    if (le32(b) != 0x41615252u || le32(b + 484) != 0x61417272u) return;
+    wr32(b + 488, g_free_count);
+    wr32(b + 492, g_free_hint);
+    blk_write(sec, b);
+}
 
 // ---- кластер -> сектор (с учётом сдвига раздела) ----
 static uint32_t cluster_to_sector(uint32_t cl) {
@@ -76,14 +110,29 @@ static uint32_t cluster_to_sector(uint32_t cl) {
 }
 
 // ---- чтение следующего кластера по FAT ----
+/* r827: кэш ОДНОГО сектора FAT. Было: find_free_cluster/fat_next_cluster
+   читали сектор FAT через USB на КАЖДЫЙ кластер (128 кластеров на сектор ->
+   128 одинаковых USB-чтений подряд). На флешке 1.87 млн кластеров поиск
+   свободного кластера при STOR растягивался на минуты и выглядел как
+   зависание прошивки. Кэш сбрасывается после записи в FAT (fat_set_cluster). */
+static uint32_t fat_cache_sec = 0xFFFFFFFFu;
+static uint8_t  fat_cache[512];
+
+static int fat_sector_cached(uint32_t sec) {
+    if (sec == fat_cache_sec) return 0;
+    if (blk_read(sec, fat_cache) < 0) { fat_cache_sec = 0xFFFFFFFFu; return -1; }
+    fat_cache_sec = sec;
+    return 0;
+}
+
 static uint32_t fat_next_cluster(uint32_t cl) {
     // P30: кластеры начинаются с 2; cl<2 = служебные записи FAT (0/1) —
     // не читаем их как кластеры, сразу обрыв цепочки.
     if (cl < 2) return 0x0FFFFFFF;
     uint32_t fat_off = cl * 4;
     uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
-    if (blk_read(sec, g_sector) < 0) return 0x0FFFFFFF;
-    uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
+    if (fat_sector_cached(sec) < 0) return 0x0FFFFFFF;
+    uint32_t v = le32(fat_cache + (fat_off % 512)) & 0x0FFFFFFF;
     return v;
 }
 
@@ -206,6 +255,7 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
 
     out->first_cluster = le16(e + 26) | (le16(e + 20) << 16);
     out->size = (short_attr & 0x10) ? 0 : le32(e + 28);
+    out->attr = short_attr;      // r818: сохраняем атрибут (0x10 = каталог)
     lfn[0] = 0;
     *lfn_len = 0;
     return 1;
@@ -394,6 +444,12 @@ uint32_t off = (e * esize) % 512;
     if (g_data_start >= total_sectors) return -1;
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
 
+    /* r828: FSInfo — подсказка next_free для быстрого поиска свободного
+       кластера (без неё запись начинала линейный обход с кластера 2). */
+    g_fsinfo_sec = le16(g_sector + 48);
+    if (g_fsinfo_sec == 0 || g_fsinfo_sec == 0xFFFF) g_fsinfo_sec = 1;
+    fsinfo_load();
+
     printf("FAT: part LBA=%u sec/clu=%u reserved=%u fats=%u fat_size=%u root_clu=%u data_start=%u total_clu=%u\n",
            part_lba, g_sec_per_cluster, g_reserved, g_num_fats, g_fat_size,
            g_root_cluster, g_data_start, g_total_clusters);
@@ -428,12 +484,24 @@ static void make_short_name(const char* name, uint8_t* out83) {
 
 // поиск свободного кластера (по FAT), возвращает номер или 0
 static uint32_t find_free_cluster(void) {
-    for (uint32_t cl = 2; cl < 2 + g_total_clusters; cl++) {
-        uint32_t fat_off = cl * 4;
-        uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
-        if (blk_read(sec, g_sector) < 0) return 0;
-        uint32_t v = le32(g_sector + (fat_off % 512)) & 0x0FFFFFFF;
-        if (v == 0) return cl;
+    /* r827: чтение сектора FAT через кэш. r828: старт с подсказки FSInfo —
+       первый же свободный кластер обычно рядом с последним выделенным. */
+    uint32_t start = g_free_hint;
+    if (start < 2 || start >= 2 + g_total_clusters) start = 2;
+    for (uint32_t pass = 0; pass < 2; pass++) {
+        uint32_t from = (pass == 0) ? start : 2;
+        uint32_t to   = (pass == 0) ? (2 + g_total_clusters) : start;
+        for (uint32_t cl = from; cl < to; cl++) {
+            uint32_t fat_off = cl * 4;
+            uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
+            if (fat_sector_cached(sec) < 0) return 0;
+            uint32_t v = le32(fat_cache + (fat_off % 512)) & 0x0FFFFFFF;
+            if (v == 0) {
+                g_free_hint = cl + 1;
+                if (g_free_count != 0 && g_free_count != 0xFFFFFFFFu) g_free_count--;
+                return cl;
+            }
+        }
     }
     return 0;
 }
@@ -454,6 +522,8 @@ static int fat_set_cluster(uint32_t cl, uint32_t val) {
         g_sector[off+3] = (v >> 24) & 0xFF;
         if (blk_write(s, g_sector) < 0) return -1;
     }
+    /* r827: FAT изменена — кэш сектора устарел. */
+    fat_cache_sec = 0xFFFFFFFFu;
     return 0;
 }
 
@@ -711,18 +781,25 @@ int fat_delete_file(const char* dir, const char* name) {
                     memcpy(full, lfn, flen);
                     full[flen] = 0;
                 } else {
-                    char n[13];
+                    /* r831: собираем 8.3 ТАК ЖЕ, как read_dir (LIST): пробелы
+                       внутри имени сохраняются, обрезаются только хвостовые.
+                       Раньше здесь стоял обрыв на первом пробеле: файл
+                       "ARCADE A.A26" (из длинного имени) показывался в LIST
+                       как "ARCADE A.A26", а DELE искал "ARCADE.A26" ->
+                       не находил -> 550 delete fail. */
+                    char n8[9], x3[4];
+                    memcpy(n8, g_sector + i, 8); n8[8] = 0;
+                    memcpy(x3, g_sector + i + 8, 3); x3[3] = 0;
+                    for (int k = 7; k >= 0 && n8[k] == ' '; k--) n8[k] = 0;
+                    for (int k = 2; k >= 0 && x3[k] == ' '; k--) x3[k] = 0;
                     int pi = 0;
-                    for (int c = 0; c < 8 && g_sector[i + c] != ' ' && pi < 12; c++)
-                        n[pi++] = (char)g_sector[i + c];
-                    if (attr != 0x10 && g_sector[i + 8] != ' ') {
-                        n[pi++] = '.';
-                        for (int c = 0; c < 3 && g_sector[i + 8 + c] != ' ' && pi < 12; c++)
-                            n[pi++] = (char)g_sector[i + 8 + c];
+                    for (int k = 0; n8[k] && pi < 12; k++) full[pi++] = n8[k];
+                    if (attr != 0x10 && x3[0]) {
+                        full[pi++] = '.';
+                        for (int k = 0; x3[k] && pi < 12; k++) full[pi++] = x3[k];
                     }
+                    full[pi] = 0;
                     flen = pi;
-                    memcpy(full, n, flen);
-                    full[flen] = 0;
                 }
 
                 if (attr != 0x10 && name_eq(full, name)) {   // файл (не папка)
@@ -787,6 +864,7 @@ static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen
     if (*p == 0) {
         out->first_cluster = cluster;
         out->size = 0;
+        out->attr = 0x10;            // r818: корень — каталог
         strcpy(out->name, "/");
         return 1;
     }
@@ -817,24 +895,36 @@ static int path_lookup(const char* path, fat_entry_t* out, char* buf, int buflen
 int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, uint32_t len) {
     if (!dir_path || !name || !name[0]) return -1;
     if (!data && len) return -1;
-    if (len == 0) return 0;   // пустой файл не создаём
+    /* r829: пустой файл (len==0) теперь СОЗДАЁТСЯ: запись каталога с size=0
+       и first_cluster=0. Раньше возвращали успех, но файла на диске не было —
+       FTP отвечал 426 (клиент не мог сохранить 0-байтный файл). */
+    /* r826: пошаговая диагностика записи — STOR виснет после приёма данных,
+       нужно видеть, на каком этапе (поиск каталога / удаление старого /
+       выделение кластеров / данные / запись dirent). */
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr1 start len=%u\r\n", len); }
 
     // 1. Найти родительскую директорию
     char pbuf[FAT_NAME_LEN];
     fat_entry_t parent;
     if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
     if (parent.size != 0) return -1;
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr1a dir ok cl=%u\r\n", parent.first_cluster); }
 
     // 2. Если файл уже есть — удалить (освободить старые кластеры и запись)
     fat_entry_t old;
     if (fat_find(dir_path, name, &old)) {
+        { extern int uart0_printf(const char* fmt, ...);
+          uart0_printf("  fat: wr1b delete old size=%u\r\n", old.size); }
         fat_delete_file(dir_path, name);
     }
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr1c alloc %u cl\r\n", (len + (g_sec_per_cluster*512) - 1) / (g_sec_per_cluster*512)); }
 
-    // 3. Выделить цепочку кластеров
+    // 3. Выделить цепочку кластеров (для пустого файла — ни одного)
     uint32_t cl_size = g_sec_per_cluster * 512;
-    uint32_t need_cl = (len + cl_size - 1) / cl_size;
-    if (need_cl == 0) need_cl = 1;
+    uint32_t need_cl = (len + cl_size - 1) / cl_size;   /* len==0 -> 0 */
 
     uint32_t first_cl = 0, prev_cl = 0;
     for (uint32_t i = 0; i < need_cl; i++) {
@@ -844,7 +934,12 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
         if (i > 0) fat_set_cluster(prev_cl, cl);   // prev -> next
         prev_cl = cl;
     }
-    fat_set_cluster(prev_cl, 0x0FFFFFFF);          // конец цепочки
+    if (need_cl) {
+        fat_set_cluster(prev_cl, 0x0FFFFFFF);      // конец цепочки
+        fsinfo_store();                            /* r828: сохранить next_free */
+    }
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr2 cl first=%u need=%u\r\n", first_cl, need_cl); }
 
     // 4. Записать данные по кластерам
     uint32_t pos = 0;
@@ -865,11 +960,15 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
         }
         cl = fat_next_cluster(cl);
     }
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr3 data ok pos=%u\r\n", pos); }
 
     // 5. Запись в директорию (спрашиваем свободную запись: 1 = 8.3, без LFN)
     uint32_t dentry_sec; int dentry_off;
     if (find_free_entry(parent.first_cluster, &dentry_sec, &dentry_off) < 0) return -1;
     if (blk_read(dentry_sec, g_sector) < 0) return -1;
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  fat: wr4 dentry sec=%u off=%d\r\n", dentry_sec, dentry_off); }
 
     // 8.3 имя: до 8 символов + '.' + до 3 расширение, в верхнем регистре
     uint8_t short83[11];
@@ -883,12 +982,25 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
     for (int i = 0; i < nlen; i++) {
         char c = name[i];
         if (c >= 'a' && c <= 'z') c -= 32;
-        short83[i] = (uint8_t)c;
+        /* r831: в 8.3 недопустимы пробел, точка, скобки и т.п. (пробел — только
+           padding в конце). Заменяем на '_', иначе получались имена с пробелом
+           внутри («ARCADE A»), и удаление/поиск расходились с LIST. */
+        int ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                 (c == '$' || c == '%' || c == '\'' || c == '-' || c == '_' ||
+                  c == '@' || c == '~' || c == '`' || c == '!' || c == '#' ||
+                  c == '&' || c == '(' || c == ')' || c == '{' || c == '}' ||
+                  c == '^');
+        short83[i] = (uint8_t)(ok ? c : '_');
     }
     for (int i = 0; i < xlen; i++) {
         char c = dot[i + 1];
         if (c >= 'a' && c <= 'z') c -= 32;
-        short83[8 + i] = (uint8_t)c;
+        int ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                 (c == '$' || c == '%' || c == '\'' || c == '-' || c == '_' ||
+                  c == '@' || c == '~' || c == '`' || c == '!' || c == '#' ||
+                  c == '&' || c == '(' || c == ')' || c == '{' || c == '}' ||
+                  c == '^');
+        short83[8 + i] = (uint8_t)(ok ? c : '_');
     }
     // атрибут: архивный (0x20) — файл
     g_sector[dentry_off + 11] = 0x20;
@@ -917,6 +1029,158 @@ int fat_list(const char* dir, fat_entry_t* out, int max) {
     if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return 0;
     if (d.size != 0) return 0;
     return read_dir(d.first_cluster, out, max);
+}
+
+/* ---- r832: ПОТОКОВАЯ запись файла (FTP STOR больших файлов) ----------
+   Раньше STOR копил файл в g_stor[64 КБ] и писал целиком: файлы больше
+   64 КБ молча обрезались (в логе "STOR OVERFLOW ... total=64564",
+   файл 128 КБ записывался как 64 КБ). Теперь принятые сегменты пишутся
+   в кластеры сразу, кластеры выделяются по мере заполнения. */
+
+/* Символ, допустимый в 8.3 (остальные -> '_'). */
+static char conv83(char c) {
+    if (c >= 'a' && c <= 'z') c -= 32;
+    int ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+             (c == '$' || c == '%' || c == '\'' || c == '-' || c == '_' ||
+              c == '@' || c == '~' || c == '`' || c == '!' || c == '#' ||
+              c == '&' || c == '(' || c == ')' || c == '{' || c == '}' ||
+              c == '^');
+    return ok ? c : '_';
+}
+
+static void build_83(const char* name, uint8_t* short83) {
+    memset(short83, ' ', 11);
+    const char* dot = 0;
+    for (const char* p = name; *p; p++) if (*p == '.') dot = p;
+    int nlen = dot ? (int)(dot - name) : (int)strlen(name);
+    int xlen = dot ? (int)strlen(dot + 1) : 0;
+    if (nlen > 8) nlen = 8;
+    if (xlen > 3) xlen = 3;
+    for (int i = 0; i < nlen; i++) short83[i] = (uint8_t)conv83(name[i]);
+    for (int i = 0; i < xlen; i++) short83[8 + i] = (uint8_t)conv83(dot[i + 1]);
+}
+
+static struct {
+    int      active;
+    uint32_t dentry_sec;
+    int      dentry_off;
+    uint32_t first_cluster;
+    uint32_t last_cluster;
+    uint32_t cur_cluster;   /* 0 = нужно выделить следующий */
+    uint32_t size;
+    uint32_t cl_off;        /* смещение внутри текущего кластера */
+    uint8_t  secbuf[512];
+    uint32_t sec_no;
+    int      sec_dirty;
+} g_wr;
+
+static int wr_flush(void) {
+    if (!g_wr.sec_dirty) return 0;
+    if (blk_write(g_wr.sec_no, g_wr.secbuf) < 0) return -1;
+    g_wr.sec_dirty = 0;
+    return 0;
+}
+
+int fat_write_begin(const char* dir_path, const char* name) {
+    /* r833: если предыдущая потоковая запись не закрылась (обрыв связи),
+       фиксируем её и продолжаем — иначе все последующие STOR получали 550. */
+    if (g_wr.active) fat_write_end();
+    if (!dir_path || !name || !name[0]) return -1;
+
+    fat_entry_t parent;
+    char pbuf[FAT_NAME_LEN];
+    if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
+    if (parent.size != 0) return -1;
+
+    fat_entry_t old;
+    if (fat_find(dir_path, name, &old)) fat_delete_file(dir_path, name);
+
+    uint32_t dsec; int doff;
+    if (find_free_entry(parent.first_cluster, &dsec, &doff) < 0) return -1;
+    if (blk_read(dsec, g_sector) < 0) return -1;
+    uint8_t s83[11];
+    build_83(name, s83);
+    memcpy(g_sector + doff, s83, 11);
+    g_sector[doff + 11] = 0x20;               /* архивный файл */
+    for (int k = 12; k < 32; k++) g_sector[doff + k] = 0;
+    if (blk_write(dsec, g_sector) < 0) return -1;
+
+    memset(&g_wr, 0, sizeof(g_wr));
+    g_wr.active = 1;
+    g_wr.dentry_sec = dsec;
+    g_wr.dentry_off = doff;
+    return 0;
+}
+
+int fat_write_data(const uint8_t* d, uint32_t n) {
+    if (!g_wr.active) return -1;
+    uint32_t cl_size = g_sec_per_cluster * 512;
+    if (cl_size == 0) return -1;
+    while (n) {
+        if (g_wr.cur_cluster == 0) {
+            uint32_t cl = find_free_cluster();
+            if (cl == 0) return -1;
+            if (g_wr.first_cluster == 0) g_wr.first_cluster = cl;
+            else fat_set_cluster(g_wr.last_cluster, cl);
+            g_wr.last_cluster = cl;
+            g_wr.cur_cluster = cl;
+            g_wr.cl_off = 0;
+        }
+        uint32_t sec_in_cl = g_wr.cl_off / 512;
+        uint32_t in_sec = g_wr.cl_off % 512;
+        uint32_t abs_sec = cluster_to_sector(g_wr.cur_cluster) + sec_in_cl;
+        uint32_t take = 512 - in_sec;
+        if (take > n) take = n;
+        /* r833: полный сектор пишем напрямую — без blk_read ради хвоста.
+           Раньше каждый сектор читался+писался (2 USB-операции на 512 б),
+           из-за чего приём STOR проседал и клиент рвал канал. */
+        if (in_sec == 0 && take == 512) {
+            if (wr_flush() < 0) return -1;
+            memcpy(g_wr.secbuf, d, 512);
+            if (blk_write(abs_sec, g_wr.secbuf) < 0) return -1;
+            g_wr.sec_no = abs_sec;
+            g_wr.sec_dirty = 0;
+        } else {
+            if (!g_wr.sec_dirty || g_wr.sec_no != abs_sec) {
+                if (wr_flush() < 0) return -1;
+                if (blk_read(abs_sec, g_wr.secbuf) < 0) return -1;
+                g_wr.sec_no = abs_sec;
+            }
+            memcpy(g_wr.secbuf + in_sec, d, take);
+            g_wr.sec_dirty = 1;
+        }
+        d += take; n -= take;
+        g_wr.cl_off += take;
+        g_wr.size += take;
+        if (g_wr.cl_off >= cl_size) {
+            if (wr_flush() < 0) return -1;
+            g_wr.cur_cluster = 0;
+        }
+    }
+    return 0;
+}
+
+int fat_write_end(void) {
+    if (!g_wr.active) return -1;
+    g_wr.active = 0;
+    if (wr_flush() < 0) return -1;
+    if (g_wr.last_cluster) {
+        fat_set_cluster(g_wr.last_cluster, 0x0FFFFFFF);   /* конец цепочки */
+        fsinfo_store();
+    }
+    if (blk_read(g_wr.dentry_sec, g_sector) < 0) return -1;
+    int off = g_wr.dentry_off;
+    uint32_t fc = g_wr.first_cluster, sz = g_wr.size;
+    g_sector[off + 20] = (uint8_t)((fc >> 16) & 0xFF);
+    g_sector[off + 21] = (uint8_t)((fc >> 24) & 0xFF);
+    g_sector[off + 26] = (uint8_t)(fc & 0xFF);
+    g_sector[off + 27] = (uint8_t)((fc >> 8) & 0xFF);
+    g_sector[off + 28] = (uint8_t)(sz & 0xFF);
+    g_sector[off + 29] = (uint8_t)((sz >> 8) & 0xFF);
+    g_sector[off + 30] = (uint8_t)((sz >> 16) & 0xFF);
+    g_sector[off + 31] = (uint8_t)((sz >> 24) & 0xFF);
+    if (blk_write(g_wr.dentry_sec, g_sector) < 0) return -1;
+    return (int)g_wr.size;
 }
 
 int fat_find(const char* dir, const char* name, fat_entry_t* out) {

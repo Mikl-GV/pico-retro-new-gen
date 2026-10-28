@@ -10,6 +10,7 @@ typedef struct {
     uint32_t first_cluster;
     uint32_t size;
     char     name[FAT_NAME_LEN];
+    uint8_t  attr;          // r818: атрибут FAT (0x10 = каталог)
 } fat_entry_t;
 
 int  fat_init(void);
@@ -24,6 +25,16 @@ int  fat_mkdir(const char* parent_path, const char* name);
 // Создаёт новые кластеры по цепочке, пишет LFN+8.3 если нужно.
 // Возвращает кол-во записанных байт, -1 при ошибке.
 int  fat_write_file(const char* dir_path, const char* name, const uint8_t* data, uint32_t len);
+
+// r832: потоковая запись (FTP STOR неограниченного размера). Кластеры
+// выделяются по мере заполнения, промежуточный буфер не нужен.
+//   fat_write_begin — создать/перезаписать запись каталога (size=0);
+//   fat_write_data  — дописать произвольный кусок (любая длина);
+//   fat_write_end   — закрыть цепочку и записать итоговый размер
+//                     (возвращает число байт).
+int  fat_write_begin(const char* dir_path, const char* name);
+int  fat_write_data(const uint8_t* data, uint32_t len);
+int  fat_write_end(void);
 
 // Удаление файла: помечает как 0xE5 и освобождает кластеры в FAT
 int  fat_delete_file(const char* dir, const char* name);

@@ -17,12 +17,17 @@ static int     g_ctrl_slot = -1;
 static int     g_data_slot = -1;
 static uint16_t g_pasv_port = 21000;
 
-// Буфер приёма STOR (до 64 КБ) и позиция.
-static uint8_t  g_stor[65536];
-static uint32_t g_stor_len;
+// Состояние приёма STOR (r832): данные пишутся в FAT сразу, без буфера —
+// файлы больше 64 КБ больше не обрезаются.
 static char     g_stor_name[FAT_NAME_LEN];
 static char     g_stor_dir[FAT_NAME_LEN];
 static int      g_stor_active = 0;   /* 1 = идёт приём STOR (ждём FIN data-слота) */
+static uint32_t g_stor_len;          /* принято байт (для лога) */
+/* r833: буфер-накопитель 8 КБ. Писать в FAT на каждый TCP-сегмент (1460 б)
+   слишком дорого (USB на сектор) — WiFi-RX простаивал, кадры терялись и
+   клиент рвал канал. Копим и сбрасываем пачкой. */
+static uint8_t  g_stor_buf[8192];
+static uint32_t g_stor_used;
 
 // ---- Утилиты ----
 static void ftp_send_ctrl(const char* s) {
@@ -31,15 +36,22 @@ static void ftp_send_ctrl(const char* s) {
 }
 
 static void ftp_reply(int code, const char* msg) {
-    char t[8];
-    t[0] = (char)('0' + code/100);
-    t[1] = (char)('0' + (code/10)%10);
-    t[2] = (char)('0' + code%10);
-    t[3] = ' ';
-    t[4] = 0;
-    ftp_send_ctrl(t);
-    ftp_send_ctrl(msg);
-    ftp_send_ctrl("\r\n");
+    // r818: одна строка ответа одним TCP-сегментом (раньше — 3 сегмента:
+    // код, текст, CRLF). Меньше пакетов, меньше риск потери на WiFi.
+    char buf[320];
+    int n = 0;
+    buf[n++] = (char)('0' + code / 100);
+    buf[n++] = (char)('0' + (code / 10) % 10);
+    buf[n++] = (char)('0' + code % 10);
+    buf[n++] = ' ';
+    for (int i = 0; msg[i] && n < (int)sizeof(buf) - 3; i++) buf[n++] = msg[i];
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+    buf[n] = 0;
+    /* r821: диагностика ответов — по строке на ответ (см. ftp_ctrl_rx). */
+    { extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  ftp> %d %s\r\n", code, msg); }
+    ftp_send_ctrl(buf);
 }
 
 // Полный путь (абсолютный) — g_cwd + arg, если arg относительный.
@@ -88,9 +100,36 @@ static int ftp_data_rx(int slot, const uint8_t* data, uint16_t len,
                        const uint8_t* src_ip, const uint8_t* src_mac, void* ctx)
 {
     (void)src_ip; (void)src_mac; (void)ctx;
-    if (g_stor_len + len <= sizeof(g_stor)) {
-        memcpy(&g_stor[g_stor_len], data, len);
+    /* r830: видно, доходят ли данные больших файлов. Печатаем только
+       реальные данные (len>0) и только в STOR — раньше счётчик съедали
+       служебные вызовы (len=0) при connect на LIST. */
+    if (len > 0 && g_stor_active) {
+        /* r833: копим в буфер 8 КБ, в FAT пишем пачкой. */
+        const uint8_t* p = data;
+        uint32_t n = len;
+        while (n) {
+            uint32_t space = (uint32_t)sizeof(g_stor_buf) - g_stor_used;
+            uint32_t take = (n < space) ? n : space;
+            memcpy(g_stor_buf + g_stor_used, p, take);
+            g_stor_used += take;
+            p += take;
+            n -= take;
+            if (g_stor_used == (uint32_t)sizeof(g_stor_buf)) {
+                if (fat_write_data(g_stor_buf, g_stor_used) < 0) {
+                    extern int uart0_printf(const char* fmt, ...);
+                    uart0_printf("  ftp: STOR write err total=%u\r\n", g_stor_len);
+                }
+                g_stor_used = 0;
+            }
+        }
         g_stor_len += len;
+        /* прогресс раз в 16 КБ */
+        static uint32_t mark;
+        if (g_stor_len - mark >= 16384u) {
+            mark = g_stor_len;
+            extern int uart0_printf(const char* fmt, ...);
+            uart0_printf("  ftp: STOR rx %u\r\n", g_stor_len);
+        }
     }
     (void)slot;
     return 0;
@@ -113,14 +152,31 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
     for (uint16_t i = 0; i < len; i++) {
         char c = (char)data[i];
         if (c == '\n') {
+            /* r822: срезаем CR. Клиент шлёт "CMD\r\n"; при разборе команды
+               БЕЗ аргумента (PASV, PWD, LIST) CR попадал в имя команды ->
+               cmd="PASV\r" и strcmp(cmd,"PASV") не совпадал -> 502.
+               В UART CR возвращал каретку, поэтому печать выглядела верной.
+               Команды с аргументом (USER user\r) не страдали: разбор
+               останавливался на пробеле. */
+            if (ll && line[ll-1] == '\r') ll--;
             line[ll] = 0; ll = 0;
             // путь команды и аргумент
             char cmd[8]; int ci = 0;
-            while (line[ci] && line[ci] != ' ' && ci < 7) { cmd[ci] = line[ci]; ci++; }
+            while (line[ci] && line[ci] != ' ' && line[ci] != '\r' && ci < 7) { cmd[ci] = line[ci]; ci++; }
             cmd[ci] = 0;
             const char* arg = line[ci] ? line + ci + 1 : "";
             for (int k = 0; cmd[k]; k++) if (cmd[k] >= 'a' && cmd[k] <= 'z') cmd[k] -= 32;
             while (*arg == ' ') arg++;
+            /* r822: пустая строка (клиент иногда шлёт голый CRLF) — не
+               ошибка, просто игнорируем; раньше отвечали 502. */
+            if (!cmd[0]) continue;
+
+            /* r821: диагностика — одна строка на КОМАНДУ (не на пакет),
+               при копировании файлов команд немного, UART не тормозит.
+               Нужна, чтобы видеть точку останова клиента: TCP уже
+               устанавливается (r820), значит висим на протоколе. */
+            { extern int uart0_printf(const char* fmt, ...);
+              uart0_printf("  ftp< %s %s\r\n", cmd, arg); }
 
             if (strcmp(cmd,"USER")==0 || strcmp(cmd,"PASS")==0) ftp_reply(230,"logged in");
             else if (strcmp(cmd,"SYST")==0) ftp_reply(215,"UNIX Type: L8");
@@ -182,7 +238,11 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                 if (n < 0) { ftp_reply(550, "no such dir"); }
                 else {
                     for (int i=0; i<n && bl < sizeof(body)-40; i++) {
-                        int isdir = (dirs[i].size==0);
+                        // r818: папка по атрибуту FAT (0x10), а не по size==0 —
+                        // иначе пустой файл выглядел каталогом. Fallback на
+                        // size==0 для записей без атрибута.
+                        int isdir = (dirs[i].attr & 0x10) != 0
+                                 || (dirs[i].attr == 0 && dirs[i].size == 0);
                         body[bl++] = isdir ? 'd' : '-';
                         const char* perm = "rw-------";
                         for (int p=0;p<9 && bl<sizeof(body)-1;p++) body[bl++]=perm[p];
@@ -201,6 +261,10 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                     }
                     ftp_reply(150, "listing");
                     ftp_data_send((const uint8_t*)body, (int)bl);
+                    /* r823: закрыть data-канал ПОСЛЕ данных и ДО 226 —
+                       клиент читает до EOF (FIN), только потом ждёт 226.
+                       Без FIN он висел до таймаута и переподключался. */
+                    if (g_data_slot >= 0) { net_tcp_close(g_data_slot); g_data_slot = -1; }
                     ftp_reply(226, "transfer complete");
                 }
             }
@@ -224,6 +288,8 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                         }
                         off += (uint32_t)got;
                     }
+                    /* r823: FIN до 226 — клиент ждёт EOF на data-канале. */
+                    if (g_data_slot >= 0) { net_tcp_close(g_data_slot); g_data_slot = -1; }
                     ftp_reply(226, "transfer complete");
                 }
             }
@@ -232,14 +298,19 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                 char dir[FAT_NAME_LEN], nm[FAT_NAME_LEN];
                 path_split(p, dir, sizeof(dir), nm, sizeof(nm));
                 g_stor_len = 0;
+                g_stor_used = 0;
                 strncpy(g_stor_name, nm, sizeof(g_stor_name)-1);
                 g_stor_name[sizeof(g_stor_name)-1] = 0;
                 strncpy(g_stor_dir, dir, sizeof(g_stor_dir)-1);
                 g_stor_dir[sizeof(g_stor_dir)-1] = 0;
-                g_stor_active = 1;
-                ftp_reply(150, "ok to send data");
-                /* Данные асинхронно копятся в g_stor (ftp_data_rx);
-                   запись в FAT — в ftp_server_poll по закрытию data-слота. */
+                /* r832: открываем потоковую запись ДО 150 — если каталог/имя
+                   не годятся, клиент сразу получит 550. */
+                if (fat_write_begin(dir[0] ? dir : "/roms", nm) < 0) {
+                    ftp_reply(550, "cannot create file");
+                } else {
+                    g_stor_active = 1;
+                    ftp_reply(150, "ok to send data");
+                }
             }
             else if (strcmp(cmd,"DELE")==0) {
                 char p[FAT_NAME_LEN]; make_path(arg, p, sizeof(p));
@@ -278,7 +349,7 @@ int ftp_server_start(void) {
     return g_ctrl_slot >= 0 ? 0 : -1;
 }
 
-// Статус приёма STOR (1 = идём; данные копятся в g_stor) — вверху файла.
+// Статус приёма STOR: данные пишутся в FAT потоково (fat_write_data).
 
 void ftp_server_poll(void) {
     net_tcp_poll();
@@ -288,9 +359,19 @@ void ftp_server_poll(void) {
         if (g_data_slot < 0 || !net_tcp_connected(g_data_slot)) {
             g_stor_active = 0;
             int rc = -1;
-            if (g_stor_len > 0) {
-                rc = fat_write_file(g_stor_dir[0] ? g_stor_dir : "/roms",
-                                    g_stor_name, g_stor, g_stor_len);
+            {
+                extern int uart0_printf(const char* fmt, ...);
+                uart0_printf("  ftp: STOR fin len=%u dir=%s name=%s\r\n",
+                             g_stor_len, g_stor_dir[0] ? g_stor_dir : "/roms",
+                             g_stor_name);
+                /* r833: дослать остаток из буфера, затем закрыть файл. */
+                if (g_stor_used) {
+                    if (fat_write_data(g_stor_buf, g_stor_used) < 0)
+                        uart0_printf("  ftp: STOR tail write err\r\n");
+                    g_stor_used = 0;
+                }
+                rc = fat_write_end();
+                uart0_printf("  ftp: STOR write rc=%d\r\n", rc);
             }
             if (rc >= 0) ftp_reply(226, "transfer complete");
             else         ftp_reply(426, "write failed");

@@ -15,6 +15,7 @@ struct tcp_slot {
     uint8_t  peer_mac[6];
     uint32_t snd_nxt;
     uint32_t rcv_nxt;
+    uint32_t iss;           // r818: initial send seq — для повтора SYN-ACK
     net_tcp_app_rx_t app_rx;
     void*    ctx;
 };
@@ -37,7 +38,12 @@ static void tcp_csum(uint8_t* pkt, uint16_t tcp_len) {
     // дропал, FTP-подключение не устанавливалось (ни проводник, ни клиент).
     uint32_t acc = 0;
     for (int i = 12; i < 20; i += 2) acc += ((uint16_t)pkt[i] << 8) | pkt[i+1];
-    acc += 6u << 8;
+    /* r820: псевдозаголовок TCP — слово (0x00, 0x06) = 0x0006.
+       Было `6u << 8` (0x0600): ошибка ровно 0x05FA в КАЖДОМ TCP-сегменте
+       (SYN-ACK/220/ACK/данные) -> Windows молча дропал все пакеты,
+       FTP-соединение не устанавливалось. Проверка по захвату: в пакете
+       csum=0x8600, правильная 0x8BFA, разница 0x05FA. */
+    acc += 0x0006u;
     acc += tcp_len;
     for (int i = 20; i + 1 < 20 + (int)tcp_len; i += 2)
         acc += ((uint16_t)pkt[i] << 8) | pkt[i+1];
@@ -53,16 +59,34 @@ static void slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
 {
     if (!s->active && !(flags & NET_TCP_SYN)) return;
     if (len > NET_TCP_MSS) len = NET_TCP_MSS;   // защита: не больше MSS (r808)
-    uint8_t pkt[40 + NET_TCP_MSS];
+    // r818: 48 (20 IP + 20 TCP + 4 опции MSS + запас) + MSS. Раньше 40+MSS
+    // (1500): при SYN с MSS-опцией и полном MSS-блоке данных писали до
+    // pkt[1503] — переполнение стека на 4 байта.
+    uint8_t pkt[48 + NET_TCP_MSS];
     uint8_t my_mac[6], my_ip[4];
     h3_wifi_get_mac(my_mac);
     if (h3_wifi_get_ip(my_ip) != 0) return;
 
-    uint16_t tot = 20 + 20 + len;
+    // r815: SYN-пакеты (SYN и SYN-ACK) с MSS-опцией (kind=2,len=4,MSS=1460).
+    // Windows без MSS в SYN-ACK отбрасывает соединение.
+    // ВАЖНО: data offset = (20+mss_len)/4 = 6 (0x60) для 24-байт заголовка.
+    // r816: раньше писали 0x54 — старший ниббл 5 (20 байт заголовка!)
+    // ломал парсинг: опции игнорировались, младший ниббл 4 читался как
+    // Reserved-флаг (tshark: Flags 0x412 SYN+ACK+Reserved) → Windows
+    // обрывал соединение.
+    int mss_len = (flags & NET_TCP_SYN) ? 4 : 0;   // байтов в опции MSS
+    uint16_t tot = 20 + 20 + mss_len + len;
     memset(pkt, 0, sizeof(pkt));
     pkt[0] = 0x45; pkt[1] = 0;
     pkt[2] = (uint8_t)(tot >> 8); pkt[3] = (uint8_t)tot;
     pkt[8] = 64; pkt[9] = 6;
+    // r813: уникальный IP-ID + DF=1 (без этого Windows дропал пакеты).
+    {
+        static uint16_t ip_id = 0x1234;
+        ip_id++;
+        pkt[4] = (uint8_t)(ip_id >> 8); pkt[5] = (uint8_t)ip_id;
+        pkt[6] = 0x40;   /* DF=1 */
+    }
     memcpy(&pkt[12], my_ip, 4);
     memcpy(&pkt[16], s->peer_ip, 4);
     ipv4_csum(pkt);
@@ -73,11 +97,20 @@ static void slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
     pkt[26] = (uint8_t)(seq >> 8);  pkt[27] = (uint8_t)seq;
     pkt[28] = (uint8_t)(ack >> 24); pkt[29] = (uint8_t)(ack >> 16);
     pkt[30] = (uint8_t)(ack >> 8);  pkt[31] = (uint8_t)ack;
-    pkt[32] = 0x50;
+    pkt[32] = (mss_len ? 0x60 : 0x50);  /* data offset: 24 или 20 байт */
     pkt[33] = flags;
     pkt[34] = (uint8_t)(NET_TCP_WINDOW >> 8); pkt[35] = (uint8_t)NET_TCP_WINDOW;
-    if (data && len) memcpy(&pkt[40], data, len);
-    tcp_csum(pkt, (uint16_t)(20 + len));
+    if (mss_len) {
+        // r817: опции TCP — С БАЙТА 40 (20 фикс. TCP + 20 IP = 40). Раньше
+        // писали в 36-39 — это ПОЛЯ CHECKSUM/URGENT, а не опции! Wireshark
+        // видел 4xEOL вместо MSS, control-сумма была неверной → Windows
+        // отбрасывал SYN-ACK.
+        pkt[40] = 2;                    /* kind = MSS */
+        pkt[41] = 4;                    /* len = 4 */
+        pkt[42] = (uint8_t)(NET_TCP_MSS >> 8); pkt[43] = (uint8_t)NET_TCP_MSS;
+    }
+    if (data && len) memcpy(&pkt[40 + mss_len], data, len);
+    tcp_csum(pkt, (uint16_t)(20 + mss_len + len));
     h3_wifi_tx_data(0x0800, s->peer_mac, pkt, tot);
 }
 
@@ -116,7 +149,16 @@ int net_tcp_listen(uint16_t port, net_tcp_app_rx_t app_rx, void* ctx) {
 }
 
 void net_tcp_close(int slot) {
-    if (slot >= 0 && slot < NET_TCP_SLOTS) memset(&g_slots[slot], 0, sizeof(g_slots[0]));
+    // r823: закрытие ДОЛЖНО слать FIN. Раньше слот просто затирался — клиент
+    // (ftp: data-канал после LIST/RETR) не получал EOF и висел до таймаута:
+    // 226 уходил, а data-соединение оставалось «открытым» с нашей стороны.
+    if (slot < 0 || slot >= NET_TCP_SLOTS) return;
+    struct tcp_slot* s = &g_slots[slot];
+    if (s->active) {
+        slot_send_raw(s, NET_TCP_FIN | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
+        s->snd_nxt += 1;
+    }
+    memset(s, 0, sizeof(*s));
 }
 
 void net_tcp_abort(int slot) {
@@ -149,7 +191,6 @@ static struct tcp_slot* slot_by_dport(uint16_t dp) {
 int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
                    const uint8_t* src_ip, const uint8_t my_ip[4])
 {
-    extern int uart0_printf(const char* fmt, ...);
     if (len < 20) return -1;
     uint16_t sp = (uint16_t)((pkt[0] << 8) | pkt[1]);
     uint16_t dp = (uint16_t)((pkt[2] << 8) | pkt[3]);
@@ -161,22 +202,28 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     uint8_t flags = pkt[13];
     if (off < 20 || off > (uint16_t)len) return -1;
 
-    // r810-DIAG: каждый входящий TCP (временно, для отладки FTP)
-    uart0_printf("  net: tcp %u:%u->%u fl=0x%X seq=%u ack=%u len=%u\r\n",
-                 (unsigned)src_ip[0], (unsigned)sp, (unsigned)dp,
-                 (unsigned)flags, (unsigned)seq, (unsigned)ack, (unsigned)len);
-
     struct tcp_slot* s = slot_by_dport(dp);
-    if (!s) { uart0_printf("  net: tcp no-slot dp=%u\r\n", (unsigned)dp); return 0; }
+    if (!s) return 0;   // не наш порт
+
+    // r819: краткая диагностика ТОЛЬКО для SYN (редкие, не тормозит передачу)
+    if (flags & NET_TCP_SYN) {
+        extern int uart0_printf(const char* fmt, ...);
+        uart0_printf("  net: SYN sp=%u dp=%u seq=%u is=%d rcv=%u snd=%u\r\n",
+                     (unsigned)sp, (unsigned)dp, (unsigned)seq,
+                     (int)s->active, (unsigned)s->rcv_nxt, (unsigned)s->snd_nxt);
+    }
 
     memcpy(s->peer_ip, src_ip, 4);
     memcpy(s->peer_mac, src_mac, 6);
 
     if (flags & NET_TCP_SYN) {
         if (s->active) {
-            // Тот же сокет (retransmit SYN) — повторный SYN-ACK.
+            // Тот же сокет (retransmit SYN) — повторный SYN-ACK с ИСХОДНЫМ
+            // seq (iss). Раньше слали snd_nxt-1, а после отправки 220
+            // snd_nxt уже сдвинут на его длину → seq неверный, клиент
+            // отвергал SYN-ACK.
             if (s->peer_port == sp) {
-                slot_send_raw(s, NET_TCP_SYN | NET_TCP_ACK, s->snd_nxt - 1,
+                slot_send_raw(s, NET_TCP_SYN | NET_TCP_ACK, s->iss,
                               s->rcv_nxt, 0, 0);
                 return 0;
             }
@@ -189,6 +236,7 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         s->peer_port = sp;
         s->rcv_nxt = seq + 1;
         s->snd_nxt = 0x40000000u;
+        s->iss     = 0x40000000u;
         slot_send_raw(s, NET_TCP_SYN | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         s->snd_nxt++;
         // r809: уведомить приложение о новом соединении (data=NULL, len=0).
@@ -206,7 +254,8 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     // active оставался 1, слот "залипал" после каждого клиента, повторные
     // подключения игнорировались. Теперь: закрыть соединение всегда.
     if (flags & NET_TCP_FIN) {
-        if (seq == s->rcv_nxt) s->rcv_nxt += pay ? pay : 1;
+        // FIN занимает 1 байт sequence (даже если с ним пришли данные).
+        if (seq == s->rcv_nxt) s->rcv_nxt += pay + 1;
         else                   s->rcv_nxt += pay;
         if (pay && s->app_rx)
             s->app_rx((int)(s - g_slots), &pkt[off], pay, s->peer_ip, s->peer_mac, s->ctx);
@@ -218,6 +267,14 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     if (flags & NET_TCP_ACK) {
         if (pay == 0) return 0;   // чистый ACK
         if (seq != s->rcv_nxt) {
+            /* r830: диагностика — сегмент вне ожидаемого окна. Если таких
+               много, rcv_nxt разъехался (потеря кадра WiFi) и данные не
+               доходят до приложения: файл сохраняется нулевым. */
+            { extern int uart0_printf(const char* fmt, ...);
+              static uint32_t drops;
+              if (drops < 5) uart0_printf("  net: tcp drop seq=%u want=%u len=%u\r\n",
+                                          seq, s->rcv_nxt, pay);
+              drops++; }
             // retransmit-ACK с ожидаемым номером
             slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
             return 0;

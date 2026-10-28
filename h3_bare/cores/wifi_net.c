@@ -360,6 +360,14 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
     if (!st || len < 20) return;
     ihl = (uint8_t)((pkt[0] & 0x0F) * 4);
     if (ihl < 20 || ihl > len) return;
+    // r818: точная длина IP-пакета из его заголовка (total length).
+    // Переданный len — длина payload 802.11-кадра (может включать LLC и
+    // padding), из-за чего в TCP «pay = len - off» был завышен, rcv_nxt
+    // разъезжался и FTP-обмен рвался. ip_len всегда ≤ len.
+    {
+        uint16_t ip_len = (uint16_t)((pkt[2] << 8) | pkt[3]);
+        if (ip_len >= ihl && ip_len <= len) len = ip_len;
+    }
     proto = pkt[9];
 
     if (proto == 1) {                 /* ICMP echo-request — отвечаем */
