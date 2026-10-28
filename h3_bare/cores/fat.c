@@ -13,6 +13,17 @@
 
 extern int printf(const char* fmt, ...);
 
+/* r835: пошаговая отладка записи FAT (wr1..wr4) выключена — при копировании
+   папки она давала сотни строк в UART (115200) и заметно тормозила.
+   Включить: FAT_DBG 1. */
+#define FAT_DBG 0
+#if FAT_DBG
+extern int uart0_printf(const char* fmt, ...);
+#define FATLOG(...) uart0_printf(__VA_ARGS__)
+#else
+#define FATLOG(...) do {} while (0)
+#endif
+
 // forward: создание записи директории, сравнение имён (определены ниже)
 static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int is_dot);
 static int name_eq(const char* a, const char* b);
@@ -901,26 +912,22 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
     /* r826: пошаговая диагностика записи — STOR виснет после приёма данных,
        нужно видеть, на каком этапе (поиск каталога / удаление старого /
        выделение кластеров / данные / запись dirent). */
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr1 start len=%u\r\n", len); }
+    FATLOG("  fat: wr1 start len=%u\r\n", len);
 
     // 1. Найти родительскую директорию
     char pbuf[FAT_NAME_LEN];
     fat_entry_t parent;
     if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
     if (parent.size != 0) return -1;
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr1a dir ok cl=%u\r\n", parent.first_cluster); }
+    FATLOG("  fat: wr1a dir ok cl=%u\r\n", parent.first_cluster);
 
     // 2. Если файл уже есть — удалить (освободить старые кластеры и запись)
     fat_entry_t old;
     if (fat_find(dir_path, name, &old)) {
-        { extern int uart0_printf(const char* fmt, ...);
-          uart0_printf("  fat: wr1b delete old size=%u\r\n", old.size); }
+        FATLOG("  fat: wr1b delete old size=%u\r\n", old.size);
         fat_delete_file(dir_path, name);
     }
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr1c alloc %u cl\r\n", (len + (g_sec_per_cluster*512) - 1) / (g_sec_per_cluster*512)); }
+    FATLOG("  fat: wr1c alloc %u cl\r\n", (len + (g_sec_per_cluster*512) - 1) / (g_sec_per_cluster*512));
 
     // 3. Выделить цепочку кластеров (для пустого файла — ни одного)
     uint32_t cl_size = g_sec_per_cluster * 512;
@@ -938,8 +945,7 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
         fat_set_cluster(prev_cl, 0x0FFFFFFF);      // конец цепочки
         fsinfo_store();                            /* r828: сохранить next_free */
     }
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr2 cl first=%u need=%u\r\n", first_cl, need_cl); }
+    FATLOG("  fat: wr2 cl first=%u need=%u\r\n", first_cl, need_cl);
 
     // 4. Записать данные по кластерам
     uint32_t pos = 0;
@@ -960,15 +966,13 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
         }
         cl = fat_next_cluster(cl);
     }
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr3 data ok pos=%u\r\n", pos); }
+    FATLOG("  fat: wr3 data ok pos=%u\r\n", pos);
 
     // 5. Запись в директорию (спрашиваем свободную запись: 1 = 8.3, без LFN)
     uint32_t dentry_sec; int dentry_off;
     if (find_free_entry(parent.first_cluster, &dentry_sec, &dentry_off) < 0) return -1;
     if (blk_read(dentry_sec, g_sector) < 0) return -1;
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  fat: wr4 dentry sec=%u off=%d\r\n", dentry_sec, dentry_off); }
+    FATLOG("  fat: wr4 dentry sec=%u off=%d\r\n", dentry_sec, dentry_off);
 
     // 8.3 имя: до 8 символов + '.' + до 3 расширение, в верхнем регистре
     uint8_t short83[11];
@@ -1048,6 +1052,43 @@ static char conv83(char c) {
     return ok ? c : '_';
 }
 
+/* r836: нужно ли писать LFN для этого имени (длинное или с символами,
+   которых нет в 8.3 — строчные буквы, пробел, скобки, '[' и т.п.). */
+static int name_needs_lfn(const char* name) {
+    int n = (int)strlen(name);
+    if (n > 12) return 1;
+    const char* dot = 0;
+    for (const char* p = name; *p; p++) if (*p == '.') dot = p;
+    int nlen = dot ? (int)(dot - name) : n;
+    int xlen = dot ? (int)strlen(dot + 1) : 0;
+    if (nlen > 8 || xlen > 3) return 1;
+    for (int i = 0; i < n; i++) {
+        char c = name[i];
+        if (c == '.') continue;
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '$' || c == '%' || c == '\'' || c == '-' || c == '_' ||
+              c == '@' || c == '~' || c == '`' || c == '!' || c == '#' ||
+              c == '&' || c == '(' || c == ')' || c == '{' || c == '}' ||
+              c == '^')) return 1;
+    }
+    return 0;
+}
+
+/* r836: 8.3-имя файла; при need_tilde основа усекается до 6 символов и
+   добавляется "~1" (псевдоним для LFN). */
+static void build_short_file(const char* name, uint8_t* short83, int need_tilde) {
+    memset(short83, ' ', 11);
+    const char* dot = 0;
+    for (const char* p = name; *p; p++) if (*p == '.') dot = p;
+    int nlen = dot ? (int)(dot - name) : (int)strlen(name);
+    int xlen = dot ? (int)strlen(dot + 1) : 0;
+    if (xlen > 3) xlen = 3;
+    for (int i = 0; i < xlen; i++) short83[8 + i] = (uint8_t)conv83(dot[i + 1]);
+    int keep = need_tilde ? (nlen > 6 ? 6 : nlen) : (nlen > 8 ? 8 : nlen);
+    for (int i = 0; i < keep; i++) short83[i] = (uint8_t)conv83(name[i]);
+    if (need_tilde) { short83[6] = '~'; short83[7] = '1'; }
+}
+
 static void build_83(const char* name, uint8_t* short83) {
     memset(short83, ' ', 11);
     const char* dot = 0;
@@ -1096,10 +1137,36 @@ int fat_write_begin(const char* dir_path, const char* name) {
     if (fat_find(dir_path, name, &old)) fat_delete_file(dir_path, name);
 
     uint32_t dsec; int doff;
-    if (find_free_entry(parent.first_cluster, &dsec, &doff) < 0) return -1;
-    if (blk_read(dsec, g_sector) < 0) return -1;
+    /* r836: LFN — длинные имена (и имена с недопустимыми для 8.3 символами)
+       сохраняются полностью: перед 8.3-записью пишутся LFN-фрагменты, а
+       8.3 получает псевдоним с '~1'. Раньше имя обрезалось до 8.3
+       («COMMANDO_.A78»), и клиент не мог вернуть исходное имя. */
+    int need_lfn = name_needs_lfn(name);
     uint8_t s83[11];
-    build_83(name, s83);
+    build_short_file(name, s83, need_lfn);
+    int lfn_count = need_lfn ? (int)((strlen(name) + 12) / 13) : 0;
+    if (lfn_count > 15) lfn_count = 15;       /* 16 записей в сектор */
+
+    if (lfn_count > 0) {
+        if (find_free_entries(parent.first_cluster, lfn_count + 1, &dsec, &doff) < 0) return -1;
+    } else {
+        if (find_free_entry(parent.first_cluster, &dsec, &doff) < 0) return -1;
+    }
+    if (blk_read(dsec, g_sector) < 0) return -1;
+
+    if (lfn_count > 0) {
+        uint8_t chk = lfn_checksum(s83);
+        int off = doff;
+        /* Фрагменты на диске идут от последнего (seq|0x40) к первому,
+           непосредственно ПЕРЕД 8.3-записью. */
+        for (int i = lfn_count - 1; i >= 0; i--) {
+            int seq = i + 1;
+            if (i == lfn_count - 1) seq |= 0x40;
+            make_lfn_fragment(g_sector + off, seq, name, i * 13, chk);
+            off += 32;
+        }
+        doff = off;
+    }
     memcpy(g_sector + doff, s83, 11);
     g_sector[doff + 11] = 0x20;               /* архивный файл */
     for (int k = 12; k < 32; k++) g_sector[doff + k] = 0;

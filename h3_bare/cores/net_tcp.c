@@ -5,6 +5,10 @@
 #include "h3_sdc.h"
 #include "uart.h"
 
+/* r835: отладочная трассировка SYN (см. net_tcp_handle). По умолчанию
+   выключена — при автопоиске клиента это десятки строк на адрес. */
+#define TCP_DBG 0
+
 struct tcp_slot {
     int      used;          // слот занят (слушатель)
     int      active;        // соединение установлено (SYN принят)
@@ -18,6 +22,13 @@ struct tcp_slot {
     uint32_t iss;           // r818: initial send seq — для повтора SYN-ACK
     net_tcp_app_rx_t app_rx;
     void*    ctx;
+    /* r835: буфер переупорядочивания. Потеря одного кадра WiFi даёт сегмент
+       с seq > rcv_nxt; раньше он отбрасывался, поток вставал до таймаута
+       клиента (обрыв STOR на 98–101 КБ). Теперь такие сегменты копятся и
+       отдаются приложению по порядку, когда придёт пропущенный. */
+    uint32_t ooo_seq[NET_TCP_OOO];
+    uint16_t ooo_len[NET_TCP_OOO];
+    uint8_t  ooo_data[NET_TCP_OOO][NET_TCP_MSS];
 };
 
 static struct tcp_slot g_slots[NET_TCP_SLOTS];
@@ -205,13 +216,15 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     struct tcp_slot* s = slot_by_dport(dp);
     if (!s) return 0;   // не наш порт
 
-    // r819: краткая диагностика ТОЛЬКО для SYN (редкие, не тормозит передачу)
+    // r835: трассировка SYN — под флагом (автопоиск клиента даёт десятки
+    // строк на каждый адрес подсети). Включить: TCP_DBG 1.
+#if TCP_DBG
     if (flags & NET_TCP_SYN) {
         extern int uart0_printf(const char* fmt, ...);
         uart0_printf("  net: SYN sp=%u dp=%u seq=%u is=%d rcv=%u snd=%u\r\n",
-                     (unsigned)sp, (unsigned)dp, (unsigned)seq,
-                     (int)s->active, (unsigned)s->rcv_nxt, (unsigned)s->snd_nxt);
+                     sp, dp, seq, s->active, s->rcv_nxt, s->snd_nxt);
     }
+#endif
 
     memcpy(s->peer_ip, src_ip, 4);
     memcpy(s->peer_mac, src_mac, 6);
@@ -237,6 +250,7 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         s->rcv_nxt = seq + 1;
         s->snd_nxt = 0x40000000u;
         s->iss     = 0x40000000u;
+        for (int i = 0; i < NET_TCP_OOO; i++) s->ooo_len[i] = 0;   /* r835 */
         slot_send_raw(s, NET_TCP_SYN | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         s->snd_nxt++;
         // r809: уведомить приложение о новом соединении (data=NULL, len=0).
@@ -259,6 +273,7 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         else                   s->rcv_nxt += pay;
         if (pay && s->app_rx)
             s->app_rx((int)(s - g_slots), &pkt[off], pay, s->peer_ip, s->peer_mac, s->ctx);
+        for (int i = 0; i < NET_TCP_OOO; i++) s->ooo_len[i] = 0;   /* r835 */
         slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         s->active = 0;   // слот свободен для нового клиента
         return 0;
@@ -266,22 +281,47 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
 
     if (flags & NET_TCP_ACK) {
         if (pay == 0) return 0;   // чистый ACK
-        if (seq != s->rcv_nxt) {
-            /* r830: диагностика — сегмент вне ожидаемого окна. Если таких
-               много, rcv_nxt разъехался (потеря кадра WiFi) и данные не
-               доходят до приложения: файл сохраняется нулевым. */
-            { extern int uart0_printf(const char* fmt, ...);
-              static uint32_t drops;
-              if (drops < 5) uart0_printf("  net: tcp drop seq=%u want=%u len=%u\r\n",
-                                          seq, s->rcv_nxt, pay);
-              drops++; }
-            // retransmit-ACK с ожидаемым номером
+        int slot_i = (int)(s - g_slots);
+        if (seq == s->rcv_nxt) {
+            /* По порядку: отдать приложению, затем всё, что уже накопилось
+               в буфере переупорядочивания и теперь стыкуется. */
+            s->rcv_nxt += pay;
+            if (s->app_rx)
+                s->app_rx(slot_i, &pkt[off], pay, s->peer_ip, s->peer_mac, s->ctx);
+            for (;;) {
+                int idx = -1;
+                for (int i = 0; i < NET_TCP_OOO; i++) {
+                    if (s->ooo_len[i] && s->ooo_seq[i] == s->rcv_nxt) { idx = i; break; }
+                }
+                if (idx < 0) break;
+                uint16_t n = s->ooo_len[idx];
+                s->ooo_len[idx] = 0;
+                s->rcv_nxt += n;
+                if (s->app_rx)
+                    s->app_rx(slot_i, s->ooo_data[idx], n,
+                              s->peer_ip, s->peer_mac, s->ctx);
+            }
             slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
             return 0;
         }
-        s->rcv_nxt += pay;
-        if (s->app_rx)
-            s->app_rx((int)(s - g_slots), &pkt[off], pay, s->peer_ip, s->peer_mac, s->ctx);
+        if ((int32_t)(seq - s->rcv_nxt) > 0) {
+            /* r835: сегмент ВПЕРЁД (потерян предыдущий кадр). Копим, чтобы
+               отдать по порядку; клиенту сразу шлём ACK с текущим rcv_nxt —
+               это дублирующий ACK и ускоряет ретрансмиссию пропущенного. */
+            int free_idx = -1, dup = 0;
+            for (int i = 0; i < NET_TCP_OOO; i++) {
+                if (s->ooo_len[i] && s->ooo_seq[i] == seq) { dup = 1; break; }
+                if (!s->ooo_len[i] && free_idx < 0) free_idx = i;
+            }
+            if (!dup && free_idx >= 0 && pay <= NET_TCP_MSS) {
+                s->ooo_seq[free_idx] = seq;
+                s->ooo_len[free_idx] = pay;
+                memcpy(s->ooo_data[free_idx], &pkt[off], pay);
+            }
+            slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
+            return 0;
+        }
+        /* seq < rcv_nxt — старый дубль: подтверждаем текущий rcv_nxt. */
         slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         return 0;
     }

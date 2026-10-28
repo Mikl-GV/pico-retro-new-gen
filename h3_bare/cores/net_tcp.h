@@ -16,6 +16,9 @@
 #define NET_TCP_SLOTS    2
 #define NET_TCP_WINDOW   4096u
 #define NET_TCP_MSS      1460u
+// r835: глубина буфера переупорядочивания (сегментов на слот). Покрывает
+// потерю нескольких кадров WiFi подряд без остановки потока.
+#define NET_TCP_OOO      4
 
 // Колбэк прикладного уровня: данные сегмента. Возвращает 0.
 typedef int (*net_tcp_app_rx_t)(int slot, const uint8_t* data, uint16_t len,

@@ -30,11 +30,35 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
     if (f.size == 0 || f.size > ROM_MAX) { printf("load_rom: bad size %lu\n", (unsigned long)f.size); return -1; }
     uint8_t* buf = (uint8_t*)ROM_BUF;
     printf("load_rom: %s/%s size=%lu cl=%lu\n", path, name, (unsigned long)f.size, (unsigned long)f.first_cluster);
-    int r = fat_read_file(&f, 0, buf, f.size);
-    printf("load_rom: got %d bytes\n", r);
-    // r0.365 (H4 аудита): недопрочитанный ROM (ошибка SD) — не запускать:
-    // эмулятор стартовал с обрезанной прошивкой и молча падал/глючил.
-    if (r < 0 || (uint32_t)r != f.size) { printf("load_rom: short read\n"); return -1; }
+    /* r836: индикатор загрузки. Чтение ROM с USB-флешки идёт секундами, и
+       без прогресса это выглядит как зависание (владелец). Читаем блоками
+       по 256 КБ и обновляем полосу — как у аркад. */
+    const int bx = 60, by = 300, bw = 904, bh = 26;
+    fb_clear();
+    fb_puts_s(60, 200, "Loading ROM...", 2, 0x00FFFF00);
+    fb_puts_s(60, 240, name, 1, 0x00FFFFFF);
+    fb_fill_rect(bx, by, bw, bh, 0x00222222);
+    fb_puts_s(bx, by + 40, "0 %", 1, 0x00AAAAAA);
+    fb_flush();
+
+    uint32_t done = 0;
+    const uint32_t chunk = 256u * 1024u;
+    int r = 0;
+    while (done < f.size) {
+        uint32_t n = f.size - done;
+        if (n > chunk) n = chunk;
+        r = fat_read_file(&f, done, buf + done, n);
+        if (r < 0 || (uint32_t)r != n) { printf("load_rom: short read at %lu\n", (unsigned long)done); return -1; }
+        done += n;
+        uint32_t pct = (uint32_t)(((uint64_t)done * 100u) / f.size);
+        fb_fill_rect(bx, by, (bw * (int)pct) / 100, bh, 0x0000AA00);
+        char pb[16];
+        snprintf(pb, sizeof(pb), "%lu %%", (unsigned long)pct);
+        fb_fill_rect(bx, by + 40, 120, 18, 0x00000000);
+        fb_puts_s(bx, by + 40, pb, 1, 0x00AAAAAA);
+        fb_flush();
+    }
+    printf("load_rom: got %lu bytes\n", (unsigned long)done);
     // sd.c читает PIO: CPU пишет данные через обычные store, поэтому
     // dirty-линии D-cache (write-back) могут не дойти до DRAM. Инвалидация
     // (DCIMVAC) НЕ подходит — она отбросит грязные данные. Используем

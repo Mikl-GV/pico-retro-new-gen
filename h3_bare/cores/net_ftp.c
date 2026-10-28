@@ -11,6 +11,17 @@
 #include "fat.h"
 #include "uart.h"
 
+/* r835: построчная трассировка FTP-команд/ответов выключена (в т.ч. не
+   логируется аргумент PASS). Ключевые события — старт сервера, завершение
+   STOR, ошибки записи — печатаются всегда. Включить трассировку: FTP_DBG 1. */
+#define FTP_DBG 0
+#if FTP_DBG
+extern int uart0_printf(const char* fmt, ...);
+#define FTPLOG(...) uart0_printf(__VA_ARGS__)
+#else
+#define FTPLOG(...) do {} while (0)
+#endif
+
 // ---- Состояние ----
 static char    g_cwd[FAT_NAME_LEN] = "";
 static int     g_ctrl_slot = -1;
@@ -48,9 +59,7 @@ static void ftp_reply(int code, const char* msg) {
     buf[n++] = '\r';
     buf[n++] = '\n';
     buf[n] = 0;
-    /* r821: диагностика ответов — по строке на ответ (см. ftp_ctrl_rx). */
-    { extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  ftp> %d %s\r\n", code, msg); }
+    FTPLOG("  ftp> %d %s\r\n", code, msg);
     ftp_send_ctrl(buf);
 }
 
@@ -171,12 +180,8 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                ошибка, просто игнорируем; раньше отвечали 502. */
             if (!cmd[0]) continue;
 
-            /* r821: диагностика — одна строка на КОМАНДУ (не на пакет),
-               при копировании файлов команд немного, UART не тормозит.
-               Нужна, чтобы видеть точку останова клиента: TCP уже
-               устанавливается (r820), значит висим на протоколе. */
-            { extern int uart0_printf(const char* fmt, ...);
-              uart0_printf("  ftp< %s %s\r\n", cmd, arg); }
+            /* r821: трассировка команд (под FTP_DBG — аргумент PASS не логируется). */
+            FTPLOG("  ftp< %s %s\r\n", cmd, arg);
 
             if (strcmp(cmd,"USER")==0 || strcmp(cmd,"PASS")==0) ftp_reply(230,"logged in");
             else if (strcmp(cmd,"SYST")==0) ftp_reply(215,"UNIX Type: L8");
