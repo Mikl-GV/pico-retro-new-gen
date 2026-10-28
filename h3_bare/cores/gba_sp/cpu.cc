@@ -870,14 +870,24 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     STATS_MEMORY_ACCESS(read, type, region);                                  \
   }                                                                           \
                                                                               \
-if (                                                                         \
+  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
+                      io_read_requires_handler(_address);                     \
+  if (                                                                        \
      ((_address >> 24) == 0 && (reg[REG_PC] >= 0x4000)) ||  /* BIOS read */    \
      (_address >= 0x10000000) ||                         /* r542: open bus  */ \
      (_address & aligned_address_mask##size) ||      /* Unaligned access */     \
+     _io_handler ||                                  /* Special I/O read */   \
      !(map = memory_map_read[_address >> 15])        /* Unmapped memory */      \
   )                                                                             \
   {                                                                           \
+    /* Reading the open bus or device memory can take a variable amount of   \
+     * cycles; the read itself, however, may depend on the value of the PC   \
+     * register. We temporarily modify the PC to point one instruction       \
+     * ahead, and then restore it afterwards. */                             \
+    u32 _saved_pc = reg[REG_PC];                                              \
+    reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                          \
     dest = (type)(readfn)(_address);                                          \
+    reg[REG_PC] = _saved_pc;                                                  \
   }                                                                           \
   else                                                                        \
   {                                                                           \
@@ -910,13 +920,22 @@ if (                                                                         \
     cycles_remaining -= ws_cyc_seq[region][1];                                \
     STATS_MEMORY_ACCESS(read, u32, region);                                   \
   }                                                                           \
-  if(_address < 0x10000000 && map)                                            \
+  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
+                      io_read_requires_handler(_address);                     \
+  if(_address < 0x10000000 && map && !_io_handler)                            \
   {                                                                           \
     dest = readaddress32(map, _address & 0x7FFF);                             \
   }                                                                           \
   else                                                                        \
   {                                                                           \
+    /* Reading the open bus or device memory can take a variable amount of   \
+     * cycles; the read itself, however, may depend on the value of the PC   \
+     * register. We temporarily modify the PC to point one instruction       \
+     * ahead, and then restore it afterwards. */                             \
+    u32 _saved_pc = reg[REG_PC];                                              \
+    reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                          \
     dest = read_memory32(_address);                                           \
+    reg[REG_PC] = _saved_pc;                                                  \
   }                                                                           \
 }                                                                             \
 
@@ -3084,6 +3103,13 @@ arm_loop:
 
           case 0xF0 ... 0xFF:
             collapse_flags();
+            /* r841: HLE-фикс деления на ноль — см. Thumb case 0xDF. */
+            if (((opcode >> 24) == 0x06 || (opcode >> 24) == 0x07) &&
+                reg[1] == 0)
+            {
+              reg[REG_PC] = reg[REG_PC] + 4;
+              break;
+            }
             reg[REG_BUS_VALUE] = 0xe3a02004;  // After SWI, we read bios[0xE4]
             REG_MODE(MODE_SUPERVISOR)[6] = reg[REG_PC] + 4;
             REG_SPSR(MODE_SUPERVISOR) = reg[REG_CPSR];
@@ -3537,6 +3563,18 @@ thumb_loop:
 
           case 0xDF:
              collapse_flags();
+             /* r841 (RnR/порты SNES): HLE-обработка деления на ноль.
+              * На реальном GBA SWI 0x06 (Div) / 0x07 (DivMod) с r1==0 не
+              * вешают CPU (биос возвращает неопределённое значение), но
+              * open-source BIOS (bios_data.S) при r1==0 крутит бесконечный
+              * цикл сдвига в 0x17C4 — игра навсегда застревает. Возврат
+              * на следующую инструкцию, режим не меняем (мы его сохранили). */
+             if (((opcode & 0xFF) == 0x06 || (opcode & 0xFF) == 0x07) &&
+                 reg[1] == 0)
+             {
+               reg[REG_PC] = reg[REG_PC] + 2;
+               break;
+             }
              REG_MODE(MODE_SUPERVISOR)[6] = reg[REG_PC] + 2;
              REG_SPSR(MODE_SUPERVISOR) = reg[REG_CPSR];
              reg[REG_PC] = 0x00000008;

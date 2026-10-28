@@ -149,17 +149,11 @@ unsigned sound_timer(fixed8_24 frequency_step, u32 channel)
 
   if(((ds->fifo_top - ds->fifo_base) % 32) <= 16)
   {
-    /* r530: guard — реплина только для реально сконфигурированного FIFO-DMA
-     * (start==SPECIAL), иначе dma_transfer дёргался на любом канале с
-     * заполненным direct_sound_channel (RnR: канал 2 -> вечный ожидающий
-     * IRQ_DMA2 без реального заполнения FIFO). */
-    if(dma[1].direct_sound_channel == channel &&
-       dma[1].start_type == DMA_START_SPECIAL)
-      dma_transfer(1, &ret);
-
-    if(dma[2].direct_sound_channel == channel &&
-       dma[2].start_type == DMA_START_SPECIAL)
-      dma_transfer(2, &ret);
+    /* r840: возврат к upstream-поведению: рефил FIFO-канала при
+       direct_sound_channel==channel (НЕ требуем start_type==SPECIAL —
+       r530-guard был ошибочным; RnR так и не выходил из чёрного экрана). */
+    if (dma[1].direct_sound_channel == channel) dma_transfer(1, &ret);
+    if (dma[2].direct_sound_channel == channel) dma_transfer(2, &ret);
   }
   return ret;
 }

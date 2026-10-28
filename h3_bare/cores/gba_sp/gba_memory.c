@@ -689,6 +689,155 @@ void function_cc write_eeprom(u32 unused_address, u32 value)
     value = current_instruction | (current_instruction << 16);                \
   }                                                                           \
 
+/* Часть IO-пространства (неиспользуемые/UIO регистры) читается как
+ * шина открытого типа (open bus): значение зависит от выполняемой
+ * инструкции. Список взят из upstream libretro/gpsp. */
+static inline bool io_read_open_bus16(u32 offset)
+{
+  offset &= ~1U;
+
+  if (offset >= 0x400)
+    return true;
+  if (offset >= 0x10 && offset <= 0x46)
+    return true;
+  if (offset >= 0x4C && offset <= 0x4E)
+    return true;
+  if (offset >= 0x54 && offset <= 0x5E)
+    return true;
+  if (offset >= 0x8C && offset <= 0x8E)
+    return true;
+  if (offset >= 0xA0 && offset <= 0xB6)
+    return true;
+  if (offset >= 0xBC && offset <= 0xC2)
+    return true;
+  if (offset >= 0xC8 && offset <= 0xCE)
+    return true;
+  if (offset >= 0xD4 && offset <= 0xDA)
+    return true;
+  if (offset >= 0xE0 && offset <= 0xFE)
+    return true;
+
+  return false;
+}
+
+static inline bool io_read_zero16(u32 offset)
+{
+  offset &= ~1U;
+  switch (offset)
+  {
+    case 0x066:
+    case 0x06A:
+    case 0x06E:
+    case 0x076:
+    case 0x07A:
+    case 0x07E:
+    case 0x086:
+    case 0x08A:
+    case 0x0B8:
+    case 0x0C4:
+    case 0x0D0:
+    case 0x0DC:
+    case 0x136:
+    case 0x142:
+    case 0x15A:
+    case 0x206:
+    case 0x20A:
+    case 0x302:
+      return true;
+    default:
+      return false;
+  }
+}
+
+u32 function_cc read_io_register16(u32 address)
+{
+  u32 offset = (address & 0x00ffffff) & ~1U;
+  if (io_read_open_bus16(offset))
+  {
+    u32 value;
+    read_open16();
+    return value;
+  }
+
+  if (io_read_zero16(offset))
+    return 0;
+
+  u32 value = readaddress16(io_registers, offset & 0x3FF);
+  switch (offset)
+  {
+    case 0x008:
+    case 0x00A:
+      return value & 0xDFFF;
+    case 0x048:
+    case 0x04A:
+      return value & 0x3F3F;
+    case 0x050:
+      return value & 0x3FFF;
+    case 0x052:
+      return value & 0x1F1F;
+    case 0x060:
+      return value & 0x007F;
+    case 0x062:
+    case 0x068:
+      return value & 0xFFC0;
+    case 0x064:
+    case 0x06C:
+    case 0x074:
+      return value & 0x4000;
+    case 0x070:
+      return value & 0x00E0;
+    case 0x072:
+      return value & 0xE000;
+    case 0x078:
+      return value & 0xFF00;
+    case 0x07C:
+      return value & 0x40FF;
+    case 0x080:
+      return value & 0xFF77;
+    case 0x082:
+      return value & 0x770F;
+    case 0x084:
+      /* Bits 0-3 are the PSG channel status flags kept up to date by sound.c */
+      return value & 0x008F;
+    case 0x0BA:
+    case 0x0C6:
+    case 0x0D2:
+      return value & 0xF7E0;
+    case 0x0DE:
+      return value & 0xFFE0;
+    default:
+      return value;
+  }
+}
+
+u32 function_cc read_io_register8(u32 address)
+{
+  u32 offset = address & 0x00ffffff;
+  if (io_read_open_bus16(offset))
+  {
+    u32 value;
+    read_open8();
+    return value;
+  }
+
+  u32 value = read_io_register16(address & ~1U);
+  return (value >> ((address & 1) * 8)) & 0xFF;
+}
+
+u32 function_cc read_io_register32(u32 address)
+{
+  u32 offset = (address & 0x00ffffff) & ~3U;
+  if (io_read_open_bus16(offset) || io_read_open_bus16(offset + 2))
+  {
+    u32 value;
+    read_open32();
+    return value;
+  }
+
+  return read_io_register16(address) |
+         (read_io_register16(address + 2) << 16);
+}
+
 u32 function_cc read_eeprom(void)
 {
   eeprom_really_used = 1;
@@ -2246,14 +2395,10 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   if (dmach->irq)
     ret |= flag_interrupt(IRQ_DMA0 << dma_chan);
 
-  // r530: FIFO-DMA (SPECIAL, каналы 1/2) с repeat — источник продвигается
-  // на 16 байт (4 слова) на каждую передачу; иначе каждая подкачка берёт
-  // одни и те же 4 слова (зацикленный «трек»), и игра, ждущая прогресса
-  // адреса/партии данных, виснет (RnR Racing).
-  if (dmach->start_type == DMA_START_SPECIAL &&
-      dmach->repeat_type == DMA_REPEAT &&
-      (dma_chan == 1 || dma_chan == 2))
-    dmach->source_address = (dmach->source_address + 16) & 0xFFFFFFF;
+  /* r840: r530-фикс «источник +16» УБРАН — в каноническом gpSP FIFO-DMA
+     (SPECIAL, repeat) НЕ двигает source_address сам; буфер чередует игра.
+     Принудительный сдвиг давал другой поток адресов -> RnR не выходил из
+     «загрузки» (чёрный экран). */
 
   // This is an approximation for the most common case (no region cross)
   if (usedcycles)
