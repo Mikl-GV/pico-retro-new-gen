@@ -22,6 +22,18 @@ struct tcp_slot {
     uint32_t iss;           // r818: initial send seq — для повтора SYN-ACK
     net_tcp_app_rx_t app_rx;
     void*    ctx;
+    /* r846 (аудит, «нет ретрансмиссий»): отслеживание неподтверждённых
+       данных. snd_una — первый неподтверждённый байт; retx-буфер хранит
+       копии сегментов (до RETX_MAX), RTO — сколько кадров ждём перед
+       повтором. Чистые ACK больше не игнорируются: они двигают snd_una
+       и освобождают буфер. */
+    uint32_t snd_una;
+    uint32_t rto;           // счётчик вызовов net_tcp_poll до повтора
+    uint8_t  retx_data[NET_TCP_RETX][NET_TCP_MSS];
+    uint16_t retx_len[NET_TCP_RETX];
+    uint32_t retx_seq[NET_TCP_RETX];
+    uint8_t  retx_flags[NET_TCP_RETX];
+    uint8_t  retx_cnt;
     /* r835: буфер переупорядочивания. Потеря одного кадра WiFi даёт сегмент
        с seq > rcv_nxt; раньше он отбрасывался, поток вставал до таймаута
        клиента (обрыв STOR на 98–101 КБ). Теперь такие сегменты копятся и
@@ -64,11 +76,13 @@ static void tcp_csum(uint8_t* pkt, uint16_t tcp_len) {
     pkt[20 + 16] = (uint8_t)(c >> 8); pkt[20 + 17] = (uint8_t)c;
 }
 
-// Отправка сегмента в слоте.
-static void slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
+// Отправка сегмента в слоте. Возвращает 0 при успехе, -1 при ошибке TX
+// (r846): вызывающий может не класть сегмент в очередь повтора или
+// положить его туда принудительно.
+static int slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
                           uint32_t ack, const uint8_t* data, uint16_t len)
 {
-    if (!s->active && !(flags & NET_TCP_SYN)) return;
+    if (!s->active && !(flags & NET_TCP_SYN)) return -1;
     if (len > NET_TCP_MSS) len = NET_TCP_MSS;   // защита: не больше MSS (r808)
     // r818: 48 (20 IP + 20 TCP + 4 опции MSS + запас) + MSS. Раньше 40+MSS
     // (1500): при SYN с MSS-опцией и полном MSS-блоке данных писали до
@@ -76,7 +90,7 @@ static void slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
     uint8_t pkt[48 + NET_TCP_MSS];
     uint8_t my_mac[6], my_ip[4];
     h3_wifi_get_mac(my_mac);
-    if (h3_wifi_get_ip(my_ip) != 0) return;
+    if (h3_wifi_get_ip(my_ip) != 0) return -1;
 
     // r815: SYN-пакеты (SYN и SYN-ACK) с MSS-опцией (kind=2,len=4,MSS=1460).
     // Windows без MSS в SYN-ACK отбрасывает соединение.
@@ -122,7 +136,7 @@ static void slot_send_raw(struct tcp_slot* s, uint8_t flags, uint32_t seq,
     }
     if (data && len) memcpy(&pkt[40 + mss_len], data, len);
     tcp_csum(pkt, (uint16_t)(20 + mss_len + len));
-    h3_wifi_tx_data(0x0800, s->peer_mac, pkt, tot);
+    return h3_wifi_tx_data(0x0800, s->peer_mac, pkt, tot);
 }
 
 // r808: сегментация по MSS. Раньше net_tcp_send клал ВСЕ данные одним
@@ -133,15 +147,29 @@ void net_tcp_send(int slot, uint8_t flags, const uint8_t* data, uint16_t len) {
     if (slot < 0 || slot >= NET_TCP_SLOTS) return;
     struct tcp_slot* s = &g_slots[slot];
     if (!s->active) return;
+    if (!s->snd_una) s->snd_una = s->snd_nxt;   /* r846: первый неподтверждённый */
     uint16_t sent = 0;
     while (sent < len) {
         uint16_t n = len - sent;
         if (n > NET_TCP_MSS) n = NET_TCP_MSS;
-        slot_send_raw(s, flags | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt,
-                      data ? data + sent : 0, n);
+        int rc = slot_send_raw(s, flags | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt,
+                               data ? data + sent : 0, n);
+        /* r846: кладём в очередь повтора независимо от результата TX — при
+           ошибке (-3 и т.п.) кадр не ушёл, повторим его из очереди. */
+        if (s->retx_cnt < NET_TCP_RETX) {
+            uint8_t idx = s->retx_cnt;
+            s->retx_seq[idx] = s->snd_nxt;
+            s->retx_len[idx] = n;
+            s->retx_flags[idx] = flags | NET_TCP_ACK;
+            if (data && n)
+                memcpy(s->retx_data[idx], data + sent, n);
+            s->retx_cnt++;
+        }
         s->snd_nxt += n;
         sent += n;
     }
+    if (s->retx_cnt)
+        s->rto = 1;   /* начнём обратный отсчёт для повтора */
 }
 
 int net_tcp_listen(uint16_t port, net_tcp_app_rx_t app_rx, void* ctx) {
@@ -250,6 +278,7 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         s->rcv_nxt = seq + 1;
         s->snd_nxt = 0x40000000u;
         s->iss     = 0x40000000u;
+        s->snd_una = 0; s->retx_cnt = 0; s->rto = 0;   /* r846: новая сессия */
         for (int i = 0; i < NET_TCP_OOO; i++) s->ooo_len[i] = 0;   /* r835 */
         slot_send_raw(s, NET_TCP_SYN | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         s->snd_nxt++;
@@ -261,6 +290,18 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     }
     if (!s->active) return 0;
 
+    /* r846 (аудит, «RST только отправляется»): пришедший RST аварийно
+       закрывает соединение — слот становится свободным, все очереди чистые.
+       Это закрывает залипание слота после аварийного закрытия клиента. */
+    if (flags & NET_TCP_RST) {
+        s->active = 0;
+        s->snd_una = 0;
+        s->retx_cnt = 0;
+        s->rto = 0;
+        for (int i = 0; i < NET_TCP_OOO; i++) s->ooo_len[i] = 0;
+        return 0;
+    }
+
     uint16_t pay = (uint16_t)(len - off);
 
     // r812: FIN обрабатываем ДО ACK-ветки. Раньше пакет FIN+ACK (fl=0x14)
@@ -271,15 +312,48 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         // FIN занимает 1 байт sequence (даже если с ним пришли данные).
         if (seq == s->rcv_nxt) s->rcv_nxt += pay + 1;
         else                   s->rcv_nxt += pay;
-        if (pay && s->app_rx)
+        /* r846 (аудит, «FIN с данными вне порядка»): если FIN пришёл с
+           данными, чей seq раньше пропущенного сегмента, данные отдаём
+           приложению только в порядке seq; иначе они ломают поток STOR. */
+        if (pay && s->app_rx && seq == (s->rcv_nxt - pay - 1))
             s->app_rx((int)(s - g_slots), &pkt[off], pay, s->peer_ip, s->peer_mac, s->ctx);
+        else if (pay) {
+            /* Данные вне порядка: отдать в порядке накопления (OOO). */
+            for (int i = 0; i < NET_TCP_OOO; i++)
+                if (s->ooo_len[i]) {
+                    if (s->app_rx)
+                        s->app_rx((int)(s - g_slots), s->ooo_data[i], s->ooo_len[i],
+                                  s->peer_ip, s->peer_mac, s->ctx);
+                    s->ooo_len[i] = 0;
+                }
+        }
         for (int i = 0; i < NET_TCP_OOO; i++) s->ooo_len[i] = 0;   /* r835 */
+        s->snd_una = 0; s->retx_cnt = 0; s->rto = 0;               /* r846 */
         slot_send_raw(s, NET_TCP_ACK, s->snd_nxt, s->rcv_nxt, 0, 0);
         s->active = 0;   // слот свободен для нового клиента
         return 0;
     }
 
     if (flags & NET_TCP_ACK) {
+        /* r846: ACK подтверждает наши данные — двигаем snd_una и чистим
+           очередь повтора. Раньше чистые ACK просто игнорировались. */
+        if ((int32_t)(ack - s->snd_una) > 0) {
+            uint32_t new_una = ack;
+            /* освободить все сегменты, целиком покрытые ack */
+            uint8_t left = 0;
+            for (int i = 0; i < NET_TCP_RETX; i++) {
+                if (s->retx_len[i]) {
+                    uint32_t end = s->retx_seq[i] + s->retx_len[i];
+                    if ((int32_t)(end - new_una) <= 0)
+                        s->retx_len[i] = 0;
+                    else
+                        left++;
+                }
+            }
+            s->retx_cnt = left;   /* пересчёт вместо декремента — нет ухода в -1 */
+            s->snd_una = new_una;
+            if (!s->retx_cnt) s->rto = 0;
+        }
         if (pay == 0) return 0;   // чистый ACK
         int slot_i = (int)(s - g_slots);
         if (seq == s->rcv_nxt) {
@@ -328,4 +402,21 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     return 0;
 }
 
-void net_tcp_poll(void) {}
+void net_tcp_poll(void) {
+    /* r846 (аудит, «нет ретрансмиссий»): периодический повтор сегментов,
+       неподтверждённых за RTO. Потеря WiFi-кадра на RETR/LIST/ответе FTP
+       раньше давала вечную паузу до таймаута клиента. Теперь: каждый
+       NET_TCP_RTO_MAX вызовов шлём заново весь неподтверждённый хвост. */
+    for (int i = 0; i < NET_TCP_SLOTS; i++) {
+        struct tcp_slot* s = &g_slots[i];
+        if (!s->active || !s->retx_cnt) continue;
+        if (++s->rto >= NET_TCP_RTO_MAX) {
+            s->rto = 0;
+            for (int k = 0; k < NET_TCP_RETX; k++) {
+                if (!s->retx_len[k]) continue;
+                slot_send_raw(s, s->retx_flags[k], s->retx_seq[k], s->rcv_nxt,
+                              s->retx_data[k], s->retx_len[k]);
+            }
+        }
+    }
+}

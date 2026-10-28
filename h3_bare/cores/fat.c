@@ -29,16 +29,17 @@ static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int i
 static int name_eq(const char* a, const char* b);
 
 // ---- Блочный источник (r788): SD по умолчанию, USB через fat_set_block_source ----
-// blk_read/blk_write — единственные точки доступа FAT к носителю. SD-вызовы
-// остались в обёртках: если кастомный источник не назначен, читаем SD.
-static fat_blk_read_t  g_blk_rd = 0;
-static fat_blk_write_t g_blk_wr = 0;
+// blk_read/blk_write — единственные точки доступа FAT к носителю. Если
+// кастомный источник не назначен (или дёрнут до main.c), читаем SD —
+// g_blk_rd/g_blk_wr по умолчанию указывают на SD-обёртки, рекурсии нет.
+static fat_blk_read_t  g_blk_rd = sd_read_sector;
+static fat_blk_write_t g_blk_wr = sd_write_sector;
 
 static int blk_read(uint32_t lba, void* buf) {
-    return g_blk_rd ? g_blk_rd(lba, buf) : blk_read(lba, buf);
+    return g_blk_rd ? g_blk_rd(lba, buf) : sd_read_sector(lba, buf);
 }
 static int blk_write(uint32_t lba, const void* buf) {
-    return g_blk_wr ? g_blk_wr(lba, buf) : blk_write(lba, buf);
+    return g_blk_wr ? g_blk_wr(lba, buf) : sd_write_sector(lba, buf);
 }
 
 void fat_set_block_source(fat_blk_read_t rd, fat_blk_write_t wr) {
@@ -1248,6 +1249,24 @@ int fat_write_end(void) {
     g_sector[off + 31] = (uint8_t)((sz >> 24) & 0xFF);
     if (blk_write(g_wr.dentry_sec, g_sector) < 0) return -1;
     return (int)g_wr.size;
+}
+
+void fat_abort_write(void) {
+    /* r845: неудачная потоковая запись — помечаем запись каталога как
+       удалённую (0xE5). Кластеры в FAT остаются несвязанными (leak, но
+       файл не «битый»); FAT32 это переживёт, а частичного файла на диске
+       не остаётся. */
+    if (!g_wr.active) return;
+    g_wr.active = 0;
+    if (g_wr.dentry_sec) {
+        if (blk_read(g_wr.dentry_sec, g_sector) < 0) {
+            memset(&g_wr, 0, sizeof(g_wr));
+            return;
+        }
+        g_sector[g_wr.dentry_off] = 0xE5;
+        blk_write(g_wr.dentry_sec, g_sector);
+    }
+    memset(&g_wr, 0, sizeof(g_wr));
 }
 
 int fat_find(const char* dir, const char* name, fat_entry_t* out) {

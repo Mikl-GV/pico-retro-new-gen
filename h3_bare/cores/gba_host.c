@@ -290,6 +290,7 @@ u32 gba_last_pairs(void) { return g_gba_pairs; }
 void gba_render_frame(void) {
     if (!g_loaded) return;
     if (!gba_screen_pixels) return;
+
     for (int y = 0; y < GBA_SCREEN_HEIGHT && y < EMU_H; y++)
         for (int x = 0; x < GBA_SCREEN_WIDTH && x < EMU_W; x++)
             EMU_FB[y * EMU_W + x] = gba_screen_pixels[y * GBA_SCREEN_PITCH + x];

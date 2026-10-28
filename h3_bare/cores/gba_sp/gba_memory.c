@@ -906,7 +906,7 @@ u32 function_cc read_eeprom(void)
                                                                               \
     case 0x04:                                                                \
       /* I/O registers */                                                     \
-      value = readaddress##type(io_registers, address & 0x3FF);               \
+      value = read_io_register##type(address);                                \
       break;                                                                  \
                                                                               \
     case 0x05:                                                                \

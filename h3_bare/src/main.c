@@ -333,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r841";
+const char g_fw_version[] = "r845";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r841\n");
+    uart_puts("build: r845\n");
 
     led_init();
     led_set(0);
@@ -384,6 +384,10 @@ void main(void) {
         fat_set_block_source(usb_msd_block_read, usb_msd_block_write);
         uart_puts("ROM source: USB flash\n");
     } else {
+        // r843-FIX: явно ставим SD-источник ДО fat_init() — без вызова
+        // g_blk_rd остался бы нулевым и первый blk_read() в fat_init()
+        // ушёл бы по нулевому указателю (prefetch abort на 0x0).
+        fat_set_block_source(sd_read_sector, sd_write_sector);
         uart_puts("ROM source: SD (no USB flash)\n");
     }
 

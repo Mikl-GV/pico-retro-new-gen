@@ -33,6 +33,7 @@ static uint16_t g_pasv_port = 21000;
 static char     g_stor_name[FAT_NAME_LEN];
 static char     g_stor_dir[FAT_NAME_LEN];
 static int      g_stor_active = 0;   /* 1 = идёт приём STOR (ждём FIN data-слота) */
+static int      g_stor_failed = 0;   /* r845: ошибка записи в FAT — аборт */
 static uint32_t g_stor_len;          /* принято байт (для лога) */
 /* r833: буфер-накопитель 8 КБ. Писать в FAT на каждый TCP-сегмент (1460 б)
    слишком дорого (USB на сектор) — WiFi-RX простаивал, кадры терялись и
@@ -64,20 +65,51 @@ static void ftp_reply(int code, const char* msg) {
 }
 
 // Полный путь (абсолютный) — g_cwd + arg, если arg относительный.
+// r845: нормализуем «/a/b/../c» и повторные слеши; «..» выше корня
+// остаётся у корня (не даём уйти за /roms).
 static void make_path(const char* arg, char* out, int outsz) {
+    char tmp[FAT_NAME_LEN];
     if (arg[0] == '/') {
-        strncpy(out, arg, outsz-1); out[outsz-1]=0;
+        strncpy(tmp, arg, sizeof(tmp)-1); tmp[sizeof(tmp)-1]=0;
     } else {
         if (g_cwd[0]) {
-            strncpy(out, g_cwd, outsz-1); out[outsz-1]=0;
-            int l = (int)strlen(out);
-            if (l > 0 && out[l-1] != '/') { out[l++]='/'; out[l]=0; }
-            strncat(out, arg, outsz - strlen(out) - 1);
+            strncpy(tmp, g_cwd, sizeof(tmp)-1); tmp[sizeof(tmp)-1]=0;
+            int l = (int)strlen(tmp);
+            if (l > 0 && tmp[l-1] != '/') { tmp[l++]='/'; tmp[l]=0; }
+            strncat(tmp, arg, sizeof(tmp) - strlen(tmp) - 1);
         } else {
-            strncpy(out, "/roms/", outsz-1); out[outsz-1]=0;
-            strncat(out, arg, outsz - strlen(out) - 1);
+            strncpy(tmp, "/roms/", sizeof(tmp)-1); tmp[sizeof(tmp)-1]=0;
+            strncat(tmp, arg, sizeof(tmp) - strlen(tmp) - 1);
         }
     }
+    /* Нормализация: сворачиваем "x/../" и "//". Проходим слева направо,
+       собираем компоненты. */
+    char* dst = out;
+    const char* src = tmp;
+    while (*src) {
+        if (src[0]=='/' && src[1]=='/') { src++; continue; }
+        if (src[0]=='/' && src[1]=='.' && (src[2]=='/' || src[2]==0)) {
+            src += 2;   /* "/." или "/./" — просто пропустить */
+            if (*src == '/') src++;
+            continue;
+        }
+        if (src[0]=='/' && src[1]=='.' && src[2]=='.' &&
+            (src[3]=='/' || src[3]==0)) {
+            src += 3;
+            if (*src == '/') src++;
+            /* подняться на уровень: откатить последний компонент в out */
+            if (dst > out) {
+                dst--;                     /* убрать завершающий '/' */
+                while (dst > out && dst[-1] != '/') dst--;
+            }
+            continue;
+        }
+        if ((int)(dst - out) < outsz - 2) *dst++ = *src++;
+        else break;
+    }
+    if (dst == out) { *dst++ = '/'; }
+    else if (dst[-1] == '/' && dst > out + 1) dst--;
+    *dst = 0;
 }
 
 // Разделить путь "/roms/nes/game.nes" → dir="/roms/nes", name="game.nes".
@@ -127,6 +159,11 @@ static int ftp_data_rx(int slot, const uint8_t* data, uint16_t len,
                 if (fat_write_data(g_stor_buf, g_stor_used) < 0) {
                     extern int uart0_printf(const char* fmt, ...);
                     uart0_printf("  ftp: STOR write err total=%u\r\n", g_stor_len);
+                    /* r845: запись не удалась — останавливаем приём, при
+                       финализации файл будет удалён (fat_abort_write). */
+                    g_stor_failed = 1;
+                    g_stor_used = 0;
+                    return 0;
                 }
                 g_stor_used = 0;
             }
@@ -202,13 +239,33 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                     ftp_reply(250,"cwd ok");
                 }
             }
-            else if (strcmp(cmd,"CDUP")==0) { ftp_reply(250,"cdup ok"); }
+            else if (strcmp(cmd,"CDUP")==0) {
+                /* r845 (аудит, «CDUP ничего не меняет»): реально поднимаемся
+                   на уровень выше. С /roms/nes → /roms, с /roms → корень. */
+                if (g_cwd[0]) {
+                    char p[FAT_NAME_LEN];
+                    strncpy(p, g_cwd, sizeof(p)-1); p[sizeof(p)-1]=0;
+                    int l=(int)strlen(p);
+                    while (l>1 && p[l-1]=='/') p[--l]=0;
+                    char* slash = strrchr(p, '/');
+                    if (slash) {
+                        if (slash == p) g_cwd[0]=0;
+                        else { *slash=0; strncpy(g_cwd, p, sizeof(g_cwd)-1); g_cwd[sizeof(g_cwd)-1]=0; }
+                    } else g_cwd[0]=0;
+                }
+                ftp_reply(250,"cdup ok");
+            }
             else if (strcmp(cmd,"PASV")==0) {
                 /* Сначала открыть data-слушатель на НОВОМ порту, затем
-                   сообщить клиенту именно его номер. */
+                   сообщить клиенту именно его номер. r845: если слушатель
+                   не открылся — не отвечаем 227 (клиент пошёл бы на
+                   несуществующий порт). */
                 if (g_data_slot >= 0) { net_tcp_close(g_data_slot); g_data_slot=-1; }
                 g_pasv_port = 21000 + (uint8_t)((unsigned)(slot+1)*37 % 1000);
                 g_data_slot = net_tcp_listen(g_pasv_port, ftp_data_rx, 0);
+                if (g_data_slot < 0) {
+                    ftp_reply(425, "cannot open data connection");
+                } else {
                 uint8_t ip[4]; h3_wifi_get_ip(ip);
                 char buf[96]; int n=0;
                 buf[n++]='(';
@@ -233,6 +290,7 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                 for (int p=0;p<tn;p++) buf[n++]=t[p];
                 buf[n++]=')'; buf[n]=0;
                 ftp_reply(227, buf);
+                }
             }
             else if (strcmp(cmd,"LIST")==0 || strcmp(cmd,"NLST")==0) {
                 char body[4096];
@@ -304,6 +362,7 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                 path_split(p, dir, sizeof(dir), nm, sizeof(nm));
                 g_stor_len = 0;
                 g_stor_used = 0;
+                g_stor_failed = 0;
                 strncpy(g_stor_name, nm, sizeof(g_stor_name)-1);
                 g_stor_name[sizeof(g_stor_name)-1] = 0;
                 strncpy(g_stor_dir, dir, sizeof(g_stor_dir)-1);
@@ -327,7 +386,6 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
             else if (strcmp(cmd,"MKD")==0) {
                 char p[FAT_NAME_LEN]; make_path(arg, p, sizeof(p));
                 // fat_mkdir(parent, name) — вычленяем последний компонент
-                int l=(int)strlen(p);
                 char parent[FAT_NAME_LEN]; strncpy(parent, p, sizeof(parent)-1); parent[sizeof(parent)-1]=0;
                 char* slash = strrchr(parent, '/');
                 if (slash && slash != parent) { *slash=0; const char* nm = slash+1;
@@ -369,14 +427,21 @@ void ftp_server_poll(void) {
                 uart0_printf("  ftp: STOR fin len=%u dir=%s name=%s\r\n",
                              g_stor_len, g_stor_dir[0] ? g_stor_dir : "/roms",
                              g_stor_name);
-                /* r833: дослать остаток из буфера, затем закрыть файл. */
-                if (g_stor_used) {
-                    if (fat_write_data(g_stor_buf, g_stor_used) < 0)
-                        uart0_printf("  ftp: STOR tail write err\r\n");
+                if (g_stor_failed) {
+                    /* r845: была ошибка записи — удаляем частичный файл. */
+                    uart0_printf("  ftp: STOR abort (write error)\r\n");
+                    fat_abort_write();
                     g_stor_used = 0;
+                } else {
+                    /* r833: дослать остаток из буфера, затем закрыть файл. */
+                    if (g_stor_used) {
+                        if (fat_write_data(g_stor_buf, g_stor_used) < 0)
+                            uart0_printf("  ftp: STOR tail write err\r\n");
+                        g_stor_used = 0;
+                    }
+                    rc = fat_write_end();
+                    uart0_printf("  ftp: STOR write rc=%d\r\n", rc);
                 }
-                rc = fat_write_end();
-                uart0_printf("  ftp: STOR write rc=%d\r\n", rc);
             }
             if (rc >= 0) ftp_reply(226, "transfer complete");
             else         ftp_reply(426, "write failed");

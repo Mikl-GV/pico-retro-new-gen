@@ -36,6 +36,11 @@ int  fat_write_begin(const char* dir_path, const char* name);
 int  fat_write_data(const uint8_t* data, uint32_t len);
 int  fat_write_end(void);
 
+// r845: аборт потоковой записи при ошибке (см. STOR). Сбрасывает g_wr и
+// помечает начатый файл как удалённый (0xE5) — на диске не остаётся
+// частичного файла после неудачного приёма.
+void fat_abort_write(void);
+
 // Удаление файла: помечает как 0xE5 и освобождает кластеры в FAT
 int  fat_delete_file(const char* dir, const char* name);
 

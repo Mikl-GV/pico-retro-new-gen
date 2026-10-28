@@ -360,6 +360,17 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
     if (!st || len < 20) return;
     ihl = (uint8_t)((pkt[0] & 0x0F) * 4);
     if (ihl < 20 || ihl > len) return;
+    // r846 (аудит, «не проверяются IP/TCP checksum на приёме»): проверяем
+    // контрольную сумму IP-заголовка. Битые кадры WiFi, которые доходили
+    // до FTP, раньше ломали состояние TCP (rcv_nxt/snd_nxt разъезжались);
+    // теперь такие пакеты отбрасываются молча.
+    {
+        uint32_t acc = 0;
+        for (uint16_t wi = 0; wi < ihl; wi += 2)
+            acc += ((uint16_t)pkt[wi] << 8) | pkt[wi+1];
+        while (acc >> 16) acc = (acc & 0xFFFF) + (acc >> 16);
+        if ((uint16_t)~acc != 0) return;   /* bad IP header checksum */
+    }
     // r818: точная длина IP-пакета из его заголовка (total length).
     // Переданный len — длина payload 802.11-кадра (может включать LLC и
     // padding), из-за чего в TCP «pay = len - off» был завышен, rcv_nxt
@@ -379,6 +390,24 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
                                   const uint8_t* src_mac,
                                   const uint8_t* src_ip,
                                   const uint8_t my_ip[4]);
+        /* r846: проверяем TCP-контрольную сумму (псевдозаголовок+сегмент). */
+        {
+            uint16_t tcp_len = (uint16_t)(len - ihl);
+            uint16_t tcp_off = (uint16_t)((pkt[ihl+12] >> 4) * 4);
+            if (tcp_off < 20 || tcp_off > tcp_len) return;
+            uint32_t acc = 0;
+            /* псевдозаголовок: src IP + dst IP + 0x00,0x06 + tcp_len */
+            for (int wi = 12; wi < 20; wi += 2)
+                acc += ((uint16_t)pkt[wi] << 8) | pkt[wi+1];
+            acc += 0x0006u;
+            acc += tcp_len;
+            for (uint16_t wi = 0; wi + 1 < tcp_len; wi += 2)
+                acc += ((uint16_t)pkt[ihl+wi] << 8) | pkt[ihl+wi+1];
+            if (tcp_len & 1)
+                acc += (uint16_t)pkt[ihl+tcp_len-1] << 8;
+            while (acc >> 16) acc = (acc & 0xFFFF) + (acc >> 16);
+            if ((uint16_t)~acc != 0) return;   /* bad TCP checksum */
+        }
         net_tcp_handle(&pkt[ihl], (uint16_t)(len - ihl), src_mac,
                        &pkt[12], st->ip);   /* src_ip = IP-header src */
         return;

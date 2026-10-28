@@ -22,6 +22,9 @@ extern "C" {
   #include "cpu_instrument.h"
 }
 
+/* Диагностика (временная, под GBA_DBG): uart0_printf из uart.c. */
+extern "C" int uart0_printf(const char* fmt, ...);
+
 const u8 bit_count[256] =
 {
   0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 1, 2, 2, 3, 2, 3, 3,
