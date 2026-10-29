@@ -25,13 +25,15 @@ emulator-refs/
 # BIOS-бинарники, которые .S-файлы вшивают через .incbin (нужны для сборки из клона):
 !h3_bare/cores/gba_sp/bios/open_gba_bios.bin
 !h3_bare/cores/gearcoleco/coleco_bios.bin
+# WiFi-прошивка чипа RTL8189FTV (fw_blob.S .incbin "fw_nic.bin") — тоже для сборки:
+!fw_nic.bin
 
-# PyInstaller-��������� � spec: �� �����
+# PyInstaller-��������� � spec: �� �����
 *.spec
 tools/ftp_client/build/
 tools/ftp_client/dist/
 tools/ftp_client/__pycache__/
 
 
-# ��������� ������
+# ��������� ������
 *.lnk
