@@ -333,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r845";
+const char g_fw_version[] = "r856";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r845\n");
+    uart_puts("build: r856\n");
 
     led_init();
     led_set(0);
@@ -482,7 +482,7 @@ void main(void) {
         // r797: фоновый опрос WiFi (DHCP-ретраи + приём FTP-команд/данных).
         // Сервер продолжает работать и после выхода с экрана «WiFi Transfer».
         extern int wifi_layer_poll(void);
-        if (wifi_layer_poll) wifi_layer_poll();
+        wifi_layer_poll();
         tft_help_show(NULL);
         int sel = menu_run();
         if (sel == -2) {

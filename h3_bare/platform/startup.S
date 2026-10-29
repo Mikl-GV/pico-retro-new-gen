@@ -448,7 +448,7 @@ _start:
     b 1b
 5:
 
-    /* r778: Zero-init .a8_bss (NOLOAD, ядро Atari 800 на 0x52000000) —
+    /* r778: Zero-init .a8_bss (NOLOAD, ядро Atari 800; linker.ld — 0x5F000000) —
      * BSS-цикл её не покрывает (отдельная секция, как .coherent). */
     ldr r0, =_a8_bss_start
     ldr r1, =_a8_bss_end
@@ -529,7 +529,10 @@ _irq_entry:
     beq     _irq_spurious           /* ложное прерывание — не обрабатывать */
 
     mov     r0, r1                  /* r0 = INTID → C-диспетчеру */
+    push    {r1, r2}                /* r1 — caller-saved: сохранить INTID
+                                       (пара регистров держит SP выровненным) */
     bl      gic_dispatch
+    pop     {r1, r2}
 
     ldr     r0, =0x01C82000
     str     r1, [r0, #0x10]         /* GICC_EOIR = INTID (тот же ID!) */

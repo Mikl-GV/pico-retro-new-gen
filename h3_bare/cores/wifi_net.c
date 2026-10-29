@@ -377,7 +377,10 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
     // разъезжался и FTP-обмен рвался. ip_len всегда ≤ len.
     {
         uint16_t ip_len = (uint16_t)((pkt[2] << 8) | pkt[3]);
-        if (ip_len >= ihl && ip_len <= len) len = ip_len;
+        /* r850: заголовок не может быть длиннее кадра. Раньше при ip_len > len
+           длина не клампилась, и TCP-сумма/опции читали за payload. */
+        if (ip_len < ihl || ip_len > len) return;
+        len = ip_len;
     }
     proto = pkt[9];
 
@@ -393,6 +396,7 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
         /* r846: проверяем TCP-контрольную сумму (псевдозаголовок+сегмент). */
         {
             uint16_t tcp_len = (uint16_t)(len - ihl);
+            if (tcp_len < 20) return;
             uint16_t tcp_off = (uint16_t)((pkt[ihl+12] >> 4) * 4);
             if (tcp_off < 20 || tcp_off > tcp_len) return;
             uint32_t acc = 0;
@@ -436,12 +440,18 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
         int di_u0 = (pkt[udp_off+0]<<8)|pkt[udp_off+1];
         int di_u1 = (pkt[udp_off+2]<<8)|pkt[udp_off+3];
         int di_mt = -1;
-        for (int oi = 0; oi + 2 <= udp_len; ) {
-            uint8_t c = pkt[dh+240+oi];
+        /* r850: окно опций ограничено фактическим payload (udp_len мог быть
+           больше кадра — чтение уходило за rxbuf). */
+        uint16_t obase = (uint16_t)(dh + 240);
+        uint16_t pay_end = (uint16_t)(dh + (udp_len >= 8 ? (uint16_t)(udp_len - 8) : 0));
+        if (pay_end > len) pay_end = len;
+        for (int oi = 0; obase + oi + 1 < pay_end; ) {
+            uint8_t c = pkt[obase + oi];
             if (c == 0) { oi++; continue; }
             if (c == 255) break;
-            uint8_t ol = pkt[dh+240+oi+1];
-            if (c == 53 && ol == 1) di_mt = pkt[dh+240+oi+2];
+            uint8_t ol = pkt[obase + oi + 1];
+            if (c == 53 && ol == 1 && obase + oi + 2 < pay_end)
+                di_mt = pkt[obase + oi + 2];
             oi += 2 + ol;
         }
         uart_print("  net: dhcp ");

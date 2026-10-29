@@ -4,10 +4,10 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 512 МБ, без ОС). Один бинарник `h3_bare.bin` грузится U-Boot/FEL по адресу
 0x40000000. HDMI 1024×600 (меню/игры, core0) + SPI TFT 480×320 (справка, тач —
 дополнение, core1). ROM — с SD (FAT32), ввод — USB-клавиатура (OHCI) +
-Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — I2S0 (MAX98357A,
-48 кГц), долив на CPU2.
+Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — вывод снят (r777),
+синтез в ядрах сохранён.
 
-Версия прошивки: **r776** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
+Версия прошивки: **r856** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
 
 ## Системы (статус из `h3_bare/cores/systems.h`)
 
@@ -69,10 +69,11 @@ ROM — в `/roms/<id>/` на SD: `.a26`, `.a52`, `.a78`, `.nes`, `.sms`, `.gg`,
 
 ## Документация
 
-- `docs/HANDOVER.md` — точка сохранения и история дельт (r500..r776)
-- `docs/ARCHITECTURE.md` — устройство кода, карта памяти
-- `docs/ROADMAP.md` — статус систем и план
+- `docs/ARCHITECTURE.md` — устройство кода, карта памяти, масштабирование
+- `docs/HANDOVER.md` — текущее состояние и последние дельты
+- `docs/ROADMAP.md` — статус систем, очередь, аркады
 - `docs/CONTROLS.md` — полная карта управления
-- `docs/BUILD.md` — сборка (Linux/Windows)
+- `docs/BUILD.md` — сборка (Linux/Windows) и флаги
 - `docs/HARDWARE.md` — железо, распиновка
 - `docs/FBNEO-ROMS.md` — каталог аркадных ROM
+- `docs/AUDIT_2026-10-29_r848_FIXPLAN.md` — аудит и план исправлений (D1..D9)

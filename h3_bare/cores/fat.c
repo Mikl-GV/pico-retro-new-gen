@@ -140,7 +140,9 @@ static int fat_sector_cached(uint32_t sec) {
 static uint32_t fat_next_cluster(uint32_t cl) {
     // P30: кластеры начинаются с 2; cl<2 = служебные записи FAT (0/1) —
     // не читаем их как кластеры, сразу обрыв цепочки.
-    if (cl < 2) return 0x0FFFFFFF;
+    // r853: и не выходим за пределы тома — иначе битая запись каталога даёт
+    // чтение/запись произвольного сектора (cl*4 переполняется).
+    if (cl < 2 || cl >= 2 + g_total_clusters) return 0x0FFFFFFF;
     uint32_t fat_off = cl * 4;
     uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
     if (fat_sector_cached(sec) < 0) return 0x0FFFFFFF;
@@ -151,13 +153,15 @@ static uint32_t fat_next_cluster(uint32_t cl) {
 // r0.417 (H1 аудита): верхняя граница итераций цепочки кластеров —
 // защита от бесконечного обхода при цикле в цепочке на битой FAT.
 static uint32_t chain_guard_limit(void) {
-    uint32_t l = g_total_clusters;
-    return (l < 100000) ? 100000 : l;
+    // r853: цепочка не может быть длиннее числа кластеров тома. Прежний
+    // минимум 100000 на битой FAT давал минуты чтения секторов.
+    return (g_total_clusters > 2) ? g_total_clusters : 2;
 }
 
 // ---- чтение по байтам из цепочки кластеров ----
 static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t len) {
     if (g_sec_per_cluster == 0) return 0;
+    if (cl < 2 || cl >= 2 + g_total_clusters) return 0;   /* r853: кластер вне тома */
     uint32_t cl_size = g_sec_per_cluster * 512;
     uint32_t skip = offset;
     uint32_t guard = 0;
@@ -275,6 +279,7 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
 
 // ---- чтение директории (кластеры) ----
 static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
+    if (cl < 2 || cl >= 2 + g_total_clusters) return 0;   /* r853: кластер вне тома */
     int count = 0;
     char lfn[FAT_NAME_LEN] = {0};
     int lfn_len = 0;
@@ -455,6 +460,11 @@ uint32_t off = (e * esize) % 512;
     uint32_t total_sectors = le32(g_sector + 32);
     if (g_data_start >= total_sectors) return -1;
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
+    /* r853: границы FAT32 по спецификации: кластер ≤ 128 секторов (64 КиБ),
+       минимум два кластера, корневой кластер внутри тома. */
+    if (g_sec_per_cluster > 128) return -1;
+    if (g_total_clusters < 2) return -1;
+    if (g_root_cluster < 2 || g_root_cluster >= 2 + g_total_clusters) return -1;
 
     /* r828: FSInfo — подсказка next_free для быстрого поиска свободного
        кластера (без неё запись начинала линейный обход с кластера 2). */
@@ -520,6 +530,7 @@ static uint32_t find_free_cluster(void) {
 
 // записать значение в FAT (обе копии)
 static int fat_set_cluster(uint32_t cl, uint32_t val) {
+    if (cl < 2 || cl >= 2 + g_total_clusters) return -1;   /* r853: за пределы FAT */
     uint32_t fat_off = cl * 4;
     uint32_t sec = g_part_lba + g_reserved + (fat_off / 512);
     uint32_t off = fat_off % 512;
@@ -583,6 +594,7 @@ static void make_lfn_fragment(uint8_t* e, int seq, const char* name, int start, 
 
 // Найти count подряд свободных записей ВНУТРИ одного сектора директории.
 static int find_free_entries(uint32_t cl, int count, uint32_t* first_sec, int* first_off) {
+    if (cl < 2 || cl >= 2 + g_total_clusters) return -1;   /* r853 */
     uint32_t base = cluster_to_sector(cl);
     for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
         if (blk_read(base + s, g_sector) < 0) return -1;
@@ -600,6 +612,7 @@ static int find_free_entries(uint32_t cl, int count, uint32_t* first_sec, int* f
 
 // найти свободное место в директории (пустая/удалённая запись)
 static int find_free_entry(uint32_t cl, uint32_t* sec_out, int* off_out) {
+    if (cl < 2 || cl >= 2 + g_total_clusters) return -1;   /* r853 */
     uint32_t guard = 0;
     uint32_t clim = chain_guard_limit();
     while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {

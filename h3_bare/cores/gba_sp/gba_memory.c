@@ -1253,6 +1253,9 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 
 #define write_palette8(address, value)                                        \
 {                                                                             \
+  /* 8-битная запись в палитру на железе ДУБЛИРУЕТ байт в оба разряда        \
+     halfword (GBATEK/Tonc: no-byte-write rule для PRAM/OAM; mGBA так же).   \
+     r846 merge-write был ошибкой — возвращаем duplicate как в upstream. */  \
   u32 aladdr = address & ~1U;                                                 \
   u16 val16 = (value << 8) | value;                                           \
   address16(palette_ram, aladdr) = eswap16(val16);                            \
@@ -1412,8 +1415,16 @@ void function_cc write_backup(u32 address, u32 value)
 #define write_backup32()                                                      \
 
 #define write_vram8()                                                         \
-  address &= ~0x01;                                                           \
-  address16(vram, address) = eswap16((value << 8) | value)                    \
+  {                                                                           \
+    /* GBA: запись БАЙТА в VRAM. В тайловых режимах (0-2) — игнорируется;    \
+       в bitmap (3-5) — дублируется в оба разряда halfword (GBATEK/Tonc,     \
+       OwlBlock). Проверяем режим из DISPCNT.                                 */ \
+    u32 vm = read_ioreg(REG_DISPCNT) & 7;                                    \
+    if (vm >= 3) {                                                           \
+      address &= ~0x01;                                                       \
+      address16(vram, address) = eswap16((value << 8) | value);               \
+    }                                                                         \
+  }                                                                           \
 
 #define write_vram16()                                                        \
   address16(vram, address) = eswap16(value)                                   \
@@ -2354,6 +2365,31 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   // the source and destination memory regions.
   u32 src_end = MIN(0x10000000, src_ptr + byte_length * dma_stride[dmach->source_direction]);
   u32 dst_end = MIN(0x10000000, dst_ptr + byte_length * dma_stride[dmach->dest_direction]);
+
+#if 0 /* r847 DBG (полосы RnR): включать только на стенде — постоянный спам. */
+  /* r847 DBG (полосы RnR): содержимое источника DMA в VRAM/палитру.
+     Проверяем гипотезу «DMA с заворачиванием адреса»: что реально лежит
+     в источнике (IWRAM/ROM), не шаблон ли это на самом деле. */
+  if ((dst_ptr >> 24) == 0x06 || (dst_ptr >> 24) == 0x05)
+  {
+    static u32 dbg_cnt;
+    if ((dbg_cnt++ % 60) == 0)
+    {
+      extern int uart0_printf(const char* fmt, ...);
+      uart0_printf("  gba: dma%d s=%08X d=%08X n=%u t=%d sd=%d dd=%d\r\n",
+                   dma_chan, (unsigned)src_ptr, (unsigned)dst_ptr,
+                   (unsigned)dmach->length, dmach->length_type,
+                   dmach->source_direction, dmach->dest_direction);
+      if ((src_ptr >> 24) == 0x03)
+      {
+        u8 *sp = iwram + 0x8000 + (src_ptr & 0x7FFF);
+        uart0_printf("  gba:   iwram_src=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                     sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7],
+                     sp[8], sp[9], sp[10], sp[11], sp[12], sp[13], sp[14], sp[15]);
+      }
+    }
+  }
+#endif
 
   dma_region_type src_reg0 = dma_region_map[src_ptr >> 24];
   dma_region_type src_reg1 = dma_region_map[src_end >> 24];

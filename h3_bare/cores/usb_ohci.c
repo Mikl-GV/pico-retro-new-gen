@@ -602,6 +602,23 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
 
         udelay(1000);
         if (++elapsed > timeout_ms) {
+            /* r856: короткий IN (DataUnderrun) — буфер заполнен, но status-TD
+               на этом OHCI не выполнился. Принимаем, если принято ровно
+               data_len байт (CBP после полного IN = data + data_len). */
+            uint32_t cc_s = t_setup->cfg >> TD_CC_SHIFT;
+            uint32_t cc_d = t_data->cfg >> TD_CC_SHIFT;
+            if (cc_s == TD_CC_NOERR && dir_in && data_len > 0 && cc_d == 0x8u) {
+                uint32_t cbp = t_data->cbp;
+                uint32_t got = (cbp >= (uint32_t)data &&
+                                cbp <= (uint32_t)data + data_len)
+                             ? (cbp - (uint32_t)data) : 0;
+                if (got >= data_len) {
+                    uart0_printf("usb: ctrl short-IN ok a=%u len=%u\n",
+                                 addr, (unsigned)data_len);
+                    cache_invalidate((uint32_t)data, data_len);
+                    return (int)data_len;
+                }
+            }
             uart0_printf("usb: ctrl TIMEOUT a=%u len=%u cmd=0x%X cur=0x%X isr=0x%X cc=%u/%u/%u\n",
                          addr, (unsigned)data_len,
                          (unsigned)ohci->cmdstatus, (unsigned)ohci->ctrlcur,

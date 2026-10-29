@@ -5790,6 +5790,15 @@ uint32_t dp = fr + 24 + ((fcfc & 0x0080) ? 2 : 0)
                            (Protected=0) — header нет. Скипаем 8 байт для
                            всех Protected-кадров. */
                         if (fcfc & 0x4000) dp += 8;
+                        /* r850: LLC/SNAP и payload должны целиком лежать в
+                           принятом кадре; иначе plen уводил чтение за rxbuf. */
+                        if (dp + 8 > acc) {
+                            off += 24u + drvsz + shift + plen;
+                            off = (off + 7u) & ~7u;
+                            continue;
+                        }
+                        uint32_t net_len = acc - (dp + 8);
+                        if (net_len > plen) net_len = plen;
                         uint16_t etype = (uint16_t)((rxbuf[dp+6] << 8) | rxbuf[dp+7]);
                         /* W.406: ethertype в проводе big-endian (IPv4=08 00).
                            Раньше читали LE (rxbuf[dp+6] | rxbuf[dp+7]<<8 → 0x0008),
@@ -5879,7 +5888,7 @@ uint32_t dp = fr + 24 + ((fcfc & 0x0080) ? 2 : 0)
                         }
                         if (etype == 0x0800)      /* IPv4: DHCP / ICMP */
                             if (decrypted) {
-                                net_handle_ipv4(&rxbuf[dp+8], (uint16_t)plen, sa, &nst);
+                                net_handle_ipv4(&rxbuf[dp+8], (uint16_t)net_len, sa, &nst);
                                 /* W.608: OFFER пришёл — зафиксировать момент для
                                    REQUEST-ретраев (база offer_waited). */
                                 if (net_dhcp_offer_pending() && offer_waited == 0)
@@ -5887,8 +5896,8 @@ uint32_t dp = fr + 24 + ((fcfc & 0x0080) ? 2 : 0)
                             }
                         if (etype == 0x0806)      /* ARP request -> reply */
                             if (decrypted)
-                                net_handle_arp(&rxbuf[dp+8], (uint16_t)plen, sa, &nst);
-                        if (etype == 0x888E) {    /* WPA2 EAPOL-Key (4-way) */
+                                net_handle_arp(&rxbuf[dp+8], (uint16_t)net_len, sa, &nst);
+                        if (etype == 0x888E && dp + 64 <= acc) {    /* WPA2 EAPOL-Key (4-way) */
                             eapol_count++;
                             /* W.412 [диагностика]: EAPOL-Key начинается сразу после
                                LLC/SNAP (AA AA 03 00 00 00) + ethertype 0x888E.
@@ -6424,12 +6433,14 @@ int h3_wifi_rx_poll(void)
                             + (((fcfc & 0x000C) == 0x000C) ? 6 : 0);
                 if (fcfc & 0x4000) dp += 8;              /* CCMP header перед LLC */
                 if (dp + 8 <= acc) {
+                    uint32_t net_len = acc - (dp + 8);
+                    if (net_len > plen) net_len = plen;
                     uint16_t etype = (uint16_t)((rxbuf[dp+6] << 8) | rxbuf[dp+7]);
                     if (etype == 0x0800 && decrypted) {
-                        net_handle_ipv4(&rxbuf[dp+8], (uint16_t)plen, sa, &st);
+                        net_handle_ipv4(&rxbuf[dp+8], (uint16_t)net_len, sa, &st);
                         handled++;
                     } else if (etype == 0x0806 && decrypted) {
-                        net_handle_arp(&rxbuf[dp+8], (uint16_t)plen, sa, &st);
+                        net_handle_arp(&rxbuf[dp+8], (uint16_t)net_len, sa, &st);
                         handled++;
                     }
                 }

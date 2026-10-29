@@ -5,6 +5,7 @@
 //   LIST/NLST, RETR, STOR, DELE, MKD, RMD, QUIT, NOOP.
 // Файлы ходят через единый FAT-слой (активный источник — SD или USB).
 #include <string.h>
+#include <stdio.h>
 #include "net_ftp.h"
 #include "net_tcp.h"
 #include "h3_sdc.h"
@@ -64,9 +65,16 @@ static void ftp_reply(int code, const char* msg) {
     ftp_send_ctrl(buf);
 }
 
+// FTP-корень — /roms. Путь считается допустимым, только если это сам
+// /roms или что-то внутри него.
+static int path_in_root(const char* p) {
+    return (strcmp(p, "/roms") == 0) || (strncmp(p, "/roms/", 6) == 0);
+}
+
 // Полный путь (абсолютный) — g_cwd + arg, если arg относительный.
-// r845: нормализуем «/a/b/../c» и повторные слеши; «..» выше корня
-// остаётся у корня (не даём уйти за /roms).
+// Нормализуем «/a/b/../c» и повторные слеши. После нормализации путь
+// принудительно приводится внутрь /roms: абсолютный путь клиента и «..»
+// за корень не выпускают (chroot-поведение).
 static void make_path(const char* arg, char* out, int outsz) {
     char tmp[FAT_NAME_LEN];
     if (arg[0] == '/') {
@@ -110,6 +118,15 @@ static void make_path(const char* arg, char* out, int outsz) {
     if (dst == out) { *dst++ = '/'; }
     else if (dst[-1] == '/' && dst > out + 1) dst--;
     *dst = 0;
+
+    /* chroot: всё, что оказалось вне /roms, переносим внутрь него. */
+    if (!path_in_root(out)) {
+        char t[FAT_NAME_LEN];
+        const char* tail = (out[0] == '/') ? out : "/";
+        snprintf(t, sizeof(t), "/roms%s", tail);
+        strncpy(out, t, (size_t)outsz - 1);
+        out[outsz - 1] = 0;
+    }
 }
 
 // Разделить путь "/roms/nes/game.nes" → dir="/roms/nes", name="game.nes".
@@ -224,8 +241,8 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
             else if (strcmp(cmd,"SYST")==0) ftp_reply(215,"UNIX Type: L8");
             else if (strcmp(cmd,"TYPE")==0) ftp_reply(200,"type set");
             else if (strcmp(cmd,"PWD")==0 || strcmp(cmd,"XPWD")==0) {
-                char pr[180]; pr[0]='"'; pr[1]=0;
-                strcat(pr, g_cwd[0]?g_cwd:"/roms"); strcat(pr, "\"");
+                char pr[180];
+                snprintf(pr, sizeof(pr), "\"%s\"", g_cwd[0] ? g_cwd : "/roms");
                 ftp_reply(257, pr);
             }
             else if (strcmp(cmd,"CWD")==0) {
@@ -300,7 +317,7 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                 int n = fat_list(d, dirs, FAT_MAX_ENTRIES);
                 if (n < 0) { ftp_reply(550, "no such dir"); }
                 else {
-                    for (int i=0; i<n && bl < sizeof(body)-40; i++) {
+                    for (int i=0; i<n && bl + 2 <= sizeof(body); i++) {
                         // r818: папка по атрибуту FAT (0x10), а не по size==0 —
                         // иначе пустой файл выглядел каталогом. Fallback на
                         // size==0 для записей без атрибута.
@@ -320,6 +337,7 @@ static int ftp_ctrl_rx(int slot, const uint8_t* data, uint16_t len,
                         int nl=(int)strlen(dirs[i].name);
                         if (nl>80) nl=80;
                         for (int p=0;p<nl && bl<sizeof(body)-1;p++) body[bl++]=dirs[i].name[p];
+                        if (bl + 2 > sizeof(body)) break;
                         body[bl++]='\r'; body[bl++]='\n';
                     }
                     ftp_reply(150, "listing");

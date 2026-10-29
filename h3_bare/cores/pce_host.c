@@ -110,7 +110,7 @@ static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
     // (линейный, фаза 16.16, шаг 60211 = (44100<<16)/48000), push в I2S.
     if (!data || frames == 0) return frames;
     static uint32_t rs_phase = 0;
-    static int16_t out[2048];   // максимум выходных стерео-пар за вызов
+    static int16_t out[2048 * 2];   // 2048 выходных стерео-пар (L,R на пару)
     const size_t in_n = frames;
     size_t o = 0;
     while (o < 2048) {

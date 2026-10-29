@@ -23,6 +23,10 @@
 #include "remap.h"
 #include "i2s.h"
 
+/* r856: отладочный дамп тайлов/палитры (r848) — только по флагу.
+   По умолчанию выключен: это постоянный спам в UART каждые 60 кадров. */
+#define GBA_DEBUG 0
+
 // r521: ресемпл звука gpSP 65536 → 48000 Гц (линейная интерполяция, 16.16).
 // I2S остаётся на 48 кГц — честных делителей под 65536 у H3 нет (ср.: ровный
 // 48 кГц это PLL/8; для 65536 пришлось бы дробить LRCKPER/PLL — риск мимо
@@ -274,6 +278,7 @@ void gba_run_frame(void) {
     static s16 sndbuf[4096];
     static s16 rsbuf[GBA_RS_MAX_OUT * 2];
     u32 frames = sound_read_samples(sndbuf, 549);  // возвращает пары ~549/кадр
+    if (frames > 2048) frames = 2048;              /* r856: sndbuf[4096] = 2048 пар */
     u32 np = gba_resample(sndbuf, frames, rsbuf);
     // r592 (Д-57): гейн ×1.5 из r591 УБРАН — он перегружал микс (DS ±32768 +
     // PSG ±8192, жёсткий кламп → «очень громко/треск», на 5% как 50% Lynx).
@@ -290,6 +295,39 @@ u32 gba_last_pairs(void) { return g_gba_pairs; }
 void gba_render_frame(void) {
     if (!g_loaded) return;
     if (!gba_screen_pixels) return;
+
+#if GBA_DEBUG
+    /* r848 DBG: тайловый базис от bg0. tilecntrl=(bg0>>2)&3, tile_base=
+       tilecntrl*0x4000. У MK bg0=1782 -> tilecntrl=0 -> tile_base=0x0000.
+       Печатаем и 0x0000, и 0x4000-запас + палитру + карту. */
+    {
+        static u32 dbgf;
+        if ((dbgf++ % 60) == 0) {
+            extern int uart0_printf(const char* fmt, ...);
+            extern u16 palette_ram_converted[];
+            extern u8 gpsp_vram[];
+            u32 tc = (read_ioreg(REG_BG0CNT) >> 2) & 3;
+            u32 tb = tc * 0x4000;
+            uart0_printf("  gba: tc=%u tb=%06X\r\n", (unsigned)tc, (unsigned)tb);
+            uart0_printf("  gba: t0=%02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X\r\n",
+                         gpsp_vram[tb+0x00], gpsp_vram[tb+0x01], gpsp_vram[tb+0x02], gpsp_vram[tb+0x03],
+                         gpsp_vram[tb+0x04], gpsp_vram[tb+0x05], gpsp_vram[tb+0x06], gpsp_vram[tb+0x07],
+                         gpsp_vram[tb+0x08], gpsp_vram[tb+0x09], gpsp_vram[tb+0x0A], gpsp_vram[tb+0x0B],
+                         gpsp_vram[tb+0x0C], gpsp_vram[tb+0x0D], gpsp_vram[tb+0x0E], gpsp_vram[tb+0x0F]);
+            uart0_printf("  gba: t+20=%02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X\r\n",
+                         gpsp_vram[tb+0x20], gpsp_vram[tb+0x21], gpsp_vram[tb+0x22], gpsp_vram[tb+0x23],
+                         gpsp_vram[tb+0x24], gpsp_vram[tb+0x25], gpsp_vram[tb+0x26], gpsp_vram[tb+0x27],
+                         gpsp_vram[tb+0x28], gpsp_vram[tb+0x29], gpsp_vram[tb+0x2A], gpsp_vram[tb+0x2B],
+                         gpsp_vram[tb+0x2C], gpsp_vram[tb+0x2D], gpsp_vram[tb+0x2E], gpsp_vram[tb+0x2F]);
+            uart0_printf("  gba: pal=%04X %04X %04X %04X %04X %04X %04X %04X | bg0=%04X disp=%04X\r\n",
+                         palette_ram_converted[0], palette_ram_converted[1],
+                         palette_ram_converted[2], palette_ram_converted[3],
+                         palette_ram_converted[0x50], palette_ram_converted[0x51],
+                         palette_ram_converted[0x52], palette_ram_converted[0x53],
+                         (unsigned)read_ioreg(REG_BG0CNT), (unsigned)read_ioreg(REG_DISPCNT));
+        }
+    }
+#endif
 
     for (int y = 0; y < GBA_SCREEN_HEIGHT && y < EMU_H; y++)
         for (int x = 0; x < GBA_SCREEN_WIDTH && x < EMU_W; x++)

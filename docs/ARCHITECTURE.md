@@ -84,6 +84,12 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   системы: A2600 — тёмно-янтарный, A5200 — синий, A7800 — бордовый, NES — бордовый,
   SMS — синий, MD — тёмно-синий, Game Boy — зелёный, Lynx — фиолетовый, Portfolio — оливковый,
   SNES — тёмно-синеватый, NGP — тёмно-синий
+- `emu_scale`/`emu_scale_int` клампят вход к 320×240 (`emu.c:64-65,125-126`):
+  hi-res SNES (512 колонок) читается без выхода за EMU_FB.
+- Vectrex (`vecx_host.c`) и аркады (`cps1_host.cpp`) пишут напрямую в HDMI FB,
+  минуя EMU_FB — у них свои таблицы колонок и буферы кадра.
+- `.a8_bss` (Atari 800) — 0x5F000000..0x5F1D7310, между zip-зоной и EMU_FB;
+  пересечений нет, но ASSERT на верхнюю границу в `linker.ld` пока не стоит.
 
 ### system_a7800_h3.cpp (A7800, ProSystem)
 
@@ -157,7 +163,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 - Ядро: `snes/` (Snes9x 2005, libretro, 39 C-файлов + libretro-common-заглушки)
 - `snes_init_game()`: `S9xInitMemory → InitAPU → InitDisplay → InitGFX → InitSound → LoadROM (прямое копирование в Memory.ROM) → S9xReset`. `Settings.Mute=false` с r600; звук стерео 48 кГц выводится в I2S
-- Рендер: `GFX.Screen` (RGB565, pitch = IMAGE_WIDTH×2 = 1024) → EMU_FB. Разрешение 256×224/240 (H32/H40, NTSC/PAL)
+- Рендер: `GFX.Screen` (RGB565, pitch = IMAGE_WIDTH×2 = 1024) → EMU_FB. Разрешение 256×224/240 (H32/H40, NTSC/PAL); hi-res 512 колонок клампится к 320 (`snes_host.cpp:294-310`)
 - Ввод: USB-клавиатура → геймпад SNES (Z=B, X=Y, A=A, S=X, Q=L, W=R, Space=Select, Enter=Start)
 - Выход: ESC-удержание ~0.9 с
 - Сборка с `-DLAGFIX`: иначе `S9xMainLoop` не возвращается (бесконечный цикл без флага `finishedFrame`)
@@ -212,9 +218,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 - **PL10** — зелёный, «проц жив»: мигает 0.5/0.5 с с **CPU1** (`led_heartbeat_cpu1`).
   Вынесен на R_PIO специально — CPU1 не трогает PA_DAT (меньше RMW-гонки с падом/тачем).
-- **PA15** — красный, «обращение к SD» (`led_sd_on/off` в sd.c). r703: PA_DAT в
-  рантайме пишет ТОЛЬКО CPU2 через coherent-shadow (led.c) — core0/CPU1 RMW по
-  порту A не делают, гонок PA_DAT нет (см. sega_pad.c / tft_drv.c).
+- **PA15** — красный, «обращение к SD» (`led_sd_on/off` в sd.c). Фактический
+  владелец PA_DAT: **core0** — PA10/PA15 через `led.c` (`pa_dat_set`); **CPU1** —
+  PA2 (RST TFT) только на этапе `tft_init`; **CPU2** порт A не пишет. RMW-гонка
+  возможна лишь в узком окне инициализации CPU1 (см. `docs/AUDIT_2026-10-29_r848_FIXPLAN.md`, H6).
 - Активный уровень HIGH (проверено на железе: горит при DAT=1)
 - R_PIO требует включения тактирования (PRCM) — настраивается через U-Boot `gpio set PL10`
   в boot.scr (или остаётся в функции 7)
@@ -346,23 +353,23 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Разрешение: **1024×600 @ 60 Гц**, pixel clock 51.2 МГц.
 
-## Карта памяти (актуально r776, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (актуально r855, точные адреса из `nm build/h3_bare.elf`)
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → `.noinit_fbn` |
-| 0x40000000..0x40742740 | `.text` + init_array (код ≈ 7.4 МБ); векторы `_vectors`=0x40000000, `_prefetch`=0x400000B4, `_dataabort`=0x40000194, `_start`=0x4000035C |
-| 0x40742740..0x40A38200 | `.rodata` (≈ 2.9 МБ) |
-| 0x40A38200..0x40A3BAAC | `.ARM.extab/.exidx` |
-| 0x40A3BAA8..0x40D05300 | `.data` (≈ 2.8 МБ, копируется из образа) |
-| 0x40D05300..0x42BD3748 | `.bss` (`_bstart1.._bend1`, ≈ 30.7 МБ, обнуляется в `startup.S` NEON-магазинами) |
-| 0x42BD3748..0x48BD3748 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
-| 0x48BD3760..0x4A3D3760 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x4A3D3760 | `_hend` — конец кучи; `_sbrk`-арена растёт вверх от `libh3_coherent_region + 1 МБ` до лимита `SBRK_LIMIT=0x4F000000` (newlib-куча размещена ПОСЛЕ uncached-окна, не пересекает его) |
-| 0x4A400000..0x4A408E80 | `.libh3_coherent` (резерв до 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`/кольцо/почта аудио (`g_ring_*`, `g_audio_*`, LLI-структуры), L1-таблица страниц (0x4A40C000, startup.S r722). Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`) |
+| 0x40000000..0x407C08A8 | `.text` + init_array (код ≈ 7.75 МБ); векторы `_vectors`=0x40000000 |
+| 0x407C08C0..0x40AE6150 | `.rodata` (≈ 3.15 МБ) |
+| 0x40AE6150..0x40AE99F4 | `.ARM.extab/.exidx` |
+| 0x40AE99F8..0x40DC5B40 | `.data` (≈ 2.86 МБ, копируется из образа) |
+| 0x40DC5B40..0x42CBD8F8 | `.bss` (`_bstart1.._bend1`, ≈ 30.9 МБ, обнуляется в `startup.S` NEON-магазинами) |
+| 0x42CBD8F8..0x48CBD8F8 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
+| 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
+| 0x48CBD8F8 | `_hend` — конец образа/BSS. `_sbrk`-арена стартует от `_gb_heap_end` (0x4BF00000) до `SBRK_LIMIT=0x4EF00000` (перед `_menu_arena`) |
+| 0x4A400000..0x4A402540 | `.libh3_coherent` (фактически ≈ 9.3 КБ; резерв до 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, L1-таблица страниц (0x4A40C000, startup.S r722). Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`) |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
-| 0x50000000..0x51800000 | `ROM_BUF` — буфер загрузки ROM с SD (24 МБ) |
+| 0x50000000..0x51800000 | `ROM_BUF` — буфер браузера ROM (24 МБ). Аркады используют этот же адрес как 92-МБ zip-буфер (`cps1_host.cpp:112`), поэтому «24 МБ» — граница только для `rom_browser.c`, не физическая |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000..0x5FB58000 | HDMI framebuffer (1024×600 XRGB8888) |
 | 0x5FDFD000..0x5FE01000 | стеки CPU1 (исключения + SVC, TFT-ядро) |
@@ -374,9 +381,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r776, `arm-none-eabi-readelf -SW`):** `.text` 0x742730 (≈7.3 МБ),
-`.rodata` 0x2F5AC0 (≈2.9 МБ), `.data` 0x2C9824 (≈2.8 МБ), `.bss` 0x1ECE448 (≈30.9 МБ),
-`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), образ `h3_bare.bin` ≈13.65 МБ.
+**Числа-размеры (r855, `arm-none-eabi-readelf -SW`):** `.text` 0x7C08A8 (≈7.75 МБ),
+`.rodata` 0x325890 (≈3.15 МБ), `.data` 0x2DC124 (≈2.86 МБ), `.bss` 0x1EF7DB8 (≈30.9 МБ),
+`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), `.a8_bss` 0x1D7310 (≈1.84 МБ,
+0x5F000000..0x5F1D7310), `.coherent` 0x2540, образ `h3_bare.bin` ≈14.44 МБ.
 
 ## Загрузочная карта памяти (r502)
 
@@ -451,42 +459,25 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   C64, Enterprise, Atari 8-bit (atari800 собран в OBJ? — НЕТ, a8-объекты не
   линкуются в прошивку, в меню статус PLANNED).
 
-### Звук (актуально, r776)
+### Звук (актуально, r855)
 
-I2S (MAX98357A, 48 кГц): долив кольца в TX FIFO — CPU2 (поллинг, r773), core0 — продюсер
-(`i2s_push_sample` → кольцо в `.coherent`). Подключены: Lynx, GBA, GB/GBC, NGP,
-MD/SMS/GG, NES, SNES, A2600, A5200, A7800, Coleco, PCE, ZX Spectrum, BK-0010,
-MS1504 (PC-спикер), аркады FBNeo, MSX (r735), Vectrex (r735), Portfolio — звук по слоям.
+Вывод звука **снят** (r777, решение владельца): `i2s.c` содержит только no-op
+стабы, аппаратный I2S не инициализируется, `cpu2_audio_entry` — `wfi`-цикл.
+Синтез звука в ядрах и host-слоях **сохранён** (правило владельца): вызовы
+`i2s_push_sample()` / `i2s_*` остаются, но никуда не выводятся. Ресемплеры
+host-слоёв (GBA 32→48, NGP/ZX/PCE 44.1→48, A7800 31.44→48, BK, Lynx, NES,
+SNES, аркады) работают вхолостую — это осознанно, чтобы возврат звука был
+отдельной дельтой без переписывания ядер.
 
-Карта и истории подключения — docs/HANDOVER.md r594..r776.
+План возврата — `docs/ROADMAP.md`, раздел «Звук».
 
-### Архитектура CPU2 — аудио-ядро (Ф1, r585)
+### CPU2 (бывшее аудио-ядро; с r777 — idle)
 
-С r585 долив звука I2S обслуживает **CPU2** (audio_core.c: cpu2_audio_entry),
-а не core0:
+CPU2 по-прежнему стартует (`main.c: h3_cpu_start(2, cpu2_entry)`), но его точка
+входа `cpu2_audio_entry` — `wfi`-цикл (`i2s.c:68-70`). Стек — 0x5FC01000, свои
+банки исключений, NEON включается в `startup.S` до C-кода. Кольца, почты
+`g_audio_*` и `i2s_ring_reset` больше нет — это удалено вместе со звуковым
+слоем (r777). Если звук возвращать — поднимать весь конвейер заново по
+`docs/ROADMAP.md`, а не «включать флаг».
 
-```
-core0 (эмулятор):  ядро → host синтез → i2s_push_sample() → кольцо (.coherent)
-                                                              │
-core2 (аудио):      cpu2_audio_entry(): flush_max(24)+500мкс=48кГц → TX FIFO
-                    (вечный цикл, poll_cmd из почты, heartbeat)
-```
-
-- Кольцо, индексы, dc_l/dc_r и почта (g_audio_*) — секция `.coherent`
-  (uncached): оба ядра видят актуальное состояние (у CPU2 MMU выключен).
-- core0 синтезирует звук и кладёт в кольцо; CPU2 выводит с честным темпом
-  48 кГц независимо от загрузки эмуляции (качество не зависит от fps).
-- emu_throttle() при активном CPU2 — только ожидание конца периода
-  (синхронизация видео↔звук); fallback на старый долив, если ядро не
-  поднялось (i2s_audio_core_active()==0).
-- Старт: h3_cpu_start(2, cpu2_entry) — asm в startup.S (свой стек 0x5FC01000,
-  стеки исключений, NEON до C-кода, magic 0x13579BDF).
-- UART0 (PA4/PA5): пишет ТОЛЬКО core0. CPU2 диагностику числами кладёт в
-  .coherent (i2s_audio_set_*); печать — core0 (один писатель, без драк).
-- Сброс кольца при смене системы (i2s_ring_reset): через почту
-  AUDIO_CMD_RING_RESET (исполняет CPU2), fallback — напрямую.
-
-**Открыто (отдельная дельта):** мониторинг живости CPU2 (heartbeat) на core0 —
-сейчас fallback только «не стартовал», не «завис в работе».
-**Задел:** H3 = 4 ядра. CPU3 свободен — кандидат под оффлоад рендера/скейла
-на тяжёлых системах (отдельная большая дельта, по решению владельца).
+Задел: H3 = 4 ядра; CPU3 свободен (оффлоад рендера/скейла — отдельная дельта).

@@ -198,6 +198,90 @@ static int usb_ehci_bulk_in(uint8_t ep, uint16_t mps, uint8_t* data, uint32_t le
 // usb_hc_init_bulk (для EHCI) или OHCI-bulk-инициализацией.
 static int g_bulk_via_ohci = 0;
 
+void usb_hc_set_bulk_ohci(void);   // определён ниже
+
+/* ---- r856: однократная энумерация MSD ----
+ * HID-скан (usb_kbd.c:enum_port) уже прочитал config-дескриптор флешки и
+ * оставил её адресованной (addr=1, без SET_CONFIGURATION). Повторная
+ * энумерация после EHCI→OHCI handover падала на 18-байтном GET_DESCRIPTOR
+ * (cc=0/8/15). Здесь используем уже прочитанный конфиг: только
+ * SET_CONFIGURATION + MSD. */
+static uint8_t  g_pre_cfg[256] __attribute__((section(".coherent"), aligned(32)));
+static uint32_t g_pre_cfg_len;
+static uint16_t g_pre_mps = 8;
+static int      g_pre_msd;
+
+void usb_hc_set_preenum_msd(const uint8_t* cfg, uint32_t len, uint16_t mps,
+                            uint32_t base) {
+    if (!cfg || len < 9 || len > sizeof(g_pre_cfg)) return;
+    if (base != 0x01C1B400u) return;   /* OHCI-bulk сейчас только PHY1 */
+    memcpy(g_pre_cfg, cfg, len);
+    g_pre_cfg_len = len;
+    g_pre_mps = mps ? mps : 8;
+    g_pre_msd = 1;
+    printf("usb: MSD pre-enumerated (cfg=%u mps=%u)\n",
+           (unsigned)len, (unsigned)g_pre_mps);
+}
+
+static int usb_ohci_activate_flash_pre(void) {
+    extern int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
+                                      const uint8_t* setup, uint8_t setup_len,
+                                      uint8_t* data, uint32_t data_len, int dir_in,
+                                      uint32_t timeout_ms);
+    extern void usb_ohci_set_mps(uint16_t mps);
+    extern int usb_ohci_bulk_toggle_reset(uint32_t base);
+    extern void usb_ohci_bot_recover(uint32_t base);
+    const uint32_t base = 0x01C1B400u;
+    static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
+    static uint8_t inq[36] __attribute__((section(".coherent"), aligned(32)));
+    static struct usb_msd_dev mdev;
+    uint8_t setup[8];
+
+    usb_ohci_set_mps(g_pre_mps);
+    setup[0]=0x00; setup[1]=0x09; setup[2]=0x01; setup[3]=0x00;
+    setup[4]=0x00; setup[5]=0x00; setup[6]=0x00; setup[7]=0x00;
+    if (usb_ohci_ctrl_transfer(base, 1, 0, setup, 8, 0, 0, 0, 1000) < 0) {
+        printf("usb: pre-enum SET_CONFIGURATION fail\n");
+        return -1;
+    }
+    g_usb_addr = 1;
+    udelay(20000);
+
+    if (usb_msd_init(&mdev, g_pre_cfg, g_pre_cfg_len) != 0) {
+        printf("usb: pre-enum no MSD interface\n");
+        return -1;
+    }
+    usb_hc_set_bulk_ohci();
+    usb_ohci_bulk_toggle_reset(base);
+    if (usb_msd_activate(&mdev) != 0) {
+        printf("usb: pre-enum activate fail\n");
+        return -1;
+    }
+    usb_ohci_bot_recover(base);
+
+    if (usb_msd_inquiry(&mdev, inq) == 0) {
+        printf("usb: pre-enum INQUIRY: ");
+        for (int i = 8; i < 32 && inq[i]; i++) {
+            char c = (char)inq[i];
+            if (c < 0x20 || c > 0x7E) c = '.';
+            printf("%c", c);
+        }
+        printf("\n");
+    }
+    uint32_t last = 0, blk = 0;
+    if (usb_msd_wait_ready(&mdev, 3) != 0) printf("usb: pre-enum TUR fail\n");
+    if (usb_msd_read_capacity(&mdev, &last, &blk) == 0)
+        printf("usb: pre-enum block=%u last_lba=%u\n", (unsigned)blk, (unsigned)last);
+    else
+        printf("usb: pre-enum READ CAPACITY fail\n");
+    if (usb_msd_block_read(0, mbr) != 0) {
+        printf("usb: pre-enum MBR read fail\n");
+        return -1;
+    }
+    printf("usb: pre-enum MBR sig=0x%04X — flash OK\n", mbr[510] | (mbr[511] << 8));
+    return 0;
+}
+
 int usb_bulk_out(uint8_t ep, uint16_t mps, const uint8_t* data, uint32_t len) {
     if (g_bulk_via_ohci) {
         extern int usb_ohci_bulk_out(uint32_t base, uint8_t addr, uint8_t ep,
@@ -268,6 +352,14 @@ static int usb_ehci_port_reset(void) {
 }
 
 int usb_hc_init(void) {
+    /* r856: если HID-скан уже прочитал MSD-конфиг — не трогаем EHCI и не
+       энумерируем устройство второй раз (этот путь падал на стенде). */
+    if (g_pre_msd) {
+        if (usb_ohci_activate_flash_pre() == 0) return 0;
+        printf("usb: pre-enum failed, fallback re-enum\n");
+        g_pre_msd = 0;
+    }
+
     // Подъём EHCI (PHY1): такты/PHY уже подняты usb_ohci_init (PHY1+PHY2,
     // usb_kbd_init). Здесь только EHCI-контроллер.
     printf("usb-ehci: init\n");

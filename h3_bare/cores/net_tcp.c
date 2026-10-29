@@ -254,10 +254,15 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
     }
 #endif
 
-    memcpy(s->peer_ip, src_ip, 4);
-    memcpy(s->peer_mac, src_mac, 6);
+    /* r851: активное соединение принимает пакеты только от того же peer.
+       Раньше peer_ip/peer_mac перезаписывались до проверок — любой хост мог
+       увести ответы на себя (инъекция/перехват сессии). */
+    int same_peer = (memcmp(s->peer_ip, src_ip, 4) == 0 &&
+                     memcmp(s->peer_mac, src_mac, 6) == 0);
 
     if (flags & NET_TCP_SYN) {
+        memcpy(s->peer_ip, src_ip, 4);
+        memcpy(s->peer_mac, src_mac, 6);
         if (s->active) {
             // Тот же сокет (retransmit SYN) — повторный SYN-ACK с ИСХОДНЫМ
             // seq (iss). Раньше слали snd_nxt-1, а после отправки 220
@@ -289,6 +294,7 @@ int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
         return 0;
     }
     if (!s->active) return 0;
+    if (!same_peer) return 0;   /* чужой источник — молча дроп */
 
     /* r846 (аудит, «RST только отправляется»): пришедший RST аварийно
        закрывает соединение — слот становится свободным, все очереди чистые.

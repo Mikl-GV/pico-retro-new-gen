@@ -171,6 +171,9 @@ static int zip_extract(const uint8_t* z, uint32_t zsize, const char* target,
         uint16_t elen     = le16(z + p + 30);
         uint16_t clen     = le16(z + p + 32);
         uint32_t lho      = le32(z + p + 42);
+        /* r854: запись central directory должна целиком лежать в cd_size —
+           иначе nm[nlen-...] читает за буфером. */
+        if ((uint32_t)nlen + elen + clen > cd_off + cd_size - p - 46) return 1;
         const uint8_t* nm = z + p + 46;
         p += 46 + nlen + elen + clen;
 
@@ -182,10 +185,15 @@ static int zip_extract(const uint8_t* z, uint32_t zsize, const char* target,
         if (!match) continue;
 
         // local header: проверить сигнатуру и смещение данных
-        if (lho + 30 > zsize || z[lho] != 0x50 || z[lho + 1] != 0x4b ||
+        /* r854: lho+30 мог переполниться, а data — уйти за zsize. */
+        if (lho > zsize || zsize - lho < 30) return 1;
+        if (z[lho] != 0x50 || z[lho + 1] != 0x4b ||
             z[lho + 2] != 0x03 || z[lho + 3] != 0x04) return 1;
-        uint32_t data = lho + 30 + le16(z + lho + 26) + le16(z + lho + 28);
-        if (data + csize > zsize) return 1;
+        uint16_t lnlen = le16(z + lho + 26);
+        uint16_t lelen = le16(z + lho + 28);
+        if ((uint32_t)lnlen + lelen > zsize - lho - 30) return 1;
+        uint32_t data = lho + 30 + lnlen + lelen;
+        if (csize > zsize - data) return 1;
         if (usize > maxout) return 1;
 
         if (method == 0) {
@@ -252,6 +260,7 @@ static int zip_lookup(const uint8_t* z, uint32_t zsize, const char* target, uint
         uint16_t nlen = le16(z + p + 28);
         uint16_t elen = le16(z + p + 30);
         uint16_t clen = le16(z + p + 32);
+        if ((uint32_t)nlen + elen + clen > cd_off + cd_size - p - 46) return 1;   /* r854 */
         const uint8_t* nm = z + p + 46;
         p += 46 + nlen + elen + clen;
         if (nlen < tlen) continue;

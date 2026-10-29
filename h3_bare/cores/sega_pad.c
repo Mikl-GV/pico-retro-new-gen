@@ -23,9 +23,10 @@
 //   Вход/выход эмулятора: re-init пада sega_pad_init() (лечит сбой I2C).
 //   Выход из игры — удержание Start+Mode ~0.9 с (emu.c: armed + sticky).
 //
-//   PA_DAT (0x01C20810) ДЕЛЯТ ДВА ВЛАДЕЛЬЦА НА ДВУХ ЯДРАХ:
-//     CPU0 — i2s-SD (PA10, i2s.c) и PA15 (SD-LED, led.c);
-//     CPU1 — PA21 (CS тача TSC2046I) и PA2 (RST TFT, tft_drv.c).
+//   PA_DAT (0x01C20810) в рантайме пишет ТОЛЬКО core0:
+//     PA10 (SD-усилитель, был i2s.c) и PA15 (SD-LED, led.c).
+//     CPU1 трогает PA2 (RST TFT) только в tft_init; CS тача с r703 — PC4.
+//     CPU2 порт A не пишет.
 //   Битовые |= / &= на PA_DAT НЕ атомарны → возможна RMW-гонка. НЕ добавлять
 //   новые записи в PA_DAT из CPU0 без необходимости; «alive» держать на PL10.
 //   r614: Sega-пад/кнопки (bit-bang TWI) ПЕРЕВЕДЕНЫ с PA11/PA12 (TWI0) на

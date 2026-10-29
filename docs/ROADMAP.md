@@ -28,8 +28,10 @@
 3. **Vectrex** — реализован (host `vecx_host.c`, systems.h READY, звук на I2S
    r735); стендовое подтверждение картинки — у владельца.
 4. **PC Engine** — HuCard готов; CD (заглушен), PSG-качество — по потребности.
-5. **WiFi (RTL8189FTV)** — SDIO-стек + firmware + TCP/IP — отдельная большая задача (не начата).
-6. **Звук**: все системы подключены к I2S (r735..r776); тонкая настройка АЧХ/гейна — по стенду.
+5. **WiFi (RTL8189FTV)** — SDIO + firmware + TCP/IP + FTP реализованы (r795..r846);
+   дальше — только стабильность (TLS/шифрование FTP не планируется).
+6. **Звук**: вывод снят (r777); синтез в ядрах сохранён. Возврат — отдельная дельта:
+   I2S0 + CPU2-долив (история — в git), затем ресемплеры/гейн по стенду.
 
 ## Отложено / перспективы
 
@@ -52,4 +54,33 @@
 - Браузер ROM (FAT32), автозапуск по sys_id, удаление ROM с подтверждением.
 - USB-клавиатура (boot), автоповтор; Sega-геймпад 6-button; кнопочный пад.
 - HDMI 1024×600 @ 60 Гц; SPI TFT (справка/тач) на CPU1; UART 115200.
-- Звук: I2S0 + CPU2-долив (см. docs/AUDIO_SUBSYSTEM_PLAN.md).
+- Звук: вывод снят (r777); синтез в ядрах сохранён (см. раздел «Звук» выше).
+
+## Аркады (FBNeo): принципы и очередь
+
+Вендор — `h3_bare/cores/cps1/` (подмножество FBNeo). Подключено: CPS-1, CPS-2,
+NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), сводный FB Neo
+(`/roms/fbneo`). Каталог ROM — `docs/FBNEO-ROMS.md`.
+
+Паттерн порта семейства:
+
+1. Файлы — `cores/cps1/src/burn/drv/<family>/` (выборочно).
+2. Секция объектов в Makefile (`c1*_`) + `cps1_rename.sh` (коллизии m68k*/YM*).
+3. Регистрация в `driverlist.h` + `pDriver[]`.
+4. Host-ветка в `cps1_host.cpp`: `g_*` по `HARDWARE_PREFIX`, кадр «как железо»
+   (rot=0), ввод через `toa_input_cache`.
+5. `systems.h`/меню/справка/About/Arcade-guide.
+6. Стенд: экран, ввод, звук (звук сейчас не выводится — r777).
+
+Очередь:
+
+| # | Семейство | CPU | Игры | Сложность |
+|---|-----------|-----|------|:---------:|
+| 1 | Taito 68K (F2/F3) | 68K(+Z80/M6805) | Bubble Bobble, Rainbow Islands, Arkanoid, Rastan | средняя |
+| 2 | Data East 68K | 68K+Z80 | Robocop 1-2, Bad Dudes, Heavy Barrel, Karnov | средняя |
+| 3 | Psikyo 68K | 68K | Strikers 1945, Gunbird | выше средней |
+| 4 | Midway 68K | 68K | MK 1-3, NBA Jam | высокая (T-unit) |
+| 5 | Konami/Namco/Capcom ранние | 6809/6502 | 1942, Commando, Galaga, R-Type | высокая (нужны CPU) |
+
+Риски: защитные MCU (частично покрыто M6805), видео Midway T-unit/System 32,
+объём вендора (только выборка файлов семейства).

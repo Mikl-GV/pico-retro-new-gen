@@ -49,6 +49,7 @@
 #include "sega_pad.h"
 #include "btn_pad.h"
 #include "usb_kbd.h"   // KBD_EV_* и прототипы слоя
+#include "usb_msd.h"   // r856: распознать MSD-флешку при HID-скане
 
 #define TOUCH_BUF   16
 
@@ -422,6 +423,14 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
     }
 
     if (!dev->in_ep) {
+        /* r856: не-HID. Если это MSD-флешка — отдаём уже прочитанный
+           config-дескриптор MSD-слою, чтобы usb_hc_init не энумерировал
+           устройство второй раз (после EHCI→OHCI handover это падало). */
+        extern void usb_hc_set_preenum_msd(const uint8_t* cfg, uint32_t len,
+                                           uint16_t mps, uint32_t base);
+        struct usb_msd_dev md;
+        if (usb_msd_init(&md, buf, (uint32_t)r) == 0)
+            usb_hc_set_preenum_msd(buf, (uint32_t)r, dev->mps0, base);
         printf("usb: port=0x%X no HID IN ep, type=%d\n", (unsigned)base, type);
         return 0;
     }
