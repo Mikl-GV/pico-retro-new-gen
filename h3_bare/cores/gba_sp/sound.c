@@ -149,11 +149,11 @@ unsigned sound_timer(fixed8_24 frequency_step, u32 channel)
 
   if(((ds->fifo_top - ds->fifo_base) % 32) <= 16)
   {
-    /* r840: возврат к upstream-поведению: рефил FIFO-канала при
-       direct_sound_channel==channel (НЕ требуем start_type==SPECIAL —
-       r530-guard был ошибочным; RnR так и не выходил из чёрного экрана). */
-    if (dma[1].direct_sound_channel == channel) dma_transfer(1, &ret);
-    if (dma[2].direct_sound_channel == channel) dma_transfer(2, &ret);
+    if(dma[1].direct_sound_channel == channel)
+      dma_transfer(1, &ret);
+
+    if(dma[2].direct_sound_channel == channel)
+      dma_transfer(2, &ret);
   }
   return ret;
 }
@@ -600,9 +600,8 @@ void reset_sound(void)
 
 void init_sound()
 {
-  /* 256 / sound_frequency in 16.16: 256 при 2^16, 512 при 2^15 (r524:
-   * считаем от фактической частоты, а не хардкодим под 65536). */
-  gbc_sound_tick_step = (fixed16_16)(((u64)256u << 16) / sound_frequency);
+  /* 256 / sound_frequency in 16.16 == 256 (sound_frequency == 2^16). */
+  gbc_sound_tick_step = (fixed16_16)256u;
 
   init_noise_table(noise_table15, 32767, 14);
   init_noise_table(noise_table7, 127, 6);
@@ -750,41 +749,6 @@ bool sound_read_savestate(const u8 *src)
       bson_read_int32(sndchan, "noise-type", &gs->noise_type) &&
       bson_read_int32(sndchan, "sample-tbl", &gs->sample_table_idx)))
       return false;
-  }
-
-  /* r545: валидация значений из савстейта. Повреждённый/подставленный стейт
-   * не должен дать индексацию за fifo[32]/таблицы громкости, мусорные
-   * индексы буфера (нечётные/за размером — OOB в sound_buffer) или
-   * UB-сдвиг в >>= volume_halve (сдвиг ≥ 32). */
-  for (i = 0; i < 2; i++)
-  {
-    direct_sound_struct *ds = &direct_sound_channel[i];
-    ds->fifo_top &= 31;
-    ds->fifo_base &= 31;
-    ds->buffer_index = (ds->buffer_index & BUFFER_SIZE_MASK) & ~1u;
-    if (ds->volume_halve > 1)
-      ds->volume_halve = 1;
-  }
-  sound_buffer_base = (sound_buffer_base & BUFFER_SIZE_MASK) & ~1u;
-  gbc_sound_buffer_index = (gbc_sound_buffer_index & BUFFER_SIZE_MASK) & ~1u;
-  gbc_sound_partial_ticks &= 0xFFFF;
-  gbc_sound_master_volume_left &= 7;    /* индекс gbc_sound_channel_volume_table[8] */
-  gbc_sound_master_volume_right &= 7;
-  gbc_sound_master_volume &= 3;         /* индекс gbc_sound_master_volume_table[4] */
-  for (i = 0; i < 4; i++)
-  {
-    gbc_sound_struct *gs = &gbc_sound_channel[i];
-    gs->sample_table_idx &= 3;          /* square_pattern_duty[4] */
-    gs->wave_bank &= 1;
-    gs->wave_type &= 1;
-    gs->noise_type &= 1;
-    gs->sweep_shift &= 7;
-    gs->envelope_volume &= 15;          /* gbc_sound_envelope_volume_table[16] */
-    gs->envelope_ticks &= 0xFFFF;
-    gs->envelope_initial_ticks &= 0xFFFF;
-    gs->sweep_ticks &= 0xFFFF;
-    gs->sweep_initial_ticks &= 0xFFFF;
-    gs->length_ticks &= 0x3FF;
   }
 
   return true;

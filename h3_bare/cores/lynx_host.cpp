@@ -86,6 +86,14 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     extern void gb_heap_reset(void);
+    // r904 (Lx2): удаляем прежний объект ядра до сброса bump-пула, иначе
+    // gb_heap_reset() затирает память старого CSystem, а g_lynx остаётся
+    // висячим; при отказе нового `new` g_lynx_run/render (guard «!g_lynx» на
+    // 130/203) пошли бы по мусору пула.
+    if (g_lynx) {
+        delete g_lynx;
+        g_lynx = NULL;
+    }
     gb_heap_reset();
     memset(lynx_fb, 0, sizeof(lynx_fb));   // свой кадр-буфер не чистится emu_prepare
 

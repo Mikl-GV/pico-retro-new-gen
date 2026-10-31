@@ -12,6 +12,7 @@
 #include "wifi_layer.h"
 #include "net_ftp.h"
 #include "h3_sdc.h"   /* struct h3_wifi_ap, scan_ap_get */
+#include "i2s.h"      /* r898: громкость (i2s_volume/i2s_volume_pct) + тест-тон */
 extern int printf(const char* fmt, ...);
 
 // r118: SRAM A1 почта калибровки тача (определена в tft_drv.c — дублируем
@@ -379,8 +380,11 @@ enum {
     // r797: пункт WiFi-трансфера добавлен В КОНЕЦ — индексы первых пунктов
     // совпадают с TFT-меню (tft_drv.c items[]), сдвигать нельзя.
     SET_WIFI_TRANSFER,
-    // r777: пункты аудио (громкость, тест слоя) УДАЛЕНЫ — звуковой слой вывода
-    // снят полностью (владелец). TFT-индексы первых пунктов не тронуты.
+    // r896 (этап 3 звука): тест-тон с выбором частоты (440/1000/3000 Гц) —
+    // запуск по команде из меню, не ловля на старте. Тоже в конец.
+    SET_AUDIO_TONE,
+    // r898: громкость — ←/→, по умолчанию 10%. В конец (TFT-индексы не трогаем).
+    SET_AUDIO_VOLUME,
     SET_COUNT,
 };
 
@@ -394,7 +398,58 @@ static const char* const set_labels[SET_COUNT] = {
     "ROM partition info",
     "Atari 2600 TV mode",
     "WiFi Transfer (FTP)",
+    "Audio test tone",
+    "Volume",
 };
+
+// r896 (этап 3 звука): подменю «Audio test tone» — выбор частоты стрелками,
+// Enter запускает тон до нажатия любой клавиши. Проверка тракта I2S0/CPU2
+// на стенде по команде, а не ловля на старте.
+// r897: правильные коды клавиш (Up=82, Down=81, Enter=40, ESC=41 — как в
+// главном цикле settings) + перерисовка только по событию (input_wait вместо
+// горячего цикла с fb_flush каждый проход → экран не мерцает).
+extern void i2s_test_tone_freq(int hz, int ms);
+static void audio_tone_submenu(void) {
+    static const int freqs[3] = { 440, 1000, 3000 };
+    static const char* const flabels[3] = { "440 Hz", "1000 Hz", "3000 Hz" };
+    int sel = 1;   // 1000 Гц по умолчанию
+
+    // Рисуем один раз до первой клавиши.
+    int dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear();
+            fb_puts_s(60, 40, "Audio test tone", 2, 0x00FFAA00);
+            fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
+            for (int i = 0; i < 3; i++) {
+                int y = 120 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00FFFFFF;
+                if (i == sel)
+                    fb_fill_rect(50, y - 4, PHYS_W - 100, 28, 0x00181818);
+                if (i == sel)
+                    fb_puts_s(58, y, ">", 1, 0x00FFFF00);
+                fb_puts_s(80, y, flabels[i], 1, clr);
+            }
+            fb_puts(60, FOOTER_Y, "  ^v : select    Enter : play    ESC : back", 0x00888888);
+            fb_flush();
+            dirty = 0;
+        }
+
+        int k = input_wait();               // ждёт клавишу (без мерцания)
+        if (k == 41) return;                // ESC
+        else if (k == 82) { sel--; if (sel < 0) sel = 2; dirty = 1; }  // Up
+        else if (k == 81) { sel++; if (sel >= 3) sel = 0; dirty = 1; }  // Down
+        else if (k == 40) {                 // Enter
+            fb_clear();
+            fb_puts_s(60, 200, "Tone playing... press any key", 1, 0x00FFFFFF);
+            fb_flush();
+            i2s_test_tone_freq(freqs[sel], 1500);
+            int k2 = usb_input_poll();
+            while (k2 == 0) { udelay(16000); k2 = usb_input_poll(); }
+            dirty = 1;
+        }
+    }
+}
 
 // Рисуем меню настроек с курсором и вертикальным скроллом.
 // SET_COUNT пунктов > видимой области нельзя — рисуем окно [scroll, scroll+V).
@@ -427,6 +482,12 @@ static void settings_draw(int sel, int scroll) {
         // Значение справа (для переключаемых)
         if (i == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
+        }
+        if (i == SET_AUDIO_VOLUME) {
+            char vbuf[16];
+            int vpct = i2s_volume_pct();
+            snprintf(vbuf, sizeof(vbuf), "%d%%", vpct);
+            fb_puts_s(440, y, vbuf, 1, 0x00AAAAAA);
         }
         if (i == SET_A2600_TV) {
             fb_puts_s(440, y, a2600_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
@@ -699,6 +760,15 @@ void settings_run(void) {
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
                 break;
+            case SET_AUDIO_VOLUME: {
+                extern int i2s_volume_pct(void);
+                extern void i2s_volume(int p);
+                int v = i2s_volume_pct();
+                if (k == 79) { v += 5; if (v > 100) v = 100; }   // RArr → +
+                else        { v -= 5; if (v < 0)   v = 0;   }    // LArr → -
+                i2s_volume(v);
+                break;
+            }
             default:
                 break;
             }
@@ -730,6 +800,9 @@ void settings_run(void) {
                 goto partition_info;
             case SET_WIFI_TRANSFER:
                 wifi_transfer_run();
+                break;
+            case SET_AUDIO_TONE:
+                audio_tone_submenu();
                 break;
             }
         }

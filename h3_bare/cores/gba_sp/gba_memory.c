@@ -689,9 +689,6 @@ void function_cc write_eeprom(u32 unused_address, u32 value)
     value = current_instruction | (current_instruction << 16);                \
   }                                                                           \
 
-/* Часть IO-пространства (неиспользуемые/UIO регистры) читается как
- * шина открытого типа (open bus): значение зависит от выполняемой
- * инструкции. Список взят из upstream libretro/gpsp. */
 static inline bool io_read_open_bus16(u32 offset)
 {
   offset &= ~1U;
@@ -1055,6 +1052,28 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
       write_ioreg(REG_DISPCNT, value);
       break;
 
+    case REG_BG0CNT:
+    case REG_BG1CNT:
+      write_ioreg(ioreg, value & 0xDFFF);
+      break;
+
+    case REG_WININ:
+    case REG_WINOUT:
+      write_ioreg(ioreg, value & 0x3F3F);
+      break;
+
+    case REG_BLDCNT:
+      write_ioreg(ioreg, value & 0x3FFF);
+      break;
+
+    case REG_BLDALPHA:
+      write_ioreg(ioreg, value & 0x1F1F);
+      break;
+
+    case REG_BLDY:
+      write_ioreg(ioreg, value & 0x001F);
+      break;
+
     // DISPSTAT has 3 read only bits, controlled by the LCD controller
     case REG_DISPSTAT:
       write_ioreg(REG_DISPSTAT, (read_ioreg(REG_DISPSTAT) & 0x07) | (value & ~0x07));
@@ -1193,6 +1212,15 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
     case REG_VCOUNT:
       break;  // Do nothing
 
+    // Invalid I/O locations that read as zero must not retain writes.
+    case 0x09B: // 0x136
+    case 0x0A1: // 0x142
+    case 0x0AD: // 0x15A
+    case 0x103: // 0x206
+    case 0x105: // 0x20A
+    case 0x181: // 0x302
+      break;
+
     case REG_WAITCNT:
       write_ioreg(REG_WAITCNT, value);
       reload_timing_info();
@@ -1253,9 +1281,6 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 
 #define write_palette8(address, value)                                        \
 {                                                                             \
-  /* 8-битная запись в палитру на железе ДУБЛИРУЕТ байт в оба разряда        \
-     halfword (GBATEK/Tonc: no-byte-write rule для PRAM/OAM; mGBA так же).   \
-     r846 merge-write был ошибкой — возвращаем duplicate как в upstream. */  \
   u32 aladdr = address & ~1U;                                                 \
   u16 val16 = (value << 8) | value;                                           \
   address16(palette_ram, aladdr) = eswap16(val16);                            \
@@ -1415,16 +1440,8 @@ void function_cc write_backup(u32 address, u32 value)
 #define write_backup32()                                                      \
 
 #define write_vram8()                                                         \
-  {                                                                           \
-    /* GBA: запись БАЙТА в VRAM. В тайловых режимах (0-2) — игнорируется;    \
-       в bitmap (3-5) — дублируется в оба разряда halfword (GBATEK/Tonc,     \
-       OwlBlock). Проверяем режим из DISPCNT.                                 */ \
-    u32 vm = read_ioreg(REG_DISPCNT) & 7;                                    \
-    if (vm >= 3) {                                                           \
-      address &= ~0x01;                                                       \
-      address16(vram, address) = eswap16((value << 8) | value);               \
-    }                                                                         \
-  }                                                                           \
+  address &= ~0x01;                                                           \
+  address16(vram, address) = eswap16((value << 8) | value)                    \
 
 #define write_vram16()                                                        \
   address16(vram, address) = eswap16(value)                                   \
@@ -2366,31 +2383,6 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   u32 src_end = MIN(0x10000000, src_ptr + byte_length * dma_stride[dmach->source_direction]);
   u32 dst_end = MIN(0x10000000, dst_ptr + byte_length * dma_stride[dmach->dest_direction]);
 
-#if 0 /* r847 DBG (полосы RnR): включать только на стенде — постоянный спам. */
-  /* r847 DBG (полосы RnR): содержимое источника DMA в VRAM/палитру.
-     Проверяем гипотезу «DMA с заворачиванием адреса»: что реально лежит
-     в источнике (IWRAM/ROM), не шаблон ли это на самом деле. */
-  if ((dst_ptr >> 24) == 0x06 || (dst_ptr >> 24) == 0x05)
-  {
-    static u32 dbg_cnt;
-    if ((dbg_cnt++ % 60) == 0)
-    {
-      extern int uart0_printf(const char* fmt, ...);
-      uart0_printf("  gba: dma%d s=%08X d=%08X n=%u t=%d sd=%d dd=%d\r\n",
-                   dma_chan, (unsigned)src_ptr, (unsigned)dst_ptr,
-                   (unsigned)dmach->length, dmach->length_type,
-                   dmach->source_direction, dmach->dest_direction);
-      if ((src_ptr >> 24) == 0x03)
-      {
-        u8 *sp = iwram + 0x8000 + (src_ptr & 0x7FFF);
-        uart0_printf("  gba:   iwram_src=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-                     sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7],
-                     sp[8], sp[9], sp[10], sp[11], sp[12], sp[13], sp[14], sp[15]);
-      }
-    }
-  }
-#endif
-
   dma_region_type src_reg0 = dma_region_map[src_ptr >> 24];
   dma_region_type src_reg1 = dma_region_map[src_end >> 24];
   dma_region_type dst_reg0 = dma_region_map[dst_ptr >> 24];
@@ -2430,11 +2422,6 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   // Trigger an IRQ if configured to do so.
   if (dmach->irq)
     ret |= flag_interrupt(IRQ_DMA0 << dma_chan);
-
-  /* r840: r530-фикс «источник +16» УБРАН — в каноническом gpSP FIFO-DMA
-     (SPECIAL, repeat) НЕ двигает source_address сам; буфер чередует игра.
-     Принудительный сдвиг давал другой поток адресов -> RnR не выходил из
-     «загрузки» (чёрный экран). */
 
   // This is an approximation for the most common case (no region cross)
   if (usedcycles)
@@ -2518,9 +2505,9 @@ u8 *load_gamepak_page(u32 physical_index)
   if (rom_blocks == 0)
     return &gamepak_buffers[0][0];
 
-  // ---- bare-metal: ROM уже в памяти, страницы замаплены напрямую на
-  // ROM_BUF. Не трогаем LRU/filestream (он бы затёр ROM байтами 0xFF,
-  // т.к. gamepak_buffers[i] указывают на ROM_BUF). ----
+  // ---- bare-metal: ROM уже в памяти (g_ram_rom) — мапим напрямую, не
+  // трогая LRU/filestream (он бы затёр ROM байтами 0xFF, т.к. gamepak_buffers
+  // указывают на ROM_BUF). ----
   if (g_ram_rom && g_ram_rom_size)
   {
     if (physical_index >= rom_blocks)
@@ -2879,10 +2866,9 @@ static s32 load_gamepak_raw(const char *name)
   unsigned i, j;
   u32 raw_size;
   int64_t fsize;
-
   // ---- bare-metal: ROM уже в памяти (host выставил g_ram_rom) ----
-  // Мапим страницы ROM напрямую на ROM_BUF — без LRU-очереди и без
-  // init_gamepak_buffer() (та аллоцирует до 32МБ, чего нет в пуле H3).
+  // Мапим страницы ROM напрямую на ROM_BUF — без filestream, LRU и
+  // init_gamepak_buffer() (тот аллоцирует до 32МБ, чего нет в пуле H3).
   if (g_ram_rom && g_ram_rom_size)
   {
     raw_size = (g_ram_rom_size + 0x7FFF) & ~0x7FFF;
@@ -3060,76 +3046,6 @@ static s32 load_gamepak_raw(const char *name)
   return -1;
 }
 
-// ---- bare-metal загрузчик ROM из памяти (без filestream, для host-слоя H3) ----
-// Копирует rom[0..size) в gamepak_buffers и мапит в адресное пространство
-// точно так же, как load_gamepak_raw. Возвращает 0 при успехе.
-// Объявлен в gba_memory.h.
-s32 load_gamepak_from_memory(const u8* rom, u32 size) {
-  unsigned i, j;
-  if (!rom || size == 0) return -1;
-  if (!gamepak_buffer_count) return -1;
-
-  u32 raw_size = (size + 0x7FFF) & ~0x7FFF;
-  gamepak_file_blocks = raw_size >> 15;
-  gamepak_mirror_1m = (raw_size == 0x00100000);
-  gamepak_size = gamepak_mirror_1m ? 0x00400000 : raw_size;
-  u32 rom_blocks = gamepak_size >> 15;
-
-  // 1MiB mirror (NES Mini) — материализуем полный 4MB образ
-  if (gamepak_mirror_1m)
-  {
-    gamepak_mini_rom = (u8*)malloc(gamepak_size);
-    if (gamepak_mini_rom)
-    {
-      memset(gamepak_mini_rom, 0xFF, gamepak_size);
-      memcpy(gamepak_mini_rom, rom, size < 0x100000 ? size : 0x100000);
-      memcpy(gamepak_mini_rom + 0x100000, gamepak_mini_rom, 0x100000);
-      memcpy(gamepak_mini_rom + 0x200000, gamepak_mini_rom, 0x100000);
-      memcpy(gamepak_mini_rom + 0x300000, gamepak_mini_rom, 0x100000);
-      if (gamepak_buffer_count > 0)
-        memcpy(gamepak_buffers[0], gamepak_mini_rom, gamepak_buffer_blocksize);
-      map_null(read, 0x8000000, 0xD000000);
-      u32 map_blocks = gamepak_size >> 15;
-      for (u32 phyn = 0; phyn < map_blocks; phyn++)
-      {
-        u8 *blkptr = &gamepak_mini_rom[32 * 1024 * phyn];
-        map_rom_entry(read, phyn, blkptr, map_blocks);
-      }
-      update_gpio_romregs();
-      gamepak_mini_materialized = true;
-      return 0;
-    }
-    // материализация не удалась — падаем на обычный путь
-    gamepak_size = raw_size;
-    gamepak_mirror_1m = false;
-    rom_blocks = gamepak_size >> 15;
-  }
-
-  // Обычный путь: копируем в gamepak_buffers (по 1MB) и мапим
-  map_null(read, 0x8000000, 0xD000000);
-  u32 buf_blocks = (raw_size + gamepak_buffer_blocksize - 1) / gamepak_buffer_blocksize;
-  if (buf_blocks > gamepak_buffer_count) buf_blocks = gamepak_buffer_count;
-
-  for (i = 0; i < buf_blocks; i++)
-  {
-    u32 src_off = i * gamepak_buffer_blocksize;
-    u32 copy = size > src_off ? size - src_off : 0;
-    if (copy > gamepak_buffer_blocksize) copy = gamepak_buffer_blocksize;
-    if (copy) memcpy(gamepak_buffers[i], rom + src_off, copy);
-    if (copy < gamepak_buffer_blocksize)
-      memset(gamepak_buffers[i] + copy, 0xFF, gamepak_buffer_blocksize - copy);
-    for (j = 0; j < 32 && i*32 + j < gamepak_file_blocks; j++)
-    {
-      u32 phyn = i*32 + j;
-      u8* blkptr = &gamepak_buffers[i][32 * 1024 * j];
-      u32 entry = evict_gamepak_page();
-      gamepak_blk_queue[entry].phy_rom = phyn;
-      map_rom_entry(read, phyn, blkptr, rom_blocks);
-    }
-  }
-  return 0;
-}
-
 static bool rom_has_signature(const u8 *rom, u32 rom_size, const char *sig)
 {
   u32 i;
@@ -3171,11 +3087,8 @@ static u32 rom_scan_signatures_in_memory(void)
     u32 chunk_size = (size_left > gamepak_buffer_blocksize) ? gamepak_buffer_blocksize : size_left;
     u8 *chunk = gamepak_buffers[buf_idx];
     u32 i;
-    /* r545: chunk_size < 10 давал underflow (u32) и чтение за буфером —
-     * сигнатуры длиной до 10 байт дальше всё равно не проверить. */
-    u32 scan = (chunk_size > 10) ? (chunk_size - 10) : 0;
 
-    for (i = 0; i < scan; i += 4)
+    for (i = 0; i < chunk_size - 10; i += 4)
     {
       if (chunk[i] == 'E' && !(found & ROM_SIG_EEPROM) && memcmp(&chunk[i], sig_eeprom, 8) == 0) found |= ROM_SIG_EEPROM;
       else if (chunk[i] == 'S' && !(found & ROM_SIG_SRAM) && memcmp(&chunk[i], sig_sram, 6) == 0) found |= ROM_SIG_SRAM;
@@ -3199,11 +3112,6 @@ static u32 rom_scan_signatures_in_memory(void)
 
 static bool rom_is_pokemon_family(const u8 *rom)
 {
-  /* r545: заголовок начинается на 0xA0 (title с 0xA0, gamecode 0xAC) —
-   * ROM меньше 0xB0 байт не может быть Pokémon, не читаем за границей. */
-  if (gamepak_size < 0xB0)
-    return false;
-
   if (memcmp(&rom[0xA0], "POKEMON", 7) == 0)
     return true;
 
@@ -3311,23 +3219,13 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
    if (load_gamepak_raw(name))
       return -1;
 
-   gamepak_header_nonstandard = true;   // r545: ROM без полного заголовка
+   gamepak_header_nonstandard =
+      (gamepak_buffers[0][3] != 0xEA) || (gamepak_buffers[0][0xB2] != 0x96);
 
    /* Buffer 0 always has the first 1MB chunk of the ROM.
     * Read game code regardless of header validity: ROM hacks usually
     * preserve the code at 0xAC even when other header bytes are wrong. */
-   if (gamepak_size >= 0xB3)
-   {
-      gamepak_header_nonstandard =
-         (gamepak_buffers[0][3] != 0xEA) || (gamepak_buffers[0][0xB2] != 0x96);
-      memcpy(game_code, &gamepak_buffers[0][0xAC], 4);
-   }
-   else
-   {
-      /* r545: обрезанный/мусорный ROM (< 179 байт) — заголовка нет,
-       * game_code = UNKN, иначе чтение ушло бы за буфер ROM. */
-      memcpy(game_code, "UNKN", 4);
-   }
+   memcpy(game_code, &gamepak_buffers[0][0xAC], 4);
 
    /* Sanitise game code: if all bytes are non-alphanumeric
     * (homebrews, some NSP-extracted ROMs), use "UNKN" so

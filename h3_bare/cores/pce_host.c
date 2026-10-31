@@ -108,27 +108,38 @@ static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
     // r606: звук PCE на I2S. Ядро отдаёт стерео пары int16, 44100 Гц
     // (audio_batch_cb, sound_buf interleaved L/R). Ресемпл 44100→48000
     // (линейный, фаза 16.16, шаг 60211 = (44100<<16)/48000), push в I2S.
+    //
+    // r923: СТАРАЯ логика обнуляла rs_phase на каждом кадре (else rs_phase=0),
+    // т.к. в конце кадра фаза < in_n<<16 и ветка `-= in_n<<16` мёртвая → дробная
+    // суб-сэмпловая позиция терялась → микро-разрывы/щелчки на границах кадров.
+    // Теперь: интерполяция идёт по виртуальному потоку [последняя пара прошлого
+    // кадра | data], целая часть фазы сбрасывается, а ДРОБЬ переносится на
+    // следующий кадр — непрерывность фазы между кадрами сохранена.
     if (!data || frames == 0) return frames;
-    static uint32_t rs_phase = 0;
-    static int16_t out[2048 * 2];   // 2048 выходных стерео-пар (L,R на пару)
+    static uint32_t rs_phase = 0;             // 16.16 позиция в виртуальном потоке
+    static int16_t  pce_tail[2] = { 0, 0 };   // последняя пара (L,R) прошлого кадра
+    static int16_t out[2048 * 2];             // 2048 выходных стерео-пар (L,R на пару)
     const size_t in_n = frames;
     size_t o = 0;
     while (o < 2048) {
         uint32_t i = rs_phase >> 16;
-        if (i + 1 >= (uint32_t)in_n) break;
-        uint32_t f = rs_phase & 0xFFFFu;
-        // интерполяция L и R независимо
-        int32_t l0 = data[2 * i],     l1 = data[2 * (i + 1)];
-        int32_t r0 = data[2 * i + 1], r1 = data[2 * (i + 1) + 1];
-        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)f) >> 16));
-        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)f) >> 16));
+        if (i >= (uint32_t)in_n) break;       // нужна пара i+1 (i+1<=in_n → i<in_n)
+        uint32_t fr = rs_phase & 0xFFFFu;
+        // пара на позиции i и i+1 виртуального потока
+        int32_t l0, r0, l1, r1;
+        if (i == 0) { l0 = pce_tail[0]; r0 = pce_tail[1]; }
+        else        { l0 = data[2 * (i - 1)];     r0 = data[2 * (i - 1) + 1]; }
+        if (i + 1 == 0)      { l1 = pce_tail[0]; r1 = pce_tail[1]; }
+        else if (i + 1 <= in_n) { l1 = data[2 * (i + 1 - 1)];     r1 = data[2 * (i + 1 - 1) + 1]; }
+        else break;
+        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)fr) >> 16));
+        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)fr) >> 16));
         o++;
         rs_phase += 60211u;
     }
-    if (rs_phase >= ((uint64_t)in_n << 16))
-        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
-    else
-        rs_phase = 0;
+    // хвост на следующий кадр = последняя пара данных этого кадра
+    if (in_n > 0) { pce_tail[0] = data[2 * (in_n - 1)]; pce_tail[1] = data[2 * (in_n - 1) + 1]; }
+    rs_phase &= 0xFFFFu;      // продолжить с той же дробной позиции (целая часть «съедена»)
     for (size_t i = 0; i < o; i++)
         i2s_push_sample(out[2 * i], out[2 * i + 1]);
     return frames;

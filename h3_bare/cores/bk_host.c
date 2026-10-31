@@ -164,21 +164,26 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 static void host_audio_sample(int16_t l, int16_t r)
 {
     (void)r;
-    static uint32_t rs_phase = 0;
+    // r923: ядро БК зовёт audio_cb(val,val) ПО-СЭМПЛОВО (bk/libretro.c sound_write_sample),
+    // поэтому только host_audio_sample_batch (ниже) не покрывает звук. Старый код
+    // выдавал РОВНО один выходной на один входной → 44100 ложился в 48к-кольцо,
+    // дрейф ~8%, недолив, подмес тишины CPU2. Теперь — корректный ап-семплер
+    // с накоплением целой части: каждый входной сэмпл = 48000/44100 ≈ 1.088
+    // выходных. Фаза (rs_acc) статическая — дрейфа/разрывов между кадрами нет.
+    static uint32_t rs_acc = 0;             // 16.16: накопленный «долг» выходных
     static int16_t prev = 0, cur = 0;
     static int have = 0;
-    // Простейший линейный upsampler по одному сэмплу за вызов: держим пару
-    // prev/cur и интерполируем на сетке 48к.
     if (!have) { prev = l; cur = l; have = 1; return; }
     prev = cur; cur = l;
-    rs_phase += 60211u;   // шаг фазы 44100→48000
-    // Один входной сэмпл ≈ 1.088 выходных; интерполируем между prev и cur.
-    // Для простоты без накопления — выдаём ровно один выходной на входной
-    // (якорь на 48к/44.1к), фаза дрейфует незначительно на низких частотах.
-    int32_t s = (int32_t)prev + (int32_t)(((int64_t)(cur - prev) * (int32_t)(rs_phase & 0xFFFF)) >> 16);
-    if (s > 32767) s = 32767;
-    if (s < -32768) s = -32768;
-    i2s_push_sample((int16_t)s, (int16_t)s);
+    rs_acc += 71332u;                       // (48000<<16)/44100 = 71331.70 → 71332
+    while (rs_acc >= 0x10000u) {
+        uint32_t fr = rs_acc & 0xFFFFu;     // дробная часть для интерполяции
+        int32_t s = (int32_t)prev + (int32_t)(((int64_t)(cur - prev) * (int32_t)fr) >> 16);
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        i2s_push_sample((int16_t)s, (int16_t)s);
+        rs_acc -= 0x10000u;
+    }
 }
 static size_t host_audio_sample_batch(const int16_t* d, size_t f)
 {

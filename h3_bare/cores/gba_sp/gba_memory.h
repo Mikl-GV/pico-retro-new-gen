@@ -205,26 +205,10 @@ typedef enum
 #define REG_BGxPC(n)   (REG_BG2PC + ((n)-2)*8)
 #define REG_BGxPD(n)   (REG_BG2PD + ((n)-2)*8)
 
-#define FLASH_DEVICE_UNDEFINED       0x00
-#define FLASH_DEVICE_MACRONIX_64KB   0x1C
-#define FLASH_DEVICE_AMTEL_64KB      0x3D
-#define FLASH_DEVICE_SST_64K         0xD4
-#define FLASH_DEVICE_PANASONIC_64KB  0x1B
-#define FLASH_DEVICE_MACRONIX_128KB  0x09
-#define FLASH_DEVICE_SANYO_128KB     0x13
-
-
-#define FLASH_MANUFACTURER_MACRONIX  0xC2
-#define FLASH_MANUFACTURER_AMTEL     0x1F
-#define FLASH_MANUFACTURER_PANASONIC 0x32
-#define FLASH_MANUFACTURER_SST       0xBF
-#define FLASH_MANUFACTURER_SANYO     0x62
-
-/* Некоторые чтения из I/O-пространства гоняются через обработчик
- * (read_io_register16), потому что требуют side-эффектов: open-bus,
- * нулевые регистры, read-Mask'и с отличающимися от raw-массива
- * значениями. Список адресов взят из upstream libretro/gpsp
- * (fix GBA I/O read semantics, 340c262). */
+/* Most I/O reads can stay on the direct memory fast path.  Video, sound and
+ * DMA registers in 0x010..0x0ff contain write-only fields and other read
+ * semantics that need the hardware-aware helper below.  Addresses beyond the
+ * 1 KiB I/O window are not mirrors on real hardware either. */
 static inline bool io_read_requires_handler(u32 address)
 {
   u32 offset = (address & 0x00ffffff) & ~1U;
@@ -288,6 +272,21 @@ static inline bool io_read_requires_handler(u32 address)
   }
 }
 
+#define FLASH_DEVICE_UNDEFINED       0x00
+#define FLASH_DEVICE_MACRONIX_64KB   0x1C
+#define FLASH_DEVICE_AMTEL_64KB      0x3D
+#define FLASH_DEVICE_SST_64K         0xD4
+#define FLASH_DEVICE_PANASONIC_64KB  0x1B
+#define FLASH_DEVICE_MACRONIX_128KB  0x09
+#define FLASH_DEVICE_SANYO_128KB     0x13
+
+
+#define FLASH_MANUFACTURER_MACRONIX  0xC2
+#define FLASH_MANUFACTURER_AMTEL     0x1F
+#define FLASH_MANUFACTURER_PANASONIC 0x32
+#define FLASH_MANUFACTURER_SST       0xBF
+#define FLASH_MANUFACTURER_SANYO     0x62
+
 u32 function_cc read_memory8(u32 address);
 u32 function_cc read_memory8s(u32 address);
 u32 function_cc read_memory16(u32 address);
@@ -327,7 +326,6 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *cycles);
 u8 *memory_region(u32 address, u32 *memory_limit);
 u32 load_gamepak(const struct retro_game_info* info, const char *name,
                  int force_rtc, int force_rumble, int force_serial);
-s32 load_gamepak_from_memory(const u8* rom, u32 size);
 s32 load_bios(char *name);
 void init_memory(void);
 void init_gamepak_buffer(void);

@@ -10,6 +10,7 @@
 #include "h3_hs_timer.h"
 #include "led.h"
 #include "settings.h"
+#include "i2s.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -205,10 +206,37 @@ void emu_prepare(void) {
     emu_period_us = 16667;   // r622: сброс периода в дефолт — иначе «протечка»
                              // между системами (напр. NGP ставил 16200, а выход
                              // возвращал saved_period от прошлого, не 16667).
-    // r777: звуковой слой вывода удалён — i2s_ring_reset()/RESUME больше не нужны.
+    // r908/r909: звук вывода возвращён (r895+) — сбрасываем индексы ring на
+    // входе, чтобы хвост прошлой игры не «доезжал» в новый запуск (TX FIFO не
+    // трогаем: его посреди потока FLUSH_TX клинит).
+    i2s_ring_reset();
+    // r910 (Фаза 0): включаем замер только на время эмуляции + чистим счётчики.
+    i2s_stats_active(1);
+    i2s_stats_reset();
+    // r916: флаг «идёт эмуляция» для CPU2 (долив тишины в тихие места).
+    i2s_audio_set_active(1);
     emu_clear_fb();
     fb_clear();
     fb_flush();
+}
+
+// r910 (Фаза 0): единая точка завершения звукового замера — печатаем итог
+// сессии (водяные знаки кольца, дропы/недоливы, всего пар) и снимаем активность,
+// чтобы простой в меню не засорял статистику.
+static void emu_audio_stop(void) {
+    uint32_t fmax = 0, fmin = 0, drop = 0, under = 0, pairs = 0;
+    i2s_stats_get(&fmax, &fmin, &drop, &under, &pairs);
+    // r921: добавляем фактические счётчики долива CPU2 (fw=выведено пар в FIFO,
+    // skip=раз «FIFO полон») — по ним видно, растёт ли долив при живом beat.
+    uint32_t fw = 0, skip = 0, fl = 0, fe = 0;
+    i2s_cpu2_diag(&fl, &fw, &skip, NULL);
+    (void)fe;
+    printf("AUDIO-END: fill=%u..%u/8192 drop=%u under=%u pairs=%u fw=%u skip=%u\n",
+           (unsigned)fmin, (unsigned)fmax, (unsigned)drop,
+           (unsigned)under, (unsigned)pairs, (unsigned)fw, (unsigned)skip);
+    i2s_stats_active(0);
+    i2s_audio_set_active(0);   /* r916: звук из игры ушёл — CPU2 тишину больше не доливает */
+    i2s_ring_reset();
 }
 
 // r777: звуковой слой вывода удалён — snd_manifest оставлен no-op,
@@ -261,6 +289,10 @@ void emu_throttle(void) {
         emu_ts0 += period;   // граница всё равно сдвинута на период
         // fallback долива нет: единственный писатель TX FIFO — CPU2 (r773).
     }
+
+    // r911: периодический UART-дамп УБРАН. Блокирующий printf (~6 мс) каждые
+    // 300 кадров останавливал продюсер, кольцо пустело → слышимые «разрывы».
+    // Счётчики продолжают копиться; итог печатает emu_audio_stop() на выходе.
 }
 
 void emu_throttle_reset(void) {
@@ -416,7 +448,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -435,7 +467,7 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -454,7 +486,7 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -473,7 +505,7 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -489,7 +521,7 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -510,7 +542,7 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
         fc++;
     }
     fb_clear(); fb_flush();
-    // r777: звук удалён
+    emu_audio_stop();
 }
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -530,7 +562,7 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -540,28 +572,26 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
     printf("GBA: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x000E1A2E);   // тёмно-синий (GBA)
+    // r892: жёсткий период кадра 16743 мкс = 59.727 Гц (16.777216 МГц /
+    // 280896 тактов GBA). Раньше период считался EMA от числа пар звука
+    // (gba_last_pairs) — но это подстраивало период ПОД скорость эмуляции,
+    // а не ограничивало её. Если эмулятор быстрее железа (у нас H3 —
+    // запредельно быстрая), EMA только закреплял «ускоренный» темп, рендер
+    // зависел от сцены → нелинейное ускорение. Без удержания на железе
+    // игры «улетают вперёд»; жёсткий период не даёт обогнать GBA.
+    uint16_t saved_period = emu_period_us;
+    emu_period_us = 16743;   // 59.727 Гц (GBA), не 60
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         gba_run_frame();
-        // r645: период кадра от ФАКТИЧЕСКОГО числа пар звука за кадр
-        // (вместо магического адреса 0x01C22028 — хрупкий прямой доступ к I2S).
-        {
-            extern uint32_t gba_last_pairs(void);
-            uint32_t p = gba_last_pairs();
-            if (p >= 400 && p <= 2000) {
-                uint32_t peri = (uint32_t)(((uint64_t)p * 1000000u) / 48000u);
-                if (peri >= 12000 && peri <= 24000)
-                    emu_period_us = (uint16_t)(((uint32_t)emu_period_us * 7 + peri) / 8);
-            }
-        }
         gba_render_frame();
         emu_throttle();
         emu_scale_int(240, 160);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; fb_clear(); fb_flush();
+exit: emu_period_us = saved_period; emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -579,7 +609,6 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // а не 16667 с EMA-сходимостью за ~8 кадров. Пока EMA сходилась, кольцо
     // пустело (продюсер медленнее железа) и CPU2 заливал тишину, затем
     // переполнялось — стартовый дрейф/плавание задержки в первые секунды.
-    uint16_t saved_period = emu_period_us;
     emu_period_us = 13333;   // 75 Гц (48000/640 пар)
     for (;;) {
         lynx_run_frame();
@@ -601,7 +630,7 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; fb_clear(); fb_flush();
+exit: emu_period_us = 16667; emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -617,7 +646,6 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // при Ticks=6·2^20 → ~61.7 Гц, а throttle стоял на общих 60 Гц — игра шла
     // на ~2.8% медленнее. Подстраиваем период под ядро; возвращаем общий 60 Гц
     // на выходе (паттерн из CPS, r0.390).
-    uint16_t saved_period = emu_period_us;
     emu_period_us = 16200;   // 61.7 Гц
     for (;;) {
         ngp_run_frame();
@@ -628,6 +656,6 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 exit:
     emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
-    // r777: звук удалён
+    emu_audio_stop();
     fb_clear(); fb_flush();
 }

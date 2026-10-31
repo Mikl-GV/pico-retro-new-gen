@@ -104,13 +104,25 @@ static void fsinfo_load(void) {
     g_free_count = le32(b + 488);
 }
 
-/* Сохранить next_free/free_count в FSInfo. */
+/* Сохранить next_free/free_count в FSInfo.
+   r903: если сигнатуры FSInfo не сошлись (свежая разметка / битый FSInfo) —
+   инициализируем сектор штатно (как mkfs.fat: lead/trail сигнатуры,
+   free_count, next_free, 0x55AA). Сектор зарезервирован BPB под FSInfo,
+   перезапись безопасна; без этого подсказка свободного кластера терялась
+   при каждом перезапуске (линейный поиск с кластера 2). */
 static void fsinfo_store(void) {
     if (!g_fsinfo_sec) return;
     uint8_t b[512];
     uint32_t sec = g_part_lba + g_fsinfo_sec;
     if (blk_read(sec, b) < 0) return;
-    if (le32(b) != 0x41615252u || le32(b + 484) != 0x61417272u) return;
+    if (le32(b) != 0x41615252u || le32(b + 484) != 0x61417272u) {
+        memset(b, 0, sizeof(b));
+        wr32(b, 0x41615252u);
+        wr32(b + 484, 0x61417272u);
+        wr32(b + 488, 0xFFFFFFFFu);
+        wr32(b + 492, g_free_hint);
+        b[510] = 0x55; b[511] = 0xAA;
+    }
     wr32(b + 488, g_free_count);
     wr32(b + 492, g_free_hint);
     blk_write(sec, b);

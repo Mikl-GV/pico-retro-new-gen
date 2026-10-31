@@ -22,9 +22,6 @@ extern "C" {
   #include "cpu_instrument.h"
 }
 
-/* Диагностика (временная, под GBA_DBG): uart0_printf из uart.c. */
-extern "C" int uart0_printf(const char* fmt, ...);
-
 const u8 bit_count[256] =
 {
   0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 1, 2, 2, 3, 2, 3, 3,
@@ -582,18 +579,11 @@ static const u8 gba_header_logo[156] = {
   if(new_pc_region != pc_region)                                              \
   {                                                                           \
     pc_region = new_pc_region;                                                \
-    /* r542: PC вне карты (≥0x10000000) — memory_map_read всего 8K страниц;  \
-     * прямое индексирование даёт OOB-read и разыменование мусора.  Ставим   \
-     * pc_address_block=NULL, циклы останавливают CPU (см. arm_loop/thumb).  */\
-    if (new_pc_region < (8 * 1024))                                           \
-    {                                                                         \
-      pc_address_block = memory_map_read[new_pc_region];                      \
-      touch_gamepak_page(pc_region);                                          \
-      if(!pc_address_block)                                                   \
-        pc_address_block = load_gamepak_page(pc_region & 0x3FF);              \
-    }                                                                         \
-    else                                                                      \
-      pc_address_block = NULL;                                                \
+    pc_address_block = memory_map_read[new_pc_region];                        \
+    touch_gamepak_page(pc_region);                                            \
+                                                                              \
+    if(!pc_address_block)                                                     \
+      pc_address_block = load_gamepak_page(pc_region & 0x3FF);                \
   }                                                                           \
 
 
@@ -864,6 +854,8 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
 {                                                                             \
   u8 *map;                                                                    \
   u32 _address = addr;                                                        \
+  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
+                     io_read_requires_handler(_address);                       \
                                                                               \
   if(_address < 0x10000000)                                                   \
   {                                                                           \
@@ -873,24 +865,24 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     STATS_MEMORY_ACCESS(read, type, region);                                  \
   }                                                                           \
                                                                               \
-  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
-                      io_read_requires_handler(_address);                     \
   if (                                                                        \
-     ((_address >> 24) == 0 && (reg[REG_PC] >= 0x4000)) ||  /* BIOS read */    \
-     (_address >= 0x10000000) ||                         /* r542: open bus  */ \
-     (_address & aligned_address_mask##size) ||      /* Unaligned access */     \
+     (((_address >> 24) == 0) && (reg[REG_PC] >= 0x4000)) ||  /* BIOS read */ \
+     (_address & aligned_address_mask##size) ||      /* Unaligned access */   \
      _io_handler ||                                  /* Special I/O read */   \
-     !(map = memory_map_read[_address >> 15])        /* Unmapped memory */      \
-  )                                                                             \
+     !(map = memory_map_read[_address >> 15])        /* Unmapped memory */    \
+  )                                                                           \
   {                                                                           \
-    /* Reading the open bus or device memory can take a variable amount of   \
-     * cycles; the read itself, however, may depend on the value of the PC   \
-     * register. We temporarily modify the PC to point one instruction       \
-     * ahead, and then restore it afterwards. */                             \
-    u32 _saved_pc = reg[REG_PC];                                              \
-    reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                          \
-    dest = (type)(readfn)(_address);                                          \
-    reg[REG_PC] = _saved_pc;                                                  \
+    if (_io_handler)                                                          \
+    {                                                                         \
+      /* The interpreter has already advanced PC for this instruction.        \
+       * read_open* expects the current instruction PC, like dynarec stubs. */ \
+      u32 _saved_pc = reg[REG_PC];                                            \
+      reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                         \
+      dest = (type)(readfn)(_address);                                        \
+      reg[REG_PC] = _saved_pc;                                                \
+    }                                                                         \
+    else                                                                      \
+      dest = (type)(readfn)(_address);                                        \
   }                                                                           \
   else                                                                        \
   {                                                                           \
@@ -915,7 +907,9 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
 #define load_aligned32(address, dest)                                         \
 {                                                                             \
   u32 _address = address;                                                     \
-  u8 *map = (_address < 0x10000000) ? memory_map_read[_address >> 15] : NULL;\
+  u8 *map = memory_map_read[_address >> 15];                                  \
+  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
+                     io_read_requires_handler(_address);                       \
   if(_address < 0x10000000)                                                   \
   {                                                                           \
     /* Account for cycles and other stats */                                  \
@@ -923,22 +917,21 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     cycles_remaining -= ws_cyc_seq[region][1];                                \
     STATS_MEMORY_ACCESS(read, u32, region);                                   \
   }                                                                           \
-  bool _io_handler = ((_address >> 24) == 0x04) &&                            \
-                      io_read_requires_handler(_address);                     \
   if(_address < 0x10000000 && map && !_io_handler)                            \
   {                                                                           \
     dest = readaddress32(map, _address & 0x7FFF);                             \
   }                                                                           \
   else                                                                        \
   {                                                                           \
-    /* Reading the open bus or device memory can take a variable amount of   \
-     * cycles; the read itself, however, may depend on the value of the PC   \
-     * register. We temporarily modify the PC to point one instruction       \
-     * ahead, and then restore it afterwards. */                             \
-    u32 _saved_pc = reg[REG_PC];                                              \
-    reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                          \
-    dest = read_memory32(_address);                                           \
-    reg[REG_PC] = _saved_pc;                                                  \
+    if (_io_handler)                                                          \
+    {                                                                         \
+      u32 _saved_pc = reg[REG_PC];                                            \
+      reg[REG_PC] -= (reg[REG_CPSR] & 0x20) ? 2 : 4;                         \
+      dest = read_memory32(_address);                                         \
+      reg[REG_PC] = _saved_pc;                                                \
+    }                                                                         \
+    else                                                                      \
+      dest = read_memory32(_address);                                         \
   }                                                                           \
 }                                                                             \
 
@@ -1385,7 +1378,7 @@ inline cpu_alert_type exec_thumb_block_mem(u32 rn, u32 reglist, s32 &cycles_rema
   {                                                                           \
     thumb_pc_offset(2);                                                       \
   }                                                                           \
-  cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][0];              \
+  cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][0];                      \
 }                                                                             \
 
 // When a mode change occurs from non-FIQ to non-FIQ retire the current
@@ -1439,16 +1432,9 @@ void set_cpu_mode(cpu_mode_type new_mode)
   reg[CPU_MODE] = new_mode;
 }
 
-// Будит ли HALT/STOP: на реальном GBA CPU просыпается при любом
-// pending-прерывании (IE & IF != 0), даже если IME=0 (прерывание
-// не будет обработано, но WFI/IntrWait завершается).  Логика же
-// обработки прерываний (переход в IRQ-режим) требует IME=1.
-#define cpu_has_pending_irq() \
-  (read_ioreg(REG_IE) & read_ioreg(REG_IF))
-
-#define cpu_has_interrupt() \
-  (!(reg[REG_CPSR] & 0x80) && read_ioreg(REG_IME) && \
-   cpu_has_pending_irq())
+#define cpu_has_interrupt()                                 \
+  (!(reg[REG_CPSR] & 0x80) && read_ioreg(REG_IME) &&        \
+    (read_ioreg(REG_IE) & read_ioreg(REG_IF)))
 
 // Returns whether the CPU has a pending interrupt.
 cpu_alert_type check_interrupt() {
@@ -1459,17 +1445,7 @@ cpu_alert_type check_interrupt() {
 // which means that it must be called with a valid CPU state.
 u32 check_and_raise_interrupts()
 {
-  // Проверка pending-прерывания (IE & IF != 0) — будит HALT
-  // даже если IME=0 (на реальном GBA так).
-  if (cpu_has_pending_irq())
-  {
-    // Wake up CPU if it is stopped/sleeping (от IME не зависит)
-    if (reg[CPU_HALT_STATE] == CPU_STOP ||
-        reg[CPU_HALT_STATE] == CPU_HALT)
-      reg[CPU_HALT_STATE] = CPU_ACTIVE;
-  }
-
-  // Полноценный вход в IRQ — только если IME=1 + CPSR не маскирует
+  // Check any IRQ flag pending, IME and CPSR-IRQ enabled
   if (cpu_has_interrupt())
   {
     // Value after the FIQ returns, should be improved
@@ -1482,6 +1458,11 @@ u32 check_and_raise_interrupts()
     reg[REG_PC] = 0x00000018;
 
     set_cpu_mode(MODE_IRQ);
+
+    // Wake up CPU if it is stopped/sleeping.
+    if (reg[CPU_HALT_STATE] == CPU_STOP ||
+        reg[CPU_HALT_STATE] == CPU_HALT)
+      reg[CPU_HALT_STATE] = CPU_ACTIVE;
 
     return 1;
   }
@@ -1518,36 +1499,20 @@ u8 vram[1024 * 96];
 u16 io_registers[512];
 #endif
 
-void execute_arm(u32 cycles)
+static u32 execute_arm_internal(u32 cycles, bool vram_only)
 {
   u32 opcode;
   u32 condition;
   u32 n_flag, z_flag, c_flag, v_flag;
   u32 pc_region = (reg[REG_PC] >> 15);
-  u8 *pc_address_block;
+  u8 *pc_address_block = memory_map_read[pc_region];
   u32 new_pc_region;
   s32 cycles_remaining;
   u32 update_ret;
   cpu_alert_type cpu_alert;
 
-  if (pc_region < (8 * 1024))
-    pc_address_block = memory_map_read[pc_region];
-  else
-    pc_address_block = NULL;
-
   if(!pc_address_block)
-  {
-    if (pc_region < (8 * 1024))
-      pc_address_block = load_gamepak_page(pc_region & 0x3FF);
-    else
-    {
-      /* r542/r563: PC вне карты (≥0x10000000). r542 останавливал CPU —
-       * некоторые игры (RnR) легально ходят по open-bus, «стоп» давал
-       * чёрный экран. Теперь не останавливаем: цикл исполнит NOP
-       * (см. arm_loop/thumb_loop) — open-bus-поведение как на железе. */
-      pc_address_block = NULL;
-    }
-  }
+    pc_address_block = load_gamepak_page(pc_region & 0x3FF);
   touch_gamepak_page(pc_region);
 
   cycles_remaining = cycles;
@@ -1557,7 +1522,7 @@ void execute_arm(u32 cycles)
     if (reg[CPU_HALT_STATE] != CPU_ACTIVE) {
        u32 ret = update_gba(cycles_remaining);
        if (completed_frame(ret))
-          return;
+          return ret;
 
        cycles_remaining = cycles_to_run(ret);
     }
@@ -1573,6 +1538,8 @@ void execute_arm(u32 cycles)
 arm_loop:
 
        collapse_flags();
+       if (vram_only && (reg[REG_PC] >> 24) != 0x06)
+          return cycles_remaining > 0 ? (u32)cycles_remaining : update_gba(cycles_remaining);
 
        /* Process cheats if we are about to execute the cheat hook */
        if (reg[REG_PC] == cheat_master_hook)
@@ -1582,10 +1549,7 @@ arm_loop:
        using_instruction(arm);
        check_pc_region();
        reg[REG_PC] &= ~0x03;
-       if (pc_address_block)
-         opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
-       else
-         opcode = 0xE1A00000;   /* r563: open-bus NOP (MOV r0,r0) — не глушим CPU */
+       opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
        condition = opcode >> 28;
 
        switch(condition)
@@ -2165,7 +2129,7 @@ arm_loop:
                    {
                       reg[REG_PC] = src;
                    }
-                   cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
+                   cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
                 }
                 else
                 {
@@ -3084,7 +3048,7 @@ arm_loop:
                 /* B offset */
                 arm_decode_branch();
                 reg[REG_PC] += offset + 8;
-                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
+                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
                 break;
              }
 
@@ -3094,7 +3058,7 @@ arm_loop:
                 arm_decode_branch();
                 reg[REG_LR] = reg[REG_PC] + 4;
                 reg[REG_PC] += offset + 8;
-                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][1];
+                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][1];
                 break;
              }
 
@@ -3106,13 +3070,6 @@ arm_loop:
 
           case 0xF0 ... 0xFF:
             collapse_flags();
-            /* r841: HLE-фикс деления на ноль — см. Thumb case 0xDF. */
-            if (((opcode >> 24) == 0x06 || (opcode >> 24) == 0x07) &&
-                reg[1] == 0)
-            {
-              reg[REG_PC] = reg[REG_PC] + 4;
-              break;
-            }
             reg[REG_BUS_VALUE] = 0xe3a02004;  // After SWI, we read bios[0xE4]
             REG_MODE(MODE_SUPERVISOR)[6] = reg[REG_PC] + 4;
             REG_SPSR(MODE_SUPERVISOR) = reg[REG_CPSR];
@@ -3138,7 +3095,7 @@ skip_instruction:
     collapse_flags();
     update_ret = update_gba(cycles_remaining);
     if (completed_frame(update_ret))
-       return;
+       return update_ret;
     cycles_remaining = cycles_to_run(update_ret);
     continue;
 
@@ -3147,6 +3104,8 @@ skip_instruction:
 thumb_loop:
 
        collapse_flags();
+       if (vram_only && (reg[REG_PC] >> 24) != 0x06)
+          return cycles_remaining > 0 ? (u32)cycles_remaining : update_gba(cycles_remaining);
 
        /* Process cheats if we are about to execute the cheat hook */
        if (reg[REG_PC] == cheat_master_hook)
@@ -3157,10 +3116,7 @@ thumb_loop:
        using_instruction(thumb);
        check_pc_region();
        reg[REG_PC] &= ~0x01;
-       if (pc_address_block)
-         opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
-       else
-         opcode = 0xBF00;   /* r563: open-bus NOP (Thumb) — не глушим CPU */
+       opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
 
        #ifdef TRACE_INSTRUCTIONS
        interp_trace_instruction(reg[REG_PC], 0);
@@ -3566,18 +3522,6 @@ thumb_loop:
 
           case 0xDF:
              collapse_flags();
-             /* r841 (RnR/порты SNES): HLE-обработка деления на ноль.
-              * На реальном GBA SWI 0x06 (Div) / 0x07 (DivMod) с r1==0 не
-              * вешают CPU (биос возвращает неопределённое значение), но
-              * open-source BIOS (bios_data.S) при r1==0 крутит бесконечный
-              * цикл сдвига в 0x17C4 — игра навсегда застревает. Возврат
-              * на следующую инструкцию, режим не меняем (мы его сохранили). */
-             if (((opcode & 0xFF) == 0x06 || (opcode & 0xFF) == 0x07) &&
-                 reg[1] == 0)
-             {
-               reg[REG_PC] = reg[REG_PC] + 2;
-               break;
-             }
              REG_MODE(MODE_SUPERVISOR)[6] = reg[REG_PC] + 2;
              REG_SPSR(MODE_SUPERVISOR) = reg[REG_CPSR];
              reg[REG_PC] = 0x00000008;
@@ -3594,7 +3538,7 @@ thumb_loop:
                 thumb_decode_branch();
                 s32 br_offset = ((s32)(offset << 21) >> 20) + 4;
                 reg[REG_PC] += br_offset;
-                cycles_remaining -= ws_cyc_nseq[(reg[REG_PC] >> 24) & 0xF][0];
+                cycles_remaining -= ws_cyc_nseq[reg[REG_PC] >> 24][0];
                 break;
              }
 
@@ -3615,7 +3559,7 @@ thumb_loop:
                 u32 newpc = reg[REG_LR] + (offset * 2);
                 reg[REG_LR] = newlr;
                 reg[REG_PC] = newpc;
-                cycles_remaining -= ws_cyc_nseq[(newpc >> 24) & 0xF][0];
+                cycles_remaining -= ws_cyc_nseq[newpc >> 24][0];
                 break;
              }
        }
@@ -3633,7 +3577,7 @@ thumb_loop:
     collapse_flags();
     update_ret = update_gba(cycles_remaining);
     if (completed_frame(update_ret))
-       return;
+       return update_ret;
     cycles_remaining = cycles_to_run(update_ret);
     continue;
 
@@ -3641,6 +3585,31 @@ thumb_loop:
       /* CPU stopped or switch to IRQ handler */
       collapse_flags();
   }
+}
+
+void execute_arm(u32 cycles)
+{
+  execute_arm_internal(cycles, false);
+}
+
+u32 function_cc execute_arm_vram(u32 cycles)
+{
+  /* VRAM instructions are never cached. This also covers code rewritten by
+   * scalar stores, store-multiple instructions, DMA and mirrored addresses. */
+  u32 result;
+  if ((s32)cycles <= 0) {
+    result = update_gba(cycles);
+    if (!completed_frame(result) && (reg[REG_PC] >> 24) == 0x06)
+      result = execute_arm_internal(cycles_to_run(result), true);
+  } else {
+    result = execute_arm_internal(cycles, true);
+  }
+#ifdef HAVE_DYNAREC
+  /* Interpreted routines may write I/EWRAM without the JIT's SMC handlers.
+   * Discard those translations before returning to compiled execution. */
+  flush_translation_cache_ram();
+#endif
+  return result;
 }
 
 void init_cpu(void)

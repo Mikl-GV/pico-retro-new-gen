@@ -1324,10 +1324,7 @@ static const ini_t gbaover[] = {
       // Prince of Persia - The Sands of Time (U)
       "BPYE",                      /* gamepak_code         */
       0,                           /* flags                */
-      /* r847 DBG: idle-хук отключён — адрес 0x808ff3a от ОРИГИНАЛЬНОГО
-         ROM, а на транслированном [T+Rus1.0 Djinn] он может рвать живую
-         логику (белый экран, висит до инициализации). Проверяем. */
-      0,                           /* idle_loop_target_pc  */
+      0x808ff3a,                   /* idle_loop_target_pc  */
       0,                           /* translation_gate_target_1 */
       0,                           /* translation_gate_target_2 */
       0,                           /* translation_gate_target_3 */

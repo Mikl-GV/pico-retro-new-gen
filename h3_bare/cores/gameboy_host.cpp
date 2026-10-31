@@ -89,6 +89,12 @@ static void gb_apply_cheats(uint8_t* rom, uint32_t size) {
 }
 
 extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
+    // r904 (B1): старый g_emu живёт в bump-пуле; gb_heap_reset() ниже затирает
+    // его память. Обнуляем указатель ДО сброса пула, иначе при отказе нового
+    // emulator_new() g_emu остался бы висячим на затёртой памяти, и
+    // gb_run_frame()/gb_render_frame() (guard «if (!g_emu) return» на 120/177)
+    // пошли бы по мусору пула.
+    g_emu = NULL;
     gb_heap_reset();
     // r0.417 (M6 аудита): битый элемент (NULL/0) — не запускаем binjgb
     // на пустом буфере (это единственный host без guard'а, как у остальных).

@@ -186,9 +186,8 @@ u32 function_cc update_gba(int remaining_cycles)
         }
 
         // Trigger the hblank interrupt, if enabled in DISPSTAT
-        if (dispstat & 0x10) {
+        if (dispstat & 0x10)
           irq_raised |= IRQ_HBLANK;
-        }
       }
       else
       {
@@ -208,9 +207,7 @@ u32 function_cc update_gba(int remaining_cycles)
 
           // Trigger VBlank interrupt if enabled
           if (dispstat & 0x8)
-          {
             irq_raised |= IRQ_VBLANK;
-          }
 
           // Trigger the VBlank DMAs if enabled
           for (i = 0; i < 4; i++)

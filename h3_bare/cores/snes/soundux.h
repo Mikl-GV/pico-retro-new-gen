@@ -35,7 +35,11 @@ enum
 #define SOUND_DECODE_LENGTH 16
 
 #define NUM_CHANNELS    8
-#define SOUND_BUFFER_SIZE (2 * 44100 / 50)
+/* r904: буфер рассчитан под 48000 Гц (host ставит S9xSetPlaybackRate(48000));
+ * прежнее (2*44100/50=1764) переполнялось на PAL-кадрах (host запрашивает
+ * 960 пар = 1920 отсчётов) и затирал EchoBuffer. +8 — запас под дробный
+ * аккумулятор кадра (S9xMixSamples никогда не вызывает больше). */
+#define SOUND_BUFFER_SIZE (2 * 48000 / 50 + 8)
 #define MAX_BUFFER_SIZE SOUND_BUFFER_SIZE
 
 #define SOUND_BUFS      4

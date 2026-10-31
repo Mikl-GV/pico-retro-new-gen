@@ -170,12 +170,16 @@ extern "C" void a7800_run_frame(void) {
     // (524 сэмпла/кадр = 31440 Гц при 60fps; tia: 0..30, pokey: 8..120).
     // Смешиваем (TIA + POKEY, если чип есть), ресемпл 31440→48000 (линейный,
     // фаза 16.16), u8→s16, моно→стерео.
+    //
+    // r923: шаг фазы исправлен — (31440<<16)/48000 = 42926.08 (не 42939, тот
+    // давал 31450 Гц, дрейф фазы). Плюс дробная часть фазы больше НЕ теряется
+    // на границе кадра (старый `else rs_phase=0` обнулял её) — интерполяция
+    // идёт с накоплением, как в PCE.
     extern byte tia_buffer[];
     extern uint tia_size;
     extern byte pokey_buffer[];
     static uint32_t rs_phase = 0;
     const int in_n = (int)tia_size;            // 524
-    /* 31440→48000: шаг фазы (31440<<16)/48000 = 42939 */
     int o = 0;
     static int16_t out[880];                   // 524*48000/31440 ≈ 800
     while (o < 880) {
@@ -189,12 +193,9 @@ extern "C" void a7800_run_frame(void) {
         if (s > 32767) s = 32767;
         if (s < -32768) s = -32768;
         out[o++] = (int16_t)s;
-        rs_phase += 42939u;
+        rs_phase += 42926u;
     }
-    if (rs_phase >= ((uint64_t)in_n << 16))
-        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
-    else
-        rs_phase = 0;
+    rs_phase &= 0xFFFFu;                       // сохранить дробную часть на след. кадр
     for (int i = 0; i < o; i++)
         i2s_push_sample(out[i], out[i]);       // моно → стерео
 }

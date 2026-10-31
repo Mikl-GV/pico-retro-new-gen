@@ -1,4 +1,4 @@
-#include <stdint.h>
+﻿#include <stdint.h>
 #include <string.h>
 #include "h3.h"
 #include "uart.h"
@@ -333,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r856";
+const char g_fw_version[] = "r929";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r856\n");
+    uart_puts("build: r929\n");
 
     led_init();
     led_set(0);
@@ -446,8 +446,25 @@ void main(void) {
         __asm volatile("dsb" ::: "memory");
     }
 
-    // r777: звуковой слой вывода УДАЛЁН (решение владельца). i2s_init() не
-    // вызывается — аппаратный I2S не трогаем, no-op стабы в i2s.c.
+    // Звук (этап 1, r8xx): ядра стартуем РАНО (после mmu_mark_uncached
+    // .coherent) — CPU2 (аудио-ядро) поднимается ДО i2s_init(), чтобы к
+    // моменту готовности I2S0 долив ring→TX FIFO уже крутился. Пока
+    // g_i2s_ready==0 i2s_poll_fill() возвращает 0 (NOP-backoff) — безопасно.
+    // Затем i2s_init(): PLL 24.576М, делители, FIFO, PA10-SD. Без DMA/GIC.
+    extern int h3_cpu_start(int cpu, void (*entry)(void));
+    extern void cpu2_entry(void);
+    if (h3_cpu_start(2, cpu2_entry) == 1)
+        uart_puts("smp: CPU2 started (audio core)\n");
+    else
+        uart_puts("smp: CPU2 FAILED to start\n");
+
+    extern int i2s_init(void);
+    i2s_init();
+
+    // Тест-тон сразу после init: CPU2 уже доливает ring, тон (200 мс 1 кГц)
+    // будет реально выведен — проверка тракта I2S0 на стенде.
+    extern void i2s_test_tone(void);
+    i2s_test_tone();
 
     // I2C (TWI0 PA11/PA12): Sega-геймпад@0x20 (если подключён).
     // r0.411: печать инициализации возвращена в boot-лог (было тихо с r0.397):
@@ -465,13 +482,6 @@ void main(void) {
         uart_puts("smp: CPU1 started (TFT core)\n");
     else
         uart_puts("smp: CPU1 FAILED to start\n");
-
-    // CPU2: стартует как раньше (r777: без звуковой роли — no-op цикл в i2s.c).
-    extern void cpu2_entry(void);
-    if (h3_cpu_start(2, cpu2_entry) == 1) {
-        uart_puts("smp: CPU2 started (idle)\n");
-    } else
-        uart_puts("smp: CPU2 FAILED to start\n");
 
 // Меню на HDMI — обычная работа core0; справка на TFT.
     // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может

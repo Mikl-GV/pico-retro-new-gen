@@ -6,7 +6,10 @@
 //   gba_render_frame()        — копия gba_screen_pixels (240x160) в EMU_FB
 //
 // Ядро gpSP собирается без libretro.c: ROM подаётся напрямую из памяти
-// (см. g_ram_rom в gba_memory.c), файлов нет, звук заглушен (нет DAC).
+// (см. g_ram_rom в gba_memory.c), файлов нет.
+// Звук: ядро синтезирует 32768 Гц стерео (sound_read_samples), host
+// ресемплит 32768→48000 (полифазный, gba_resample) и пушит пары в I2S
+// (i2s_push_sample) — тракт вывода I2S0/CPU2 (r895+).
 
 #include <stdint.h>
 #include <string.h>
@@ -22,10 +25,7 @@
 #include "btn_pad.h"
 #include "remap.h"
 #include "i2s.h"
-
-/* r856: отладочный дамп тайлов/палитры (r848) — только по флагу.
-   По умолчанию выключен: это постоянный спам в UART каждые 60 кадров. */
-#define GBA_DEBUG 0
+#include "h3_hs_timer.h"
 
 // r521: ресемпл звука gpSP 65536 → 48000 Гц (линейная интерполяция, 16.16).
 // I2S остаётся на 48 кГц — честных делителей под 65536 у H3 нет (ср.: ровный
@@ -138,10 +138,13 @@ static u32 gba_resample(const s16* in, u32 nin_pairs, s16* out) {
     }
     // r523: r522 вычитал nin<<16 даже когда ph меньше — фаза уходила в
     // огромный unsigned (i=65534) и ресемплер выдавал 0 навсегда.
+    // r903: при недоборе (кадр дал меньше пар, чем съела свёртка) фазу
+    // СОХРАНЯЕМ, а не сбрасываем в 0 — иначе теряется позиция в потоке
+    // и следующий кадр стартует рассинхронизированным («щелчок»).
     if (ph >= ((u64)nin_pairs << 16))
         gba_rs_phase = (u32)(ph - ((u64)nin_pairs << 16));
     else
-        gba_rs_phase = 0;
+        gba_rs_phase = ph;
     return o;
 }
 
@@ -295,39 +298,6 @@ u32 gba_last_pairs(void) { return g_gba_pairs; }
 void gba_render_frame(void) {
     if (!g_loaded) return;
     if (!gba_screen_pixels) return;
-
-#if GBA_DEBUG
-    /* r848 DBG: тайловый базис от bg0. tilecntrl=(bg0>>2)&3, tile_base=
-       tilecntrl*0x4000. У MK bg0=1782 -> tilecntrl=0 -> tile_base=0x0000.
-       Печатаем и 0x0000, и 0x4000-запас + палитру + карту. */
-    {
-        static u32 dbgf;
-        if ((dbgf++ % 60) == 0) {
-            extern int uart0_printf(const char* fmt, ...);
-            extern u16 palette_ram_converted[];
-            extern u8 gpsp_vram[];
-            u32 tc = (read_ioreg(REG_BG0CNT) >> 2) & 3;
-            u32 tb = tc * 0x4000;
-            uart0_printf("  gba: tc=%u tb=%06X\r\n", (unsigned)tc, (unsigned)tb);
-            uart0_printf("  gba: t0=%02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X\r\n",
-                         gpsp_vram[tb+0x00], gpsp_vram[tb+0x01], gpsp_vram[tb+0x02], gpsp_vram[tb+0x03],
-                         gpsp_vram[tb+0x04], gpsp_vram[tb+0x05], gpsp_vram[tb+0x06], gpsp_vram[tb+0x07],
-                         gpsp_vram[tb+0x08], gpsp_vram[tb+0x09], gpsp_vram[tb+0x0A], gpsp_vram[tb+0x0B],
-                         gpsp_vram[tb+0x0C], gpsp_vram[tb+0x0D], gpsp_vram[tb+0x0E], gpsp_vram[tb+0x0F]);
-            uart0_printf("  gba: t+20=%02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X\r\n",
-                         gpsp_vram[tb+0x20], gpsp_vram[tb+0x21], gpsp_vram[tb+0x22], gpsp_vram[tb+0x23],
-                         gpsp_vram[tb+0x24], gpsp_vram[tb+0x25], gpsp_vram[tb+0x26], gpsp_vram[tb+0x27],
-                         gpsp_vram[tb+0x28], gpsp_vram[tb+0x29], gpsp_vram[tb+0x2A], gpsp_vram[tb+0x2B],
-                         gpsp_vram[tb+0x2C], gpsp_vram[tb+0x2D], gpsp_vram[tb+0x2E], gpsp_vram[tb+0x2F]);
-            uart0_printf("  gba: pal=%04X %04X %04X %04X %04X %04X %04X %04X | bg0=%04X disp=%04X\r\n",
-                         palette_ram_converted[0], palette_ram_converted[1],
-                         palette_ram_converted[2], palette_ram_converted[3],
-                         palette_ram_converted[0x50], palette_ram_converted[0x51],
-                         palette_ram_converted[0x52], palette_ram_converted[0x53],
-                         (unsigned)read_ioreg(REG_BG0CNT), (unsigned)read_ioreg(REG_DISPCNT));
-        }
-    }
-#endif
 
     for (int y = 0; y < GBA_SCREEN_HEIGHT && y < EMU_H; y++)
         for (int x = 0; x < GBA_SCREEN_WIDTH && x < EMU_W; x++)

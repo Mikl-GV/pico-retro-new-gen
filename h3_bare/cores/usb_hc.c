@@ -210,17 +210,22 @@ static uint8_t  g_pre_cfg[256] __attribute__((section(".coherent"), aligned(32))
 static uint32_t g_pre_cfg_len;
 static uint16_t g_pre_mps = 8;
 static int      g_pre_msd;
+/* r903: база OHCI, с которой HID-скан уже прочитал конфиг MSD (PHY1=B400
+   или PHY2=C400). Раньше жёстко B400 — флешка на PHY2 теряла pre-enum и
+   уходила в падающий re-enum. */
+static uint32_t g_pre_base = 0x01C1B400u;
 
 void usb_hc_set_preenum_msd(const uint8_t* cfg, uint32_t len, uint16_t mps,
                             uint32_t base) {
     if (!cfg || len < 9 || len > sizeof(g_pre_cfg)) return;
-    if (base != 0x01C1B400u) return;   /* OHCI-bulk сейчас только PHY1 */
+    if (base != 0x01C1B400u && base != 0x01C1C400u) return;
     memcpy(g_pre_cfg, cfg, len);
     g_pre_cfg_len = len;
     g_pre_mps = mps ? mps : 8;
+    g_pre_base = base;
     g_pre_msd = 1;
-    printf("usb: MSD pre-enumerated (cfg=%u mps=%u)\n",
-           (unsigned)len, (unsigned)g_pre_mps);
+    printf("usb: MSD pre-enumerated (cfg=%u mps=%u base=0x%X)\n",
+           (unsigned)len, (unsigned)g_pre_mps, (unsigned)g_pre_base);
 }
 
 static int usb_ohci_activate_flash_pre(void) {
@@ -231,7 +236,7 @@ static int usb_ohci_activate_flash_pre(void) {
     extern void usb_ohci_set_mps(uint16_t mps);
     extern int usb_ohci_bulk_toggle_reset(uint32_t base);
     extern void usb_ohci_bot_recover(uint32_t base);
-    const uint32_t base = 0x01C1B400u;
+    const uint32_t base = g_pre_base;   /* r903: база из HID-скана (B400/C400) */
     static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t inq[36] __attribute__((section(".coherent"), aligned(32)));
     static struct usb_msd_dev mdev;
@@ -286,7 +291,7 @@ int usb_bulk_out(uint8_t ep, uint16_t mps, const uint8_t* data, uint32_t len) {
     if (g_bulk_via_ohci) {
         extern int usb_ohci_bulk_out(uint32_t base, uint8_t addr, uint8_t ep,
                                      const uint8_t* data, uint32_t len, uint16_t mps);
-        return usb_ohci_bulk_out(0x01C1B400u, g_usb_addr, ep, data, len, mps);
+        return usb_ohci_bulk_out(g_pre_base, g_usb_addr, ep, data, len, mps);
     }
     return usb_ehci_bulk_out(ep, mps, data, len);
 }
@@ -295,7 +300,7 @@ int usb_bulk_in(uint8_t ep, uint16_t mps, uint8_t* data, uint32_t len) {
     if (g_bulk_via_ohci) {
         extern int usb_ohci_bulk_in(uint32_t base, uint8_t addr, uint8_t ep,
                                     uint8_t* data, uint32_t len, uint16_t mps);
-        return usb_ohci_bulk_in(0x01C1B400u, g_usb_addr, ep, data, len, mps);
+        return usb_ohci_bulk_in(g_pre_base, g_usb_addr, ep, data, len, mps);
     }
     return usb_ehci_bulk_in(ep, mps, data, len);
 }
@@ -307,7 +312,7 @@ void usb_hc_bot_recover(void) {
     if (g_bulk_via_ohci) {
         extern void usb_ohci_bot_recover(uint32_t base);
 
-	usb_ohci_bot_recover(0x01C1B400u);
+	usb_ohci_bot_recover(g_pre_base);
         return;
     }
     /* Bulk-Only Mass Storage Reset: bmRequestType=0x21, bRequest=0xFF */
