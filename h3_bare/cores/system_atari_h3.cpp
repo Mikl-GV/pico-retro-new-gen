@@ -1,4 +1,4 @@
-// system_atari_h3.cpp — host-слой MCUME (Virtual VCS) для H3.
+﻿// system_atari_h3.cpp — host-слой MCUME (Virtual VCS) для H3.
 //
 // ВАЖНЫЕ СТЕНД-ПРАВИЛА ПО A2600:
 //   * mainloop (mcume/Cpu.c) ОСТАНАВЛИВАЕТСЯ на границе кадра по tv_draw_count
@@ -187,7 +187,7 @@ extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
     // вызывался). Tia_sound_init: TIA-клок ~30 кГц → вывод 48 кГц
     // (Tia_process_2 ресемплит через Samp_n_max). DC 120 Гц.
     Tia_sound_init(30000, 48000);
-    i2s_dc_shift_set(6);
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц)
     mcume_ready = 1;
     memset((void*)EMU_FB, 0, EMU_W * EMU_H * 2);
     printf("MCUME: size=%d bank=%d\n", rom_size, base_opts.bank);
@@ -221,16 +221,16 @@ extern "C" void atari2600_run_frame(void) {
         }
     }
 
-    // r601: звук A2600 на I2S. Tia_process_2 заполняет моно u16
-    // (buffer[i] = (outvol_0+outvol_1)*256, центр ~0x4000), 48 кГц
+    // Звук A2600 на I2S: Tia_process_2 заполняет моно u16 — буфер
+    // (outvol_0+outvol_1)*256, где outvol = AUDV 0..15 → диапазон 0..7680,
+    // тишина = 0 (сигнал уже центрирован, DC нет). 48 кГц
     // (Tia_sound_init ресемплит TIA-клок → 48000). 48000/60 = 800 сэмплов/кадр.
     {
         static uint16_t a26buf[1024];
         Tia_process_2(a26buf, 800);
         for (int i = 0; i < 800; i++) {
-            int32_t s = ((int32_t)a26buf[i] - 0x4000) << 1;   // u16 → s16 (центр 0x4000)
+            int32_t s = ((int32_t)a26buf[i] << 2);   // 0..7680 → 0..30720 (≈полная шкала)
             if (s > 32767) s = 32767;
-            if (s < -32768) s = -32768;
             i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
         }
     }

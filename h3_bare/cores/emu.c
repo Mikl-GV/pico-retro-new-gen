@@ -223,7 +223,8 @@ void emu_prepare(void) {
 // r910 (Фаза 0): единая точка завершения звукового замера — печатаем итог
 // сессии (водяные знаки кольца, дропы/недоливы, всего пар) и снимаем активность,
 // чтобы простой в меню не засорял статистику.
-static void emu_audio_stop(void) {
+// r939: не static — вызывается из host-слоёв (snes/gpgx/fceumm) на выходе.
+void emu_audio_stop(void) {
     uint32_t fmax = 0, fmin = 0, drop = 0, under = 0, pairs = 0;
     i2s_stats_get(&fmax, &fmin, &drop, &under, &pairs);
     // r921: добавляем фактические счётчики долива CPU2 (fw=выведено пар в FIFO,
@@ -231,8 +232,10 @@ static void emu_audio_stop(void) {
     uint32_t fw = 0, skip = 0, fl = 0, fe = 0;
     i2s_cpu2_diag(&fl, &fw, &skip, NULL);
     (void)fe;
-    printf("AUDIO-END: fill=%u..%u/8192 drop=%u under=%u pairs=%u fw=%u skip=%u\n",
-           (unsigned)fmin, (unsigned)fmax, (unsigned)drop,
+    // r932: размер кольца в логе — фактический AUDIO_RING_SIZE (65536, 2^16, ~1.37 с).
+    uint32_t ring_sz = 4096;  /* дубль AUDIO_RING_SIZE (i2s.c), держать в синхроне */
+    printf("AUDIO-END: fill=%u..%u/%u drop=%u under=%u pairs=%u fw=%u skip=%u\n",
+           (unsigned)fmin, (unsigned)fmax, (unsigned)ring_sz, (unsigned)drop,
            (unsigned)under, (unsigned)pairs, (unsigned)fw, (unsigned)skip);
     i2s_stats_active(0);
     i2s_audio_set_active(0);   /* r916: звук из игры ушёл — CPU2 тишину больше не доливает */
@@ -266,28 +269,79 @@ void emu_throttle(void) {
 
     uint32_t now = h3_hs_timer_lo_us();
     if (!emu_ts0) emu_ts0 = now;   // первый кадр — стартовая база
+
+    // r940: АДАПТИВНЫЙ ТАЙМИНГ. Стенд-лог r939: fill=1..1539/65536 при under=429 —
+    // продюсер ждал весь период (кольцо уходило в пустоту, FIFO в underrun).
+    // Теперь пауза зависит от заполнения кольца: цель ≈4800 пар (~100 мс хедрума).
+    // Если кольцо ниже цели — почти не ждём (продюсер догоняет буфер); если выше
+    // цели — ждём больше (не переполняем). Кольцо всегда накоплено → микросбои
+    // загрузки/сцены подмелёт буфер, подмелёт подклики.
     uint32_t period = emu_period_us;
+    {
+        uint32_t fill = i2s_ring_fill();
+        // r944: цель кольца адаптивная — из фактического темпа потока
+        // (i2s_ring_observe_frame с дельтой пар за кадр). Это автоматически
+        // учитывает региональную частоту кадра (NTSC 60 / PAL/Dendy 50 /
+        // A2600-выбор в меню), т.к. источник — реальный поток, а не хардкод.
+        // target = 2 кадра текущего EMA-темпа → FIFO не пустеет между кадрами
+        // (меньше under-мусора), латентность не растёт.
+        static uint32_t emu_last_pairs = 0;
+        uint32_t pairs_now = 0, dummy = 0;
+        {
+            uint32_t fmax, fmin, drop, under;
+            i2s_stats_get(&fmax, &fmin, &drop, &under, &pairs_now);
+        }
+        (void)dummy;
+        if (pairs_now > emu_last_pairs) {
+            i2s_ring_observe_frame(pairs_now - emu_last_pairs);
+            emu_last_pairs = pairs_now;
+        }
+        uint32_t target = i2s_ring_target();
+        uint32_t elapsed = now - emu_ts0 + (uint32_t)emu_debt;
+        emu_debt = 0;
 
-    // Сколько в этой итерации реально заняла эмуляция с прошлого throttle.
-    uint32_t elapsed = now - emu_ts0 + (uint32_t)emu_debt;
-    emu_debt = 0;
+        // r944-диагностика: раз в 120 кадров печатаем время кадра и fill —
+        // чтобы отличить «ядро не успевает» (elapsed > period) от «кольцо не
+        // накапливается» (fill < target при elapsed малом). Блокирующий printf
+        // раз в 120 кадров (~2 с) — допустимая редкость, не портит кольцо.
+        // r956: периодический printf УБРАН из горячего пути. Блокирующий UART
+        // (~6 мс на строку) останавливал продюсера → кольцо пустело, и сама
+        // диагностика создавала провалы, которые потом «показывала». Сводка
+        // выводится один раз в emu_audio_stop (AUDIO-END), когда поток стоит.
+        (void)elapsed; (void)pairs_now;
 
-    if (elapsed < period) {
-        // В уложились: ждём остаток периода. ЕДИНСТВЕННЫЙ писатель TX FIFO —
-        // CPU2 (i2s_poll_fill). core0 ТОЛЬКО синтезирует и льёт в кольцо
-        // (i2s_push_sample), FIFO НЕ трогает (r773).
-        uint32_t wait = period - elapsed;
-        udelay(wait);
-        // База сдвигается ровно на один период от СТАРОЙ границы:
-        // переработка (если она была) «догоняется» здесь, а не теряется.
-        emu_ts0 += period;
-    } else {
-        // Переработали период (кадр был тяжёлым). Не ждём — сразу рисуем,
-        // а переработку копим как долг, чтобы следующие кадры его догнали.
-        emu_debt = (int32_t)(elapsed - period);
-        if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3); // кап: не уходить в минус надолго
-        emu_ts0 += period;   // граница всё равно сдвинута на период
-        // fallback долива нет: единственный писатель TX FIFO — CPU2 (r773).
+        if (fill < target) {
+            // Кольцо ниже цели — хотим догнать буфер. НО ждать до period/2,
+            // а базу сдвигать на целый period было БАГОМ (r944): реально
+            // прошло period/2, а следующий кадр считал elapsed = -(period/2)
+            // → огромное беззнаковое → ветка «переработка» → кадры гонятся
+            // подряд почти без ожидания → эмуляция бежит в ~2 раза быстрее
+            // железа (NGP «2×» в стенд-логах). Правильно: если кольцо ниже
+            // цели, всё равно блюдём честный ритм периода и накапливаем
+            // буфер за счёт того, что генерация идёт в темп 48к (CPU2), а
+            // не за счёт разгона кадров. База всегда сдвигается на period,
+            // переработка (elapsed≥period) учитывается в debt в обеих ветках.
+            if (elapsed < period) {
+                uint32_t wait = period - elapsed;
+                udelay(wait);
+                emu_ts0 += period;
+            } else {
+                emu_debt = (int32_t)(elapsed - period);
+                if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
+                emu_ts0 += period;
+            }
+        } else {
+            // Достигли цели — нормальный ритм периода (жду остаток до границы).
+            if (elapsed < period) {
+                uint32_t wait = period - elapsed;
+                udelay(wait);
+                emu_ts0 += period;
+            } else {
+                emu_debt = (int32_t)(elapsed - period);
+                if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
+                emu_ts0 += period;
+            }
+        }
     }
 
     // r911: периодический UART-дамп УБРАН. Блокирующий printf (~6 мс) каждые
@@ -630,7 +684,13 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = 16667; emu_audio_stop(); fb_clear(); fb_flush();
+exit: {
+        // r956: сводка Lynx печатается на выходе (поток остановлен) — до
+        // emu_audio_stop, чтобы drop был ещё «за сессию».
+        extern void lynx_audio_report(void);
+        lynx_audio_report();
+    }
+    emu_period_us = 16667; emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {

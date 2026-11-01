@@ -1,4 +1,4 @@
-// system_gpgx_h3.c — host-слой Genesis Plus GX для bare-metal H3.
+﻿// system_gpgx_h3.c — host-слой Genesis Plus GX для bare-metal H3.
 // Подключает Sega Mega Drive (ABC/XYZ 6-кнопочный геймпад) и SMS/GG.
 // Жизненный цикл: gpgx_init_game -> цикл (gpgx_run_frame) -> gpgx_stop.
 
@@ -159,9 +159,9 @@ static void gpgx_render_emu(int max_w, int max_h) {
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
-    // r594: MD/SMS — непрерывный поток через blip (не пачки) → ~120 Гц DC,
-    // как Lynx/GG. Ставим до audio_init (до звукового пути).
+    // DC-фильтр CPU2: единый порог 120 Гц (α=2^-6) — как во всех хостах.
     i2s_dc_shift_set(6);
+    // MD/SMS target кольца — адаптивный (emu_throttle), не хардкодим.
 
     int force_sms = g_force_sms;
     g_force_sms = 0;
@@ -346,6 +346,8 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
     }
 exit:
     gpgx_stop();
+    emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
+                        // выхода (доезды/«звук ниоткуда»).
     fb_clear(); fb_flush();
 }
 
@@ -368,7 +370,7 @@ void sms_run_frame(void) {
 int gg_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
-    i2s_dc_shift_set(6);   // r594: GG — непрерывный поток (как Lynx) → ~120 Гц; пачек нет (в отличие от GBA)
+    i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
         printf("GPGX: bad rom\n"); return 0;

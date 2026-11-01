@@ -1,4 +1,4 @@
-// nes_host_fceumm.cpp — host-слой FCEUmm (FCE Ultra) для bare-metal H3.
+﻿// nes_host_fceumm.cpp — host-слой FCEUmm (FCE Ultra) для bare-metal H3.
 // Замена InfoNES: точный CPU/PPU, 250+ мапперов, поддержка клавиатуры
 // SuborKB (Сюбор-картриджи с клавиатурой, SIFC_SUBORKB).
 //
@@ -193,7 +193,7 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     // Звук: NES APU включён, вывод — в I2S (r599). 48000 Гц.
     FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
-    i2s_dc_shift_set(6);   // r599: NES — непрерывный поток → ~120 Гц (как Lynx)
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run
     // через cheats_load: NES-коды — 6/8-символьный Game Genie + PAR)
@@ -297,5 +297,7 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
     }
 exit:
     fceumm_stop();
+    emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
+                        // выхода (доезды/«звук ниоткуда»).
     fb_clear(); fb_flush();
 }

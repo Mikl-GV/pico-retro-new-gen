@@ -600,8 +600,13 @@ void reset_sound(void)
 
 void init_sound()
 {
-  /* 256 / sound_frequency in 16.16 == 256 (sound_frequency == 2^16). */
-  gbc_sound_tick_step = (fixed16_16)256u;
+  /* Каденция GBC (256 Гц = 2^24 шагов/сек) в 16.16 к текущей выходной
+   * частоте: gbc_sound_tick_step = (256<<16)/f_s = 2^24/f_s.
+   * При 65536 Гц = 256, при 32768 Гц = 512. Ранее шаг был зашит константой
+   * 256 даже на 32768 Гц → длина/огибающие/sweep PSG шли вдвое медленнее.
+   * Ошибка A1 в r941: было (65536<<16)/f_s = 2^32/f_s — в 256 раз больше,
+   * при 32768 Гц каденция срабатывала на каждом сэмпле (развал синтеза). */
+  gbc_sound_tick_step = (fixed16_16)(((u64)256 << 16) / sound_frequency);
 
   init_noise_table(noise_table15, 32767, 14);
   init_noise_table(noise_table7, 127, 6);
@@ -835,9 +840,17 @@ u32 sound_read_samples(s16 *out, u32 frames)
    u32 samples_to_read   = frames << 1;
    /* Get total number of samples in the buffer */
    u32 samples_available = (gbc_sound_buffer_index - sound_buffer_base) & BUFFER_SIZE_MASK;
-   /* The last 512 samples are 'in use', and cannot
-    * be read out yet */
-   samples_available     = (samples_available > 512) ? (samples_available - 512) : 0;
+   /* Last SND_READ_HOLDBACK samples are treated as "in use" and not read yet.
+    * Browser/gpSP synchronously finish render_gbc_sound() before this read, and
+    * direct-sound interpolation only looks a couple of samples ahead (from its
+    * own ds->fifo, not from sound_buffer), so a big margin only would cut off
+    * ~half of the freshly-rendered frame (audit r918: 512-sample holdback over
+    * the sync model halves the readout and forces emu throttle to run the GBA
+    * faster to fill the I2S ring). 16 samples keep a small safety for the DS
+    * write-ahead warp in adjust_sound_buffer(). */
+#define SND_READ_HOLDBACK 16
+   samples_available     =
+     (samples_available > SND_READ_HOLDBACK) ? (samples_available - SND_READ_HOLDBACK) : 0;
    /* Available sample count must be an even number */
    samples_available     = (samples_available >> 1) << 1;
 

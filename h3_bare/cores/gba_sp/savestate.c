@@ -143,6 +143,12 @@ bool gba_load_state(const void* src)
      return false;
   }
 
+  // r941 (аудит r918, C2): savestate сохраняет фиксированные frequency_step
+  // каналов/таймеров, рассчитанные под прошлую выходную частоту. Пересчитываем
+  // их из первичного состояния (rate/noise-регистры), чтобы после загрузки
+  // питч и темп direct-sound/PSG соответствовали текущей sound_frequency.
+  sound_frequency_changed();
+
   // Generate converted palette (since it is not saved)
   for(i = 0; i < 512; i++)
   {

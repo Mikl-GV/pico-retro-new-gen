@@ -1,4 +1,4 @@
-// gameboy_host.cpp — host-слой Game Boy / Game Boy Color (binjgb) для H3.
+﻿// gameboy_host.cpp — host-слой Game Boy / Game Boy Color (binjgb) для H3.
 #include <stdint.h>
 #include <string.h>
 
@@ -100,7 +100,7 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     // на пустом буфере (это единственный host без guard'а, как у остальных).
     if (!rom || size == 0) { printf("[GB] no ROM\n"); return 0; }
 
-    i2s_dc_shift_set(6);   // r596: GB — непрерывный поток (как Lynx) → ~120 Гц
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     EmulatorInit init;
     memset(&init, 0, sizeof(init));

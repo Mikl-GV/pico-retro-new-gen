@@ -10,6 +10,7 @@ void snd_manifest(const char* sys, const char* cores);   // r0.385: звуков
 // malloc + очистка EMU_FB и HDMI-кадра. Вызывать в начале каждого emu_run_*,
 // иначе при повторном входе на экране остаётся «загруженное до этого».
 void emu_prepare(void);
+void emu_audio_stop(void);   // r939: финализация звука на выходе (кольцо+sounder)
 
 // Throttle 60 FPS — вызывать раз в кадр
 void emu_throttle(void);

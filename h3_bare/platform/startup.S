@@ -472,6 +472,18 @@ _start:
     b 6b
 7:
 
+    /* r930: Zero-init .ring_buf (кольцо звука 32000 пар, NOLOAD — как .coherent;
+     * иначе мусор до первого push читался бы как «данные» при wr!=rd). */
+    ldr r0, =_ring_buf_start
+    ldr r1, =_ring_buf_end
+    cmp r0, r1
+    beq 9f
+8:  cmp r0, r1
+    bhs 9f
+    str r2, [r0], #4
+    b 8b
+9:
+
     /* DGN '5': BSS обнулён */
     mov r0, #'5'
     bl uart_dbg

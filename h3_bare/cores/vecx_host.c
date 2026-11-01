@@ -192,9 +192,10 @@ void vecx_snd_push(unsigned samps) {
         int32_t m0 = (int32_t)vx_psgbuf[i] + (int32_t)vx_dacbuf[i];
         int32_t m1 = (int32_t)vx_psgbuf[i + 1] + (int32_t)vx_dacbuf[i + 1];
         int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)fr) >> 16);
-        // PSG vtable до 4096, DAC до 0xFF00 (via_ora<<8) — сумма до ~0x10F00.
-        // Нормируем на s16 (>>3) — PSG-баланс ~1/8 от полной шкалы (как ориг).
-        s >>= 3;
+        // PSG vtable до 4096 + DAC до 0xFF00 (via_ora<<8) — сумма до ~0x10F00.
+        // Сдвиг 1: амплитуда ≈ пол-шкалы (сигнал PSG-вектрона богат на биты,
+        // DAC-звук громче). Клэмп до s16 ниже.
+        s >>= 1;
         if (s > 32767) s = 32767;
         if (s < -32768) s = -32768;
         out[o++] = (int16_t)s;

@@ -1,4 +1,4 @@
-// system_a7800_h3.cpp — host-слой ProSystem (Atari 7800) для H3.
+﻿// system_a7800_h3.cpp — host-слой ProSystem (Atari 7800) для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -131,7 +131,7 @@ extern "C" int a7800_init_game(const uint8_t* rom, uint32_t size) {
     a7_build_palette();
     // r603: звук A7800 — TIA (всегда) + POKEY (если чип в картридже),
     // буферы byte моно 524/кадр (31440 Гц). DC 120 Гц (непрерывный поток).
-    i2s_dc_shift_set(6);
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины
     printf("[a7800] loaded size=%d pokey=%d\n", (int)size, cartridge_pokey ? 1 : 0);
     return 1;
 }
@@ -166,15 +166,13 @@ extern "C" void a7800_run_frame(void) {
     }
     prosystem_ExecuteFrame(input);
 
-    // r603: звук A7800 на I2S. TIA и POKEY пишут byte-буферы моно
-    // (524 сэмпла/кадр = 31440 Гц при 60fps; tia: 0..30, pokey: 8..120).
-    // Смешиваем (TIA + POKEY, если чип есть), ресемпл 31440→48000 (линейный,
-    // фаза 16.16), u8→s16, моно→стерео.
+    // Звук A7800 на I2S. TIA и POKEY пишут byte-буферы моно
+    // (524 сэмпла/кадр = 31440 Гц при 60fps), тишина буфера = 0, сигнал
+    // положительный (TIA 0..30, POKEY 0..120). Смешиваем (TIA+POKEY, если
+    // чип есть), ресемпл 31440→48000 (линейный, фаза 16.16), u8→s16.
     //
-    // r923: шаг фазы исправлен — (31440<<16)/48000 = 42926.08 (не 42939, тот
-    // давал 31450 Гц, дрейф фазы). Плюс дробная часть фазы больше НЕ теряется
-    // на границе кадра (старый `else rs_phase=0` обнулял её) — интерполяция
-    // идёт с накоплением, как в PCE.
+    // Шаг фазы: (31440<<16)/48000 = 42926. Дробная часть фазы сохраняется
+    // между кадрами (интерполяция с накоплением, как в PCE).
     extern byte tia_buffer[];
     extern uint tia_size;
     extern byte pokey_buffer[];
@@ -189,9 +187,8 @@ extern "C" void a7800_run_frame(void) {
         int32_t m0 = (int32_t)tia_buffer[i] + (cartridge_pokey ? (int32_t)pokey_buffer[i] : 0);
         int32_t m1 = (int32_t)tia_buffer[i + 1] + (cartridge_pokey ? (int32_t)pokey_buffer[i + 1] : 0);
         int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)f) >> 16);
-        s = (s - 64) << 8;                     // центр ~64 → s16 (масштаб u8)
+        s <<= 7;                               // 0..150 → 0..19200 (≈60% шкалы)
         if (s > 32767) s = 32767;
-        if (s < -32768) s = -32768;
         out[o++] = (int16_t)s;
         rs_phase += 42926u;
     }

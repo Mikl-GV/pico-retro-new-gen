@@ -1,4 +1,4 @@
-// fuse_host.c — ZX Spectrum (Fuse) host for H3 bare-metal.
+﻿// fuse_host.c — ZX Spectrum (Fuse) host for H3 bare-metal.
 //
 // Ядро: h3_bare/cores/fuse/ (fuse + libspectrum + vendored libretro-common).
 // Переиспользуем враппер src/libretro.c; его libretro-API и libretro-common
@@ -449,7 +449,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fuse_retro_deinit();
         return;
     }
-    i2s_dc_shift_set(6);   // r608: ZX — непрерывный поток → ~120 Гц
+    i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     // r0.392: ядро могло «успешно» стартовать в пустой BASIC, не распознав
     // контент. Показываем причину и возвращаемся в меню (после короткой

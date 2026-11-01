@@ -1,4 +1,4 @@
-// pce_host.c — Beetle PCE Fast (mednafen_pce_fast, HuCard) host for H3 bare-metal.
+﻿// pce_host.c — Beetle PCE Fast (mednafen_pce_fast, HuCard) host for H3 bare-metal.
 //
 // Ядро: h3_bare/cores/pce_fast/mednafen + враппер mednafen libretro.c
 // (там же — машинная обвязка PCE: шина/маппер/IO/save-ram).
@@ -241,7 +241,7 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
         return;
     }
     printf("PCE: started (%u bytes)\n", (unsigned)size);
-    i2s_dc_shift_set(6);   // r606: PCE — непрерывный поток → ~120 Гц
+    i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     emu_set_border_color(0x000A0F18);   // тёмно-синий (PCE)
     emu_throttle_reset();

@@ -1,4 +1,4 @@
-// coleco_host.cpp — host-слой Gearcoleco (ColecoVision) для bare-metal H3.
+﻿// coleco_host.cpp — host-слой Gearcoleco (ColecoVision) для bare-metal H3.
 //
 // Жизненный цикл (как другие host-слои):
 //   coleco_init_game(rom, size) — Init(RGB565) + LoadROMFromBuffer
@@ -165,7 +165,7 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     g_loaded = 1;
-    i2s_dc_shift_set(6);   // r605: Coleco — непрерывный поток → ~120 Гц
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
     printf("Coleco: loaded %u bytes\n", (unsigned)size);
     return 1;
 }

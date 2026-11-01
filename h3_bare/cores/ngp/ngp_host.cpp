@@ -1,4 +1,4 @@
-// ngp_host.cpp — Neo Geo Pocket / Pocket Color (RACE core) for H3 bare-metal
+﻿// ngp_host.cpp — Neo Geo Pocket / Pocket Color (RACE core) for H3 bare-metal
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -187,7 +187,8 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
     if (!rom || size == 0) return 0;
     if (size > 4*1024*1024) size = 4*1024*1024;
 
-    i2s_dc_shift_set(6);   // r597: NGP — непрерывный поток → ~120 Гц (как Lynx)
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
+    // r944: target кольца адаптивный (emu_throttle) — не ставим тут.
 
     memset(mainrom, 0, sizeof(mainrom));
     // r502 fix: верхний 16Mbit-слот читается как mainrom[0x200000..] — у файла

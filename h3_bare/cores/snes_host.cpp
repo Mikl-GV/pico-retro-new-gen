@@ -1,4 +1,4 @@
-// snes_host.cpp — host-слой Snes9x 2005 для bare-metal H3.
+﻿// snes_host.cpp — host-слой Snes9x 2005 для bare-metal H3.
 //
 // ROM подаётся буфером (rom_browser загружает в 0x50000000).
 // Инициализация: S9xInitMemory → S9xInitAPU → S9xInitDisplay → S9xInitGFX
@@ -166,7 +166,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     memset(&Settings, 0, sizeof(Settings));
     Settings.JoystickEnabled = false;
     Settings.SoundPlaybackRate = 48000;
-    i2s_dc_shift_set(6);   // r600: SNES — непрерывный поток → ~120 Гц (как Lynx)
+    i2s_dc_shift_set(6);   // SNES — непрерывный поток → ~120 Гц (как Lynx)
     Settings.CyclesPercentage = 100;
     Settings.DisableSoundEcho = false;
     Settings.InterpolatedSound = true;
@@ -350,5 +350,8 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
     }
 exit:
     snes_stop();
+    emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
+                        // выхода (доезды/«звук ниоткуда»); теперь чистый сброс
+                        // + честный AUDIO-END для диагностики.
     fb_clear(); fb_flush();
 }

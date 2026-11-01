@@ -1,4 +1,4 @@
-// cps1_host.c — FinalBurn Neo, CPS-1 (Capcom Play System 1) host for H3 bare-metal.
+﻿// cps1_host.c — FinalBurn Neo, CPS-1 (Capcom Play System 1) host for H3 bare-metal.
 //
 // Ядро: h3_bare/cores/cps1/ (vendored подмножество FBNeo, коммит d025cfc).
 // В отличие от libretro-систем это «нативный» FBNeo: host сам выбирает
@@ -829,7 +829,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     static int16_t cps_snd[4096];
     nBurnSoundRate = 48000;
     pBurnSoundOut = cps_snd;
-    i2s_dc_shift_set(6);   // непрерывный поток → ~120 Гц
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
+    // r944: target кольца адаптивный (emu_throttle) — не хардкодим.
 
     BurnExtLoadRom = host_ext_load_rom;
     BurnHighCol = host_high_col;   // иначе вендорный filler даёт белый экран

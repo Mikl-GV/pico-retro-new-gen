@@ -403,16 +403,26 @@ static const char* const set_labels[SET_COUNT] = {
 };
 
 // r896 (этап 3 звука): подменю «Audio test tone» — выбор частоты стрелками,
-// Enter запускает тон до нажатия любой клавиши. Проверка тракта I2S0/CPU2
-// на стенде по команде, а не ловля на старте.
+// Enter запускает тон. Проверка тракта I2S0/усилителя на стенде по команде.
 // r897: правильные коды клавиш (Up=82, Down=81, Enter=40, ESC=41 — как в
 // главном цикле settings) + перерисовка только по событию (input_wait вместо
 // горячего цикла с fb_flush каждый проход → экран не мерцает).
-extern void i2s_test_tone_freq(int hz, int ms);
+// r948: тон стал ПРЯМЫМ (core0 → TX FIFO, без кольца и без CPU2) — молчание
+// теста теперь означает именно «нет тракта/усилителя», а не «мёртвый CPU2».
+// Пункт «All three» проигрывает 440/1000/4000 подряд — одна проверка на все три.
+// Результат (код возврата) показывается строкой под списком.
+#define TONE_ITEMS 5
 static void audio_tone_submenu(void) {
-    static const int freqs[3] = { 440, 1000, 3000 };
-    static const char* const flabels[3] = { "440 Hz", "1000 Hz", "3000 Hz" };
-    int sel = 1;   // 1000 Гц по умолчанию
+    static const int freqs[3] = { 440, 1000, 4000 };
+    static const char* const flabels[TONE_ITEMS] = {
+        "",                              // 0 — строка выбора пути (текст ниже)
+        "All three (440/1000/4000)",     // 1
+        "440 Hz", "1000 Hz", "4000 Hz"   // 2..4
+    };
+    int sel = 1;                 // по умолчанию — «все три»
+    int path = 0;                // 0 = Direct (core0 → FIFO), 1 = CPU2 (ring → FIFO)
+    char status[80];
+    status[0] = 0;
 
     // Рисуем один раз до первой клавиши.
     int dirty = 1;
@@ -421,31 +431,60 @@ static void audio_tone_submenu(void) {
             fb_clear();
             fb_puts_s(60, 40, "Audio test tone", 2, 0x00FFAA00);
             fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
-            for (int i = 0; i < 3; i++) {
-                int y = 120 + i * 40;
+            for (int i = 0; i < TONE_ITEMS; i++) {
+                int y = 110 + i * 36;
                 uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00FFFFFF;
                 if (i == sel)
                     fb_fill_rect(50, y - 4, PHYS_W - 100, 28, 0x00181818);
                 if (i == sel)
                     fb_puts_s(58, y, ">", 1, 0x00FFFF00);
-                fb_puts_s(80, y, flabels[i], 1, clr);
+                const char* txt = flabels[i];
+                if (i == 0)
+                    txt = path ? "Path: CPU2 (ring -> FIFO)"
+                               : "Path: Direct (core0 -> FIFO)";
+                fb_puts_s(80, y, txt, 1, clr);
             }
-            fb_puts(60, FOOTER_Y, "  ^v : select    Enter : play    ESC : back", 0x00888888);
+            if (status[0])
+                fb_puts(60, 110 + TONE_ITEMS * 36 + 8, status, 0x0000FFAA);
+            fb_puts(60, FOOTER_Y, "  ^v : select    Enter : play / toggle path    ESC : back", 0x00888888);
             fb_flush();
             dirty = 0;
         }
 
         int k = input_wait();               // ждёт клавишу (без мерцания)
         if (k == 41) return;                // ESC
-        else if (k == 82) { sel--; if (sel < 0) sel = 2; dirty = 1; }  // Up
-        else if (k == 81) { sel++; if (sel >= 3) sel = 0; dirty = 1; }  // Down
+        else if (k == 82) { sel--; if (sel < 0) sel = TONE_ITEMS - 1; dirty = 1; }  // Up
+        else if (k == 81) { sel++; if (sel >= TONE_ITEMS) sel = 0; dirty = 1; }     // Down
         else if (k == 40) {                 // Enter
+            // Первый пункт — переключатель пути вывода: кто монопольно владеет
+            // TX FIFO на время теста (core0 напрямую либо CPU2 через кольцо).
+            if (sel == 0) { path ^= 1; dirty = 1; continue; }
+
             fb_clear();
-            fb_puts_s(60, 200, "Tone playing... press any key", 1, 0x00FFFFFF);
+            fb_puts_s(60, 180, "Playing...", 2, 0x00FFFFFF);
+            fb_puts_s(60, 220, path ? "via CPU2 (ring)" : "via core0 (direct)", 1, 0x00AAAAAA);
+            fb_puts_s(60, 250, flabels[sel], 1, 0x00AAAAAA);
             fb_flush();
-            i2s_test_tone_freq(freqs[sel], 1500);
-            int k2 = usb_input_poll();
-            while (k2 == 0) { udelay(16000); k2 = usb_input_poll(); }
+            int rc;
+            if (sel == 1) {
+                // Все три подряд с паузой, чтобы тона различались на слух.
+                rc = 0;
+                for (int i = 0; i < 3 && rc == 0; i++) {
+                    rc = path ? i2s_test_tone_cpu2(freqs[i], 1200)
+                              : i2s_test_tone_freq(freqs[i], 1200);
+                    if (rc == 0) udelay(120000);
+                }
+            } else {
+                int hz = freqs[sel - 2];
+                rc = path ? i2s_test_tone_cpu2(hz, 1500)
+                          : i2s_test_tone_freq(hz, 1500);
+            }
+            if (rc == 0)
+                snprintf(status, sizeof(status), "OK: %s played", path ? "CPU2" : "core0");
+            else if (rc == -1)
+                snprintf(status, sizeof(status), "I2S NOT READY (init/PLL failed)");
+            else
+                snprintf(status, sizeof(status), "%s not draining", path ? "CPU2/ring" : "FIFO");
             dirty = 1;
         }
     }

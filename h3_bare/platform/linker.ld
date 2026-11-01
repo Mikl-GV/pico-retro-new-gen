@@ -72,6 +72,19 @@ SECTIONS
   libh3_coherent_region = _coherent_start;
   ASSERT(_coherent_end <= 0x4A40C000, "ERROR: .coherent objects overflow into L1 page table region")
 
+  /* r930: кольцо звука (.ring_buf) — В uncached-окне, но отдельно от .coherent.
+   * Лимит .coherent = 0x4A40C000 (48 КБ после L1-таблицы) — кольцо 32000 пар
+   * (128 КБ) туда не влезает. VMA 0x4A418000: после L1-таблицы (заканчивается
+   * на 0x4A410000), до sbrk-кучи 0x4A500000 — свободно ~960 КБ. Секция в той
+   * же uncached-1МБ-секции (0x4A400000), которую помечает mmu_mark_uncached —
+   * данные ring видны CPU2 без MMU, как и раньше (.coherent). */
+  .ring_buf 0x4A418000 (NOLOAD) : {
+    _ring_buf_start = .;
+    *(.ring_buf)
+    _ring_buf_end = .;
+  }
+  ASSERT(_ring_buf_end <= 0x4A500000, "ERROR: .ring_buf overflow into sbrk heap (0x4A500000)")
+
   /* r779: куча эмуляторов — ЗА uncached-зоной (VMA 0x4A700000), 24 МБ.
    * Раньше была плавающей после .bss — рост кода сдвигал её конец на
    * жёсткие адреса и линкер падал. Теперь куча жёстко на 0x4A700000,

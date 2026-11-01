@@ -1,4 +1,4 @@
-// system_a5200_h3.cpp — host-слой Atari 5200 для H3.
+﻿// system_a5200_h3.cpp — host-слой Atari 5200 для H3.
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -148,7 +148,7 @@ extern "C" int a5200_init_game(const uint8_t *rom, uint32_t size) {
     at5_Start((char *)"cart");
     // r602: звук A5200 — POKEYSND_Init(48000, BIT16) вызывается ядром
     // (HAS_SND=1 в Makefile); DC 120 Гц (непрерывный поток).
-    i2s_dc_shift_set(6);
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц)
     printf("[a5200] loaded size=%d\n", (int)size);
     return 1;
 }

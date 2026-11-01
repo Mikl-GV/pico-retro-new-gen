@@ -22,16 +22,29 @@ extern "C" {
 // ---- Хост-API (эмуляторы и меню) ----
 int  i2s_init(void);                    // 0 = готово, -1 = ошибка init
 int  i2s_ready(void);                   // 1 = I2S работает, тык пары принимает
+uint32_t i2s_ring_fill(void);           // r940: текущее заполнение кольца (пар), для throttle
+void i2s_ring_set_target(uint32_t pairs); // r943: целевая высота кольца (пар) для throttle — per-system
+uint32_t i2s_ring_target(void);          // r943: текущий target кольца
+void i2s_ring_observe_frame(uint32_t pairs); // r944: адаптивный target из фактического потока (PAL/NTSC сам)
 void i2s_ring_reset(void);              // сброс ring+FIFO (смена игры/старт)
 void i2s_push_sample(int16_t left, int16_t right); // продюсер: пара в ring
 uint32_t i2s_push_block(const int16_t* pairs, uint32_t n); // r919: блок пар, 1 dmb на пакет
 void i2s_test_tone(void);               // тест-тон 1 кГц на старте (этап 2)
-void i2s_test_tone_freq(int hz, int ms); // тон по команде (меню настроек)
-void i2s_dc_shift_set(int shift);       // no-op (DC-блокер не нужен, для совместимости)
+// r948: тон по команде (меню настроек) — ПРЯМОЙ долив TX FIFO с core0,
+// без кольца и без CPU2. 0 = проигран, -1 = I2S не готов, -2 = FIFO не сливается.
+// Монополист FIFO на время теста — core0 (CPU2 принудительно на паузе).
+int  i2s_test_tone_freq(int hz, int ms);
+// r951: тот же тон, но выводит CPU2: core0 только пишет в кольцо, FIFO
+// доливает аудио-ядро. Монополист FIFO — CPU2. Возврат: 0 = проигран,
+// -1 = I2S не готов, -2 = кольцо/CPU2 не выгребаются (нет прогресса).
+int  i2s_test_tone_cpu2(int hz, int ms);
+void i2s_dc_shift_set(int shift);       // α=2^-shift для ФВЧ CPU2 (дефолт 6)
+void i2s_dc_bypass(int on);             // r956: 1 = тест без DC-фильтра, 0 = штатный ФВЧ
 void i2s_volume(int percent);           // громкость 0..100; 0% = PA10(SD)=0 (мьют усилителя)
 int  i2s_volume_pct(void);
 void i2s_mute(int mute);                // 1 = усилитель выключен (PA10=0)
 void i2s_click(void);                   // короткий клик меню (через ring)
+void i2s_emulators_audio(int on);       // S.0: 1 = host-слои пишут в ring (по умолч. 0)
 
 // ---- Аудио-ядро CPU2 (вызываются из cpu2_entry) ----
 int      i2s_audio_core_active(void);
@@ -51,6 +64,10 @@ enum {
 };
 
 // ---- Диагностика (SLT/стабы) ----
+// r948: проверка, что TX FIFO реально сливается (такт I2S0 жив, блок не заперт
+// во FLUSH). 1 = такт есть, 0 = блок не тактируется. Используется тест-тоном
+// и доступна меню для отчёта.
+int      i2s_selftest(void);
 void     i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint32_t* dummy);
 void     i2s_cpu2_pairs_written_get(uint32_t* v);
 void     i2s_cpu2_stage_get(uint32_t* st, uint32_t* en, uint32_t* ex);

@@ -345,6 +345,7 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     // Звук: fMSX PSG/AY-3-8910 + YM2413 (NukeYKT) → RenderAndPlayAudio →
     // WriteAudio → I2S. InitSound обязателен (иначе SndRate=0, тишина).
     InitSound(SND_RATE);
+    // r944: target кольца адаптивный (emu_throttle по факт. потоку) — не хардкодим.
 
     g_loaded = 1;
     return 1;

@@ -1,4 +1,4 @@
-// lynx_host.cpp — host-слой Atari Lynx (Handy) для H3 bare-metal.
+﻿// lynx_host.cpp — host-слой Atari Lynx (Handy) для H3 bare-metal.
 #include <stdint.h>
 #include <string.h>
 
@@ -29,6 +29,10 @@ static CSystem* g_lynx = NULL;
 static uint16_t lynx_fb[LYNX_W * LYNX_H]; // наш буфер 160x102 RGB565
 static volatile int lynx_frame_ready = 0;  // 1 = кадр отрисован (ставит display_callback)
 static uint32_t g_lynx_pairs = 800;        // r511: сэмплов (пар) за последний кадр
+// r956: статистика звука копится в кадре БЕЗ печати (printf блокирует UART и
+// сам портит поток). Сводка выводится один раз при выходе из игры.
+static uint32_t g_lynx_aud_min = 0xFFFFFFFFu, g_lynx_aud_max = 0;
+static uint32_t g_lynx_aud_sum = 0, g_lynx_aud_n = 0;
 
 extern "C" uint32_t lynx_last_pairs(void) { return g_lynx_pairs; }
 static ULONG g_lynx_next_cycle = 0;   // r516: стaтик, сбрасывается в lynx_init_game
@@ -77,7 +81,8 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     if (!rom || size == 0) { printf("[lynx] no ROM data\n"); return 0; }
     if (size < 64) { printf("[lynx] ROM too small (%u)\n", (unsigned)size); return 0; }
 
-    i2s_dc_shift_set(6);   // r590: Lynx — ~120 Гц (непрерывный поток, по стенду)
+    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
+    // r944: target кольца адаптивный (emu_throttle) — не ставим тут.
 
     if (memcmp(rom, "LYNX", 4) != 0) {
         printf("[lynx] no LYNX header (headerless ROM), size=%u\n", (unsigned)size);
@@ -103,6 +108,11 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
     // r516: счётчик кадрового цикла — НЕЛЬЗЯ нести между играми (иначе target
     // уходит вперёд от прошлой сессии и следующий запуск упирается в safety).
     g_lynx_next_cycle = 0;
+    // r956: статистика звука — с чистого листа на каждую игру.
+    g_lynx_aud_min = 0xFFFFFFFFu;
+    g_lynx_aud_max = 0;
+    g_lynx_aud_sum = 0;
+    g_lynx_aud_n = 0;
 
     // r507: звук. gAudioEnabled в Handy по умолчанию FALSE — без TRUE
     // Mikie::Update НЕ обновляет аудио-подсистему (mikie.cpp:3224) и
@@ -172,9 +182,13 @@ extern "C" void lynx_run_frame(void) {
         }
     }
 
-    // r645: цикл кадра по эталону libretro-handy: выходим сразу по готовности
-    // кадра (display_callback), не «догоняем» target. Принудительное догоняние
-    // гнало ядро сверх 75 Гц → неравномерный звук, переполнение кольца, микрофризы.
+    // r950 (КОРЕНЬ «дубля/шума» на Lynx): кадр вывода обязан быть РОВНО 1/75 с.
+    // Раньше (r645) цикл выходил сразу по display_callback — blip получал за
+    // кадр то 174, то 958 сэмплов (стенд-лог r949) вместо 640. Неровные пачки
+    // опустошали кольцо (fill=1, under), а пустой TX FIFO аппаратно ПОВТОРЯЕТ
+    // последнее слово — это и слышно как дубль/треск. Теперь гоняем ровно
+    // HANDY_SYSTEM_FREQ/75 циклов (213333), как эталон libretro-handy:
+    // end_frame получает равные интервалы → ровно 640 пар за кадр.
     extern ULONG gSystemCycleCount;
     if (!g_lynx_next_cycle) g_lynx_next_cycle = gSystemCycleCount;
     ULONG target = g_lynx_next_cycle + (HANDY_SYSTEM_FREQ / 75);
@@ -186,7 +200,6 @@ extern "C" void lynx_run_frame(void) {
             printf("lynx: frame timeout (safety)\n");
             break;
         }
-        if (lynx_frame_ready) break;   // r645: выход сразу по готовности кадра
     }
     g_lynx_next_cycle = target;
 
@@ -204,7 +217,30 @@ extern "C" void lynx_run_frame(void) {
         const int16_t* p = (const int16_t*)gAudioBuffer;
         for (ULONG i = 0; i < np; i++)
             i2s_push_sample(p[2 * i], p[2 * i + 1]);
+
+        // r956: только накопление (без UART в кадре). Печать — в
+        // lynx_audio_report() на выходе из игры, когда поток уже остановлен.
+        if (np < g_lynx_aud_min) g_lynx_aud_min = (uint32_t)np;
+        if (np > g_lynx_aud_max) g_lynx_aud_max = (uint32_t)np;
+        g_lynx_aud_sum += (uint32_t)np;
+        g_lynx_aud_n++;
     }
+}
+
+// r956: сводка звука за сессию. Вызывается на выходе из игры (поток стоит),
+// поэтому печать не влияет ни на кольцо, ни на долив.
+extern "C" void lynx_audio_report(void) {
+    if (!g_lynx_aud_n) return;
+    printf("LYNX-AUD: pairs min/avg/max=%u/%u/%u frames=%u drop=%u\n",
+           (unsigned)g_lynx_aud_min,
+           (unsigned)(g_lynx_aud_sum / g_lynx_aud_n),
+           (unsigned)g_lynx_aud_max,
+           (unsigned)g_lynx_aud_n,
+           (unsigned)i2s_drop_cnt());
+    g_lynx_aud_min = 0xFFFFFFFFu;
+    g_lynx_aud_max = 0;
+    g_lynx_aud_sum = 0;
+    g_lynx_aud_n = 0;
 }
 
 extern "C" void lynx_render_frame(void) {

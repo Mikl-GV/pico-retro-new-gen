@@ -1,4 +1,4 @@
-// gba_host.c — host-слой Game Boy Advance (gpSP) для H3 bare-metal.
+﻿// gba_host.c — host-слой Game Boy Advance (gpSP) для H3 bare-metal.
 //
 // Жизненный цикл (как в других хостах):
 //   gba_init_game(rom, size)  — ставит g_ram_rom, грузит ROM, BIOS, reset_gba
@@ -116,7 +116,14 @@ static u32 gba_resample(const s16* in, u32 nin_pairs, s16* out) {
     u32 o = 0;
     while (o < GBA_RS_MAX_OUT) {
         u32 i = ph >> 16;
-        if (i + GBA_POLY_TAPS / 2 >= nin_pairs) break;   // нужно 4 сэмпла вперёд
+        // Вход закончился — больше пар нет. КРАЙНЕ ВАЖНО: раньше было
+        // `i + GBA_POLY_TAPS/2 >= nin_pairs` (требовали 4 сэмпла вперёд), но
+        // свёртка ниже клампит индекс к краю (idx>=nin → nin-1), поэтому
+        // такое условие останавливало генерацию на последних парах СЛИШКОМ
+        // рано. Накопленная между кадрами фаза дорастала до i=nin-4 и кадр
+        // застревал: np=0 навсегда, tick (gba_rs_phase) застывал — «GBA без
+        // звука» при живом синтезе. Теперь генерим, пока существует сэмпл i.
+        if (i >= nin_pairs) break;
         u32 f = ph & 0xFFFFu;
         // полифазная свёртка 8 тапов вокруг i: in[i-3 .. i+4]
         u32 p = (f * GBA_POLY_PHASES) >> 16;
@@ -218,7 +225,8 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     printf("GBA: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gba_rs_phase = 0;   // r544: фаза ресемплера не должна нестись между играми
-    i2s_dc_shift_set(6);   // r591: GBA — ~120 Гц (было 5=240 Гц — резало низ, «провал баса»; щелчки на пачках уходят мягким лимитером ниже)
+    i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия HP 119 Гц)
+    // r944: target кольца адаптивный (emu_throttle по факт. потоку) — не ставим тут.
 
     // ROM из памяти: host-глобалы ядра (без filestream и без аллокации пула)
     g_ram_rom = rom;
@@ -283,6 +291,17 @@ void gba_run_frame(void) {
     u32 frames = sound_read_samples(sndbuf, 549);  // возвращает пары ~549/кадр
     if (frames > 2048) frames = 2048;              /* r856: sndbuf[4096] = 2048 пар */
     u32 np = gba_resample(sndbuf, frames, rsbuf);
+    // r943 (диагностика): печать раз в 60 кадров — понять, почему AUDIO-END GBA
+    // даёт pairs≈799 (один кадр). Если frames≈549 и np≈800 каждый кадр — звук
+    // генерится, а сессии короткие; если frames≈0 — продюсер молчит.
+    {
+        static u32 gba_dbg = 0;
+        extern u32 sound_on; extern u32 sound_frequency;
+        if ((gba_dbg++ % 60) == 0)
+            printf("GBA-AUD: frames=%u np=%u sound_on=%u freq=%u tick=0x%x\n",
+                   (unsigned)frames, (unsigned)np, (unsigned)sound_on,
+                   (unsigned)sound_frequency, (unsigned)gba_rs_phase);
+    }
     // r592 (Д-57): гейн ×1.5 из r591 УБРАН — он перегружал микс (DS ±32768 +
     // PSG ±8192, жёсткий кламп → «очень громко/треск», на 5% как 50% Lynx).
     // Полифазный ресемпл сохраняет уровень (сумма тапов фазы = 1) — гейн не
