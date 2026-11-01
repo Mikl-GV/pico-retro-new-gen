@@ -186,3 +186,9 @@ while (written < total) {
 
 Итоговая скорость/формат: BCLK 3.071 МГц, LRCK 47 991 Гц (PLL 24.571 МГц),
 16-бит данные в 32-бит слоте (SR=3, WSS=7), FIFO 128 слов, кольцо 4096 пар.
+6. **NES (FCEUmm): канальные громкости = 0 после инициализации.** FCEUI_Initialize()
+   обнуляет FSettings и ставит только SoundVolume/ExpVolume; SquareVolume[2],
+   TriangleVolume, NoiseVolume, PCMVolume остаются нулями, а микшер умножает
+   каждый канал на Volume/256 → APU тикает и отдаёт сэмплы (798/кадр), но они
+   нулевые. В libretro это заполняет фронтенд (256). В bare-metal ставим явно.
+   Симптом на стенде: NES-AUD: ssize_avg=798 peak=0 nonzero=0.

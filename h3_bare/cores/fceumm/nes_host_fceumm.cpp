@@ -44,6 +44,9 @@ extern "C" void gb_heap_reset(void);
 
 // ---- состояние host-слоя ----
 static int g_loaded = 0;
+// r958: диагностика звука NES (печать только на выходе из игры).
+static uint32_t g_nes_aud_frames = 0, g_nes_aud_sum = 0;
+static uint32_t g_nes_aud_max = 0, g_nes_aud_nonzero = 0;
 
 // буферы ввода (их адреса регистрируются в ядре через FCEUI_SetInput*)
 static uint32_t g_joydata = 0;              // 1-я кнопка в младшем байте
@@ -193,6 +196,24 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     // Звук: NES APU включён, вывод — в I2S (r599). 48000 Гц.
     FCEUI_Sound(48000);
     FCEUI_SetSoundVolume(100);
+    // r960 (КОРЕНЬ тишины NES): FCEUI_Initialize() делает memset(FSettings,0),
+    // и SquareVolume[2]/TriangleVolume/NoiseVolume/PCMVolume остаются НУЛЯМИ.
+    // Микшер умножает амплитуду каждого канала на Volume/256 → все каналы
+    // глушатся: APU тикает (ssize=798), но в буфере нули (peak=0, nonzero=0).
+    // В libretro эти поля выставляет фронтенд (256 = без масштабирования);
+    // в bare-metal ставим тем же значением явно.
+    FSettings.SquareVolume[0] = 256;
+    FSettings.SquareVolume[1] = 256;
+    FSettings.TriangleVolume  = 256;
+    FSettings.NoiseVolume     = 256;
+    FSettings.PCMVolume       = 256;
+    // r958: один раз (не в кадре) фиксируем фактическую конфигурацию APU.
+    printf("FCEUmm: sound rate=%u vol=%d q=%d sq=%d/%d tri=%d noi=%d pcm=%d\n",
+           (unsigned)FSettings.SndRate, FSettings.SoundVolume, FSettings.soundq,
+           FSettings.SquareVolume[0], FSettings.SquareVolume[1],
+           FSettings.TriangleVolume, FSettings.NoiseVolume, FSettings.PCMVolume);
+    g_nes_aud_frames = g_nes_aud_sum = 0;
+    g_nes_aud_max = g_nes_aud_nonzero = 0;
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     // Применяем отмеченные в меню читы (их список заполнил rom_browser/cheat_menu_run
@@ -232,8 +253,9 @@ extern "C" void fceumm_run_frame(void) {
     // Звук NES на I2S (r599). FCEUmm отдаёт WaveFinal — МОНО int32 (0..48000 Гц,
     // см. FlushEmulateSound: end = число моно-сэмплов). Раньше здесь была
     // заглушка (snd/ssize выбрасывались). Читаем int32→s16, моно→стерео.
+    int32_t n = 0;
     if (snd && ssize > 0) {
-        int32_t n = ssize;   // число сэмплов (моно)
+        n = ssize;                // число сэмплов (моно)
         if (n > 4096) n = 4096;   // страховка от переполнения
         for (int32_t i = 0; i < n; i++) {
             int32_t s = snd[i];
@@ -241,6 +263,21 @@ extern "C" void fceumm_run_frame(void) {
             if (s < -32768) s = -32768;
             i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
         }
+    }
+
+    // r958: накопление статистики звука БЕЗ печати — UART в кадре блокирует
+    // поток и сам портит кольцо. Сводка выводится на выходе (поток стоит).
+    // peak/nonzero отделяют «APU ничего не отдал» (ssize=0) от «отдал нули».
+    g_nes_aud_frames++;
+    g_nes_aud_sum += (uint32_t)(ssize > 0 ? ssize : 0);
+    {
+        int32_t mx = 0;
+        for (int32_t i = 0; i < n; i++) {
+            int32_t a = snd[i] < 0 ? -snd[i] : snd[i];
+            if (a > mx) mx = a;
+            if (snd[i]) g_nes_aud_nonzero++;
+        }
+        if ((uint32_t)mx > g_nes_aud_max) g_nes_aud_max = (uint32_t)mx;
     }
 
     // Рендер: gfx = XBuf[256×240] индексов палитры.
@@ -273,6 +310,17 @@ extern "C" void fceumm_stop(void) {
     printf("FCEUmm: stopped\n");
 }
 
+// r958: сводка звука за сессию (вызывается на выходе, поток уже остановлен).
+extern "C" void nes_audio_report(void) {
+    if (!g_nes_aud_frames) return;
+    printf("NES-AUD: frames=%u ssize_avg=%u peak=%u nonzero=%u\n",
+           (unsigned)g_nes_aud_frames,
+           (unsigned)(g_nes_aud_sum / g_nes_aud_frames),
+           (unsigned)g_nes_aud_max, (unsigned)g_nes_aud_nonzero);
+    g_nes_aud_frames = g_nes_aud_sum = 0;
+    g_nes_aud_max = g_nes_aud_nonzero = 0;
+}
+
 // ---- точка входа emu.c (совместима со старым emu_run_nes) ----
 extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
@@ -296,6 +344,7 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    nes_audio_report();   // r958: сводка звука до сброса кольца
     fceumm_stop();
     emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
                         // выхода (доезды/«звук ниоткуда»).
