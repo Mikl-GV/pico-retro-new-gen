@@ -207,11 +207,13 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
     FSettings.TriangleVolume  = 256;
     FSettings.NoiseVolume     = 256;
     FSettings.PCMVolume       = 256;
-    // r958: один раз (не в кадре) фиксируем фактическую конфигурацию APU.
-    printf("FCEUmm: sound rate=%u vol=%d q=%d sq=%d/%d tri=%d noi=%d pcm=%d\n",
-           (unsigned)FSettings.SndRate, FSettings.SoundVolume, FSettings.soundq,
-           FSettings.SquareVolume[0], FSettings.SquareVolume[1],
-           FSettings.TriangleVolume, FSettings.NoiseVolume, FSettings.PCMVolume);
+    // r958: один раз (не в кадре) фиксируем фактическую конфигурацию APU —
+    // только при включённой аудио-диагностике.
+    if (i2s_audio_diag())
+        printf("FCEUmm: sound rate=%u vol=%d q=%d sq=%d/%d tri=%d noi=%d pcm=%d\n",
+               (unsigned)FSettings.SndRate, FSettings.SoundVolume, FSettings.soundq,
+               FSettings.SquareVolume[0], FSettings.SquareVolume[1],
+               FSettings.TriangleVolume, FSettings.NoiseVolume, FSettings.PCMVolume);
     g_nes_aud_frames = g_nes_aud_sum = 0;
     g_nes_aud_max = g_nes_aud_nonzero = 0;
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
@@ -313,10 +315,11 @@ extern "C" void fceumm_stop(void) {
 // r958: сводка звука за сессию (вызывается на выходе, поток уже остановлен).
 extern "C" void nes_audio_report(void) {
     if (!g_nes_aud_frames) return;
-    printf("NES-AUD: frames=%u ssize_avg=%u peak=%u nonzero=%u\n",
-           (unsigned)g_nes_aud_frames,
-           (unsigned)(g_nes_aud_sum / g_nes_aud_frames),
-           (unsigned)g_nes_aud_max, (unsigned)g_nes_aud_nonzero);
+    if (i2s_audio_diag())
+        printf("NES-AUD: frames=%u ssize_avg=%u peak=%u nonzero=%u\n",
+               (unsigned)g_nes_aud_frames,
+               (unsigned)(g_nes_aud_sum / g_nes_aud_frames),
+               (unsigned)g_nes_aud_max, (unsigned)g_nes_aud_nonzero);
     g_nes_aud_frames = g_nes_aud_sum = 0;
     g_nes_aud_max = g_nes_aud_nonzero = 0;
 }

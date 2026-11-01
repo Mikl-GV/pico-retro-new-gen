@@ -231,12 +231,13 @@ extern "C" void lynx_run_frame(void) {
 // поэтому печать не влияет ни на кольцо, ни на долив.
 extern "C" void lynx_audio_report(void) {
     if (!g_lynx_aud_n) return;
-    printf("LYNX-AUD: pairs min/avg/max=%u/%u/%u frames=%u drop=%u\n",
-           (unsigned)g_lynx_aud_min,
-           (unsigned)(g_lynx_aud_sum / g_lynx_aud_n),
-           (unsigned)g_lynx_aud_max,
-           (unsigned)g_lynx_aud_n,
-           (unsigned)i2s_drop_cnt());
+    if (i2s_audio_diag())
+        printf("LYNX-AUD: pairs min/avg/max=%u/%u/%u frames=%u drop=%u\n",
+               (unsigned)g_lynx_aud_min,
+               (unsigned)(g_lynx_aud_sum / g_lynx_aud_n),
+               (unsigned)g_lynx_aud_max,
+               (unsigned)g_lynx_aud_n,
+               (unsigned)i2s_drop_cnt());
     g_lynx_aud_min = 0xFFFFFFFFu;
     g_lynx_aud_max = 0;
     g_lynx_aud_sum = 0;

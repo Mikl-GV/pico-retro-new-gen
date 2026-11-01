@@ -413,7 +413,7 @@ SD/MMC: U-Boot SPL -> U-Boot (SPL в SRAM, U-Boot в DRAM)
 | Куча эмуляторов | 0x48BD3760..0x4A3D3760 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
 | Пулы FBNeo/gpgx | 0x42BD3748..0x48BD3748 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом) |
 | sbrk-арена (newlib) | 0x4A400000+1МБ..0x4F000000 | растёт вверх ПОСЛЕ uncached-окна (куча не пересекает `.coherent`) |
-| coherent (uncached) | 0x4A400000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, кольцо/почта аудио, L1-таблица (0x4A40C000) — недоступно кэшу |
+| coherent (uncached) | 0x4A400000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, почта аудио/флаги `g_audio_*`, L1-таблица (0x4A40C000) — недоступно кэшу. **Данные кольца звука НЕ здесь** — они в SRAM A1 (r957) |
 | Меню | 0x4F000000 | `_menu_arena` |
 | SAT ROM | 0x50000000..0x51800000 | `ROM_BUF` — образы ROM с SD (24 МБ) |
 | Видео | 0x5F800000 (EMU_FB 150 КБ), 0x5F900000 (HDMI 2.4 МБ) | кадр эмулятора 320×240 RGB565 -> апскейл 1024×600 XRGB8888 |
@@ -459,26 +459,28 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   C64, Enterprise, Atari 8-bit (atari800 собран в OBJ? — НЕТ, a8-объекты не
   линкуются в прошивку, в меню статус PLANNED).
 
-### Звук (актуально, r903)
+### Звук (актуально, r957)
 
 Вывод звука **возвращён** (r895..r902, решение владельца отменяет r777):
-`i2s.c` — рабочий слой (ring `.coherent` uncached → CPU2 доливает TX FIFO,
+`i2s.c` — рабочий слой (ring в SRAM A1 → CPU2 доливает TX FIFO,
 guard `TXE_CNT`, темп = аппаратный FIFO 48 кГц), аппаратный I2S0
 инициализируется (`i2s_init`, PLL 24.576 МГц, PMC0 PA18/19/20, PA10-SD),
 `cpu2_audio_entry` — вечный цикл долива. Синтез в ядрах и host-слоях
 **сохранён** (правило владельца): вызовы `i2s_push_sample()` / `i2s_*`
 остаются и реально выводятся. Ресемплеры host-слоёв (GBA 32→48, NGP/ZX/PCE
 44.1→48, BK, Lynx, NES, SNES, аркады) работают в боевом режиме.
-Детали дельт — `docs/HANDOVER.md` (r895..r902), меню настроек: «Audio test
+Детали дельт — `docs/HANDOVER.md` (r895..r902, r957), меню настроек: «Audio test
 tone» и «Volume» (r896..r898).
 
 ### CPU2 (аудио-ядро; долив I2S с r895)
 
 CPU2 стартует рано (`main.c: h3_cpu_start(2, cpu2_entry)` ДО `i2s_init`), его
 точка входа `cpu2_audio_entry` (`i2s.c`) — вечный цикл: приём команд почты
-(PAUSE/RESUME), `i2s_poll_fill()` (долив ring → TX FIFO, burst 24, NOP-backoff
+(PAUSE/RESUME), `i2s_poll_fill()` (долив ring → TX FIFO, burst, NOP-backoff
 при пустом кольце/полном FIFO). Стек — 0x5FC01000, свои банки исключений,
-NEON включается в `startup.S` до C-кода. Кольцо, почты `g_audio_*` и
-`i2s_ring_reset` живут в `.coherent` (uncached).
+NEON включается в `startup.S` до C-кода. **Данные кольца и индексы wr/rd/sync —
+в SRAM A1** (r957: L=0x1000, R=0x3000, 4096 пар — обмен данных через DRAM
+между ядрами ненадёжен в обе стороны); почты `g_audio_*` — в `.coherent`
+(uncached), флаги CPU2 — SRAM-дубли.
 
 Задел: H3 = 4 ядра; CPU3 свободен (оффлоад рендера/скейла — отдельная дельта).

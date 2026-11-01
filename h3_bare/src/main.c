@@ -115,14 +115,14 @@ static int zx_model_dialog(void) {
     }
 }
 
-// 1 = ROM (браузер /roms/zxspectrum), 2 = BASIC, 0 = назад
+// 1 = BASIC, 2 = ROM (браузер /roms/zxspectrum), 0 = назад
 static int zx_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
         if (dirty) {
             fb_clear(); fb_draw_stars();
             fb_puts_s(60, 90, "ZX Spectrum: load", 2, 0x00FFAA00);
-            const char* opts[2] = { "1. ROM (snapshot .z80/.sna)", "2. BASIC" };
+            const char* opts[2] = { "1. BASIC", "2. ROM (snapshot .z80/.sna)" };
             for (int i = 0; i < 2; i++) {
                 int y = 160 + i * 40;
                 uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
@@ -136,7 +136,7 @@ static int zx_source_dialog(void) {
         if (!k) { udelay(16000); continue; }
         if (k == 82) { if (sel > 0) sel--; dirty = 1; }
         else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
-        else if (k == 40) return sel + 1;
+        else if (k == 40) return (sel == 0) ? 2 : 1;
         else if (k == 41 || k == 27) return 0;
         udelay(50000);
     }
@@ -213,14 +213,14 @@ static int msx_model_dialog(void) {
     }
 }
 
-// 1 = ROM (браузер /roms/bk0010), 2 = BASIC, 0 = назад
+// 1 = BASIC, 2 = ROM (браузер /roms/bk0010), 0 = назад
 static int bk_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
         if (dirty) {
             fb_clear(); fb_draw_stars();
             fb_puts_s(60, 90, "BK: load", 2, 0x00FFAA00);
-            const char* opts[2] = { "1. ROM (.bin / .img)", "2. BASIC" };
+            const char* opts[2] = { "1. BASIC", "2. ROM (.bin / .img)" };
             for (int i = 0; i < 2; i++) {
                 int y = 160 + i * 40;
                 uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
@@ -234,7 +234,7 @@ static int bk_source_dialog(void) {
         if (!k) { udelay(16000); continue; }
         if (k == 82) { if (sel > 0) sel--; dirty = 1; }
         else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
-        else if (k == 40) return sel + 1;
+        else if (k == 40) return (sel == 0) ? 2 : 1;
         else if (k == 41 || k == 27) return 0;
         udelay(50000);
     }
@@ -333,7 +333,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r960";
+const char g_fw_version[] = "r962";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +341,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r960\n");
+    uart_puts("build: r962\n");
 
     led_init();
     led_set(0);
@@ -606,7 +606,7 @@ void main(void) {
             int m = bk_model_dialog();
             if (m < 0) continue;
             bk_set_model(bk_models[m]);
-            int src = bk_source_dialog();   // 1=ROM(.bin/.img), 2=BASIC
+            int src = bk_source_dialog();   // 2=BASIC, 1=ROM(.bin/.img)
             if (src == 0) continue;
             sega_pad_init();
             tft_help_show("bk0010");

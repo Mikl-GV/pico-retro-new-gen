@@ -291,10 +291,10 @@ void gba_run_frame(void) {
     u32 frames = sound_read_samples(sndbuf, 549);  // возвращает пары ~549/кадр
     if (frames > 2048) frames = 2048;              /* r856: sndbuf[4096] = 2048 пар */
     u32 np = gba_resample(sndbuf, frames, rsbuf);
-    // r943 (диагностика): печать раз в 60 кадров — понять, почему AUDIO-END GBA
-    // даёт pairs≈799 (один кадр). Если frames≈549 и np≈800 каждый кадр — звук
-    // генерится, а сессии короткие; если frames≈0 — продюсер молчит.
-    {
+    // r943 (диагностика): раз в 60 кадров печатать состояние звука — понять,
+    // почему AUDIO-END GBA даёт pairs≈799 (один кадр). Только при включённой
+    // аудио-диагностике (по умолчанию выкл, чтобы не блокировать UART в кадре).
+    if (i2s_audio_diag()) {
         static u32 gba_dbg = 0;
         extern u32 sound_on; extern u32 sound_frequency;
         if ((gba_dbg++ % 60) == 0)

@@ -146,24 +146,20 @@ static const uint8_t k_sin8[256] = {
 #define SRAM_AUDIO_KEY  0x5A5Au                              /* защита от мусора U-Boot */
 
 // ---- Кольцо потока эмулятора (core0 → CPU2) ----
-// ДАННЫЕ ring (L/R) — в .coherent (uncached через mmu_mark_uncached, только
-// чтение CPU2 по адресам DRAM); ИНДЕКСЫ wr/rd и флаг sync — в SRAM A1 (r929:
-// стенд-лог r928 показал, что направление CPU2→core0 через DRAM НЕ работает
-// — CPU2 снял sync, core0 не увидел; SRAM A1 двунаправленно доказан живым
+// ДАННЫЕ ring (L/R) — в SRAM A1 (r957): перенос ДАННЫХ через DRAM (в отличие
+// от флагов) тоже оказался ненадёжен, поэтому и сами пары переехали в SRAM.
+// ИНДЕКСЫ wr/rd и флаг sync — там же (SRAM A1 двунаправленно доказан живым
 // статусами 0x90/0x94/beat).
-// r932: буфер 65536 пар = 2^16 (1.37 с при 48 кГц) — по решению владельца
-// «≥1 секунда». Расчёт реального максимума эмулятора: все системы 48к дают
-// 800 пар/кадр × 60 = 48000 пар/с; GBA (32768 Гц + ресемпл) ~804 пар/кадр.
-// Пик продюсера ≈ 48000 пар/с → 65536 = 1.37 с буфера (запас на синкопы
-// загрузки ROM с USB/SD). Маска & (SIZE-1) корректна (2^16). Память: 65536
-// пар × 2 кан × 2 байта = 256 КБ в .ring_buf 0x4A418000..0x4A500000 (~950 КБ —
-// влезает; ASSERT в linker.ld проверит).
-#define AUDIO_RING_SIZE 4096               /* пар; 2^16, ~1.37 с при 48 кГц */
+// r957: кольцо 4096 пар (AUDIO_RING_SIZE) в SRAM A1: L=0x1000, R=0x3000
+// (4096 пар × 2 кан × 2 байта = 16 КБ на канал). 4096 пар @48 кГц ≈ 85 мс —
+// запас на синкопы загрузки ROM с USB/SD. Маска & (SIZE-1) корректна (2^12).
+// SRAM A1: 0x00001000..0x0000 6000 (~80 КБ свободного после секции кольца).
 #define SRAM_RING_L_ADDR 0x00001000u
 #define SRAM_RING_R_ADDR 0x00003000u
 static inline int16_t* ring_l(void) { return (int16_t*)SRAM_RING_L_ADDR; }
 static inline int16_t* ring_r(void) { return (int16_t*)SRAM_RING_R_ADDR; }
-// r957: ������ ������ � � SRAM A1: ����� ������� ����� DRAM ����� ������ ����� ����/������.
+// r957: кольцо звука — в SRAM A1 (данные и индексы), т.к. обмен через DRAM
+// между ядрами ненадёжен в обе стороны.
 
 // ---- Почта core0↔CPU2 (аудио-ядро) в .coherent ----
 static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(64))) = 0; /* 1 = CPU2 в цикле */
@@ -223,6 +219,11 @@ static int g_muted = 1;                    /* усилитель выключе�
 // тест-тона (i2s_emulators_audio). core0-only, обычный BSS.
 static int g_emulators_audio = 0;
 void i2s_emulators_audio(int on) { g_emulators_audio = on ? 1 : 0; }
+// Аудио-диагностика (разовые печати AUDIO-END/DBG-RST/TONE*/NES-AUD/LYNX-AUD и
+// GBA-строка в кадре). Выключена по умолчанию — в обычном образе UART не спамит.
+static int g_audio_diag = 0;
+int  i2s_audio_diag(void)      { return g_audio_diag; }
+void i2s_audio_diag_set(int on){ g_audio_diag = on ? 1 : 0; }
 // r943: целевая высота кольца (пар) — уровень, до которого держит кольцо
 // throttle, чтобы FIFO не пустел между кадрами. Индивидуален для эмулятора:
 // ≈2 кадра его звука (напр. GBA 804 пар/кадр → 1600). core0-only, читается
@@ -477,19 +478,21 @@ void i2s_ring_reset(void) {
     // старые данные, которые CPU2 проигрывал как звук.
     // r941 (аудит r918, P2): обнуляем DC-состояние CPU2 — детерминированная
     // тишина в начале нового контекста (игры/тона), без хвоста прошлого
-    // сигнала. Пока pause=1 CPU2 не пишет FIFO, гонки на сброс нет.
+// сигнала. Пока pause=1 CPU2 не пишет FIFO, гонки на сброс нет.
     s_dc_lp_l = 0;
     s_dc_lp_r = 0;
     uint32_t w0 = SRAM_RING_WR, r0 = SRAM_RING_RD;
-    printf("DBG-RST: in wr=%u rd=%u beat=%u\n",
-           (unsigned)w0, (unsigned)r0, (unsigned)i2s_audio_beat());
+    if (g_audio_diag)
+        printf("DBG-RST: in wr=%u rd=%u beat=%u\n",
+               (unsigned)w0, (unsigned)r0, (unsigned)i2s_audio_beat());
     SRAM_RING_SYNC = 1;
     __asm volatile("dsb" ::: "memory");
     uint32_t t = 0;
     uint32_t spins = 0;
     while (SRAM_RING_SYNC && t < 100000u) { t++; spins++; }   // ~потолок; CPU2 снимает флаг
-    printf("DBG-RST: sync spins=%u done=%d rd=%u\n",
-           (unsigned)spins, SRAM_RING_SYNC ? 0 : 1, (unsigned)SRAM_RING_RD);
+    if (g_audio_diag)
+        printf("DBG-RST: sync spins=%u done=%d rd=%u\n",
+               (unsigned)spins, SRAM_RING_SYNC ? 0 : 1, (unsigned)SRAM_RING_RD);
     __asm volatile("dsb" ::: "memory");
     if (SRAM_RING_SYNC) {
         // r954: таймаут — CPU2 не ответил (мёртв/занят). Флаг обязан быть снят
@@ -827,11 +830,12 @@ static int i2s_tone_direct(int hz, int ms) {
     i2s_apply_amp();
     SRAM_AUDIO_PAUSED = 0;
     __asm volatile("dsb" ::: "memory");
-    i2s_audio_cmd(AUDIO_CMD_RESUME);
+i2s_audio_cmd(AUDIO_CMD_RESUME);
 
-    printf("TONE: hz=%d ms=%d rc=%d wrote=%u/%u free=%d beat=%u\n",
-           hz, ms, rc, (unsigned)written, (unsigned)((uint32_t)ms * 48u),
-           i2s_fifo_free_words(), (unsigned)i2s_audio_beat());
+    if (g_audio_diag)
+        printf("TONE: hz=%d ms=%d rc=%d wrote=%u/%u free=%d beat=%u\n",
+               hz, ms, rc, (unsigned)written, (unsigned)((uint32_t)ms * 48u),
+               i2s_fifo_free_words(), (unsigned)i2s_audio_beat());
     return rc;
 }
 
@@ -938,16 +942,17 @@ int i2s_test_tone_cpu2(int hz, int ms) {
     uint32_t fw1 = SRAM_AUDIO_FW;
     i2s_dc_bypass(0);                          // вернуть штатный ФВЧ
 
-    g_muted = old_muted;
+g_muted = old_muted;
     g_volume_pct = old_vol;
     i2s_apply_amp();
 
     // fw_delta — сколько пар реально вывел CPU2. Если он меньше written
     // заметно, значит аудио-ядро не выгребает кольцо (и это НЕ вина тракта).
-    printf("TONE-CPU2: hz=%d ms=%d wrote=%u/%u fw_delta=%u fill=%u fsta=%08x beat=%u rc=%d\n",
-           hz, ms, (unsigned)written, (unsigned)total,
-           (unsigned)(fw1 - fw0), (unsigned)i2s_ring_fill(),
-           (unsigned)I2S_FIFO_STA, (unsigned)i2s_audio_beat(), rc);
+    if (g_audio_diag)
+        printf("TONE-CPU2: hz=%d ms=%d wrote=%u/%u fw_delta=%u fill=%u fsta=%08x beat=%u rc=%d\n",
+               hz, ms, (unsigned)written, (unsigned)total,
+               (unsigned)(fw1 - fw0), (unsigned)i2s_ring_fill(),
+               (unsigned)I2S_FIFO_STA, (unsigned)i2s_audio_beat(), rc);
     return rc;
 }
 
@@ -1080,23 +1085,25 @@ int i2s_init(void) {
         uint32_t nw = free0 > 64u ? 64u : free0;
         for (uint32_t i = 0; i < nw; i++) I2S_FIFO_TX = 0;   // тишина
         __asm volatile("dsb" ::: "memory");
-        uint32_t free1 = (I2S_FIFO_STA >> 16) & 0xFFu;
+uint32_t free1 = (I2S_FIFO_STA >> 16) & 0xFFu;
         udelay(50000);                                       // 50 мс
         uint32_t free2 = (I2S_FIFO_STA >> 16) & 0xFFu;
-        printf("I2S DIAG: CTRL=0x%08x FMT0=0x%08x FCTL=0x%08x CLKD=0x%08x\n",
-               (unsigned)I2S_CTRL, (unsigned)I2S_FMT0, (unsigned)I2S_FIFO_CTL, (unsigned)I2S_CLK_DIV);
-        printf("I2S DIAG: MODCLK=0x%08x GATE=0x%08x RST3=0x%08x\n",
-               (unsigned)CCU_I2SPCM0_CLK, (unsigned)CCU_BUS_GATING2, (unsigned)CCU_BUS_RST3);
-        printf("I2S DIAG: FSTA=0x%08x free_pre=%u wrote=%u free_now=%u free_50ms=%u TXCNT=%u\n",
-               (unsigned)fsta0, (unsigned)free0, (unsigned)nw, (unsigned)free1,
-               (unsigned)free2, (unsigned)(I2S_TX_CNT & 0xFFFFFFu));
-        // r917 (B2 аудита): явная сверка LRCK = PLL/(BCLKDIV*2*LRCK_PERIOD) ≈ 48 кГц.
-        {
-            uint32_t pll = 24571000u;          // 0x80035514 → 24.571 МГц
-            uint32_t bd  = 8u;                 // BCLKDIV=5 → «Divide by 8» (даташит стр.536)
-            uint32_t lr  = 32u;                // LRCK_PERIOD 32 BCLK/канал → 64 BCLK/кадр
-            printf("I2S DIAG: LRCK_calc=%u Hz (24.571M / %u / 2 / %u)\n",
-                   (unsigned)(pll / (bd * 2u * lr)), (unsigned)bd, (unsigned)lr);
+        if (g_audio_diag) {
+            printf("I2S DIAG: CTRL=0x%08x FMT0=0x%08x FCTL=0x%08x CLKD=0x%08x\n",
+                   (unsigned)I2S_CTRL, (unsigned)I2S_FMT0, (unsigned)I2S_FIFO_CTL, (unsigned)I2S_CLK_DIV);
+            printf("I2S DIAG: MODCLK=0x%08x GATE=0x%08x RST3=0x%08x\n",
+                   (unsigned)CCU_I2SPCM0_CLK, (unsigned)CCU_BUS_GATING2, (unsigned)CCU_BUS_RST3);
+            printf("I2S DIAG: FSTA=0x%08x free_pre=%u wrote=%u free_now=%u free_50ms=%u TXCNT=%u\n",
+                   (unsigned)fsta0, (unsigned)free0, (unsigned)nw, (unsigned)free1,
+                   (unsigned)free2, (unsigned)(I2S_TX_CNT & 0xFFFFFFu));
+            // r917 (B2 аудита): явная сверка LRCK = PLL/(BCLKDIV*2*LRCK_PERIOD) ≈ 48 кГц.
+            {
+                uint32_t pll = 24571000u;          // 0x80035514 → 24.571 МГц
+                uint32_t bd  = 8u;                 // BCLKDIV=5 → «Divide by 8» (даташит стр.536)
+                uint32_t lr  = 32u;                // LRCK_PERIOD 32 BCLK/канал → 64 BCLK/кадр
+                printf("I2S DIAG: LRCK_calc=%u Hz (24.571M / %u / 2 / %u)\n",
+                       (unsigned)(pll / (bd * 2u * lr)), (unsigned)bd, (unsigned)lr);
+            }
         }
     }
 
@@ -1158,7 +1165,7 @@ static void cpu2_uart_puts(const char* s) {
 void cpu2_audio_entry(void) {
     i2s_audio_set_state(1);
     i2s_audio_set_beat(0);
-    cpu2_uart_puts("cpu2: enter\r\n");
+    if (g_audio_diag) cpu2_uart_puts("cpu2: enter\r\n");
 
     uint32_t beat = 0;
     int once = 0;
@@ -1172,33 +1179,33 @@ void cpu2_audio_entry(void) {
         // через DRAM (проблема когерентности) — сработает SRAM.
         if (!g_i2s_ready && !*(volatile uint32_t*)I2S_SRAM_READY_ADDR) continue;
         if (SRAM_RING_SYNC) {
-            // r929: синхронный сброс кольца через SRAM A1. rd — собственность
+// r929: синхронный сброс кольца через SRAM A1. rd — собственность
             // ТОЛЬКО CPU2: по запросу core0 подтягиваем rd к wr (кольцо
             // пустеет), снимаем sync (core0 ждёт снятия) — после этого core0
             // пишет wr=rd и гонки consume нет.
             SRAM_RING_RD = SRAM_RING_WR;
             __asm volatile("dsb" ::: "memory");
             SRAM_RING_SYNC = 0;
-            if (!once) { cpu2_uart_puts("cpu2: sync-cleared\r\n"); once = 1; }
+            if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: sync-cleared\r\n"); once = 1; }
             continue;
         }
         if (i2s_audio_paused())
             continue;
-        if (!once) { cpu2_uart_puts("cpu2: before-poll-fill\r\n"); }
+        if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: before-poll-fill\r\n"); }
         int wrote = i2s_poll_fill();
         // r929: маркеры before/after — ОДИН раз (первый проход). В r928 они
         // печатались на КАЖДОМ витке (once ставился только в sync-ветке) и
         // забивали UART (склейки в логе), тормозя сам долив.
-        if (!once) { cpu2_uart_puts("cpu2: after-poll-fill\r\n"); once = 1; }
+        if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: after-poll-fill\r\n"); once = 1; }
         if (wrote == 0) {
             // FIFO на границе / кольцо пусто — NOP-backoff (не долбить регистр).
             __asm volatile("nop; nop; nop; nop; nop; nop; nop; nop");
         }
         beat++;
         i2s_audio_set_beat(beat);
-        if (beat == 1)
+        if (g_audio_diag && beat == 1)
             cpu2_uart_puts("cpu2: loop beat=1\r\n");
-        if ((beat & 0xFFFFFFu) == 0)
+        if (g_audio_diag && (beat & 0xFFFFFFu) == 0)
             cpu2_uart_puts("cpu2: beat-wrap\r\n");
     }
 }

@@ -232,11 +232,12 @@ void emu_audio_stop(void) {
     uint32_t fw = 0, skip = 0, fl = 0, fe = 0;
     i2s_cpu2_diag(&fl, &fw, &skip, NULL);
     (void)fe;
-    // r932: размер кольца в логе — фактический AUDIO_RING_SIZE (65536, 2^16, ~1.37 с).
-    uint32_t ring_sz = 4096;  /* дубль AUDIO_RING_SIZE (i2s.c), держать в синхроне */
-    printf("AUDIO-END: fill=%u..%u/%u drop=%u under=%u pairs=%u fw=%u skip=%u\n",
-           (unsigned)fmin, (unsigned)fmax, (unsigned)ring_sz, (unsigned)drop,
-           (unsigned)under, (unsigned)pairs, (unsigned)fw, (unsigned)skip);
+    // r932: размер кольца в логе — фактический размер кольца i2s.c.
+    if (i2s_audio_diag())
+        printf("AUDIO-END: fill=%u..%u/%u drop=%u under=%u pairs=%u fw=%u skip=%u\n",
+               (unsigned)fmin, (unsigned)fmax, (unsigned)AUDIO_RING_SIZE,
+               (unsigned)drop, (unsigned)under, (unsigned)pairs,
+               (unsigned)fw, (unsigned)skip);
     i2s_stats_active(0);
     i2s_audio_set_active(0);   /* r916: звук из игры ушёл — CPU2 тишину больше не доливает */
     i2s_ring_reset();

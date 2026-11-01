@@ -15,6 +15,10 @@
 
 #include <stdint.h>
 
+// Фактический размер кольца звука (пар) в SRAM A1 (r957). 4096 пар @48 кГц ≈
+// 85 мс. Используется в логе AUDIO-END и в i2s.c.
+#define AUDIO_RING_SIZE 4096
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -45,6 +49,13 @@ int  i2s_volume_pct(void);
 void i2s_mute(int mute);                // 1 = усилитель выключен (PA10=0)
 void i2s_click(void);                   // короткий клик меню (через ring)
 void i2s_emulators_audio(int on);       // S.0: 1 = host-слои пишут в ring (по умолч. 0)
+
+// ---- Аудио-диагностика (выключена по умолчанию) ----
+// Разовые печати AUDIO-END/NES-AUD/LYNX-AUD/TONE/TONE-CPU2/DBG-RST и GBA-строки
+// в кадре идут только при g_audio_diag=1. Накопление счётчиков — всегда.
+// Включается из отладочного кода/меню; в обычном образе спама нет.
+int  i2s_audio_diag(void);              // текущее значение флага
+void i2s_audio_diag_set(int on);        // 1 = печатать диагностику
 
 // ---- Аудио-ядро CPU2 (вызываются из cpu2_entry) ----
 int      i2s_audio_core_active(void);
