@@ -214,6 +214,26 @@ int net_tcp_connected(int slot) {
     return g_slots[slot].active;
 }
 
+/* r964: неподтверждённый хвост слота. Прикладной слой (FTP) обязан
+   дождаться нуля, прежде чем слать FIN/затирать слот: иначе потерянный
+   WiFi-кадр уже не восстановить, а клиент видит недокачанный LIстING. */
+int net_tcp_unacked(int slot) {
+    if (slot < 0 || slot >= NET_TCP_SLOTS) return 0;
+    return g_slots[slot].active ? (int)g_slots[slot].retx_cnt : 0;
+}
+
+/* r964: сколько слотов слушают порт. Нужно FTP-серверу, чтобы держать
+   несколько control-слушателей :21 и восстанавливать их после закрытия
+   сессии (net_tcp_close освобождает слот вместе со слушателем). */
+int net_tcp_listener_count(uint16_t port) {
+    int n = 0;
+    for (int i = 0; i < NET_TCP_SLOTS; i++) {
+        if (g_slots[i].used && !g_slots[i].active &&
+            g_slots[i].listen_port == port) n++;
+    }
+    return n;
+}
+
 // Найти слот: активный на порту dp, либо слушатель dp.
 static struct tcp_slot* slot_by_dport(uint16_t dp) {
     for (int i = 0; i < NET_TCP_SLOTS; i++) {

@@ -27,6 +27,7 @@ extern int uart0_printf(const char* fmt, ...);
 // forward: создание записи директории, сравнение имён (определены ниже)
 static void make_dir_entry(uint8_t* e, const char* name, uint32_t cluster, int is_dot);
 static int name_eq(const char* a, const char* b);
+static void fat_free_chain(uint32_t fc);   /* r971 */
 
 // ---- Блочный источник (r788): SD по умолчанию, USB через fat_set_block_source ----
 // blk_read/blk_write — единственные точки доступа FAT к носителю. Если
@@ -868,15 +869,7 @@ int fat_delete_file(const char* dir, const char* name) {
     if (blk_write(entry_sec, g_sector) < 0) return -1;
 
     // Освободить кластеры файла в обеих FAT (с защитой от цикла в цепочке)
-    uint32_t fc = target_first;
-    uint32_t guard = 0;
-    while (fc >= 2 && fc < 0x0FFFFFF8 && guard++ < 100000) {
-        uint32_t next = fat_next_cluster(fc);
-        if (next == 0) { fat_set_cluster(fc, 0); break; } // кластер 0 — стоп
-        fat_set_cluster(fc, 0);
-        if (next == fc || next >= 0x0FFFFFF8) break;
-        fc = next;
-    }
+    fat_free_chain(target_first);
     return 0;
 }
 
@@ -1133,6 +1126,7 @@ static struct {
     int      dentry_off;
     uint32_t first_cluster;
     uint32_t last_cluster;
+    uint32_t prev_first;    /* r971: first_cluster СТАРОГО файла (если был) */
     uint32_t cur_cluster;   /* 0 = нужно выделить следующий */
     uint32_t size;
     uint32_t cl_off;        /* смещение внутри текущего кластера */
@@ -1148,6 +1142,19 @@ static int wr_flush(void) {
     return 0;
 }
 
+// r971: освободить цепочку кластеров (обнулить в обеих копиях FAT),
+// с защитой от цикла. Используется при abort новой цепочки и при
+// замене старого файла в write_end.
+static void fat_free_chain(uint32_t fc) {
+    uint32_t guard = 0;
+    while (fc >= 2 && fc < 0x0FFFFFF8 && guard++ < 100000) {
+        uint32_t next = fat_next_cluster(fc);
+        fat_set_cluster(fc, 0);
+        if (next == fc || next == 0 || next >= 0x0FFFFFF8) break;
+        fc = next;
+    }
+}
+
 int fat_write_begin(const char* dir_path, const char* name) {
     /* r833: если предыдущая потоковая запись не закрылась (обрыв связи),
        фиксируем её и продолжаем — иначе все последующие STOR получали 550. */
@@ -1159,8 +1166,14 @@ int fat_write_begin(const char* dir_path, const char* name) {
     if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
     if (parent.size != 0) return -1;
 
+    /* r971: старый файл НЕ удаляем здесь. Раньше DELETE происходил до записи
+       данных: при обрыве STOR старый файл оказывался уничтоженным, а новый —
+       пустым/частичным. Теперь dentry старого файла остаётся нетронутой до
+       самого успешного fat_write_end (там освобождаем prev_first), а в
+       fat_abort_write старая цепочка сохраняется как была. */
     fat_entry_t old;
-    if (fat_find(dir_path, name, &old)) fat_delete_file(dir_path, name);
+    uint32_t prev_first = 0;
+    if (fat_find(dir_path, name, &old)) prev_first = old.first_cluster;
 
     uint32_t dsec; int doff;
     /* r836: LFN — длинные имена (и имена с недопустимыми для 8.3 символами)
@@ -1202,6 +1215,7 @@ int fat_write_begin(const char* dir_path, const char* name) {
     g_wr.active = 1;
     g_wr.dentry_sec = dsec;
     g_wr.dentry_off = doff;
+    g_wr.prev_first = prev_first;
     return 0;
 }
 
@@ -1273,24 +1287,32 @@ int fat_write_end(void) {
     g_sector[off + 30] = (uint8_t)((sz >> 16) & 0xFF);
     g_sector[off + 31] = (uint8_t)((sz >> 24) & 0xFF);
     if (blk_write(g_wr.dentry_sec, g_sector) < 0) return -1;
+    /* r971: записи каталога указывают на НОВУЮ цепочку — теперь можно
+       освободить кластеры старого файла (он был заменён). Раньше DELETE
+       происходил до записи и при обрыве STOR старый файл терялся. */
+    if (g_wr.prev_first) fat_free_chain(g_wr.prev_first);
     return (int)g_wr.size;
 }
 
 void fat_abort_write(void) {
-    /* r845: неудачная потоковая запись — помечаем запись каталога как
-       удалённую (0xE5). Кластеры в FAT остаются несвязанными (leak, но
-       файл не «битый»); FAT32 это переживёт, а частичного файла на диске
-       не остаётся. */
+    /* r971: неудачная потоковая запись — помечаем НОВУЮ запись каталога как
+       удалённую (0xE5) и освобождаем выданную под неё цепочку кластеров.
+       Старый файл (prev_first) не тронут — его dentry осталась нетронутой в
+       fat_write_begin, поэтому файл «как был» продолжает существовать.
+       Раньше кластеры не освобождались (leak) и на диске оставались
+       потерянные цепочки, которые шли в «lost+found». */
     if (!g_wr.active) return;
     g_wr.active = 0;
     if (g_wr.dentry_sec) {
         if (blk_read(g_wr.dentry_sec, g_sector) < 0) {
+            if (g_wr.first_cluster) fat_free_chain(g_wr.first_cluster);
             memset(&g_wr, 0, sizeof(g_wr));
             return;
         }
         g_sector[g_wr.dentry_off] = 0xE5;
         blk_write(g_wr.dentry_sec, g_sector);
     }
+    if (g_wr.first_cluster) fat_free_chain(g_wr.first_cluster);
     memset(&g_wr, 0, sizeof(g_wr));
 }
 

@@ -717,6 +717,10 @@ static const struct {
       "BK-0010/0011M",
       {"Keyboard emulation","Enter = Start machine / BASIC","ESC hold = exit",NULL}
     },
+    { "cpc",
+      "Amstrad CPC",
+      {"Keyboard emulation","Enter = BIOS/BASIC","Z/X/C/A = joy fire 1..4","D-Pad = joystick","ESC hold = exit",NULL}
+    },
     // r122: About по тап-иконке на TFT (не трогает HDMI)
     { "about",
       "MultiTool Retro",

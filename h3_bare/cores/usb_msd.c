@@ -126,10 +126,14 @@ static int usb_msd_cmd_once(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t
 static int usb_msd_cmd(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t cb_len,
                        uint32_t dir_in, uint32_t xlen,
                        uint8_t* data, uint32_t data_len) {
-    int rc = usb_msd_cmd_once(dev, cdb, cb_len, dir_in, xlen, data, data_len);
-    if (rc == -3 || rc == -4) {
-        usb_msd_bot_recover();
+    // r969: до 3 попыток с BOT-восстановлением. Одна потеря пакета на USB
+    // (short IN 448/512) не должна ронять чтение FAT/ROM: после recover
+    // канал в норме, и повтор обычно проходит.
+    int rc = -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
         rc = usb_msd_cmd_once(dev, cdb, cb_len, dir_in, xlen, data, data_len);
+        if (rc != -3 && rc != -4) break;
+        usb_msd_bot_recover();
     }
     return rc;
 }

@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <string.h>
 #include "h3.h"
 #include "uart.h"
@@ -240,6 +240,37 @@ static int bk_source_dialog(void) {
     }
 }
 
+// r966: 1 = BASIC (вшитый BIOS), 2 = ROM/диск (браузер /roms/cpc), 0 = назад.
+// Раскладка возврата та же, что у BK/ZX: 2 -> BASIC, 1 -> браузер.
+static int cpc_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Amstrad CPC: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. BASIC (built-in BIOS)",
+                "2. ROM / disk (.sna/.dsk/.tap/.cpr)"
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 700, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 2 : 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // r787: выбор машины Atari 8-bit (как MSX/ZX/BK). Индексы совпадают с
 // a8_machine_variants в a8_host.c. Возвращает индекс или -1 (ESC).
 extern int a8_machine_count(void);
@@ -333,7 +364,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r962";
+const char g_fw_version[] = "r972";
 
 void main(void) {
     int sd_ok = 0;
@@ -341,7 +372,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r962\n");
+    uart_puts("build: r972\n");
 
     led_init();
     led_set(0);
@@ -620,6 +651,27 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM через браузер (0x74 ставит run_emulator)
                 rom_browser_run("bk0010", name, "bk0010");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // Amstrad CPC: вшитый BASIC (BIOS 6128) или ROM/диск с SD
+        if (strcmp(id, "cpc") == 0) {
+            int src = cpc_source_dialog();   // 2=BASIC, 1=ROM/диск
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("cpc");
+            if (src == 2) {                  // BASIC (BIOS/BASIC вшиты в ядро)
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_cpc(NULL, 0, "basic");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // ROM/диск через браузер (0x74 ставит run_emulator)
+                rom_browser_run("cpc", name, "cpc");
             }
             sega_pad_init();
             continue;

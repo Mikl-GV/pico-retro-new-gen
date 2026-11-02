@@ -743,8 +743,13 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
             __asm volatile("dsb" ::: "memory");
             ohci->intrstatus = (1u << 1);
             __asm volatile("dsb" ::: "memory");
-            ohci->cmdstatus = (1u << 2);
-            __asm volatile("dsb" ::: "memory");
+            /* r969: BLF (Bulk List Fill) здесь НЕ дёргаем. Это команда HC
+               «перечитать BulkHead», а не обслуживание завершений: вызов
+               посреди активной передачи заставляет HC бросить текущий TD
+               после первого пакета. Симптом на стенде: «short IN got=448
+               want=512» (принят ровно один 64-байтный пакет из восьми),
+               затем BOT recovery и TIMEOUT. BLF делается один раз перед
+               стартом списка (ниже) — этого достаточно. */
         }
         cache_invalidate((uint32_t)(uintptr_t)td, sizeof(td[0]));
         if (((td->cfg >> TD_CC_SHIFT) & 0xFu) != TD_CC_NOTACC) break;
@@ -784,6 +789,14 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
         ohci->ctrl &= ~(1u << 5);   /* BLE off */
         __asm volatile("dsb" ::: "memory");
         for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
+        /* r969: снять Halted И пересобрать cfg целиком. Раньше писали только
+           head; если HC успел выставить Halted/SKIP в cfg (после обрыва TD),
+           ED оставался мёртвым, и СЛЕДУЮЩАЯ передача висела до таймаута —
+           ровно это видно в логе после каждой короткой IN. */
+        ed->cfg = (uint32_t)(addr & 0x7F)
+                | ((uint32_t)(ep & 0x0F) << 7)
+                | ED_FROM_TD
+                | ((uint32_t)mps << 16);
         ed->head = (uint32_t)(uintptr_t)td;   /* снять Halted */
         cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
         g_bulk_toggle[idx][di] = 0;

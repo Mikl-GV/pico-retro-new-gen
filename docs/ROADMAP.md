@@ -11,9 +11,9 @@
 | Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (gpSP), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
 | Консоли | Atari 2600 (MCUME), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), GCE Vectrex (vecx) |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
-| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE), БК-0010/0011М (libretro-bk), Atari Portfolio (Fake86), МС 1504 (Fake86) |
+| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), БК-0010/0011М (libretro-bk), Atari Portfolio (Fake86), МС 1504 (Fake86) |
 
-Планируются (PLANNED в systems.h): Радио-86РК, Amstrad CPC, Commodore 64, Enterprise 64/128.
+Планируются (PLANNED в systems.h): Радио-86РК, Commodore 64, Enterprise 64/128.
 
 Легенда: ✅ READY · 🔲 PLANNED
 

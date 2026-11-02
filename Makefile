@@ -509,6 +509,135 @@ $(BUILD)/a8_host.o: $(A8)/a8_host.c | $(BUILD)
 $(BUILD)/a8_fs.o: $(A8)/a8_fs.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
 
+# ---- Amstrad CPC: libretro-cap32 (Caprice32), ядро в h3_bare/cores/cap32 ----
+# r963: вшитый BIOS всех моделей (rom/464.h 6128.h 664.h 6128p.h); host cpc_host.c +
+# файловый слой cpc_fs.c (rfopen поверх ROM_BUF). Состав — из Makefile.common вендора.
+# Префиксы объектов cpc_/cpcL_/cpcM_ — избегаем дублей имён (crc32, file_stream, ...).
+CPC := $(TOP)h3_bare/cores/cap32
+CPC_INC := -I$(CPC) -I$(CPC)/cap32 -I$(CPC)/libretro \
+	-I$(CPC)/libretro/microui -I$(CPC)/libretro-common/include
+CPC_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
+	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	$(CPC_INC) -D__LIBRETRO__ -D__STDC_FORMAT_MACROS -DINLINE="inline" -DHAVE_CONFIG_H \
+	-Wno-unused -Wno-unused-parameter -Wno-parentheses -Wno-sign-compare -Wno-array-bounds \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion
+# Ядро (категория cpc_, прямые файлы в cap32/)
+CPCC := cap32 slots crtc fdc psg tape cart asic z80 kbdauto \
+	lightgun_gunstick lightgun_phaser lightgun_lightgun
+# libretro-обвязка (категория cpcL_); libretro-core — главный host (retro_*)
+CPCL := libretro-core microui_microui db_database dsk_loader dsk_format dsk_amsdos_catalog \
+	gfx_software gfx_video gfx_video8bpp gfx_video16bpp gfx_video24bpp \
+	assets_ui_keyboard_bg_crop assets_ui_keyboard_bg assets_ui_keyboard_en \
+	assets_ui_keyboard_es assets_ui_keyboard_fr assets_font \
+	retro_strings retro_utils retro_disk_control retro_events retro_snd \
+	retro_render retro_ui retro_gun retro_keyboard
+# libretro-common (категория cpcM_); vfs/file_stream/retro_dirent НЕ нужны —
+# файловый слой cpc_fs.c покрывает rf*/filestream_* поверх памяти (newlib
+# freestanding не даёт DIR/opendir для vfs_implementation).
+CPCLM := file_path file_path_io stdstring compat_strl fopen_utf8 encoding_utf rtime memalign
+CPC_OBJS := $(addprefix $(BUILD)/cpc_,$(addsuffix .o,$(CPCC))) \
+	$(addprefix $(BUILD)/cpcL_,$(addsuffix .o,$(CPCL))) \
+	$(addprefix $(BUILD)/cpcM_,$(addsuffix .o,$(CPCLM)))
+OBJ += $(CPC_OBJS) $(BUILD)/cpc_host.o $(BUILD)/cpc_fs.o
+
+$(BUILD)/cpc_%.o: $(CPC)/cap32/%.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpc_lightgun_gunstick.o: $(CPC)/cap32/lightgun/gunstick.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpc_lightgun_phaser.o: $(CPC)/cap32/lightgun/phaser.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpc_lightgun_lightgun.o: $(CPC)/cap32/lightgun/lightgun.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_microui_microui.o: $(CPC)/libretro/microui/microui.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_db_database.o: $(CPC)/libretro/db/database.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_dsk_loader.o: $(CPC)/libretro/dsk/loader.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_dsk_format.o: $(CPC)/libretro/dsk/format.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_dsk_amsdos_catalog.o: $(CPC)/libretro/dsk/amsdos_catalog.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_gfx_software.o: $(CPC)/libretro/gfx/software.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_gfx_video.o: $(CPC)/libretro/gfx/video.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_gfx_video8bpp.o: $(CPC)/libretro/gfx/video8bpp.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_gfx_video16bpp.o: $(CPC)/libretro/gfx/video16bpp.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_gfx_video24bpp.o: $(CPC)/libretro/gfx/video24bpp.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_ui_keyboard_bg_crop.o: $(CPC)/libretro/assets/ui_keyboard_bg_crop.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_ui_keyboard_bg.o: $(CPC)/libretro/assets/ui_keyboard_bg.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_ui_keyboard_en.o: $(CPC)/libretro/assets/ui_keyboard_en.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_ui_keyboard_es.o: $(CPC)/libretro/assets/ui_keyboard_es.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_ui_keyboard_fr.o: $(CPC)/libretro/assets/ui_keyboard_fr.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_assets_font.o: $(CPC)/libretro/assets/font.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_strings.o: $(CPC)/libretro/retro_strings.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_utils.o: $(CPC)/libretro/retro_utils.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_disk_control.o: $(CPC)/libretro/retro_disk_control.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_events.o: $(CPC)/libretro/retro_events.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_snd.o: $(CPC)/libretro/retro_snd.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_render.o: $(CPC)/libretro/retro_render.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_ui.o: $(CPC)/libretro/retro_ui.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_gun.o: $(CPC)/libretro/retro_gun.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_retro_keyboard.o: $(CPC)/libretro/retro_keyboard.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcL_libretro-core.o: $(CPC)/libretro/libretro-core.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_file_path.o: $(CPC)/libretro-common/file/file_path.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_file_path_io.o: $(CPC)/libretro-common/file/file_path_io.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_retro_dirent.o: $(CPC)/libretro-common/file/retro_dirent.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_file_stream.o: $(CPC)/libretro-common/streams/file_stream.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_file_stream_transforms.o: $(CPC)/libretro-common/streams/file_stream_transforms.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_vfs_implementation.o: $(CPC)/libretro-common/vfs/vfs_implementation.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_stdstring.o: $(CPC)/libretro-common/string/stdstring.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_compat_strl.o: $(CPC)/libretro-common/compat/compat_strl.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_fopen_utf8.o: $(CPC)/libretro-common/compat/fopen_utf8.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_encoding_utf.o: $(CPC)/libretro-common/encodings/encoding_utf.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_rtime.o: $(CPC)/libretro-common/time/rtime.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpcM_memalign.o: $(CPC)/libretro-common/memmap/memalign.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) -c -o $@ $<
+$(BUILD)/cpc_host.o: $(CPC)/cpc_host.c | $(BUILD)
+	$(CC) $(CPC_CFLAGS) $(INCLUDES) -I$(CPC)/libretro-common/include -c -o $@ $<
+$(BUILD)/cpc_fs.o: $(CPC)/cpc_fs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(CPC)/libretro-common/include -c -o $@ $<
+# Батч-ренейм глобалов ядра в cpc_* (как a8): после сборки, перед линком.
+# cpc_fs.o ВХОДИТ в набор: он определяет rf*/filestream-API (cpc_rfopen и голые
+# rfeof/rferror/...), поэтому rf* попадают в CANON и голые ссылки ядра
+# (fopen→rfopen по file_stream_transforms.h) переименовываются в cpc_* — иначе
+# они резолвятся в чужие стабы gpgx_missing.o (rfopen=NULL → DSK Error).
+# cpc_host.o НЕ входит — держит внешние имена (emu_run_cpc) и зовёт cpc_retro_*.
+$(BUILD)/cpc_renamed.stamp: $(CPC_OBJS) $(BUILD)/cpc_fs.o
+	$(TOP)h3_bare/cores/cpc_rename.sh $(CPC_OBJS) $(BUILD)/cpc_fs.o
+	touch $@
+
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
 # Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
 # host сам выбирает драйвер и крутит BurnDrvFrame). Собственные флаги
@@ -985,19 +1114,23 @@ $(BUILD)/gpgx_svp_%.o: $(TOP)h3_bare/cores/gpgx/core/cart_hw/svp/%.c | $(BUILD)
 	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
 
 # ---- Линковка ----
-# На Linux объекты передаются напрямую (cmdline лимит не проблема).
-# Под Windows (MSYS2) команда длиннее лимита (~32K): линкуем через
-# response-файл linker.rsp (cygpath -m даёт Windows-пути для линкера).
-# r0.416: cygpath больше НЕ обязателен на Linux — если его нет, пути
-# передаются как есть (чистая машина собирается без всяких shim-файлов).
+# Линкуем через response-файл linker.rsp: список объектов (~1300 шт.) не
+# влезает в командную строку Windows (~32K), а длинный printf в рецепте
+# обрезался — часть объектов (mcume_Collision.o) молча терялась и линковка
+# падала с «undefined reference to col_state».
+# r965: rsp пишется make-функцией $(file) — без внешних процессов и без
+# ограничения длины; пути для нативного линкера переводятся в Windows-вид
+# ОДНИМ вызовом cygpath (cygpath -m $(CURDIR)), дальше — $(subst).
 ifeq ($(shell command -v cygpath 2>/dev/null),)
 WINPATH = $1
 else
-WINPATH = $(shell cygpath -m $1)
+WINROOT := $(shell cygpath -m $(CURDIR))
+WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp
-	@printf '%s\n' $(foreach o,$(OBJ),$(subst /,\/,$(call WINPATH,$(o)))) > $(BUILD)/linker.rsp
-	printf -- '-lstdc++ -lgcc -lc -lm -lgcc\n' >> $(BUILD)/linker.rsp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp
+	$(file >$(BUILD)/linker.rsp)
+	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
+	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
 	    -Wl,--allow-multiple-definition \
 	    -o $@ @$(BUILD)/linker.rsp

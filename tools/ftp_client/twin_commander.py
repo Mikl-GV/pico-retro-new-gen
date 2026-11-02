@@ -213,11 +213,31 @@ class FtpPanel:
         self.cwd = "/roms"
         self.entries = []      # [(name, is_dir, size)]
         self.host = ""
+        # ftplib не потокобезопасен: copy/refresh/автопоиск живут в разных
+        # потоках. Все операции с одним control-соединением — строго по
+        # очереди, иначе ответы сервера съезжают (200 вместо 226/227).
+        self._lock = threading.RLock()
 
     def connected(self):
         return self.ftp is not None
 
+    def _close_quiet(self):
+        """Закрыть текущее соединение (сервер держит ОДИН control-слот
+        на каждую сессию: брошенный сокет = обрыв новой сессии)."""
+        ftp, self.ftp = self.ftp, None
+        if ftp is None:
+            return
+        try:
+            ftp.quit()
+        except Exception:
+            try:
+                ftp.close()
+            except Exception:
+                pass
+
     def connect(self, host, port=21, source_ip=None):
+        with self._lock:
+            self._close_quiet()
         try:
             ftp = ftplib.FTP()
             # Проверка: при connect() ftplib читает баннер 220. Свой FTP-сервер
@@ -243,12 +263,8 @@ class FtpPanel:
             return False, f"{e}"
 
     def disconnect(self):
-        try:
-            if self.ftp:
-                self.ftp.quit()
-        except Exception:
-            pass
-        self.ftp = None
+        with self._lock:
+            self._close_quiet()
         self.entries = []
         self.tree.delete(*self.tree.get_children())
         self.path_var.set("-")
@@ -258,7 +274,10 @@ class FtpPanel:
             return False, "не подключено"
         try:
             items = []
-            self.ftp.retrlines("LIST -a", items.append)
+            with self._lock:
+                # сервер отдаёт листинг по одному слоту: параллельный RETR/STOR
+                # на том же control-соединении перемешал бы ответы 150/226/227
+                self.ftp.retrlines("LIST -a", items.append)
         except Exception as e:
             log(f"FTP LIST {self.cwd}: ошибка {e}")
             return False, f"{e}"
@@ -313,7 +332,8 @@ class FtpPanel:
         try:
             base = self.cwd.rstrip("/")
             newpath = base + "/" + name.strip("/")
-            self.ftp.cwd(newpath)
+            with self._lock:
+                self.ftp.cwd(newpath)
             self.cwd = newpath          # r818: не зависим от разбора PWD
             return self.refresh()
         except Exception as e:
@@ -331,7 +351,8 @@ class FtpPanel:
         if not parent.startswith("/roms"):
             parent = "/roms"
         try:
-            self.ftp.cwd(parent)
+            with self._lock:
+                self.ftp.cwd(parent)
             self.cwd = parent
             return self.refresh()
         except Exception as e:
@@ -339,20 +360,44 @@ class FtpPanel:
 
     def delete(self, name, is_dir):
         try:
-            if is_dir:
-                self.ftp.rmd(name)
-            else:
-                self.ftp.delete(name)
+            with self._lock:
+                if is_dir:
+                    self.ftp.rmd(name)
+                else:
+                    self.ftp.delete(name)
             return True, ""
         except Exception as e:
             return False, f"{e}"
 
     def mkdir(self, name):
         try:
-            self.ftp.mkd(name.strip("/"))
+            with self._lock:
+                self.ftp.mkd(name.strip("/"))
             return True, ""
         except Exception as e:
             return False, f"{e}"
+
+    def stor_file(self, name, path, callback=None):
+        """Выгрузить локальный файл (ПК → консоль). Держит блокировку на всё
+        время передачи: LIST не должен влезать в середину STOR."""
+        with self._lock:
+            if not self.ftp:
+                raise RuntimeError("не подключено")
+            with open(path, "rb") as f:
+                self.ftp.storbinary("STOR " + name, f, blocksize=8192,
+                                    callback=callback)
+
+    def retr_file(self, name, path, callback=None):
+        """Скачать файл (консоль → ПК) под той же блокировкой."""
+        with self._lock:
+            if not self.ftp:
+                raise RuntimeError("не подключено")
+            with open(path, "wb") as f:
+                def _cb(buf):
+                    f.write(buf)          # данные обязательно в файл
+                    if callback:
+                        callback(buf)
+                self.ftp.retrbinary("RETR " + name, _cb)
 
 
 def find_console_worker(ip, port, found, done, open_ports, source_ip=None):
@@ -371,10 +416,10 @@ def find_console_worker(ip, port, found, done, open_ports, source_ip=None):
         s.connect((ip, port))
         open_ports.append(ip)           # порт открыт — кандидат
         s.settimeout(1.2)
-        try:
-            s.sendall(b"\r\n")
-        except OSError:
-            pass
+        # Ничего НЕ отправляем: сервер шлёт 220 сразу на SYN. Лишний коннект
+        # на :21 у сервера — это новая сессия в единственном control-слоте,
+        # она обрывает уже идущий обмен; поэтому автопоиск и не должен
+        # трогать адрес, к которому мы подключены (фильтр в _auto_find_worker).
         data = b""
         t0 = time.time()
         while time.time() - t0 < 2.0:
@@ -648,12 +693,15 @@ class TwinApp:
             log("Автопоиск: не определён ни один локальный IP")
             return
 
-        # Собираем (адрес, локальный_ip_интерфейса) из ВСЕХ подсетей
+        # Собираем (адрес, локальный_ip_интерфейса) из ВСЕХ подсетей.
+        # Уже подключённую консоль не сканируем: connect на :21 — это новая
+        # сессия в её control-слоте, она обрывает текущий обмен.
         jobs = []   # (host, source_ip)
         log_txt = []
+        busy_ip = self.rpanel.host if self.rpanel.connected() else ""
         for local_ip, net in nets:
             addrs = [str(h) for h in net.hosts()]
-            addrs = [a for a in addrs if a != local_ip]
+            addrs = [a for a in addrs if a != local_ip and a != busy_ip]
             # порядок: ближайшие к себе
             oct = int(local_ip.split(".")[-1])
             addrs.sort(key=lambda a: abs(int(a.split(".")[-1]) - oct))
@@ -662,12 +710,13 @@ class TwinApp:
             log_txt.append(f"{net} (через {local_ip})")
         self.root.after(0, lambda: self.set_status(
             f"Автопоиск: сканирую {len(jobs)} адресов в {len(nets)} подсетях..."))
-        log(f"Автопоиск: подсети {log_txt}, адресов={len(jobs)}")
+        # строка про подсети убрана: лог только по ошибкам и результату
 
         found = []
         open_ports = []
         done = []
-        step = max(1, len(jobs) // 30)   # до 30 одновременных
+        step = max(1, len(jobs) // 16)   # до 16 одновременных (WiFi-консоль
+                                         # дешёвым железом не любит шквал SYN)
         for block in range(0, len(jobs), step):
             batch = jobs[block:block + step]
             threads = []
@@ -699,6 +748,12 @@ class TwinApp:
                 log("Автопоиск: ни один хост не отдал :21")
 
     def _auto_connect(self, ip):
+        # Уже подключены к этой консоли — переподключение создало бы вторую
+        # сессию и оборвало первую; достаточно перечитать панель.
+        if self.rpanel.connected() and self.rpanel.host == ip:
+            self.set_status(f"Уже подключено: {ip}")
+            self.refresh_all()
+            return
         self.set_status(f"Найдена консоль: {ip}, подключаюсь...")
         threading.Thread(target=self._connect_worker, args=(ip,), daemon=True).start()
 
@@ -740,13 +795,11 @@ class TwinApp:
 
             try:
                 self.set_progress(0, total, "0 %")
-                with open(path, "rb") as f:
-                    dst.ftp.storbinary("STOR " + name, f, blocksize=8192, callback=cb)
+                dst.stor_file(name, path, callback=cb)
                 fin = total or done[0]
                 self.set_progress(fin, fin, "Готово")
                 self.root.after(0, lambda: self.set_status(
                     f"ГОТОВО: загружено на консоль — {name} ({human_size(fin)})"))
-                log(f"STOR завершён: {name} ({fin} байт)")
             except Exception as e:
                 self.set_progress(0, 0, "ошибка")
                 self.root.after(0, lambda: self.set_status(f"Ошибка загрузки: {e}"))
@@ -759,18 +812,17 @@ class TwinApp:
             try:
                 path = os.path.join(dst.cwd, name)
                 self.set_progress(0, total, "0 %")
-                with open(path, "wb") as f:
-                    def cb(buf):
-                        f.write(buf)          # данные обязательно в файл
-                        done[0] += len(buf)
-                        self.set_progress(done[0], total,
-                                          f"{human_size(done[0])} / {human_size(total)}")
-                    src.ftp.retrbinary("RETR " + name, cb)
+
+                def cb(buf):
+                    done[0] += len(buf)
+                    self.set_progress(done[0], total,
+                                      f"{human_size(done[0])} / {human_size(total)}")
+
+                src.retr_file(name, path, callback=cb)
                 fin = done[0]
                 self.set_progress(fin, fin, "Готово")
                 self.root.after(0, lambda: self.set_status(
                     f"ГОТОВО: скачано на ПК — {name} ({human_size(fin)})"))
-                log(f"RETR завершён: {name} ({fin} байт)")
             except Exception as e:
                 self.set_progress(0, 0, "ошибка")
                 self.root.after(0, lambda: self.set_status(f"Ошибка скачивания: {e}"))
