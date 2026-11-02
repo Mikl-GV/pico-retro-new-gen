@@ -77,7 +77,7 @@ static const system_entry_t systems[] = {
     SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
     SYS("ms1504",     "MS 1504",                  COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
-    SYS("c64",        "Commodore 64",             COMPUTER, PLANNED),
+    SYS("c64",        "Commodore 64/128",         COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };
 

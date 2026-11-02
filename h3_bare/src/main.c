@@ -87,6 +87,7 @@ extern void fuse_set_model(const char* m);
 extern void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void bk_set_model(const char* m);
 extern void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void c64_set_model(int m);
 
 static int zx_model_dialog(void) {
     int sel = 0, scroll = 0, dirty = 1;
@@ -271,6 +272,69 @@ static int cpc_source_dialog(void) {
     }
 }
 
+// r974: выбор машины Commodore 64/128 (как A8/ZX/BK). Значения строк совпадают
+// с vice_c64_model/vice_c128_model в libretro-core.c (strcmp).
+// 0 = C64 PAL, 1 = C64 NTSC, 2 = C128 PAL, 3 = C128 NTSC. -1 (ESC).
+static int c64_model_dialog(void) {
+    int sel = 0, dirty = 1;
+    const char* const models[] = {
+        "C64 PAL", "C64 NTSC", "C128 PAL", "C128 NTSC",
+    };
+    const int count = (int)(sizeof(models) / sizeof(models[0]));
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "Commodore 64/128: model", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            for (int i = 0; i < count; i++) {
+                int y = 140 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 4, 460, 30, 0x00222222);
+                fb_puts_s(70, y, models[i], 1, clr);
+            }
+            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < count - 1) sel++; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
+// r974: 1 = BASIC (вшитый KERNAL+Basic), 2 = ROM/диск (браузер /roms/c64), 0 = назад.
+static int c64_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Commodore 64/128: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. BASIC (built-in BIOS)",
+                "2. ROM / disk (.d64/.t64/.tap/.prg)"
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 760, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 2 : 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // r787: выбор машины Atari 8-bit (как MSX/ZX/BK). Индексы совпадают с
 // a8_machine_variants в a8_host.c. Возвращает индекс или -1 (ESC).
 extern int a8_machine_count(void);
@@ -364,7 +428,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r973";
+const char g_fw_version[] = "r975";
 
 void main(void) {
     int sd_ok = 0;
@@ -372,7 +436,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r973\n");
+    uart_puts("build: r975\n");
 
     led_init();
     led_set(0);
@@ -696,6 +760,34 @@ void main(void) {
                 rom_browser_run("ms1504", name, "ms1504");
             }
             sega_pad_init();
+            continue;
+        }
+
+        // Commodore 64/128: выбор машины -> вшитый BASIC или ROM/диск с SD
+        if (strcmp(id, "c64") == 0) {
+            extern void emu_run_c64(const uint8_t*, uint32_t, const char*);
+            // r974: как A8: после выхода возвращаемся к выбору этой же системы
+            for (;;) {
+                int m = c64_model_dialog();   // 0=C64 PAL, 1=C64 NTSC, 2=C128 PAL, 3=C128 NTSC
+                if (m < 0) break;             // ESC — назад в главное меню
+                c64_set_model(m);
+                int src = c64_source_dialog();// 2=BASIC, 1=ROM/диск
+                if (src == 0) break;          // ESC — назад в главное меню
+                sega_pad_init();
+                tft_help_show("c64");
+                if (src == 2) {               // BASIC (вшитый BIOS)
+                    *(volatile uint32_t*)0x74u = 1;
+                    __asm volatile("dsb st" ::: "memory");
+                    emu_run_c64(NULL, 0, "basic");
+                    usb_wait_release_all();
+                    usb_kbd_restart_intr();
+                    *(volatile uint32_t*)0x74u = 0;
+                    __asm volatile("dsb st" ::: "memory");
+                } else {                      // ROM/диск через браузер (0x74 ставит run_emulator)
+                    rom_browser_run("c64", name, "c64");
+                }
+                sega_pad_init();
+            }
             continue;
         }
 

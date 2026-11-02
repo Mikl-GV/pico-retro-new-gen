@@ -638,6 +638,70 @@ $(BUILD)/cpc_renamed.stamp: $(CPC_OBJS) $(BUILD)/cpc_fs.o
 	$(TOP)h3_bare/cores/cpc_rename.sh $(CPC_OBJS) $(BUILD)/cpc_fs.o
 	touch $@
 
+# ---- Commodore 64/128 (VICE / vice-libretro), ядро в h3_bare/cores/vice ----
+# r974: vendored libretro/vice-libretro (VICE 3.10). EMUTYPE=x128 — один бинарь
+# покрывает C64 и C128 (VICII+VDC, resid); BIOS вшиты через USE_EMBEDDED
+# (include/embedded/*.h: c64 basic/kernal/chargen, c128 basiclo/hi/kernal/chargen).
+# retrodep/ — готовый libretro-архслой (видео/звук/ввод/архитектура); sdl/gtk3
+# из arch удалены. freestanding-newlib ошибался на <dirent.h> — shim/dirent.h
+# (как fuse/atari800). Префиксы объектов vz_ — избегаем дублей имён
+# (main, log, lib, crc32, file_path, filestream_*, retro_* с другими ядрами).
+VICE_ROOT := $(TOP)h3_bare/cores/vice
+VICE_INC  := -I$(VICE_ROOT)/shim -I$(VICE_ROOT)/vice/src -I$(VICE_ROOT) \
+	-I$(VICE_ROOT)/libretro -I$(VICE_ROOT)/include -I$(VICE_ROOT)/include/embedded \
+	-I$(VICE_ROOT)/vice/src/core/rtc -I$(VICE_ROOT)/vice/src/lib \
+	-I$(VICE_ROOT)/vice/src/printerdrv -I$(VICE_ROOT)/retrodep \
+	-I$(VICE_ROOT)/libretro-common/include -I$(VICE_ROOT)/deps/libz \
+	-I$(VICE_ROOT)/vice/src/sid -I$(VICE_ROOT)/vice/src/arch/shared \
+	-I$(VICE_ROOT)/vice/src/c64 -I$(VICE_ROOT)/vice/src/c64/cart \
+	-I$(VICE_ROOT)/vice/src/c64dtv -I$(VICE_ROOT)/vice/src/c128 -I$(VICE_ROOT)/vice/src/core \
+	-I$(VICE_ROOT)/vice/src/datasette -I$(VICE_ROOT)/vice/src/diag \
+	-I$(VICE_ROOT)/vice/src/drive -I$(VICE_ROOT)/vice/src/drive/iec \
+	-I$(VICE_ROOT)/vice/src/drive/iec/c64exp -I$(VICE_ROOT)/vice/src/drive/ieee \
+	-I$(VICE_ROOT)/vice/src/drive/tcbm -I$(VICE_ROOT)/vice/src/fsdevice \
+	-I$(VICE_ROOT)/vice/src/imagecontents -I$(VICE_ROOT)/vice/src/joyport \
+	-I$(VICE_ROOT)/vice/src/lib/p64 -I$(VICE_ROOT)/vice/src/monitor \
+	-I$(VICE_ROOT)/vice/src/raster -I$(VICE_ROOT)/vice/src/resid \
+	-I$(VICE_ROOT)/vice/src/residfp \
+	-I$(VICE_ROOT)/vice/src/residfp/builders/residfp-builder/residfp \
+	-I$(VICE_ROOT)/vice/src/rs232drv -I$(VICE_ROOT)/vice/src/rtc \
+	-I$(VICE_ROOT)/vice/src/samplerdrv -I$(VICE_ROOT)/vice/src/tape \
+	-I$(VICE_ROOT)/vice/src/tapeport -I$(VICE_ROOT)/vice/src/userport \
+	-I$(VICE_ROOT)/vice/src/vdc -I$(VICE_ROOT)/vice/src/vdrive \
+	-I$(VICE_ROOT)/vice/src/vicii -I$(VICE_ROOT)/vice/src/video
+VICEFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
+	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-DHAVE_CONFIG_H -D__LIBRETRO__ -DUSE_LIBRETRO_VFS -DCORE_NAME=\"x128\" -D__X128__ \
+	-D__STDC_FORMAT_MACROS -DHAVE_7ZIP -D_7ZIP_ST \
+	-Wno-format -Wno-format-security -Wno-unused -Wno-unused-parameter \
+	-Wno-parentheses -Wno-sign-compare -Wno-array-bounds \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion
+# Состав — из Makefile.common/Makefile.x128 вендора (полный список в
+# vice_sources.mk, генерируется из dry-run make EMUTYPE=x128; цели в
+# vice_rules.mk строятся по тому же правилу имён).
+include $(VICE_ROOT)/vice_sources.mk
+include $(VICE_ROOT)/vice_rules.mk
+VICE_OBJS := $(foreach f,$(VICE_REL),$(BUILD)/vz_$(subst /,_,$(subst .,_,$(f))).o)
+OBJ += $(VICE_OBJS) $(BUILD)/c64_host.o $(BUILD)/c64_fs.o $(BUILD)/c64_stubs.o
+
+$(BUILD)/c64_host.o: $(TOP)h3_bare/cores/c64_host.c | $(BUILD)
+	$(CC) $(VICEFLAGS) $(VICE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/c64_fs.o: $(TOP)h3_bare/cores/c64_fs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(VICE_ROOT)/libretro-common/include -c -o $@ $<
+$(BUILD)/c64_stubs.o: $(TOP)h3_bare/cores/c64_stubs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+# Батч-ренейм глобалов набора в vice_* (как a8/cpc): после сборки, перед линком.
+# r974: BSS ядра VICE (~31 МБ, из них 21 МБ — таблица ReSID filter8580new) вынесен
+# в .vice_bss (NOLOAD, 0x52000000) — иначе он переполняет общую .bss и плавающий
+# пул .noinit_fbn наезжает на uncached-зону 0x4A400000 (ASSERT-ошибка линковки).
+# Переименование секции — на КАЖДОМ объекте ДО батч-ренейма символов (как a8).
+# Host-слой (c64_host.o/c64_fs.o/c64_stubs.o) НЕ входит — держит внешние имена
+# (emu_run_c64, c64_fs_register, fopen/fread) и зовёт vice_retro_*.
+$(BUILD)/vice_renamed.stamp: $(VICE_OBJS)
+	for o in $(VICE_OBJS); do arm-none-eabi-objcopy --rename-section .bss=.vice_bss "$$o" "$$o" || exit 1; done
+	$(TOP)h3_bare/cores/vice_rename.sh $(VICE_OBJS)
+	touch $@
+
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
 # Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
 # host сам выбирает драйвер и крутит BurnDrvFrame). Собственные флаги
@@ -1127,7 +1191,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)

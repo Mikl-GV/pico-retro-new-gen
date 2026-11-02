@@ -165,6 +165,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_atari800(rom, size, sel_name);  // Atari 8-bit (400/800/XL/XE) — /roms/atari800 (r778)
     else if (strcmp(sys_id, "cpc") == 0)
         emu_run_cpc(rom, size, sel_name);       // Amstrad CPC — /roms/cpc (r963)
+    else if (strcmp(sys_id, "c64") == 0)
+        emu_run_c64(rom, size, sel_name);       // Commodore 64/128 — /roms/c64 (r974)
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);

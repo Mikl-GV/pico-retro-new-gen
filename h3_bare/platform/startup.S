@@ -460,6 +460,18 @@ _start:
     b 7b
 8:
 
+    /* r974: Zero-init .vice_bss (NOLOAD, ядро VICE C64/C128; linker.ld —
+     * 0x52000000). BSS-цикл её не покрывает (отдельная секция). */
+    ldr r0, =_vice_bss_start
+    ldr r1, =_vice_bss_end
+    cmp r0, r1
+    beq 9f
+8:  cmp r0, r1
+    bhs 9f
+    str r2, [r0], #4
+    b 8b
+9:
+
     /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
      * не покрывает). Идёт ПОСЛЕ кучи, но до main. */
     ldr r0, =_coherent_start
