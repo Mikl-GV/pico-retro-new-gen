@@ -79,6 +79,17 @@ static int path_matches(const char* path) {
 RFILE* cpc_rfopen(const char* path, const char* mode) {
     (void)mode;
     if (!path_matches(path)) {
+        // r973: штатные промахи НЕ логируем — cap32 при старте ищет свой
+        // конфиг (.//cap32.cfg) и diff диска ((null)/xxx.sav от
+        // retro_attach_disk: GET_SAVE_DIRECTORY у нас нет, retro_save_directory
+        // == NULL). Это не ошибки: конфиг задаётся хостом через переменные,
+        // diff отсутствует -> диск грузится без изменений. Лог остаётся
+        // только для реального контента (когда запрошен неизвестный файл,
+        // НЕ похожий на cfg/sav).
+        const char* ext = path ? strrchr(path, '.') : NULL;
+        if (ext && (strcmp(ext, ".cfg") == 0 || strcmp(ext, ".sav") == 0)) {
+            return NULL;
+        }
         // r968: ядро спрашивает файл, которого мы не регистрировали — без
         // этого лога причина «остался BASIC вместо диска» невидима.
         extern int uart0_printf(const char* fmt, ...);
