@@ -44,12 +44,15 @@ static io_read16_cb_t  port_read_callback16 [0x10000];
 
 static void unknown_port_writer (uint16_t portnum, uint8_t value)
 {
-	printf("IO: unknown port OUT to %04Xh with value %02Xh\n", portnum, value);
+	// r1047: молчим — неэмулированные порты это норма, не ошибка.
+	// (Раньше печатали каждый OUT с @CS:IP — спам в логе.)
+	(void)portnum; (void)value;
 }
 
 static uint8_t unknown_port_reader (uint16_t portnum)
 {
-	printf("IO: unknown port IN to %04Xh\n", portnum);
+	// r1047: молчим (см. выше).
+	(void)portnum;
 	return 0xFF;
 }
 
@@ -114,7 +117,12 @@ uint8_t portin (uint16_t portnum)
 	//if (verbose) printf("portin(0x%X);\n", portnum);
 	switch (portnum) {
 		case 0x62:
-			return 0x00;
+			/* r1020: порт 0x62 на PC/XT — ввод «перемычек»/клавиатурного
+			   статуса (DIP-биты). BIOS PK300 после теста памяти читает его
+			   (F61F7: OUT 61,F8; IN 62; SHL 4; AND 0xF; OR AH) и ждёт, что
+			   результат НЕ 0, иначе повтор теста клавиатуры (BL=06→07).
+			   Возвращаем ненулевое «железо есть»: 0x05 (DIP-биты 0/2). */
+			return 0x05;
 		case 0x60:
 		case 0x61:
 		case 0x63:

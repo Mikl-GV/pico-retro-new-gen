@@ -15,6 +15,16 @@
 #include "uart.h"
 #include "usb_ohci.h"
 
+// r990: опрос клавиатуры внутри длинных ожиданий OHCI (bulk/control) — чтобы
+// при чтении флешки отчёты клавиатуры продолжали забираться, иначе при
+// длинном чтении FAT/ROM (до 2 с на таймаут) зажатые клавиши ложно
+// «отпускались» по KBD_IDLE_RELEASE_US («часть кнопок не работает»).
+// r991: используем БЕЗОПАСНУЮ версию — usb_kbd_get_raw у Full-Speed клавы
+// зовёт GET_REPORT (control-передача) и из ctrl_transfer давал бесконечную
+// рекурсию (зависание после «-> KEYBOARD» на стенде r990). poll_block
+// работает только по стартованному interrupt-IN (low-speed донгл).
+extern void usb_kbd_poll_block(void);
+
 // ---- OHCI register block ----
 typedef struct {
     volatile uint32_t rev;
@@ -102,7 +112,26 @@ static uint16_t    g_mps = 8;
 // write-back D-cache затирает toggle-биты, которые HC обновляет в DRAM.
 
 static ohci_ed_t   g_int_ed[2][2] __attribute__((section(".coherent"), aligned(16)));
-static ohci_td_t   g_int_td[2][2][2] __attribute__((section(".coherent"), aligned(32)));
+// r1063: ЗАМКНУТОЕ кольцо TD (по 8 на слот). HC сам продвигается по TD.next,
+// CPU только реармит снятые — head/tail НЕ трогаются. Благодаря этому HC
+// непрерывно держит IN-токены на эндпоинте и ловит КАЖДЫЙ пакет донгла,
+// включая пустой отчёт отпускания (отжатие). Рук переназначение head/tail в
+// r1062 теряло короткие пакеты press→release подряд (HC закрывал TD, пустой
+// отчёт уходил в «мёртвое окно»).
+#define KBD_INT_NTD 8
+static ohci_td_t   g_int_td[2][2][KBD_INT_NTD] __attribute__((section(".coherent"), aligned(32)));
+// Буферы репортов interrupt-IN: на каждый (порт, слот, TD) свой.
+static uint8_t     g_int_report_buf[2][2][KBD_INT_NTD][16] __attribute__((section(".coherent"), aligned(8)));
+
+// ---- периодический interrupt-IN (для HID) ----
+// r1063: ЗАМКНУТОЕ кльцо TD — HC сам беспрерывно обходит кольцо, держит
+// IN-токены всегда; CPU реармит снятые (см. intr_in_poll). r1065: сюда же
+// храним параметры цепочки для автоматического рестарта при Halted-ED.
+static uint8_t     g_int_addr[2];      // FUNC (адрес устройства), для рестарта
+static uint8_t     g_int_ep[2];        // номер эндпоинта (без бита IN)
+static uint8_t*    g_int_buf[2];       // 8-байтный буфер репорта (не TD-буфер)
+static uint32_t    g_int_started[2];   // цепочка построена хотя бы раз
+
 
 // r788: bulk-пул для FS/LS-флешки (USB Mass Storage через OHCI). [порт][направление].
 // Toggle отдельный по направлению (EP-IN и EP-OUT — независимые эндпоинты).
@@ -127,11 +156,15 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
     if (slot < 0 || slot >= 2 || !buf || len == 0) return -1;
     int idx = ohci_idx(base);
     ohci_regs_t* ohci = (ohci_regs_t*)base;
+
+    // r1065: запоминаем параметры — нужны для авто-рестарта при Halted-ED.
+    g_int_addr[idx]  = addr;
+    g_int_ep[idx]    = (uint8_t)(ep & 0x7F);
+    g_int_buf[idx]   = buf;
+    g_int_started[idx] = 1;
     int low_speed = usb_ohci_port_low_speed(base, 0);
 
-    ohci_ed_t* ed  = &g_int_ed[idx][slot];
-    ohci_td_t* td  = &g_int_td[idx][slot][0];
-    ohci_td_t* dum = &g_int_td[idx][slot][1];
+    ohci_ed_t* ed = &g_int_ed[idx][slot];
 
     memset(ed, 0, sizeof(*ed));
     memset(&g_int_td[idx][slot], 0, sizeof(g_int_td[idx][slot]));
@@ -142,27 +175,26 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
              | (0u << 25)            // toggle carry = DATA0
              | (low_speed ? ED_LOWSPEED : 0)
              | ((uint32_t)len << 16);
-    ed->head = (uint32_t)td;
-    ed->tail = (uint32_t)dum;
     ed->next = 0;
 
-    // TD toggle: оба слота одинаково — T=00 (toggle from ED), HC сам ведёт
-    // DATA0/DATA1 через ED toggle carry.
-    td->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
-    td->cbp = (uint32_t)buf;
-    td->be  = (uint32_t)(buf + len - 1);
-    td->next = (uint32_t)dum;
-
-    dum->cfg = (TD_CC_NOTACC << TD_CC_SHIFT);
-    dum->cbp = dum->be = 0;
-    dum->next = (uint32_t)dum;
+    // r1066: замкнутое кольцо из KBD_INT_NTD активных TD. head=TD0, tail
+    // ставим на TD[KBD_INT_NTD-2] — «один позади head» (head никогда не
+    // догонит tail). Сам tail в intr_in_poll сдвигается при каждом снятии.
+    for (int t = 0; t < KBD_INT_NTD; t++) {
+        ohci_td_t* td = &g_int_td[idx][slot][t];
+        td->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
+        td->cbp = (uint32_t)(g_int_report_buf[idx][slot][t]);
+        td->be  = (uint32_t)(g_int_report_buf[idx][slot][t] + len - 1);
+        td->next = (uint32_t)&g_int_td[idx][slot][(t + 1) % KBD_INT_NTD];  // кольцо
+    }
+    ed->head = (uint32_t)&g_int_td[idx][slot][0];
+    ed->tail = (uint32_t)&g_int_td[idx][slot][KBD_INT_NTD - 2];
 
     cache_clean((uint32_t)ed, sizeof(*ed));
     cache_clean((uint32_t)&g_int_td[idx][slot], sizeof(g_int_td[idx][slot]));
-    cache_clean((uint32_t)buf, len);
+    cache_clean((uint32_t)&g_int_report_buf[idx][slot], sizeof(g_int_report_buf[idx][slot]));
 
     if (slot == 0) {
-        // Первый слот: HCCA-таблица → ED0, цеплялка NextED, PLE
         g_int_ed[idx][0].next = (uint32_t)&g_int_ed[idx][1];
         cache_clean((uint32_t)&g_int_ed[idx][0], sizeof(g_int_ed[idx][0]));
 
@@ -173,53 +205,95 @@ int usb_ohci_intr_in_start(uint32_t base, uint8_t addr, uint8_t ep,
         ohci->peried = (uint32_t)&g_int_ed[idx][0];
         ohci->ctrl |= (1u << 2);   // PLE
     } else {
-        // Второй слот: цепляется через ED0.NextED (уже настроен в slot=0)
         __asm volatile("dmb" ::: "memory");
     }
     return 0;
 }
 
+// авто-рестарт кольца после Halted-ED (r1065): пересборка цепочки
+// usb_ohci_intr_in_start со СБРОСОМ data toggle (снимает рассинхрон чётности).
+static void intr_in_restart(int idx, int slot) {
+    if (g_int_started[idx] && g_int_buf[idx]) {
+        usb_ohci_intr_in_start((idx == 0) ? 0x01C1B400u : 0x01C1C400u,
+                               g_int_addr[idx], g_int_ep[idx],
+                               g_int_buf[idx], 8, slot);
+    }
+}
+
 // Опрос периодического interrupt-IN.
-// Возврат: 1 = снят свежий пакет (данные в buf), 0 = пакета нет (TD ждёт,
-//          ED/TD НЕ трогаем), -1 = TD завершился с ошибкой (CRC/timeout) —
-//          вызывающий может перезапустить цепочку.
-// ВАЖНО: переарм делаем ТОЛЬКО после снятия пакета. Прежний вариант
-// переармливал TD на каждом опросе — при частых поллах это гонка с HC
-// (HC пишет HEAD в DRAM, мы затирали из кэша) и «замирание» клавиатуры.
+// r1063: замкнутое кольцо из KBD_INT_NTD TD, HC сам идёт по TD.next.
+// r1066: tail теперь ДИНАМИЧЕСКИЙ. В r1063 tail был зафиксирован на последнем
+// TD — по семантике OHCI HC останавливается, когда head == tail, и TD на
+// границе не обрабатывает: кольцо из 8 TD реально давало максимум 7 передач
+// (head: TD0..TD6, седьмая упирается в tail=TD7), после чего ED выглядит
+// ПУСТЫМ навсегда → донгл молчит, хотя отчёты ждут (в логе владельца ровно
+// 7 пакетов и «перестала реагировать», оживала только после пересборки).
+// Фикс: после каждого снятия TD ставим ed->tail на TD «один позади head» —
+// граница всегда впереди head на целое кольцо, HC не останавливается и не
+// теряет пустой отчёт RELEASE. TailP можно писать на лету — это штатный
+// способ подкидывать TD в OHCI (spec: append via TailP update).
 int usb_ohci_intr_in_poll(uint32_t base, uint8_t* buf, uint16_t len, int slot) {
-    // r0.417 (L2 аудита): API-защита (как в intr_in_start)
+    // r0.417 (L2 аудита): API-защита
     if (slot < 0 || slot >= 2 || !buf || len == 0) return -1;
     int idx = ohci_idx(base);
-    ohci_td_t* td = &g_int_td[idx][slot][0];
 
-    cache_invalidate((uint32_t)td, sizeof(td[0]));
-    uint32_t cc = td->cfg >> TD_CC_SHIFT;
+    ohci_ed_t* ed = &g_int_ed[idx][slot];
+    ohci_td_t* ring = g_int_td[idx][slot];
+    uint32_t ring_base = (uint32_t)&ring[0];
 
-    if (cc == TD_CC_NOTACC)
-        return 0;                       // передача ещё идёт / пакета нет
+    // r1066: Halted — ТОЛЬКО по H bit (bit0) слова head. Условие head==tail
+    // ошибкой НЕ считается: при динамическом tail это легитимный момент.
+    {
+        cache_invalidate((uint32_t)ed, sizeof(*ed));
+        if (ed->head & 1u) {
+            // Бит H: HC бросил список после битого пакета (CRC/timeout).
+            // Пересобираем цепочку целиком со сбросом data toggle.
+            intr_in_restart(idx, slot);
+            return -1;
+        }
+    }
 
-    // Переарм (общий для «пакет» и «ошибка»): вернуть TD в цепочку.
-    uint32_t cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
-    td->cfg = cfg;
-    td->cbp = (uint32_t)buf;
-    td->be  = (uint32_t)(buf + len - 1);
-    td->next = (uint32_t)&g_int_td[idx][slot][1];
-    cache_clean((uint32_t)td, sizeof(td[0]));
-    cache_clean((uint32_t)buf, len);
+    // Сканируем кольцо: один завершённый TD за вызов (drain-цикл kbd_scan
+    // дёргает нас подряд, разбирая пачки press/release).
+    for (int t = 0; t < KBD_INT_NTD; t++) {
+        ohci_td_t* td = &ring[t];
+        cache_invalidate((uint32_t)td, sizeof(td[0]));
+        uint32_t cc = td->cfg >> TD_CC_SHIFT;
+        if (cc == TD_CC_NOTACC) continue;   // этот TD ещё не получил пакет
 
-    // head/tail: возвращаем на активный TD. Не инвалидируем и не читаем ED —
-    // stale-копия кары HC из кэша не должна затираться (она и так у HC в DRAM).
-    g_int_ed[idx][slot].head = (uint32_t)td;
-    g_int_ed[idx][slot].tail = (uint32_t)&g_int_td[idx][slot][1];
-    cache_clean((uint32_t)&g_int_ed[idx][slot], sizeof(g_int_ed[idx][slot]));
+        uint8_t* slot_buf = g_int_report_buf[idx][slot][t];
 
-    if (cc != TD_CC_NOERR)
-        return -1;                      // ошибка завершения
+        if (cc == TD_CC_NOERR) {
+            cache_invalidate((uint32_t)slot_buf, len);
+            memcpy(buf, slot_buf, (len < 8) ? len : 8);   // отчёт ≤ 8 байт
+        }
 
-    // r0.417 (L2): инвалидируем по фактической длине, а не фиксированные
-    // 64 байта (для 8-байтного отчёта убивались чужие dirty-линии).
-    cache_invalidate((uint32_t)buf, len);
-    return 1;
+        // Реарм снятого/ошибочного TD: вернуть в кольцо.
+        td->cfg = (TD_CC_NOTACC << TD_CC_SHIFT) | TD_DP_IN | TD_R;
+        td->cbp = (uint32_t)(slot_buf);
+        td->be  = (uint32_t)(slot_buf + len - 1);
+        td->next = (uint32_t)&ring[(t + 1) % KBD_INT_NTD];
+        cache_clean((uint32_t)td, sizeof(td[0]));
+        cache_clean((uint32_t)slot_buf, len);
+
+        // r1066: сдвинуть tail на «один позади head» — кольцо не опустеет.
+        {
+            cache_invalidate((uint32_t)ed, sizeof(*ed));
+            uint32_t hptr = ed->head & ~0x0Fu;   // head-указатель (без флагов)
+            if (hptr >= ring_base &&
+                hptr - ring_base < KBD_INT_NTD * (uint32_t)sizeof(ohci_td_t)) {
+                int hndx = (int)((hptr - ring_base) / sizeof(ohci_td_t));
+                int tndx = (hndx + KBD_INT_NTD - 1) % KBD_INT_NTD;
+                ed->tail = (uint32_t)&ring[tndx];
+                cache_clean((uint32_t)ed, sizeof(*ed));
+            }
+        }
+
+        if (cc != TD_CC_NOERR)
+            return -1;
+        return 1;
+    }
+    return 0;
 }
 
 void usb_ohci_set_mps(uint16_t mps) {
@@ -601,6 +675,10 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
         }
 
         udelay(1000);
+        // r990: обслуживание клавиатуры во время длинных control-передач
+        // (дескрипторы/config на старте, запросы к флешке) — безопасная
+        // версия (r991): не входит в GET_REPORT-рекурсию для Full-Speed клавы.
+        usb_kbd_poll_block();
         if (++elapsed > timeout_ms) {
             /* r856: короткий IN (DataUnderrun) — буфер заполнен, но status-TD
                на этом OHCI не выполнился. Принимаем, если принято ровно
@@ -753,6 +831,15 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
         }
         cache_invalidate((uint32_t)(uintptr_t)td, sizeof(td[0]));
         if (((td->cfg >> TD_CC_SHIFT) & 0xFu) != TD_CC_NOTACC) break;
+        // r990: пока bulk-передача (чтение флешки) в полёте, обслуживаем
+        // клавиатуру — иначе при длинном чтении FAT/ROM CPU висит здесь
+        // (udelay по 1 мс, до 2 c), отчёты клавиатуры не читаются, и по
+        // таймауту «тишины» kbd_release_all ложно отпускает зажатые клавиши
+        // («часть кнопок не работает», подвисание ввода в меню на флешке).
+        // Interrupt-IN и bulk живут в РАЗНЫХ списках OHCI (control vs bulk),
+        // поэтому опрос внутри ожидания не ломает передачу. Безопасная
+        // версия r991: не входит в GET_REPORT-рекурсию для Full-Speed клавы.
+        usb_kbd_poll_block();
         udelay(1000);
         if (++elapsed > 2000) {
             uart0_printf("ohci-bulk: TIMEOUT d=%d ep=%d len=%u edcfg=0x%X ctl=0x%X cmd=0x%X isr=0x%X\n"

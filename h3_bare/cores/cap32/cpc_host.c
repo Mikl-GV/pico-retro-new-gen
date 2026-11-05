@@ -87,8 +87,12 @@ static uint16_t hid_to_retrok(uint8_t sc)
     case 0x38: return RETROK_SLASH;      case 0x39: return RETROK_CAPSLOCK;
     case 0x3A: return RETROK_F1;   case 0x3B: return RETROK_F2;   case 0x3C: return RETROK_F3;
     case 0x3D: return RETROK_F4;   case 0x3E: return RETROK_F5;   case 0x3F: return RETROK_F6;
-    case 0x40: return RETROK_F7;   case 0x41: return RETROK_F8;   case 0x42: return RETROK_F9;
-    case 0x43: return RETROK_F10;  case 0x44: return RETROK_F11;  case 0x45: return RETROK_F12;
+    case 0x40: return RETROK_F7;   case 0x41: return RETROK_F8;
+    // r993: F9 (VKEYB) и F10 (GUI) НЕ мапим — ядро cap32 по ним открывает
+    // собственный libretro-UI (retro_ui_toggle_status UI_KEYBOARD/UI_MENU),
+    // которого наш host не поддерживает: рендер UI уходит в мусорные
+    // указатели → Data Abort (дамп F1..F6 из startup.S), эмулятор падает.
+    case 0x44: return RETROK_F11;  case 0x45: return RETROK_F12;
     case 0x49: return RETROK_INSERT;     case 0x4A: return RETROK_HOME;
     case 0x4B: return RETROK_PAGEUP;     case 0x4C: return RETROK_DELETE;
     case 0x4D: return RETROK_END;        case 0x4E: return RETROK_PAGEDOWN;
@@ -353,10 +357,13 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    extern int g_emu_keep_heap;
-    g_emu_keep_heap = 1;
+    // r1015: НЕ ставим g_emu_keep_heap — cap32 не кэширует указатели пула
+    // между запусками (pbRAM/pbROM пересоздаются в init, retro_free в
+    // deinit). Симптом (лог r1014): CPC (единственный перед A8) с keep_heap=1
+    // НЕ давал gb_heap_reset() — пул 24 МБ оставался занят капри32 после
+    // выхода; следующий запуск Atari 800 падал «Fatal error: out of memory»
+    // (Util_malloc → malloc NULL), хотя файл читался нормально.
     emu_prepare();
-    g_emu_keep_heap = 0;
     snd_manifest("cpc", "ay-3-8912");
 
     // BASIC/ROM: rom==NULL -> вшитый BIOS + BASIC (нет файла).

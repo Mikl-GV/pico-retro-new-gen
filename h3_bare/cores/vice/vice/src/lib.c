@@ -1,4 +1,4 @@
-/*
+﻿/*
  * lib.c - Library function wrappers, mostly for memory alloc/free tracking.
  *
  * Written by
@@ -636,7 +636,7 @@ void *lib_malloc(size_t size)
 #endif
 
     if (ptr == NULL && size > 0) {
-        fprintf(stderr, "error: lib_malloc failed\n");
+        printf("error: lib_malloc failed\r\n");
         archdep_vice_exit(-1);
     }
 #ifdef LIB_DEBUG
@@ -673,7 +673,7 @@ void *lib_calloc(size_t nmemb, size_t size)
 #endif
 
     if (ptr == NULL && (size * nmemb) > 0) {
-        fprintf(stderr, "error: lib_calloc failed\n");
+        printf("error: lib_calloc failed\r\n");
         archdep_vice_exit(-1);
     }
 #ifdef LIB_DEBUG
@@ -702,7 +702,7 @@ void *lib_realloc(void *ptr, size_t size)
 #endif
 
     if (new_ptr == NULL) {
-        fprintf(stderr, "error: lib_realloc failed\n");
+        printf("error: lib_realloc failed\r\n");
         archdep_vice_exit(-1);
     }
 #ifdef LIB_DEBUG
@@ -753,7 +753,7 @@ char *lib_strdup(const char *str)
 #ifdef LIB_DEBUG_PINPOINT
         fprintf(stderr, "%s:%u: ", lib_debug_pinpoint_filename, lib_debug_pinpoint_line);
 #endif
-        fprintf(stderr, "error: lib_strdup(NULL) not allowed.\n");
+        printf("error: lib_strdup(NULL) not allowed\r\n");
         archdep_vice_exit(-1);
     }
 

@@ -231,6 +231,14 @@ int usb_msd_block_read(uint32_t lba, void* buf) {
         if (rc == 0) {
             uint8_t* d = (uint8_t*)buf;
             for (uint32_t i = 0; i < 512; i++) d[i] = g_bounce[off + i];
+            // r1002: диагностика — что реально отдал контроллер (первые блоки).
+            static int mlog = 0;
+            if (mlog < 6) {
+                mlog++;
+                printf("msd-blk: lba=%u bounce=%02X %02X %02X %02X dst=%02X %02X\n",
+                       (unsigned)lba, g_bounce[off], g_bounce[off+1],
+                       g_bounce[off+2], g_bounce[off+3], d[0], d[1]);
+            }
             return 0;
         }
         usb_msd_bot_recover();

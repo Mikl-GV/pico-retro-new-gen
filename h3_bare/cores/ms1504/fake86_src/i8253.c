@@ -57,6 +57,11 @@ static void out8253 ( uint16_t portnum, uint8_t value )
 				i8253.effectivedata[portnum] = 65536;
 			else
 				i8253.effectivedata[portnum] = i8253.chandata[portnum];
+			/* r1017: реальный 8253 при записи данных ЗАГРУЖАЕТ счётчик.
+			   Без этого counter[] оставался со старым значением (после
+			   декремента в timing), и BIOS-самотест PIT (IN 41; CMP 65) всегда
+			   читал 0 → вечный повтор с BL=02. */
+			i8253.counter[portnum] = (uint16_t)i8253.effectivedata[portnum];
 			i8253.active[portnum] = 1;
 			tickgap = (uint64_t) ( (float) hostfreq / (float) ( (float) 1193182 / (float) i8253.effectivedata[0]) );
 			if (i8253.accessmode[portnum] == PIT_MODE_TOGGLE)

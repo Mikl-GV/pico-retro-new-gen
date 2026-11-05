@@ -54,24 +54,34 @@ static void out8237 (uint16_t addr, uint8_t value) {
 #ifdef DEBUG_DMA
 	printf ("out8237(0x%X, %X);\n", addr, value);
 #endif
+	/* r1019: полные регистры 8237 — BIOS PK300 (DMA-тест F13E-F159) пишет
+	   0xFF в КАЖДЫЙ порт 0x00..0x07 (addr/count каналов 0..3) и читает назад.
+	   Раньше обрабатывались только ch1 addr/count (0x02/0x03) → IN 0x00/0x01
+	   возвращал 0, CMP FF не сходился → вечный цикл BL=01. */
 	switch (addr) {
+			case 0x0: //channel 0 address register
 			case 0x2: //channel 1 address register
-				if (flipflop == 1) dmachan[1].addr = (dmachan[1].addr & 0x00FF) | ( (uint32_t) value << 8);
-				else dmachan[1].addr = (dmachan[1].addr & 0xFF00) | value;
-#ifdef DEBUG_DMA
-				if (flipflop == 1) printf ("[NOTICE] DMA channel 1 address register = %04X\n", dmachan[1].addr);
-#endif
+			case 0x4: //channel 2 address register
+			case 0x6: //channel 3 address register
+				channel = (addr >> 1) & 3;
+				if (flipflop == 1)
+					dmachan[channel].addr = (dmachan[channel].addr & 0x00FF) | ( (uint32_t) value << 8);
+				else
+					dmachan[channel].addr = (dmachan[channel].addr & 0xFF00) | value;
 				flipflop = ~flipflop & 1;
 				break;
+			case 0x1: //channel 0 count register
 			case 0x3: //channel 1 count register
-				if (flipflop == 1) dmachan[1].reload = (dmachan[1].reload & 0x00FF) | ( (uint32_t) value << 8);
-				else dmachan[1].reload = (dmachan[1].reload & 0xFF00) | value;
+			case 0x5: //channel 2 count register
+			case 0x7: //channel 3 count register
+				channel = (addr >> 1) & 3;
+				if (flipflop == 1)
+					dmachan[channel].reload = (dmachan[channel].reload & 0x00FF) | ( (uint32_t) value << 8);
+				else
+					dmachan[channel].reload = (dmachan[channel].reload & 0xFF00) | value;
 				if (flipflop == 1) {
-						if (dmachan[1].reload == 0) dmachan[1].reload = 65536;
-						dmachan[1].count = 0;
-#ifdef DEBUG_DMA
-						printf ("[NOTICE] DMA channel 1 reload register = %04X\n", dmachan[1].reload);
-#endif
+						if (dmachan[channel].reload == 0) dmachan[channel].reload = 65536;
+						dmachan[channel].count = 0;
 					}
 				flipflop = ~flipflop & 1;
 				break;
@@ -98,11 +108,17 @@ static void out8237 (uint16_t addr, uint8_t value) {
 #endif
 				flipflop = 0;
 				break;
+			case 0x81: //DMA channel 2 page register
+				dmachan[2].page = (uint32_t) value << 16;
+				break;
+			case 0x82: //DMA channel 3 page register
+				dmachan[3].page = (uint32_t) value << 16;
+				break;
 			case 0x83: //DMA channel 1 page register
 				dmachan[1].page = (uint32_t) value << 16;
-#ifdef DEBUG_DMA
-				printf ("[NOTICE] DMA channel 1 page base = %05X\n", dmachan[1].page);
-#endif
+				break;
+case 0x87: //DMA channel 0 page register
+				dmachan[0].page = (uint32_t) value << 16;
 				break;
 		}
 }
@@ -112,13 +128,28 @@ static uint8_t in8237 (uint16_t addr) {
 	printf ("in8237(0x%X);\n", addr);
 #endif
 	switch (addr) {
-		case 3:
-			if (flipflop == 1)
-				return dmachan[1].reload >> 8;
+		case 0: //channel 0 address register (read back)
+		case 1: //channel 0 count register
+		case 2: //channel 1 address register
+		case 3: //channel 1 count register
+		case 4: //channel 2 address register
+		case 5: //channel 2 count register
+		case 6: //channel 3 address register
+		case 7: //channel 3 count register
+		{
+			int chan = (addr >> 1) & 3;      /* 0/2/4/6 -> chan address; 1/3/5/7 -> count */
+			int is_count = addr & 1;
+			uint16_t v;
+			if (is_count)
+				v = (uint16_t)dmachan[chan].reload;
 			else
-				return dmachan[1].reload;
+				v = (uint16_t)dmachan[chan].addr;
+			if (flipflop == 1)
+				return (uint8_t)(v >> 8);
+			return (uint8_t)(v & 0xFF);
 			flipflop = ~flipflop & 1;	// this seems to be invalid, control never gets here ... :-O
 			break;
+		}
 	}
 	return 0;
 }

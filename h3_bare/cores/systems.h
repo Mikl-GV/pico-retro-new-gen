@@ -71,11 +71,11 @@ static const system_entry_t systems[] = {
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),
     SYS_BUILTIN("msx",  "MSX / Yamaha YIS-503III",  COMPUTER, READY),
-    SYS("atari800",   "Atari 8-bit (400/800/XL/XE)", COMPUTER, READY),
+    SYS_ALT("atari800", "Atari 8-bit (400/800/XL/XE)", "atari800", "atari8", COMPUTER, READY),
     SYS("radio86rk",  "Radio-86RK",                  COMPUTER, PLANNED),
     SYS_BUILTIN("bk0010", "BK-0010/0011M",       COMPUTER, READY),
     SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
-    SYS("ms1504",     "MS 1504",                  COMPUTER, READY),
+    SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
     SYS("c64",        "Commodore 64/128",         COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),

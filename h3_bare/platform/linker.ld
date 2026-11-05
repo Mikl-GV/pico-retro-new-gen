@@ -72,18 +72,9 @@ SECTIONS
   libh3_coherent_region = _coherent_start;
   ASSERT(_coherent_end <= 0x4A40C000, "ERROR: .coherent objects overflow into L1 page table region")
 
-  /* r930: кольцо звука (.ring_buf) — В uncached-окне, но отдельно от .coherent.
-   * Лимит .coherent = 0x4A40C000 (48 КБ после L1-таблицы) — кольцо 32000 пар
-   * (128 КБ) туда не влезает. VMA 0x4A418000: после L1-таблицы (заканчивается
-   * на 0x4A410000), до sbrk-кучи 0x4A500000 — свободно ~960 КБ. Секция в той
-   * же uncached-1МБ-секции (0x4A400000), которую помечает mmu_mark_uncached —
-   * данные ring видны CPU2 без MMU, как и раньше (.coherent). */
-  .ring_buf 0x4A418000 (NOLOAD) : {
-    _ring_buf_start = .;
-    *(.ring_buf)
-    _ring_buf_end = .;
-  }
-  ASSERT(_ring_buf_end <= 0x4A500000, "ERROR: .ring_buf overflow into sbrk heap (0x4A500000)")
+  /* r1009: кольцо звука удалено из linker.ld — данные и индексы живут в
+   * SRAM A1 (r957: L=0x1000, R=0x3000, 4096 пар), секция .ring_buf была пустой
+   * (NOLOAD, ноль объектов) и не использовалась. */
 
   /* r779: куча эмуляторов — ЗА uncached-зоной (VMA 0x4A700000), 24 МБ.
    * Раньше была плавающей после .bss — рост кода сдвигал её конец на
@@ -112,6 +103,20 @@ SECTIONS
     . = ALIGN(4);
     _a8_bss_end = .;
   }
+
+  /* r1010: файловый слой прошивки (.fs_bss) — НЕ в общем BSS.
+   * Слоты g_files (448 байт×16) и g_rom_* жили в .bss рядом с данными
+   * ядра VICE; при инициализации/автозапуске C64 ядро перезаписывало
+   * их (лог: «fopen ok … ptr=42ED2A30» → «fread EOF … used=мусор» →
+   * «Cannot read image header»). Выносим в отдельную NOLOAD-секцию после
+   * .vice_bss: VICE-ядро туда не пишет. Обнуляется startup.S (как .a8_bss). */
+  .fs_bss 0x53E00000 (NOLOAD) : {
+    _fs_bss_start = .;
+    *(.fs_bss)
+    . = ALIGN(4);
+    _fs_bss_end = .;
+  }
+  ASSERT(_fs_bss_end <= 0x54000000, "ERROR: .fs_bss overflow (0x53E00000..0x54000000 резерв 2 МБ)")
 
   /* r974: BSS ядра VICE (.vice_bss, ~31 МБ) — в свободной зоне над ROM_BUF
    * (0x51800000..0x52000000 свободно ~0.5 МБ — мало), поэтому на 0x52000000:

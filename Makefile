@@ -414,14 +414,20 @@ $(BUILD)/msx_WrapNukeYKT.o: $(MSX)/NukeYKT/WrapNukeYKT.c | $(BUILD)
 MS1504 := $(TOP)h3_bare/cores/ms1504
 MS1504_INC := -I$(MS1504)/fake86_src -I$(MS1504)
 MS1504_CFLAGS := $(CFLAGS) $(MS1504_INC)
-MS1504_BONES  := cpu bios i8237 i8253 i8259 video ports disk bindata sermouse shim host bios_data
+MS1504_BONES  := cpu bios i8237 i8253 i8259 video ports disk bindata sermouse com shim host bios_data boot_ima font_comb
 OBJ += $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES)))
 
 $(BUILD)/ms1504_%.o: $(MS1504)/fake86_src/%.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ms1504_bios_data.o: $(MS1504)/ms1504_bios_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
+$(BUILD)/ms1504_boot_ima.o: $(MS1504)/ms1504_boot_ima.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ms1504_shim.o: $(MS1504)/ms1504_shim.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ms1504_com.o: $(MS1504)/ms1504_com.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ms1504_font_comb.o: $(MS1504)/ms1504_font_comb.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ms1504_host.o: $(MS1504)/ms1504_host.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
@@ -459,7 +465,10 @@ A8_OBJS := $(addprefix $(BUILD)/a8c_,$(addsuffix .o,$(A8C))) \
 	$(addprefix $(BUILD)/a8r_,$(addsuffix .o,$(A8R))) \
 	$(addprefix $(BUILD)/a8z_,$(addsuffix .o,$(A8Z)))
 # r778: ядро + host + файловый слой идут в прошивку.
-OBJ += $(A8_OBJS) $(BUILD)/a8_host.o $(BUILD)/a8_fs.o
+# r1013: ЕДИНЫЙ файловый слой прошивки вынесен в cores/fs_layer.c (из
+# atari800/a8_fs.c) — его глобальные fopen/fread/stat/open/read видят ВСЕ
+# ядра. a8_fs.o остаётся тонким мостом a8_fs_register->fs_register.
+OBJ += $(A8_OBJS) $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/fs_layer.o
 
 $(BUILD)/a8c_%.o: $(A8)/atari800/src/%.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) -c -o $@ $<
@@ -507,6 +516,10 @@ $(BUILD)/a8_renamed.stamp: $(A8_OBJS)
 $(BUILD)/a8_host.o: $(A8)/a8_host.c | $(BUILD)
 	$(CC) $(A8_CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
 $(BUILD)/a8_fs.o: $(A8)/a8_fs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
+
+# r1013: единый файловый слой прошивки (cores/fs_layer.c), общий для всех ядер.
+$(BUILD)/fs_layer.o: $(TOP)h3_bare/cores/fs_layer.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
 
 # ---- Amstrad CPC: libretro-cap32 (Caprice32), ядро в h3_bare/cores/cap32 ----

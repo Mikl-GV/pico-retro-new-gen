@@ -472,6 +472,18 @@ _start:
     b 8b
 9:
 
+    /* r1010: Zero-init .fs_bss (NOLOAD, файловый слой a8_fs; linker.ld —
+     * 0x53E00000). BSS-цикл её не покрывает (отдельная секция). */
+    ldr r0, =_fs_bss_start
+    ldr r1, =_fs_bss_end
+    cmp r0, r1
+    beq 10f
+9:  cmp r0, r1
+    bhs 10f
+    str r2, [r0], #4
+    b 9b
+10:
+
     /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
      * не покрывает). Идёт ПОСЛЕ кучи, но до main. */
     ldr r0, =_coherent_start
@@ -484,17 +496,8 @@ _start:
     b 6b
 7:
 
-    /* r930: Zero-init .ring_buf (кольцо звука 32000 пар, NOLOAD — как .coherent;
-     * иначе мусор до первого push читался бы как «данные» при wr!=rd). */
-    ldr r0, =_ring_buf_start
-    ldr r1, =_ring_buf_end
-    cmp r0, r1
-    beq 9f
-8:  cmp r0, r1
-    bhs 9f
-    str r2, [r0], #4
-    b 8b
-9:
+    /* r1009: блок обнуления .ring_buf удалён — секция пустая, кольцо звука
+     * целиком в SRAM A1 (r957, L=0x1000/R=0x3000); меток _ring_buf_* больше нет. */
 
     /* DGN '5': BSS обнулён */
     mov r0, #'5'

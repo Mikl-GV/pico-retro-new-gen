@@ -134,6 +134,28 @@ void ejectdisk ( uint8_t drivenum )
 	}
 }
 
+// r1037: TBIOS МС1504 обращается к системному приводу 0xA0 (INT 13h
+// AH=02/00 DL=A0) как к системной дискете. insertdisk() для DL>=0x80
+// делает HD-геометрию (63/16), что для образа 720К даёт мусор. Эта функция
+// монтирует тот же образ как флоппи 720К (80,2,9) на любой привод.
+uint8_t attach_floppy_to(uint8_t drivenum, const char *filename)
+{
+	HOSTFS_FILE *file = hostfs_open(filename, "?r+b");
+	if (!file) return 1;
+	ejectdisk(drivenum);
+	disk[drivenum].diskfile = file;
+	disk[drivenum].filesize = hostfs_size(file);
+	disk[drivenum].inserted = 1;
+	disk[drivenum].readonly = hostfs_was_fallback_mode;
+	disk[drivenum].cyls = 80;
+	disk[drivenum].heads = 2;
+	disk[drivenum].sects = 9;
+	if (drivenum >= 0x80) hdcount++; else fdcount++;
+	printf("DISK: Disk %02Xh attached R/O as FDD 80,2,9 (%s, %luK)\n",
+	       drivenum, filename, (unsigned long)(disk[drivenum].filesize >> 10));
+	return 0;
+}
+
 
 // Call this ONLY if all parameters are valid! There is no check here!
 static size_t chs2ofs ( int drivenum, int cyl, int head, int sect )
@@ -336,29 +358,14 @@ void diskhandler ( void )
 				CPU_AH = 0xAA;
 			}
 			break;
-#if 0
 		case 0x15:	// get disk type
-			if (disk[CPU_DL].inserted) {
-				int drivenum = CPU_DL;
-				printf("Requesting int 13h / function 15h for drive %02Xh\n", drivenum);
-				CPU_AH = (drivenum & 0x80) ? 3 : 1;		// either "floppy without change line support" (1) or "harddisk" (3)
-				CPU_CX = (disk[drivenum].filesize >> 9) >> 16;	// number of blocks, high word
-				CPU_DX = (disk[drivenum].filesize >> 9) & 0xFFFF;	// number of blocks, low word
-				CPU_AL = CPU_AH;
-				CPU_FL_CF = 0;
-			} else {
-				printf("Requesting int 13h / function 15h for drive %02Xh\n", CPU_DL);
-				/*CPU_AH = 0;	// no such device
-				CPU_AL = 0;
-				CPU_CX = 0;
-				CPU_DX = 0;*/
-				CPU_AX = 0x0101;
-				CPU_FL_CF = 1;
-			}
+			// r1048: тихо (раньше default печатал "unknown service"). TBIOS
+			// МС1504 опрашивает тип приводов — не ошибка, молчим. Возврат —
+			// CF=1/AH=1 (как fake86 default), чтобы TBIOS шёл по пути A:.
+			CPU_FL_CF = 1;
+			CPU_AH = 1;
 			break;
-#endif
 		default:
-			printf("BIOS: unknown Int 13h service was requested: %02Xh\n", CPU_AH);
 			CPU_FL_CF = 1;	// unknown function was requested?
 			CPU_AH = 1;
 			break;

@@ -230,6 +230,9 @@ int main_program(int argc, char **argv)
     archdep_set_openmp_wait_policy();
 
     lib_init();
+#ifdef __LIBRETRO__
+
+#endif
 
     /* create string from the commandline that we can log later */
     cmdline = lib_strdup(argv[0]);
@@ -335,23 +338,50 @@ int main_program(int argc, char **argv)
         archdep_startup_log_error("archdep_init failed.\n");
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
     DBG(("main:early init"));
+#ifdef __LIBRETRO__
+
+#endif
     tick_init();
+#ifdef __LIBRETRO__
+
+#endif
     maincpu_early_init();
+#ifdef __LIBRETRO__
+
+#endif
     machine_setup_context();
+#ifdef __LIBRETRO__
+
+#endif
     drive_setup_context();
+#ifdef __LIBRETRO__
+
+#endif
     machine_early_init();
+#ifdef __LIBRETRO__
+
+#endif
     DBG(("main:early init done"));
 
     /* Initialize system file locator.  */
     sysfile_init(machine_name);
+#ifdef __LIBRETRO__
+
+#endif
 
     /* generic init, first resources, then cmdline options that use them */
     if ((init_resources() < 0) ||
         (init_cmdline_options() < 0)) {
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
     /* KLUDGES: this should really get fixed properly, so it can go into the
        regular init function(s) */
@@ -373,6 +403,9 @@ int main_program(int argc, char **argv)
         archdep_startup_log_error("Cannot set defaults.\n");
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
     /* Initialize the UI actions system, this needs to happen before the UI
      * init so the UI code can register handlers */
@@ -424,6 +457,9 @@ int main_program(int argc, char **argv)
     }
 
     main_log = log_open("Main");
+#ifdef __LIBRETRO__
+
+#endif
 
     DBG(("main:initcmdline_check_args(argc:%d)", argc));
     if (initcmdline_check_args(argc, argv) < 0) {
@@ -436,6 +472,9 @@ int main_program(int argc, char **argv)
         archdep_startup_log_error("Cannot initialize the UI.\n");
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
     /* VICE boot sequence.  */
 #ifdef __LIBRETRO__
@@ -465,6 +504,9 @@ int main_program(int argc, char **argv)
     if (/*!console_mode && */video_init() < 0) {
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
     if (initcmdline_check_psid() < 0) {
         return -1;
@@ -473,6 +515,9 @@ int main_program(int argc, char **argv)
     if (init_main() < 0) {
         return -1;
     }
+#ifdef __LIBRETRO__
+
+#endif
 
 #ifdef USE_VICE_THREAD
 
@@ -513,11 +558,20 @@ void main_loop_forever(void)
     log_message(maincpu_log, "%s", ""); /* ugly hack to produce a blank log line, but not trigger a warning */
     log_message(maincpu_log, "starting at ($FFFC).");
 
+#ifdef __LIBRETRO__
+    /* Линейный режим: эмуляцию гоняет retro_run() (while(retro_renderloop)
+     * maincpu_mainloop()), а main_loop_forever() вызывается только из
+     * пре-инициализации (pre_main -> main_program). Возвращаемся сразу,
+     * иначе зависаем в вечном цикле внутри retro_load_game() — чёрный
+     * экран, ESC не работает. */
+    return;
+#else
     /* This doesn't return. The thread will directly exit when requested. */
     maincpu_mainloop();
 
 #ifndef __LIBRETRO__
     log_fatal(main_log, "perkele! (THREAD)");
+#endif
 #endif
 }
 

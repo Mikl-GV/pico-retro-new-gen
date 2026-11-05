@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "libretro.h"
 
@@ -287,10 +288,20 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
 // Ошибки/предупреждения ядра печатаем в UART (как cpc r968) — видно
 // "Failed to load" и пр.
 static void c64_log(enum retro_log_level lvl, const char* fmt, ...) {
+    // Логи только по ошибкам/предупреждениям: INFO-поток VICE (Set resource,
+    // Arg0 и пр.) на блокирующем UART тормозил эмуляцию (r987).
     if (lvl < RETRO_LOG_WARN) return;
     extern int uart0_printf(const char* fmt, ...);
     uart0_printf(lvl == RETRO_LOG_ERROR ? "  c64# " : "  c64: ");
-    if (fmt) uart0_printf("%s", fmt);
+    if (fmt) {
+        va_list ap;
+        char buf[512];
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        buf[sizeof(buf) - 1] = 0;
+        uart0_printf("%s", buf);
+    }
 }
 
 static bool host_environment(unsigned cmd, void* data)
@@ -351,10 +362,13 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    extern int g_emu_keep_heap;
-    g_emu_keep_heap = 1;
+    // r1012: НЕ ставим g_emu_keep_heap — VICE обязан переинициализироваться
+    // с чистого пула. emu_prepare() вызывает gb_heap_reset() (возврат
+    // bump-кучи к нулю); free() у gameboy_stubs LIFO-only и при повторном
+    // входе пул 24 МБ иначе исчерпывается: второй запуск ROM падал лавиной
+    // «lib_malloc/lib_calloc/lib_realloc failed» → «Cannot initialize rombanks
+    // resources» → зависание (стенд r1011: 1942.d64 стартует, AIRWOLF2 — нет).
     emu_prepare();
-    g_emu_keep_heap = 0;
     snd_manifest("c64", "sid");
 
     // BASIC/ROM: rom==NULL -> вшитый BASIC (KERNAL+Basic), нет файла.
@@ -370,7 +384,50 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     } else {
         g_path[0] = 0;
     }
+
+    // r1003: КОРЕНЬ отказа автозапуска — регистр расширения. VICE определяет
+    // тип образа через dc_get_image_type() → strendswith(filename, "d64")
+    // РЕГИСТРОЗАВИСИМО. Файлы на флешке часто в ВЕРХНЕМ регистре
+    // (`1942.D64`, `WREST1.D64`, `BOMB JACK II++.PRG`) → тип UNKNOWN →
+    // autostart не включается вовсе, ядро пробует tape/CRT и пишет
+    // «not a valid file». Приводим расширение к нижнему регистру (имя файла
+    // на носителе не меняется: fopen/stat идут через path_matches, который
+    // теперь сравнивает без учёта регистра).
+    {
+        char* dot = 0;
+        for (char* p = g_path; *p; p++)
+            if (*p == '.') dot = p;
+        if (dot) {
+            for (char* p = dot + 1; *p; p++)
+                if (*p >= 'A' && *p <= 'Z') *p += 32;
+        }
+    }
     c64_fs_register(g_path, rom, size);
+
+    // r1000: состояние образа ДО сброса .vice_bss — отделяет «данные не
+    // доехали из загрузчика» от «их затёрла инициализация ядра».
+    if (rom && size >= 4)
+        printf("C64: rom pre-bss=%02X %02X %02X %02X (size=%u)\n",
+               rom[0], rom[1], rom[2], rom[3], (unsigned)size);
+
+    // r999: полный сброс BSS ядра VICE перед КАЖДОЙ инициализацией.
+    // Секция .vice_bss (NOLOAD, 0x52000000, ~31 МБ) обнуляется только в
+    // startup.S на старте прошивки. При повторном входе из меню VICE получал
+    // мусор от предыдущего запуска: «error: lib_malloc failed», «unknown
+    // resource …», и его структуры затирали ROM_BUF нулями (в логе r998:
+    // fread отдавал b0=00 00 00 00 при загруженном образе). Обнуление
+    // возвращает ядро в чистое состояние — как при первой загрузке.
+    {
+        extern uint8_t _vice_bss_start[], _vice_bss_end[];
+        size_t vb = (size_t)(_vice_bss_end - _vice_bss_start);
+        memset(_vice_bss_start, 0, vb);
+        printf("C64: vice_bss cleared %u KB\n", (unsigned)(vb >> 10));
+    }
+
+    // Диагностика: образ должен быть цел до инициализации ядра.
+    if (rom && size >= 4)
+        printf("C64: rom first=%02X %02X %02X %02X (size=%u)\n",
+               rom[0], rom[1], rom[2], rom[3], (unsigned)size);
 
     vice_retro_set_environment(host_environment);
     vice_retro_set_video_refresh(host_video);
@@ -406,6 +463,13 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 
     emu_set_border_color(0x00060812);
+    // r989: VICE — поцикловая эмуляция, 50 Гц PAL (C64) / 60 Гц NTSC (C128).
+    // Дефолт emu_prepare 16667 (60 Гц) заставлял throttle «догонять» 60 Гц при
+    // реальных ~33 fps → переработка копилась, CPU гонялся на 100%, USB-поллы
+    // клавиатуры прижимались (после выхода — «мёртвое» меню). Ставим честный
+    // период 50 Гц: throttle ждёт period только если ядро успело, переработки
+    // нет — и нагрузка на OHCI не пиковая.
+    emu_set_period_us(20000);   // 50 Гц PAL (C64/C128)
     emu_throttle_reset();
     emu_esc_hold_reset();
 
@@ -415,6 +479,18 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
         fb_flush();   // host_video уже пишет в HDMI FB (1024x600)
         if (emu_esc_hold()) break;
     }
+
+    // r993: сброс «всего, что передавали ядру». Пока ядро ещё живо, отпускаем
+    // ему все клавиши, которые host держал нажатыми (по g_kbd_prev), и обнуляем
+    // собственное состояние ввода. Иначе после выхода из C64 у меню/следующего
+    // эмулятора остаётся «мусорное» удержание — клавиатура ведёт себя неверно.
+    if (g_kbd_ev) {
+        for (unsigned k = 0; k < RETROK_LAST; k++)
+            if (g_kbd_prev[k]) g_kbd_ev(false, k, 0, 0);
+    }
+    memset(g_kbd, 0, sizeof(g_kbd));
+    memset(g_kbd_prev, 0, sizeof(g_kbd_prev));
+    g_joy = 0;
 
     vice_retro_unload_game();
     vice_retro_deinit();

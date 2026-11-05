@@ -252,8 +252,14 @@ void vidinterrupt(void) {
 
 int initcga ( void )
 {
-	/* MS1504 port: без SDL/файлов — встроенный шрифт bindata.c (8x16, 4096) */
-	fontcga = mem_asciivga_dat;
+	/* MS1504 port: без SDL/файлов — встроенный шрифт (8x16, 4096).
+	   r1053: комбинированный ms1504_font_comb — 0x00-0x7F латиница VGA
+	   (asciivga, как было r1050), 0x80-0xFF CP866. BIOS МС1504 пишет
+	   латиницей (в дампе BIOS нет кириллических строк и нет своего
+	   знакогенератора), а DOS-программы выводят русский кодами CP866 —
+	   их и обеспечивает вторая половина комбинированного шрифта. */
+	extern const uint8_t ms1504_font_comb[4096];
+	fontcga = ms1504_font_comb;
 
 	palettecga[0] = rgb (0, 0, 0);
 	palettecga[1] = rgb (0, 0, 0xAA);

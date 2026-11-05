@@ -81,13 +81,25 @@ void drivecpu_setup_context(struct diskunit_context_s *drv, int i)
         drv->cpu = lib_calloc(1, sizeof(drivecpu_context_t));
     }
     cpu = drv->cpu;
+#ifdef __LIBRETRO__
+
+#endif
 
     if (i) {
         drv->cpud = lib_calloc(1, sizeof(drivecpud_context_t));
+#ifdef __LIBRETRO__
+
+#endif
         drv->func = lib_malloc(sizeof(drivefunc_context_t));
+#ifdef __LIBRETRO__
+
+#endif
 
         cpu->int_status = interrupt_cpu_status_new();
         interrupt_cpu_status_init(cpu->int_status, &(cpu->last_opcode_info));
+#ifdef __LIBRETRO__
+
+#endif
     }
     drivecpu_int_status_ptr[drv->mynumber] = cpu->int_status;
 
@@ -98,7 +110,13 @@ void drivecpu_setup_context(struct diskunit_context_s *drv, int i)
     if (i) {
         cpu->snap_module_name = lib_msprintf("DRIVECPU%u", drv->mynumber);
         cpu->identification_string = lib_msprintf("DRIVE#%u", drv->mynumber + 8);
+#ifdef __LIBRETRO__
+
+#endif
         cpu->monitor_interface = monitor_interface_new();
+#ifdef __LIBRETRO__
+
+#endif
     }
     mi = cpu->monitor_interface;
     mi->context = (void *)drv;

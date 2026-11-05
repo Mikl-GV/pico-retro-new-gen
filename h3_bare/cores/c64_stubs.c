@@ -10,6 +10,20 @@
 // (libretro-core.c:5581). У нас каталоги не используются — стаб.
 void dirent_vfs_init(const void* iface) { (void)iface; }
 
+// r980: VICE зовёт setenv() в archdep_set_openmp_wait_policy() СРАЗУ на входе
+// main_program (до инициализации). Newlib-версия лезет в глобальный `environ`,
+// которого в bare-metal нет (неинициализирован) -> исключение на старте C64
+// (голый 'U' = Undefined). Переменные окружения не нужны — no-op.
+int setenv(const char* name, const char* value, int overwrite) {
+    (void)name; (void)value; (void)overwrite;
+    return 0;
+}
+
+int unsetenv(const char* name) {
+    (void)name;
+    return 0;
+}
+
 // ---- мелкие POSIX-функции, которых нет в freestanding newlib ----
 int getpid(void) { return 0; }
 

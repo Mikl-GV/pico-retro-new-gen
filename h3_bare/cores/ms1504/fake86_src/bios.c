@@ -519,6 +519,57 @@ static const uint8_t scan2ascii[] = {
 #endif
 };
 
+/* r1023: host-мост — подать PC-сканкод в буфер клавиатуры напрямую.
+   BIOS PK300 ждёт клавишу через INT 16h AH=0 (kbd_get_buffer); буфер
+   заполняется обработчиком IRQ1 (bios_irq1_handler), но при internalbios=0
+   прерывания IRQ1 не диспатчатся в него. Host (ms1504_host.c feed_pc_key)
+   вызывает эту функцию для каждого нажатия — и клавиша попадает в BDA-кольцо.
+   r1054: модификаторы отрабатываются ЗДЕСЬ (kbd_set_mod0 в BDA[0x417]),
+   т.к. bios_irq1_handler с их обработкой не вызывается (internalbios=0).
+   Верхний регистр: scan2ascii содержит только нижний; при Shift (биты
+   0x01/0x02) или CapsLock (0x40) ascii поднимается в верхний (буквы и
+   знаки US-раскладки). */
+void ms1504_kbd_feed ( uint8_t scan )
+{
+	switch (scan & 0x7F) {
+		case 0x36: kbd_set_mod0(0x01, scan); return;	// rshift
+		case 0x2A: kbd_set_mod0(0x02, scan); return;	// lshift
+		case 0x1D: kbd_set_mod0(0x04, scan); return;	// ctrl
+		case 0x38: kbd_set_mod0(0x08, scan); return;	// alt
+		case 0x46: kbd_set_mod0(0x10, scan); return;	// scroll lock
+		case 0x45: kbd_set_mod0(0x20, scan); return;	// num lock
+		case 0x3A: kbd_set_mod0(0x40, scan); return;	// caps lock
+		case 0x52: kbd_set_mod0(0x80, scan); return;	// ins
+	}
+	uint16_t word = scan;	// AL = ASCII, AH = сканкод
+	if (scan < sizeof(scan2ascii)) {
+		uint8_t ascii = scan2ascii[scan];
+		if ((RAM[0x417] & (0x03 | 0x40))) {	// shift или caps lock
+			switch (ascii) {
+				case 'a': case 'b': case 'c': case 'd': case 'e':
+				case 'f': case 'g': case 'h': case 'i': case 'j':
+				case 'k': case 'l': case 'm': case 'n': case 'o':
+				case 'p': case 'q': case 'r': case 's': case 't':
+				case 'u': case 'v': case 'w': case 'x': case 'y':
+				case 'z': ascii -= 0x20; break;
+				case '1': ascii = '!'; break; case '2': ascii = '@'; break;
+				case '3': ascii = '#'; break; case '4': ascii = '$'; break;
+				case '5': ascii = '%'; break; case '6': ascii = '^'; break;
+				case '7': ascii = '&'; break; case '8': ascii = '*'; break;
+				case '9': ascii = '('; break; case '0': ascii = ')'; break;
+				case '-': ascii = '_'; break; case '=': ascii = '+'; break;
+				case '[': ascii = '{'; break; case ']': ascii = '}'; break;
+				case '\\': ascii = '|'; break; case ';': ascii = ':'; break;
+				case '\'': ascii = '"'; break; case ',': ascii = '<'; break;
+				case '.': ascii = '>'; break; case '/': ascii = '?'; break;
+				case '`': ascii = '~'; break;
+			}
+		}
+		word = (uint16_t)(ascii | (scan << 8));
+	}
+	kbd_push_buffer(word);
+}
+
 
 
 // This is the IRQ handler for the keyboard interrupt of BIOS
@@ -800,7 +851,9 @@ static void bios_internal_trap ( unsigned int trap )
 int cpu_hlt_handler ( void )
 {
 	if (!internalbios || CPU_CS != INTERNAL_BIOS_TRAP_SEG || cpu.saveip >= 0x1FF) {
-		puts("BIOS: critical warning, HLT outside of trap area?!");
+		// r1048: молчим (раньше печатали "critical warning" при КАЖДОМ
+		// HLT — спам). Это обычный HLT вне trap-области (BIOS МС1504
+		// ждёт дискету/прерывания). Возвращаем «это настоящий HLT».
 		return 1;	// Yes, it was really a halt, since it does not fit into our trap area
 	}
 	bios_internal_trap(cpu.saveip);

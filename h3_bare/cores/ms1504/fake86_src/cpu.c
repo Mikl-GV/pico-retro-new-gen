@@ -1208,9 +1208,6 @@ static void intcall86(uint8_t intnum) {
 	switch (intnum) {
 	case 0x10:
 		updatedscreen = 1;
-		/*if (cpu.regs.byteregs[regah]!=0x0E) {
-			printf("Int 10h AX = %04X\n", cpu.regs.wordregs[regax]);
-		}*/
 		if ((cpu.regs.byteregs[regah] == 0x00) ||
 		    (cpu.regs.byteregs[regah] == 0x10)) {
 			oldregax = cpu.regs.wordregs[regax];
@@ -1241,6 +1238,124 @@ static void intcall86(uint8_t intnum) {
 			write86(0xC9002, 0x01);
 			return;
 		}
+		if (cpu.regs.byteregs[regah] == 0x0E) {
+			// r1044: INT 10h AH=0E — печать символа в текстовый буфер.
+			// ROM-обработчик (IVT[10h]) у нас недоступен/заглушка — пишем
+			// сами в videobase (как настоящий BIOS): символ+атрибут по
+			// позиции курсора, \r\n/backspace/scroll. Стенд r1043: текст
+			// реально выводился (KEYBOARD ERROR, RTC ERROR, A>, ECHO OFF)
+			// только в UART-дамп, а в B8000 был пусто — экран чёрный.
+			// Возвращаемся сразу, не уходя в IVT.
+			extern uint16_t cursx, cursy, cols, rows;
+			extern uint32_t videobase;
+			uint8_t ch = cpu.regs.byteregs[regal];
+			if (ch == '\r') {
+				cursx = 0;
+			} else if (ch == '\n') {
+				cursy++;
+			} else if (ch == '\b' || ch == 8) {
+				if (cursx) cursx--;
+			} else if (ch == '\t') {
+				cursx = (uint16_t)((cursx + 8) & ~7u);
+			} else {
+				uint32_t vb = videobase;
+				if (vb > RAM_SIZE - 4096) vb = 0xB8000;
+				uint32_t off = vb + ((uint32_t)cursy * (cols ? cols : 80) + cursx) * 2;
+				RAM[off] = ch;
+				RAM[off + 1] = 0x07;      // светло-серый на чёрном
+				cursx++;
+			}
+			if (cursx >= (cols ? cols : 80)) {
+				cursx = 0;
+				cursy++;
+			}
+			if (cursy >= (rows ? rows : 25)) {
+				// scroll: поднять строки на одну вверх
+				uint32_t vb = videobase;
+				if (vb > RAM_SIZE - 4096) vb = 0xB8000;
+				uint32_t line = (cols ? cols : 80) * 2;
+				uint32_t n = (rows ? rows : 25) - 1;
+				// memmove вручную (RAM массив, line*n ≤ 4К)
+				for (uint32_t r = 1; r <= n; r++)
+					for (uint32_t c = 0; c < line; c++)
+						RAM[vb + (r - 1) * line + c] = RAM[vb + r * line + c];
+				for (uint32_t c = 0; c < line; c++)
+					RAM[vb + n * line + c] = 0;
+				cursy = n;
+			}
+			return;
+		}
+		if ((cpu.regs.byteregs[regah] == 0x02)) {
+			// r1046: INT 10h AH=02 — установка позиции курсора.
+			// (DH=row, DL=col). ROM-обработчик недоступен; ставим cursx/cursy.
+			extern uint16_t cursx, cursy;
+			cursy = cpu.regs.byteregs[regdh];
+			cursx = cpu.regs.byteregs[regdl];
+			return;
+		}
+		if ((cpu.regs.byteregs[regah] == 0x03)) {
+			// INT 10h AH=03 — получить позицию курсора (DH=row, DL=col)
+			extern uint16_t cursx, cursy;
+			cpu.regs.byteregs[regdh] = (uint8_t)cursy;
+			cpu.regs.byteregs[regdl] = (uint8_t)cursx;
+			cpu.regs.byteregs[regbh] = 0;   // страница 0
+			return;
+		}
+		if ((cpu.regs.byteregs[regah] == 0x06) ||
+		    (cpu.regs.byteregs[regah] == 0x07)) {
+			// r1046: INT 10h AH=06/07 — scroll up/down окна.
+			// (AL=число строк, CH=top, CL=left, DH=bottom, DL=right).
+			// Строки «не в порядке» из-за того, что этот сервис не
+			// работал (IVT-заглушка) — меню/списки не прокручивались.
+			extern uint16_t cursx, cursy, cols, rows;
+			extern uint32_t videobase;
+			uint32_t vb = videobase;
+			if (vb > RAM_SIZE - 4096) vb = 0xB8000;
+			uint16_t ncols = cols ? cols : 80;
+			uint16_t nrows = rows ? rows : 25;
+			uint16_t top  = cpu.regs.byteregs[regch];
+			uint16_t left = cpu.regs.byteregs[regcl];
+			uint16_t bot  = cpu.regs.byteregs[regdh];
+			uint16_t rgt  = cpu.regs.byteregs[regdl];
+			if (bot >= nrows) bot = (uint16_t)(nrows - 1);
+			if (rgt >= ncols) rgt = (uint16_t)(ncols - 1);
+			uint16_t lines = cpu.regs.byteregs[regal];
+			if (!lines) lines = (uint16_t)(bot - top + 1);
+			uint32_t lineb = (uint32_t)ncols * 2;
+			uint8_t  fill = 0;
+			if (cpu.regs.byteregs[regah] == 0x06) {   // апша: строки вверх
+				for (uint16_t rr = top; rr + lines <= bot; rr++)
+					for (uint16_t cc = left; cc <= rgt; cc++) {
+						uint32_t s = vb + ((uint32_t)rr * ncols + cc) * 2;
+						uint32_t d = vb + (((uint32_t)(rr + lines)) * ncols + cc) * 2;
+						RAM[d] = RAM[s];
+						RAM[d + 1] = RAM[s + 1];
+					}
+			} else {                                    // 07: вниз
+				for (uint16_t rr = bot - lines; rr >= top; rr--) {
+					for (uint16_t cc = left; cc <= rgt; cc++) {
+						uint32_t s = vb + ((uint32_t)rr * ncols + cc) * 2;
+						uint32_t d = vb + (((uint32_t)(rr + lines)) * ncols + cc) * 2;
+						RAM[d] = RAM[s];
+						RAM[d + 1] = RAM[s + 1];
+					}
+					if (rr == top) break;
+				}
+			}
+			// залить освободившиеся строки (fill атрибут BL — упрощённо 0x07)
+			(void)fill; (void)lineb;
+			uint16_t clear = (cpu.regs.byteregs[regah] == 0x06)
+				? (uint16_t)(bot - lines + 1) : top;
+			uint16_t cend = (cpu.regs.byteregs[regah] == 0x06)
+				? bot : (uint16_t)(top + lines - 1);
+			for (uint16_t rr = clear; rr <= cend; rr++)
+				for (uint16_t cc = left; cc <= rgt; cc++) {
+					uint32_t d = vb + ((uint32_t)rr * ncols + cc) * 2;
+					RAM[d] = 0;
+					RAM[d + 1] = 0x07;
+				}
+			return;
+		}
 		break;
 
 #ifndef DISK_CONTROLLER_ATA
@@ -1257,6 +1372,17 @@ static void intcall86(uint8_t intnum) {
 				cpu.segregs[regcs] = 0xF600;
 				cpu.ip = 0;
 			} else {
+				// r1033: загрузчик mc1504BOOT (0x7C71-0x7C7A) определяет
+				// привод по BDA[0x43F]: MOV AL,ES:[43F]; AND 0F; LOOP{INC
+				// DX; SHR AL,1; JAE} — выходит, когда AL имел установленный
+				// младший бит, DX=номер привода. Для типа 1 нужно [43F]=1
+				// → DL=1 (читает диск с привода 1). Этот байт НЕ
+				// восстанавливается BIOS'ом и затирается обнулением
+				// IVT/BDA в POST (F619C REP STOS), поэтому запись в
+				// init_game (r1028) не выживала → вечный LOOP загрузчика.
+				// Пишем ТОЛЬКО сейчас, после всех обнулений BIOS, прямо
+				// перед передачей управления загрузчику.
+				write86(0x43F, 0x01);
 				cpu.segregs[regcs] = 0x0000;
 				cpu.ip = 0x7C00;
 				printf("BOOT: executing boot record at %04X:%04X\n", cpu.segregs[regcs], cpu.ip);
@@ -1272,6 +1398,25 @@ static void intcall86(uint8_t intnum) {
 	case 0xFD:
 		diskhandler();
 		return;
+	// r1031: INT 8..0F при internalbios=0 идут по IVT ШТАТНО. BIOS PK300
+	// сам заполняет IVT (F623E-F6245: 31 вектор на F000:E036) ДО первых
+	// реальных IRQ с IF=1, а калибровка таймера (F6276-F6285: STI; загрузка
+	// CH0; LOOP с CMP AH,55) ЖДЁТ, что INT 8 исполнит ROM-обработчик
+	// F6036 (MOV AH,55; маска PIC FF; EOI; IRET) — только так AH=55 и
+	// калибровка завершается. r1039 (модельный INT 8 с тиком [0x46C])
+	// СЛОМАЛ калибровку: условие «вызов из F6276-F6285» не сработало
+	// (saveip в момент IRQ не попадал в диапазон) → AH=55 не ставился →
+	// вечный повтор POST (стенд r1039: OUT 378,0A + reset 63,99).
+	// Таймер [0x46C] теперь тикает в timing() (ms1504_shim.c, r1040).
+	case 0x08:
+	case 0x09:
+	case 0x0A:
+	case 0x0B:
+	case 0x0C:
+	case 0x0D:
+	case 0x0E:
+	case 0x0F:
+		break;
 #endif
 #ifdef NETWORKING_OLDCARD
 	case 0xFC:
@@ -1467,14 +1612,20 @@ void exec86(uint32_t execloops) {
 		}
 
 		if (cpu.hltstate) {
-			/* MS1504: молчим — печать раз в 1024 итерации; показываем
-			   ПРИЧИНУ невыполнения HLT: IF, маску/заявки PIC и PIT */
-			static uint32_t hlt_spam;
-			hlt_spam++;
-			if ((hlt_spam & 0x3FF) == 1)
-				printf("CPU: HALTED! ifl=%d imr=%02X irr=%02X pit=%d\n",
-				       (int)cpu.ifl, (unsigned)i8259.imr,
-				       (unsigned)i8259.irr, (int)i8253.active[0]);
+			/* r1048: молчим (раньше печатали HALTED/HLT break — спам).
+			   Механика сохранена: HLT с IF=0 снимается принудительно
+			   после ~2048 итераций (выход из «камня»), при IF=1 —
+			   выход из exec86, чтобы host опросил клавиатуру. */
+			static uint32_t hlt_iters = 0;
+			hlt_iters++;
+			if (!cpu.ifl && ((hlt_iters & 0x7FF) == 0)) {
+				cpu.hltstate = 0;
+				/* r1024: HLT-цикл ожидания (напр. INT 16h: «нет клавиши»
+				   крутит HLT-трэп). Если не отдать управление, host-цикл
+				   не успевает опросить USB-клавиатуру и долить BDA-буфер.
+				   Выходим из exec86 наПРЯМУЮ — host опросит и снова войдёт. */
+				return;
+			}
 			goto skipexecution;
 		}
 

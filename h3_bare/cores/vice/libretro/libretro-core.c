@@ -1882,6 +1882,24 @@ void update_from_vice(void)
 
       autostart_autodetect(autostartString, autostartProgram, 0, AUTOSTART_MODE_RUN);
    }
+   /* r1014: одиночный TAPE/MEM (.T64/.t64/.PRG/...) без M3U/#COMMAND не
+    * автозапускался: update_from_vice заполнял autostartString из full_path
+    * → условие выше (string_is_empty(autostartString)) ложно, а dc->load
+    * пуст → второй autodetect (в workflow_disk_control) тоже не вызывался.
+    * Симптом: .T64 «просит Play на магнитофоне», .PRG «Unit 10: Cannot open
+    * file». Зовём autodetect напрямую — VICE сам найдёт программу в ленте/
+    * загрузит PRG по адресу (как для дисков, которые и так работают). */
+   else if ((!string_is_empty(autostartString) || !string_is_empty(full_path))
+         && !noautostart && !CMDFILE[0])
+   {
+      const char* img = !string_is_empty(autostartString) ? autostartString : full_path;
+      enum dc_image_type it = dc_get_image_type(img);
+      if (autostartProgram == NULL && (it == DC_IMAGE_TYPE_TAPE || it == DC_IMAGE_TYPE_MEM))
+      {
+         log_cb(RETRO_LOG_INFO, "Autostarting tape/memory image \"%s\".\n", img);
+         autostart_autodetect(img, NULL, 0, AUTOSTART_MODE_RUN);
+      }
+   }
 
    /* If vice has image attached to drive, tell libretro that the 'tray' is closed */
    if (!string_is_empty(attachedImage))
@@ -1945,6 +1963,7 @@ int pre_main(void)
    build_params();
 
    *archdep_startup_error = 0;
+   log_cb(RETRO_LOG_INFO, "pre_main: before main_program (argc=%d)\n", argc);
    if (main_program(argc, (char**)xargv_cmd) < 0)
    {
       log_cb(RETRO_LOG_WARN, "Core startup failed with error:\n");
@@ -1966,6 +1985,7 @@ int pre_main(void)
       argc = 1;
 
       *archdep_startup_error = 0;
+      log_cb(RETRO_LOG_INFO, "pre_main: retry without params\n");
       if (main_program(argc, (char**)xargv_cmd) < 0)
       {
          log_cb(RETRO_LOG_ERROR, "Core startup without parameters failed with error:\n");
@@ -1973,6 +1993,7 @@ int pre_main(void)
          environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
       }
    }
+   log_cb(RETRO_LOG_INFO, "pre_main: done\n");
 
    return 0;
 }
@@ -7858,6 +7879,20 @@ void retro_deinit(void)
    libretro_supports_bitmasks = false;
    libretro_supports_ff_override = false;
    libretro_supports_option_categories = false;
+
+   /* r998: наш frontend вызывает retro_init/load_game/run/deinit на КАЖДУЮ
+      игру из меню. Раньше runstate оставался RUNSTATE_RUNNING, поэтому
+      повторный retro_load_game шёл по ветке «загрузка на ходу» (без pre_main
+      и reload_restart) — ядро не переинициализировалось, и вторая игра
+      фактически не запускалась (в логе «C64: started» без инициализации VICE,
+      на экране оставался BASIC). Сбрасываем состояние в исходное. */
+   runstate = RUNSTATE_FIRST_START;
+   full_path[0] = '\0';
+   info_path[0]  = '\0';
+   free(autostartString);  autostartString  = NULL;
+   free(autostartProgram); autostartProgram = NULL;
+   autostartProgramNumber = 0;
+   noautostart = false;
 }
 
 unsigned retro_api_version(void)

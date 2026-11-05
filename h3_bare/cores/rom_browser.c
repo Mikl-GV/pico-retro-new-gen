@@ -73,6 +73,10 @@ static int load_rom(const char* path, const char* name, uint8_t** rom, uint32_t*
     for (; a < end; a += 32)
         __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a));
     __asm volatile("dsb" ::: "memory");
+    // r1000: диагностика — что реально лежит в ROM_BUF сразу после чтения
+    // и cache-операции (до входа в эмулятор).
+    printf("load_rom: buf first=%02X %02X %02X %02X\n",
+           buf[0], buf[1], buf[2], buf[3]);
     *rom = buf; *size = f.size;
     return 0;
 }

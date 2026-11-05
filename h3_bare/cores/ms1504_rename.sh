@@ -16,7 +16,7 @@
 # Usage: ms1504_rename.sh <build/ms1504_*.o...>
 set -u
 
-KEEP="emu_run_ms1504 ms1504_bios_pk300 ms1504_bios_pk300_len ms1504_hdd_bios ms1504_hdd_bios_len"
+KEEP="emu_run_ms1504 ms1504_bios_pk300 ms1504_bios_pk300_len ms1504_hdd_bios ms1504_hdd_bios_len ms1504_boot_ima ms1504_boot_ima_len"
 
 DEFS=$(for o in "$@"; do
   [ -f "$o" ] || continue

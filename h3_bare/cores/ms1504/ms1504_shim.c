@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include "fake86_src/config.h"
 #include "fake86_src/cpu.h"
@@ -115,10 +117,29 @@ void timing ( void )
     static uint32_t v_last = 0;    // последний перепад ретрейса
     static uint8_t  v_ph   = 0;
 
-    // PIT канал 0: если BIOS разрешил IRQ0 — держим ~18.2 Гц
-    if (i8253.active[0] && (ct - p_last) >= PIT_IRQ0_US) {
-        p_last = ct;
-        doirq(0);          // wake от HLT, тики BIOS-таймера
+    // PIT канал 0: держим ~18.2 Гц, но ТОЛЬКО после того, как BIOS реально
+    // его запрограммировал (out8253 ставит active[0]=1 при загрузке данных).
+    // Раньше doirq(0) шёл безусловно каждый 55 мс — BIOS-тест PIC
+    // (F6270: OUT 20,0A; LOOP; IN 20; SUB AL,1; JAE error — ждёт IRR==0)
+    // падал на любом ложном тике PIT ДО его инициализации (IRR=01) → BL=0A
+    // → бесконечный повтор POST. На реальном XT PIT до загрузки счётчика
+    // не тикает (mode 0, counter 0).
+    if (i8253.active[0]) {
+        if ((ct - p_last) >= PIT_IRQ0_US) {
+            p_last = ct;
+            doirq(0);          // wake от HLT, тики BIOS-таймера
+        }
+    }
+    /* r1016 (отладка): счётчик канала 1 PIT реально «тикает» вниз.
+     * BIOS PK300 (XT-самотест, F10B-F131: OUT 43; OUT 41; IN 41; CMP 65; JB)
+     * ждёт, что IN 41 >= 0x65. Режим канала — LSB (команда 0x54), чтение
+     * IN 41 возвращает МЛАДШИЙ байт счётчика. После reload=0 counter=65536;
+     * тест проходит, когда counter&0xFF >= 0x65. Декремент ОБЯЗАН быть на 1
+     * (или нечётный): шаг 256 (0x100) не трогает младший байт — он остаётся 0,
+     * и CMP 65; JB висит вечно (стенд r1018: повтор OUT 378,02). С шагом 1
+     * counter 65536 -> 65535 (low 0xFF) — тест успешен сразу после reload. */
+    {
+        i8253.counter[1] = (uint16_t)(i8253.counter[1] - 1u);   /* wrap 0->0xFFFF */
     }
     // порт 3DA: бит3 (VBlank) и бит0 — грубая имитация ретрейса
     if ((ct - v_last) >= VGA_RETRACE_US) {
@@ -128,27 +149,66 @@ void timing ( void )
     }
 }
 
-/* ---- hostfs: файлов не открываем (образы — следующая итерация) ---- */
-int hostfs_was_fallback_mode = 0;
+/* ---- hostfs: диск A: = вшитый загрузочный образ mc1504BOOT.IMA ---- */
+int hostfs_was_fallback_mode = 1;   /* диск только для чтения */
 
 /* i8259.c ссылается на keyboardwaitack (был в input.c — у нас без SDL) */
 uint8_t keyboardwaitack = 0;
 
-struct hh_file { int dummy; };
+struct hh_file { int64_t pos; };
+
+/* Вшитый загрузочный диск (см. ms1504_boot_ima.c, генерится из /MS1504) */
+extern const unsigned char ms1504_boot_ima[];
+extern const unsigned int  ms1504_boot_ima_len;
+static const char* const g_boot_path = "mc1504BOOT.IMA";
 
 int hostfs_init ( void ) { return 0; }
+
+static HOSTFS_FILE* fs_find(const char* fn)
+{
+    /* hostfs_open приходит из insertdisk(0, ...) с именем файла,
+       которое host передал при вставке; сравниваем по концу пути. */
+    if (!fn) return 0;
+    size_t l = strlen(fn), bl = strlen(g_boot_path);
+    if (l < bl) return 0;
+    const char* tail = fn + (l - bl);
+    if (strcmp(tail, g_boot_path)) return 0;
+    HOSTFS_FILE* f = (HOSTFS_FILE*)malloc(sizeof(struct hh_file));
+    if (!f) return 0;
+    f->pos = 0;
+    return f;
+}
+
 HOSTFS_FILE *hostfs_open ( const char *fn, const char *mode )
-{ (void)fn; (void)mode; return 0; }
+{ (void)mode; return fs_find(fn); }
 HOSTFS_FILE *hostfs_open_with_feedback ( const char *fn, const char *mode, const char *msg )
-{ (void)fn; (void)mode; (void)msg; return 0; }
+{ (void)mode; (void)msg; return fs_find(fn); }
 int hostfs_load_binary ( const char *fn, void *buf, int min_size, int max_size, const char *msg )
-{ (void)fn; (void)buf; (void)min_size; (void)max_size; (void)msg; return 0; }
+{ (void)fn; (void)buf; (void)min_size; (void)max_size; (void)msg; return -1; }
 
 size_t ms1504_hfs_read  ( HOSTFS_FILE *f, void *p, size_t size, size_t nmemb )
-{ (void)f; (void)p; (void)size; (void)nmemb; return 0; }
+{
+    if (!f) return 0;
+    uint64_t want = (uint64_t)size * nmemb;
+    if ((uint64_t)f->pos >= ms1504_boot_ima_len) return 0;
+    if (want > ms1504_boot_ima_len - (uint64_t)f->pos)
+        want = ms1504_boot_ima_len - (uint64_t)f->pos;
+    memcpy(p, ms1504_boot_ima + f->pos, (size_t)want);
+    f->pos += (int64_t)want;
+    return (size_t)(want / (size ? size : 1));
+}
 size_t ms1504_hfs_write ( HOSTFS_FILE *f, const void *p, size_t size, size_t nmemb )
-{ (void)f; (void)p; (void)size; (void)nmemb; return 0; }
-int    ms1504_hfs_close ( HOSTFS_FILE *f ) { (void)f; return 0; }
-int64_t ms1504_hfs_size ( HOSTFS_FILE *f ) { (void)f; return 0; }
+{ (void)f; (void)p; (void)size; (void)nmemb; return 0; }   /* диск RO */
+int    ms1504_hfs_close ( HOSTFS_FILE *f ) { if (f) free(f); return 0; }
+int64_t ms1504_hfs_size ( HOSTFS_FILE *f )
+{ (void)f; return ms1504_boot_ima_len; }
 int64_t ms1504_hfs_seek ( HOSTFS_FILE *f, int64_t offset, int whence )
-{ (void)f; (void)offset; (void)whence; return -1; }
+{
+    if (!f) return -1;
+    switch (whence) {
+    case 0: f->pos = offset; break;
+    case 1: f->pos += offset; break;
+    case 2: f->pos = ms1504_boot_ima_len + offset; break;
+    }
+    return f->pos;
+}

@@ -1,4 +1,4 @@
-// libc_min.c — минимальный freestanding libc для bare-metal H3.
+﻿// libc_min.c — минимальный freestanding libc для bare-metal H3.
 #include <stddef.h>
 #include <stdint.h>
 
@@ -144,9 +144,10 @@ int sprintf(char* buf, const char* fmt, ...) {
         case 's': { const char* s = va_arg(ap, const char*);
                     while (*s) *d++ = *s++;
                     break; }
-        case 'd': {
+        case 'd': case 'i': {
             // r0.417 (L4): INT_MIN через -v = signed overflow (UB); считаем |v|
             // в unsigned (0u - u ≡ |v| по модулю 2^32) — корректно для INT_MIN.
+            // r986: %i — синоним %d (VICE использует lib_msprintf("Drive%i…")).
             int v = va_arg(ap, int);
             unsigned u = (unsigned)v;
             if (v < 0) { *d++ = '-'; u = 0u - u; }
@@ -238,10 +239,20 @@ int putchar(int c) {
 }
 
 int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
+    // Стандартный контракт snprintf: если buf==NULL или n==0 — не писать,
+    // вернуть длину строки, которая была бы записана (C99). VICE-шный
+    // lib_mvsprintf (vice/src/lib.c) так запрашивает размер перед malloc;
+    // без этого maxlen=0 -> lib_msprintf возвращал пустую строку, и ресурсы
+    // регистрировались с пустым именем -> "Duplicated resource declaration ''".
     char* d = buf;
     size_t left = n;
-    for (; *fmt && left > 1; fmt++) {
-        if (*fmt != '%') { *d++ = *fmt; left--; continue; }
+    size_t out = 0;
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') {
+            if (left > 1) { *d++ = *fmt; left--; }
+            out++;
+            continue;
+        }
         fmt++;
 
         // Ширина: %Nd, %NX, %04X и т.п. (паддинг — нулями)
@@ -253,31 +264,32 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
                     if (!s) s = "(null)";
                     // r0.417 (L4): width применяется и к %s (паддинг пробелами)
                     int sl = 0; while (s[sl]) sl++;
-                    while (sl < width && left > 1) { *d++ = ' '; left--; width--; }
-                    while (*s && left > 1) { *d++ = *s++; left--; } break; }
-        case 'd': { int v = va_arg(ap, int);
+                    while (sl < width) { if (left > 1) { *d++ = ' '; left--; } out++; sl++; width--; }
+                    while (*s) { if (left > 1) { *d++ = *s; left--; } out++; s++; } break; }
+        case 'd': case 'i': { int v = va_arg(ap, int);
                     // r0.417 (L4): INT_MIN без signed overflow (0u-u ≡ |v|)
                     unsigned u = (unsigned)v;
-                    if (v < 0) { if (left > 1) { *d++ = '-'; left--; } u = 0u - u; }
+                    if (v < 0) { if (left > 1) { *d++ = '-'; left--; } out++; u = 0u - u; }
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = '0' + (u % 10); u /= 10; } while (u);
-                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
-                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    while (i < width) { if (left > 1) { *d++ = '0'; left--; } out++; i++; width--; }
+                    while (i) { if (left > 1) { *d++ = tmp[i - 1]; left--; } i--; out++; }
                     break; }
         case 'u': { unsigned v = va_arg(ap, unsigned);
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
-                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
-                    while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                    while (i < width) { if (left > 1) { *d++ = '0'; left--; } out++; i++; width--; }
+                    while (i) { if (left > 1) { *d++ = tmp[i - 1]; left--; } i--; out++; }
                     break; }
         case 'x': case 'X': { unsigned v = va_arg(ap, unsigned);
                     char tmp[16]; int i = 0;
                     do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
-                    while (i < width && left > 1) { *d++ = '0'; left--; width--; }
-                    while (i && left > 1) {
+                    while (i < width) { if (left > 1) { *d++ = '0'; left--; } out++; i++; width--; }
+                    while (i) {
                         char c = tmp[--i];
                         if (*fmt == 'X' && c >= 'a' && c <= 'f') c -= 32;
-                        *d++ = c; left--;
+                        if (left > 1) { *d++ = c; left--; }
+                        out++;
                     }
                     break; }
         case 'l': {
@@ -286,23 +298,23 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
                 unsigned long v = va_arg(ap, unsigned long);
                 char tmp[24]; int i = 0;
                 do { tmp[i++] = '0' + (v % 10); v /= 10; } while (v);
-                while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                while (i) { if (left > 1) { *d++ = tmp[i - 1]; left--; } i--; out++; }
             } else if (*fmt == 'd' || *fmt == 'i') {
                 long v = va_arg(ap, long);
                 // r0.417 (L4): LONG_MIN без signed overflow
                 unsigned long u = (unsigned long)v;
-                if (v < 0) { if (left > 1) { *d++ = '-'; left--; } u = 0ul - u; }
+                if (v < 0) { if (left > 1) { *d++ = '-'; left--; } out++; u = 0ul - u; }
                 char tmp[24]; int i = 0;
                 do { tmp[i++] = '0' + (u % 10); u /= 10; } while (u);
-                while (i && left > 1) { *d++ = tmp[--i]; left--; }
+                while (i) { if (left > 1) { *d++ = tmp[i - 1]; left--; } i--; out++; }
             }
             break; }
-        case 'c': { if (left > 1) { *d++ = (char)va_arg(ap, int); left--; } break; }
-        default: if (left > 1) { *d++ = *fmt; left--; } break;
+        case 'c': { if (left > 1) { *d++ = (char)va_arg(ap, int); left--; } out++; break; }
+        default: if (left > 1) { *d++ = *fmt; left--; } out++; break;
         }
     }
-    if (left > 0) *d = 0;
-    return (int)(d - buf);
+    if (buf && left > 0) *d = 0;
+    return (int)out;
 }
 
 int snprintf(char* buf, size_t n, const char* fmt, ...) {

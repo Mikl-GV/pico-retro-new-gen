@@ -97,3 +97,17 @@ int printf(const char* fmt, ...) {
     va_end(ap);
     return r;
 }
+
+// r978: vprintf/vfprintf — наша безопасная реализация поверх do_printf (uart).
+// VICE-шный fallback_log (vice/src/.../fallback_log) зовёт vfprintf; newlib-версия
+// требует корректный FILE* stdout (неинициализирован в bare-metal) и падала
+// Undefined на старте C64. Перекрываем newlib-символы — вывод идёт в UART через
+// тот же безопасный do_printf, что и printf.
+int vprintf(const char* fmt, va_list ap) {
+    return do_printf(fmt, ap);
+}
+
+int vfprintf(void* stream, const char* fmt, va_list ap) {
+    (void)stream;
+    return do_printf(fmt, ap);
+}
