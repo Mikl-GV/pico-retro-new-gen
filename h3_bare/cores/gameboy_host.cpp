@@ -10,6 +10,7 @@ extern "C" {
 #include "remap.h"
 #include "cheatdb.h"
 #include "i2s.h"
+#include "h3_hs_timer.h"
 }
 
 #define EMU_FB ((uint16_t*)0x5F800000)
@@ -27,6 +28,29 @@ int printf(const char* fmt, ...);
 }
 
 static Emulator* g_emu = NULL;
+
+// r1069/r1070: диагностика «виснет при загрузке» — static на уровне файла,
+// чтобы сбрасывать при каждом gb_init_game() (внутри функции не сбросить).
+static int gb_warned = 0;
+static uint32_t gb_warn_t = 0;
+
+// r1068: binjgb требует, чтобы ROM-буфер был реально кратен 32K и имел
+// физическую ёмкость >= размера, заявленного в заголовке (ROM_SIZE code).
+// rom_browser грузит файл как есть (может быть обрезан/некратен), а ядро
+// в get_cart_infos() при max_file_size > file_size вызывает file_data_resize()
+// (в стабах — только fd->size = new_sz, буфер НЕ растёт): cart_info->size
+// становится больше настоящего буфера → чтение банков валится за конец →
+// виснет/«не принимает». Поэтому host делает СВОЮ копию ROM фиксированной
+// ёмкости (до 8 МБ — максимум ROM_8M) и дополняет хвост нулями.
+#define GB_HOST_ROM_MAX (8u * 1024u * 1024u)
+#define GB_ROM_SIZE_ADDR 0x148u
+// Заголовок: ROM size code -> байт (как в binjgb FOREACH_ROM_SIZE).
+static const uint32_t gb_rom_size_bytes[9] = {
+    32u * 1024, 64u * 1024, 128u * 1024, 256u * 1024, 512u * 1024,
+    1024u * 1024, 2u * 1024u * 1024, 4u * 1024u * 1024, 8u * 1024u * 1024,
+};
+static uint8_t g_gb_rom_copy[GB_HOST_ROM_MAX] __attribute__((aligned(8)));
+static uint32_t g_gb_rom_copy_size = 0;
 
 // ---- Game Genie (Game Boy) чит-коды ----
 // Формат: "XX-XXX-XXX" или "XX-XXX-XXX-YY" (дефисы необязательны).
@@ -95,17 +119,40 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     // gb_run_frame()/gb_render_frame() (guard «if (!g_emu) return» на 120/177)
     // пошли бы по мусору пула.
     g_emu = NULL;
+    // r1070: сброс внутрифайловой диагностики при каждой загрузке ROM
+    // (иначе static-флаг живёт до перезагрузки прошивки).
+    gb_warned = 0;
+    gb_warn_t = 0;
     gb_heap_reset();
     // r0.417 (M6 аудита): битый элемент (NULL/0) — не запускаем binjgb
     // на пустом буфере (это единственный host без guard'а, как у остальных).
     if (!rom || size == 0) { printf("[GB] no ROM\n"); return 0; }
+
+    // r1068: собственная копия ROM + дополнение нулями до размера,
+    // заявленного заголовком (или кратного 32K). Проверяем header 0x148 —
+    // валидный ROM size code; если битый (не 0..8) или заголовок меньше
+    // 0x149 байт — берём ближайшую 32K-границу >= размера файла.
+    uint32_t want = size;
+    if (size >= 0x149u) {
+        uint8_t code = rom[GB_ROM_SIZE_ADDR];
+        if (code <= 8u) {
+            uint32_t hdr = gb_rom_size_bytes[code];
+            if (hdr > want) want = hdr;
+        }
+    }
+    if ((want & 0x7FFFu) != 0) want = (want + 0x7FFFu) & ~0x7FFFu;
+    if (want > GB_HOST_ROM_MAX) want = GB_HOST_ROM_MAX;
+    memset(g_gb_rom_copy, 0, want);            // хвост — нули (неиспользуемые банки)
+    memcpy(g_gb_rom_copy, rom, size);
+    g_gb_rom_copy_size = want;
+    rom = g_gb_rom_copy;
 
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     EmulatorInit init;
     memset(&init, 0, sizeof(init));
     init.rom.data = (uint8_t*)rom;  // ROM напрямую, без копирования
-    init.rom.size = size;
+    init.rom.size = g_gb_rom_copy_size;
     init.audio_frequency = 48000;
     init.audio_frames = 1024;
     init.random_seed = 42;
@@ -116,9 +163,9 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     if (!g_emu) { printf("[GB] emulator_new failed\n"); return 0; }
 
     // Применяем отмеченные читы (GB Game Genie) — патчим ROM напрямую
-    gb_apply_cheats((uint8_t*)rom, size);
+    gb_apply_cheats((uint8_t*)rom, g_gb_rom_copy_size);
 
-    printf("[GB] init ok, size=%u\n", (unsigned)size);
+    printf("[GB] init ok, size=%u\n", (unsigned)g_gb_rom_copy_size);
     return 1;
 }
 
@@ -156,12 +203,39 @@ extern "C" void gb_run_frame(void) {
 
     EmulatorEvent events;
     int guard = 0;
-    // r158: safety-лимит — если binjgb не выставляет NEW_FRAME (зависший ROM
-    // или сбой), не крутим вечно: кадр возвращается, и emu_esc_hold вызывается
-    // (иначе «не работает выход из эмулятора»).
+    // r1070: heartbeat вокруг do/while — отличаем «зависло внутри run_until»
+    // (TICKS не растёт) от «крутимся без NEW_FRAME» (TICKS растёт).
+    Ticks t_before = 0, t_after = 0;
     do {
+        t_before = emulator_get_ticks(g_emu);
         events = emulator_run_until(g_emu, emulator_get_ticks(g_emu) + PPU_FRAME_TICKS);
+        t_after = emulator_get_ticks(g_emu);
     } while (!(events & EMULATOR_EVENT_NEW_FRAME) && ++guard < 4);
+    if (!gb_warned && t_after == t_before) {
+        printf("[GB] STALL: ticks not moving (guard=%d event=%u frame=%u)\n",
+               guard, (unsigned)events,
+               (unsigned)emulator_get_ppu_frame(g_emu));
+        gb_warned = 1;
+    }
+
+    // r1069: детект без-кадра (первый кадр не пришёл за 4 попытки).
+    if (!(events & EMULATOR_EVENT_NEW_FRAME) && !gb_warned) {
+        printf("[GB] WARN: no NEW_FRAME after 4 tries (ticks=%u steps=%u frame=%u event=%u)\n",
+               (unsigned)emulator_get_ticks(g_emu),
+               (unsigned)emulator_get_step_count(g_emu),
+               (unsigned)emulator_get_ppu_frame(g_emu),
+               (unsigned)events);
+    }
+    if (!gb_warned && (h3_hs_timer_lo_us() - gb_warn_t > 3000000u)) {
+        // Кадр идёт, но мы уже 3 с крутимся — печатаем жив.
+        printf("[GB] alive: ticks=%u ppu=%u fill=%u\n",
+               (unsigned)emulator_get_ticks(g_emu),
+               (unsigned)emulator_get_ppu_frame(g_emu),
+               (unsigned)audio_buffer_get_frames(emulator_get_audio_buffer(g_emu)));
+        gb_warned = 1;
+    }
+    // После успешного первого кадра диагностику глушим.
+    if (events & EMULATOR_EVENT_NEW_FRAME) gb_warned = 1;
 
     // Звук GB/GBC на I2S (r596). binjgb отдаёт буфер u8 2-канальный
     // (пары L/R, 0..255, центр 128, 48000 Гц) — см. write_audio_frame

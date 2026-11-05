@@ -152,8 +152,8 @@ void net_tcp_send(int slot, uint8_t flags, const uint8_t* data, uint16_t len) {
     while (sent < len) {
         uint16_t n = len - sent;
         if (n > NET_TCP_MSS) n = NET_TCP_MSS;
-        int rc = slot_send_raw(s, flags | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt,
-                               data ? data + sent : 0, n);
+        slot_send_raw(s, flags | NET_TCP_ACK, s->snd_nxt, s->rcv_nxt,
+                      data ? data + sent : 0, n);
         /* r846: кладём в очередь повтора независимо от результата TX — при
            ошибке (-3 и т.п.) кадр не ушёл, повторим его из очереди. */
         if (s->retx_cnt < NET_TCP_RETX) {
@@ -248,7 +248,7 @@ static struct tcp_slot* slot_by_dport(uint16_t dp) {
 }
 
 int net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
-                   const uint8_t* src_ip, const uint8_t my_ip[4])
+                   const uint8_t* src_ip)
 {
     if (len < 20) return -1;
     uint16_t sp = (uint16_t)((pkt[0] << 8) | pkt[1]);

@@ -679,7 +679,6 @@ static void wifi_transfer_run(void) {
     uint8_t ip[4] = {0,0,0,0};
     int got_ip = 0;
     int joining = 0;
-    int join_sel = -1;
 
     for (;;) {
         wifi_layer_poll();   // DHCP-ретраи + приём FTP
@@ -737,7 +736,7 @@ static void wifi_transfer_run(void) {
                     else if (ap.rsn_len > 0)
                         snprintf(tag, sizeof(tag), " (WPA2)");
                     else
-                        snprintf(tag, sizeof(tag), "");
+                        tag[0] = 0;
                     fb_puts_s(48 + PHYS_W/2, y, tag, 1, 0x00AAAAAA);
                     y += 30;
                 }
@@ -757,7 +756,6 @@ static void wifi_transfer_run(void) {
         } else if (k == 40) {                            // Enter — join
             int n = h3_wifi_scan_ap_count();
             if (n > 0 && sel < n && !joining) {
-                join_sel = sel;
                 joining = 1;
                 int rc = wifi_layer_connect(sel);
                 if (rc != 0) {

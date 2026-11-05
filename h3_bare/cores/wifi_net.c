@@ -391,8 +391,7 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
     if (proto == 6) {                 /* r796: TCP (FTP-сервер) */
         extern int net_tcp_handle(const uint8_t* pkt, uint16_t len,
                                   const uint8_t* src_mac,
-                                  const uint8_t* src_ip,
-                                  const uint8_t my_ip[4]);
+                                  const uint8_t* src_ip);
         /* r846: проверяем TCP-контрольную сумму (псевдозаголовок+сегмент). */
         {
             uint16_t tcp_len = (uint16_t)(len - ihl);
@@ -413,7 +412,7 @@ void net_handle_ipv4(const uint8_t *pkt, uint16_t len, const uint8_t *src_mac,
             if ((uint16_t)~acc != 0) return;   /* bad TCP checksum */
         }
         net_tcp_handle(&pkt[ihl], (uint16_t)(len - ihl), src_mac,
-                       &pkt[12], st->ip);   /* src_ip = IP-header src */
+                       &pkt[12]);   /* src_ip = IP-header src */
         return;
     }
     if (proto != 17) return;          /* не UDP */

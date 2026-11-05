@@ -36,10 +36,9 @@ typedef int (*net_tcp_app_rx_t)(int slot, const uint8_t* data, uint16_t len,
                                 void* ctx);
 
 // Обработка входящего TCP-сегмента (из net_handle_ipv4).
-// pkt — TCP-заголовок+данные, len — длина, src_ip/src_mac — отправитель,
-// my_ip — наш адрес.
+// pkt — TCP-заголовок+данные, len — длина, src_ip/src_mac — отправитель.
 int  net_tcp_handle(const uint8_t* pkt, uint16_t len, const uint8_t* src_mac,
-                    const uint8_t* src_ip, const uint8_t my_ip[4]);
+                    const uint8_t* src_ip);
 
 // Начать прослушивание порта. Возвращает слот (0/1) или -1.
 int  net_tcp_listen(uint16_t port, net_tcp_app_rx_t app_rx, void* ctx);

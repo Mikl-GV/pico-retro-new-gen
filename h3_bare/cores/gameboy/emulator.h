@@ -214,6 +214,7 @@ SgbFrameBuffer* emulator_get_sgb_frame_buffer(Emulator*);
 AudioBuffer* emulator_get_audio_buffer(Emulator*);
 Ticks emulator_get_ticks(Emulator*);
 u32 emulator_get_ppu_frame(Emulator*);
+u32 emulator_get_step_count(Emulator*); /* r1071: диагностический счётчик шагов */
 u32 audio_buffer_get_frames(AudioBuffer*);
 void emulator_set_builtin_palette(Emulator*, u32 index);
 void emulator_set_bw_palette(Emulator*, PaletteType, const PaletteRGBA*);

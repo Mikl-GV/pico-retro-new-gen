@@ -1121,18 +1121,6 @@ static void build_short_file(const char* name, uint8_t* short83, int need_tilde)
     if (need_tilde) { short83[6] = '~'; short83[7] = '1'; }
 }
 
-static void build_83(const char* name, uint8_t* short83) {
-    memset(short83, ' ', 11);
-    const char* dot = 0;
-    for (const char* p = name; *p; p++) if (*p == '.') dot = p;
-    int nlen = dot ? (int)(dot - name) : (int)strlen(name);
-    int xlen = dot ? (int)strlen(dot + 1) : 0;
-    if (nlen > 8) nlen = 8;
-    if (xlen > 3) xlen = 3;
-    for (int i = 0; i < nlen; i++) short83[i] = (uint8_t)conv83(name[i]);
-    for (int i = 0; i < xlen; i++) short83[8 + i] = (uint8_t)conv83(dot[i + 1]);
-}
-
 static struct {
     int      active;
     uint32_t dentry_sec;

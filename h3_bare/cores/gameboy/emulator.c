@@ -689,6 +689,11 @@ typedef struct {
   Bool is_sgb;
   Bool ext_ram_updated;
   EmulatorEvent event;
+  /* r1071: диагностический счётчик шагов (не входит в save state; обнуляется
+   * в emulator_run_until). Позволяет host-слою увидеть «зависло в цикле ядра»
+   * (счётчик растёт, событие не выходит) vs «тики не двигаются» (step ничего
+   * не делает). */
+  u32 step_count;
 } EmulatorState;
 
 const size_t s_emulator_state_size = sizeof(EmulatorState);
@@ -2076,7 +2081,11 @@ static void timer_synchronize(Emulator* e) {
 
     if (TIMER.on) {
       Ticks cpu_tick = e->state.cpu_tick;
-      for (; delta_ticks > 0; delta_ticks -= cpu_tick) {
+      /* r1080: предохранитель от вечного цикла timer_synchronize.
+       * delta_ticks может быть огромным (sync_ticks отстал); лимит —
+       * 1 млн итераций — заведомо больше любого кадра (70224/4 ≈ 17.5k). */
+      u32 guard_t = 0;
+      for (; delta_ticks > 0 && guard_t++ < 1000000u; delta_ticks -= cpu_tick) {
         if (TIMER.tima_state == TIMA_STATE_OVERFLOW) {
           INTR.if_ |= (INTR.new_if & IF_TIMER);
           TIMER.tima = TIMER.tma;
@@ -2089,6 +2098,14 @@ static void timer_synchronize(Emulator* e) {
         if (is_div_falling_edge(e, old_div_counter, TIMER.div_counter)) {
           increment_tima(e);
         }
+      }
+      if (guard_t >= 1000000u) {
+        /* r1082: печать младших 32 бит — %llu на H3 искажается (r1074).
+         * Дельта на срабатывании ~ 1 млн * cpu_tick (≈4 млн тиков) —
+         * в 32 бита влезает. */
+        printf("[GB] timer_sync GUARD (delta=%u)\n",
+               (unsigned)(uint32_t)(TICKS - TIMER.sync_ticks));
+        TIMER.sync_ticks = TICKS; /* синхрон, чтобы не повторялось вечно */
       }
     } else {
       TIMER.div_counter += delta_ticks;
@@ -2115,6 +2132,14 @@ static void calculate_next_timer_intr(Emulator* e) {
         break;
       }
       ticks += cpu_tick;
+      /* r1080: предохранитель — максимум 65536 итераций (256 edge'ов ≈ 2
+       * переполнения tima; больше не бывает для валидных clock_select 0..3).
+       * Если лимит сработал — маска/state сломаны, выходим без расчёта. */
+      if (ticks - TIMER.sync_ticks > (Ticks)65536 * 8) {
+        printf("[GB] timer_calc GUARD (div=%04x cs=%u)\n",
+               (unsigned)div_counter, (unsigned)TIMER.clock_select);
+        break;
+      }
     }
     TIMER.next_intr_ticks = ticks;
   } else {
@@ -4690,6 +4715,12 @@ static inline bool is_breakpoint(Emulator* e, uint32_t  banked_pc) {
 #endif
 
 static void emulator_step_internal(Emulator* e) {
+  e->state.step_count++;
+  /* r1081: диагностический трейс шагов (r1075-r1080) убран — зависание CGB
+   * найдено (вечный цикл таймера, guard'ы r1080) и CPU работает; пошаговый
+   * вывод на каждом кадре заливал UART. Выводятся только аварийные
+   * сообщения: timer_sync GUARD / timer_calc GUARD (в таймерном коде),
+   * host WARN/STALL/alive (при отсутствии кадра). */
   if (HDMA.state == DMA_INACTIVE) {
     if (HOOK0_FALSE(emulator_step)) {
       return;
@@ -4714,7 +4745,10 @@ EmulatorEvent emulator_run_until(Emulator* e, Ticks until_ticks) {
     ab->position = ab->data;
   }
   check_joyp_intr(e);
+  /* r1081: пер-кадровая печать enter_run убрана (спам UART); выводятся
+   * только аварийные сообщения (GUARD/WARN/STALL/alive). */
   e->state.event = 0;
+  e->state.step_count = 0;
 
   u64 frames_left = ab->frames - audio_buffer_get_frames(ab);
   Ticks max_audio_ticks =
@@ -4723,6 +4757,15 @@ EmulatorEvent emulator_run_until(Emulator* e, Ticks until_ticks) {
   Ticks check_ticks = MIN(until_ticks, max_audio_ticks);
   while (e->state.event == 0 && TICKS < check_ticks) {
     emulator_step_internal(e);
+    /* r1071: предохранитель от вечного цикла ядра. Один кадр — ~17.5k
+     * инструкций (70224 тика / 4); с запасом на HDMA/служебные вызовы
+     * берём 8 млн — если шагов больше, ядро крутится без продвижения
+     * (например, step всё время возвращается без роста TICKS). Выходим
+     * с UNTIL_TICKS, host-слой увидит отсутствие NEW_FRAME и WARN. */
+    if (UNLIKELY(e->state.step_count > 8000000u)) {
+      e->state.event |= EMULATOR_EVENT_UNTIL_TICKS;
+      break;
+    }
   }
   if (TICKS >= max_audio_ticks) {
     e->state.event |= EMULATOR_EVENT_AUDIO_BUFFER_FULL;
@@ -4941,6 +4984,10 @@ Ticks emulator_get_ticks(Emulator* e) {
 
 u32 emulator_get_ppu_frame(Emulator* e) {
   return PPU.frame;
+}
+
+u32 emulator_get_step_count(Emulator* e) {
+  return e->state.step_count;
 }
 
 u32 audio_buffer_get_frames(AudioBuffer* audio_buffer) {
