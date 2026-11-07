@@ -1118,7 +1118,13 @@ $(BUILD)/mgba_renamed.stamp: $(MGBA_OBJS)
 # скриптом mgba_rename.sh (см. mgba_renamed.stamp). malloc/calloc/free берётся
 # из gameboy_stubs.c (bump-аллокатор).
 MGBA_DIR := $(TOP)h3_bare/cores/gba_mgba
-MGBA_CFLAGS := $(CFLAGS) -DNDEBUG -DMINIMAL_CORE -DM_CORE_GBA -DCOLOR_16_BIT -DCOLOR_5_6_5 -D_BSD_SOURCE -D_DEFAULT_SOURCE -DHAVE_LOCALE
+# r1136: оптимизация СКОРОСТИ интерпретатора mGBA только флагами компилятора
+# (логика ядра не тронута). -O3 поверх -O2 из $(CFLAGS) (последний -O-уровень
+# побеждает) + -fomit-frame-pointer: для ARMTDMI-декодера/_shift*/load memory это
+# меньше прологов и агрессивнее инлайнинг → быстрее диспетчер _armTable/_thumbTable.
+# NDEBUG уже отключил assert'ы; frame-pointer не нужен (отладка ядра не ведётся).
+MGBA_SPEED := -O3 -fomit-frame-pointer
+MGBA_CFLAGS := $(CFLAGS) -DNDEBUG -DMINIMAL_CORE -DM_CORE_GBA -DCOLOR_16_BIT -DCOLOR_5_6_5 -D_BSD_SOURCE -D_DEFAULT_SOURCE -DHAVE_LOCALE $(MGBA_SPEED) -fno-strict-aliasing
 MGBA_INC := -I$(MGBA_DIR) -I$(MGBA_DIR)/include $(INCLUDES)
 
 $(BUILD)/gba_mgba_host.o: $(TOP)h3_bare/cores/gba_mgba_host.c | $(BUILD)

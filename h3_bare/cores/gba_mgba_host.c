@@ -12,7 +12,7 @@
 //     EMU_FB (stride 320).
 //   - звук: mGBA синтезирует 32768 Гц стерео s16-пары в mAudioBuffer;
 //     host читает mAudioBufferRead и ресемплит 32768→48000 (полифазный,
-//     тот же GBA_RS_INC), пушит в I2S (i2s_push_sample).
+//     тот же GBA_RS_INC), пушит в I2S пакетно (i2s_push_block, r1135).
 //   - BIOS: вшит в прошивку (open_gba_bios_rom, bios_data.S), mGBA-ядру
 //     подаётся через core->loadBIOS — без файлов на SD (как r538/r565).
 //
@@ -220,7 +220,12 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     printf("GBA: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gba_rs_phase = 0;
-    i2s_dc_shift_set(6);
+    // r1137: DC-блокер CPU2 для GBA — ниже (fc≈30 Гц), чем дефолт 119 Гц.
+    // fc = fs/(2^shift·2π); shift=6→119 Гц. На GBA тяжёлые басы (бас-барабан
+    // 50–100 Гц) при 119 Гц ослабляются и фазоискажаются → «бубнёж» на низах.
+    // shift=8→~30 Гц: убираем DC/инфразвук, низы GBA сохраняются чистыми.
+    // Только GBA (общий i2s не трогаем); 30 Гц — ниже слухового дитейла баса.
+    i2s_dc_shift_set(8);
 
     // Вендорное ядро пишет mLOG(...) напрямую в printf, пока не задан дефолтный
     // логгер (см. core/log.c:114). Гасим его тихой функцией — UART не спамим.
@@ -299,8 +304,13 @@ void gba_run_frame(void) {
         frames = (u32)mAudioBufferRead(ab, sndbuf, avail);
     }
     u32 np = gba_resample(sndbuf, frames, rsbuf);
-    for (u32 i = 0; i < np; i++)
-        i2s_push_sample(rsbuf[2 * i], rsbuf[2 * i + 1]);
+    // r1135: пакетная подача ОДНИМ i2s_push_block вместо цикла push_sample.
+    // push_sample делает dsb (системный барьер) на КАЖДУЮ пару; push_block —
+    // 1 ожидание места + 1 dsb на блок (~800 пар/кадр → 800 dsb экономится).
+    // Backpressure внутри: ждёт освобождения (до 75% кольца), переполнение
+    // дропает — ровно то, что нужно, когда mGBA даёт больше, чем CPU2 успевает.
+    if (np)
+        i2s_push_block(rsbuf, np);
     g_gba_pairs = np;
 }
 
