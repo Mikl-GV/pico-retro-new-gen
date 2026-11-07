@@ -300,14 +300,19 @@ void usb_ohci_set_mps(uint16_t mps) {
     if (mps >= 8 && mps <= 64) g_mps = mps;
 }
 
-// ---- D-cache maintenance: L1 (by MVA) + L2/PL310 (by PA) ----
+// ---- D-cache maintenance: L1 (by MVA) + L2/PL310 (by PA, guarded) ----
 // U-Boot оставляет MMU + write-back D-cache включёнными. OHCI-DMA читает
 // физическую DRAM НАПРЯМУЮ. Критично (эталон h3_mmu.c:73-77): на H3 под L1
-// стоит L2-кэш; обычный L1-clean (DCCMVAC) сбрасывает строку ЛИШЬ в L2, НЕ в
-// DRAM. Без L2-операции (by-PA, PL310 @0x01C43000) DMA-мастер видит
-// УСТАРЕВШИЕ ED/TD (лог r804: td=0xF2080000 — мусор из DRAM, свежие данные
-// застряли в L2), bulk падает «TD NotAccessed». Поэтому clean/invalidate
+// стоит L2-кэш (встроен в кластер Cortex-A7); обычный L1-clean (DCCMVAC)
+// сбрасывает строку ЛИШЬ в L2, НЕ в DRAM. Без L2-операции (by-PA) DMA-мастер
+// видит УСТАРЕВШИЕ ED/TD (лог r804: td=0xF2080000 — мусор из DRAM, свежие
+// данные застряли в L2), bulk падает «TD NotAccessed». Поэтому clean/invalidate
 // делаем на ОБОИХ уровнях: L1 by MVA + L2 by PA.
+// ВАЖНО (r1083, аудит): запись by-PA на 0x01C43000 выполняется ТОЛЬКО при
+// подтверждении `pl310_present()` — CACHE_ID по адресу 0x01C43000 равен
+// ARM-совместимому (0x410000xx). Если контроллера там нет (или ID не тот),
+// by-PA-цикл — no-op (guard), остаётся только L1-операция. Подробности —
+// по документации (этот адрес ∈ диапазон 0x01C40000, mmio-периферия H3).
 #define PL310_BASE        0x01C43000u
 #define PL310_CACHE_SYNC  0x730u
 #define PL310_CLEAN_INV_PA 0x7B0u

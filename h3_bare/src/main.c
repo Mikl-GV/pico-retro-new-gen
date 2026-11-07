@@ -116,7 +116,7 @@ static int zx_model_dialog(void) {
     }
 }
 
-// 1 = BASIC, 2 = ROM (браузер /roms/zxspectrum), 0 = назад
+// 2 = BASIC, 1 = ROM (браузер /roms/zxspectrum), 0 = назад
 static int zx_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
@@ -214,7 +214,7 @@ static int msx_model_dialog(void) {
     }
 }
 
-// 1 = BASIC, 2 = ROM (браузер /roms/bk0010), 0 = назад
+// 2 = BASIC, 1 = ROM (браузер /roms/bk0010), 0 = назад
 static int bk_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
@@ -241,7 +241,7 @@ static int bk_source_dialog(void) {
     }
 }
 
-// r966: 1 = BASIC (вшитый BIOS), 2 = ROM/диск (браузер /roms/cpc), 0 = назад.
+// r966: 2 = BASIC (вшитый BIOS), 1 = ROM/диск (браузер /roms/cpc), 0 = назад.
 // Раскладка возврата та же, что у BK/ZX: 2 -> BASIC, 1 -> браузер.
 static int cpc_source_dialog(void) {
     int sel = 0, dirty = 1;
@@ -305,7 +305,7 @@ static int c64_model_dialog(void) {
     }
 }
 
-// r974: 1 = BASIC (вшитый KERNAL+Basic), 2 = ROM/диск (браузер /roms/c64), 0 = назад.
+// r974: 2 = BASIC (вшитый KERNAL+Basic), 1 = ROM/диск (браузер /roms/c64), 0 = назад.
 static int c64_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
@@ -428,7 +428,7 @@ static int ms1504_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1082";
+const char g_fw_version[] = "r1134";
 
 void main(void) {
     int sd_ok = 0;
@@ -436,7 +436,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1082\n");
+    uart_puts("build: r1134\n");
 
     led_init();
     led_set(0);

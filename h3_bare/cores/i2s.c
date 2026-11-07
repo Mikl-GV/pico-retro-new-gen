@@ -221,7 +221,9 @@ static int g_emulators_audio = 0;
 void i2s_emulators_audio(int on) { g_emulators_audio = on ? 1 : 0; }
 // Аудио-диагностика (разовые печати AUDIO-END/DBG-RST/TONE*/NES-AUD/LYNX-AUD и
 // GBA-строка в кадре). Выключена по умолчанию — в обычном образе UART не спамит.
-static int g_audio_diag = 0;
+// r1084-СТЕНД: включено для снятия лога GBA-VID (RnRR белый экран при живом
+// звуке). После замера вернуть в 0 и пересобрать.
+static int g_audio_diag = 1;
 int  i2s_audio_diag(void)      { return g_audio_diag; }
 void i2s_audio_diag_set(int on){ g_audio_diag = on ? 1 : 0; }
 // r943: целевая высота кольца (пар) — уровень, до которого держит кольцо
@@ -688,7 +690,7 @@ void i2s_audio_poll_cmd(void) {
     SRAM_AUDIO_ACK = cmd;
 }
 void i2s_audio_set_state(int on) { g_audio_state = on ? 1 : 0; }
-void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; g_audio_active = on ? 1 : 0; }  /* r916: флаг «в игре» для CPU2 — SRAM (надёжно) */
+void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; g_audio_active = on ? 1 : 0; }  /* r916: флаг «в игре». Ставится core0 в emu_prepare, снимается в emu_audio_stop. ТЕКУЩАЯ РЕАЛИЗАЦИЯ: флаг записывается (SRAM A1 + .coherent), но в hot-path CPU2 (i2s_poll_fill) при пустом кольце выполняется break без подмеса тишины и без чтения этого флага — silence-fill не реализован; underrun не маскируется (виден в статистике). Первичная диагностика и для будущих слоёв. */
 void i2s_audio_set_beat(uint32_t b) { SRAM_AUDIO_BEAT = b; }
 int  i2s_audio_core_active(void) { return (int)g_audio_state; }
 uint32_t i2s_audio_beat(void) { return SRAM_AUDIO_BEAT; }
@@ -1149,26 +1151,11 @@ uint32_t free1 = (I2S_FIFO_STA >> 16) & 0xFFu;
 // ---- CPU2: точка входа аудио-ядра ----
 // Имя cpu2_entry — из startup.S (ассемблерный пролог, затем bx cpu2_audio_entry).
 
-// r927: сырая печать с CPU2 (UART0 THR напрямую, как uart_dbg в startup.S).
-// printf с CPU2 не используется (общая блокировка/стек — риск). Только
-// диагностика, вызывается тем же физическим UART0 (115200).
-static void cpu2_uart_puts(const char* s) {
-    volatile uint32_t* usr = (volatile uint32_t*)0x01C2807Cu;
-    volatile uint32_t* thr = (volatile uint32_t*)0x01C28000u;
-    while (*s) {
-        int t = 0xFFFF;
-        while (!(*usr & 2u) && --t) ;
-        *thr = (uint32_t)(uint8_t)*s++;
-    }
-}
-
 void cpu2_audio_entry(void) {
     i2s_audio_set_state(1);
     i2s_audio_set_beat(0);
-    if (g_audio_diag) cpu2_uart_puts("cpu2: enter\r\n");
 
     uint32_t beat = 0;
-    int once = 0;
     for (;;) {
         i2s_audio_poll_cmd();
         // r918: r917-`wfi` ОТМЕНЁН — у CPU2 нет источника пробуждения (GIC для
@@ -1186,26 +1173,16 @@ void cpu2_audio_entry(void) {
             SRAM_RING_RD = SRAM_RING_WR;
             __asm volatile("dsb" ::: "memory");
             SRAM_RING_SYNC = 0;
-            if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: sync-cleared\r\n"); once = 1; }
             continue;
         }
         if (i2s_audio_paused())
             continue;
-        if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: before-poll-fill\r\n"); }
         int wrote = i2s_poll_fill();
-        // r929: маркеры before/after — ОДИН раз (первый проход). В r928 они
-        // печатались на КАЖДОМ витке (once ставился только в sync-ветке) и
-        // забивали UART (склейки в логе), тормозя сам долив.
-        if (g_audio_diag && !once) { cpu2_uart_puts("cpu2: after-poll-fill\r\n"); once = 1; }
         if (wrote == 0) {
             // FIFO на границе / кольцо пусто — NOP-backoff (не долбить регистр).
             __asm volatile("nop; nop; nop; nop; nop; nop; nop; nop");
         }
         beat++;
         i2s_audio_set_beat(beat);
-        if (g_audio_diag && beat == 1)
-            cpu2_uart_puts("cpu2: loop beat=1\r\n");
-        if (g_audio_diag && (beat & 0xFFFFFFu) == 0)
-            cpu2_uart_puts("cpu2: beat-wrap\r\n");
     }
 }

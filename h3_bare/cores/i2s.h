@@ -63,7 +63,7 @@ uint32_t i2s_audio_beat(void);
 void     i2s_audio_cmd(uint32_t cmd);   // core0 → CPU2 (пауза/резюм)
 void     i2s_audio_poll_cmd(void);      // CPU2: принять команды core0
 void     i2s_audio_set_state(int on);
-void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт (CPU2 доливает тишину)
+void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт. Флаг записывается (SRAM A1+.coherent), но при пустом кольце CPU2 НЕ подмешивает тишину — silence-fill не реализован
 void     i2s_audio_set_beat(uint32_t b);
 int      i2s_audio_paused(void);
 int      i2s_poll_fill(void);           // CPU2: долить ring→FIFO (пачки)

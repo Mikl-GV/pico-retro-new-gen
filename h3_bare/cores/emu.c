@@ -316,39 +316,25 @@ void emu_throttle(void) {
         // (~6 мс на строку) останавливал продюсера → кольцо пустело, и сама
         // диагностика создавала провалы, которые потом «показывала». Сводка
         // выводится один раз в emu_audio_stop (AUDIO-END), когда поток стоит.
-        (void)elapsed; (void)pairs_now;
+        (void)elapsed; (void)pairs_now; (void)fill; (void)target;
 
-        if (fill < target) {
-            // Кольцо ниже цели — хотим догнать буфер. НО ждать до period/2,
-            // а базу сдвигать на целый period было БАГОМ (r944): реально
-            // прошло period/2, а следующий кадр считал elapsed = -(period/2)
-            // → огромное беззнаковое → ветка «переработка» → кадры гонятся
-            // подряд почти без ожидания → эмуляция бежит в ~2 раза быстрее
-            // железа (NGP «2×» в стенд-логах). Правильно: если кольцо ниже
-            // цели, всё равно блюдём честный ритм периода и накапливаем
-            // буфер за счёт того, что генерация идёт в темп 48к (CPU2), а
-            // не за счёт разгона кадров. База всегда сдвигается на period,
-            // переработка (elapsed≥period) учитывается в debt в обеих ветках.
-            if (elapsed < period) {
-                uint32_t wait = period - elapsed;
-                udelay(wait);
-                emu_ts0 += period;
-            } else {
-                emu_debt = (int32_t)(elapsed - period);
-                if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
-                emu_ts0 += period;
-            }
+        // Единый ритм периода независимо от заполнения кольца. r944-FIX:
+        // ждать до period/2, а базу сдвигать на целый period было БАГОМ (r944):
+        // реально прошло period/2, а следующий кадр считал elapsed = -(period/2)
+        // → огромное беззнаковое → ветка «переработка» → кадры гонятся подряд
+        // почти без ожидания → эмуляция бежит в ~2 раза быстрее железа
+        // (NGP «2×» в стенд-логах). Правильно: Кольцо ниже цели или нет — блюдём
+        // честный ритм периода; буфер накапливается за счёт того, что генерация
+        // идёт в темп 48к (CPU2), а не за счёт разгона кадров. База всегда
+        // сдвигается на period, переработка (elapsed≥period) учитывается в debt.
+        if (elapsed < period) {
+            uint32_t wait = period - elapsed;
+            udelay(wait);
+            emu_ts0 += period;
         } else {
-            // Достигли цели — нормальный ритм периода (жду остаток до границы).
-            if (elapsed < period) {
-                uint32_t wait = period - elapsed;
-                udelay(wait);
-                emu_ts0 += period;
-            } else {
-                emu_debt = (int32_t)(elapsed - period);
-                if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
-                emu_ts0 += period;
-            }
+            emu_debt = (int32_t)(elapsed - period);
+            if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
+            emu_ts0 += period;
         }
     }
 

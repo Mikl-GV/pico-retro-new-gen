@@ -289,6 +289,56 @@ static void trigger_timer(u32 timer_number, u32 value)
 bool is_known_game = false;
 bool require_m1_hle_bios = false;
 
+// r1086-ДИАГ (host): счётчики главного idle-цикла RnRR для отчёта GBA-CNT.
+// gba_host.c читает их (extern) после каждого кадра, чтобы отличить «кадры
+// идут, но пустые» от «кадров нет» и проверить Halt/DMA-FIFO активность.
+// Только для отладки — счёт, не меняют поведение ядра.
+u32 gba_diag_halt_cnt = 0;
+u32 gba_diag_fifo_a_cnt = 0;
+u32 gba_diag_fifo_b_cnt = 0;
+// r1096-ДИАГ: счётчики записей REG_IF (сброс VBlank-флага). Читает gba_host.c.
+u32 gba_diag_if_wr = 0;
+u32 gba_diag_if_vblank_wr = 0;
+// r1097-ДИАГ: счётчики записей VRAM (0x06000000). Раздельны программные и DMA,
+// в т.ч. по map-диапазону сцены RnRR (0xF000..0x18000 = screen block 30).
+u32 gba_diag_vram_wr = 0;       // программные записи VRAM (все)
+u32 gba_diag_vram_map_wr = 0;   // программные в 0xF000..0x18000
+u32 gba_diag_vram_dma_wr = 0;   // DMA-записи VRAM (все)
+u32 gba_diag_vram_dma_map_wr = 0; // DMA в 0xF000..0x18000
+// r1117/r1118: зеркало BG VRAM 0x08000<->0x00000 (диагностика RnRR).
+// r1117 на стенде с =1 ломало рендер ДРУГИХ игр (интро обрезает, повреждения) —
+// зеркало пересекает чарданные области других игр. ВЫКЛЮЧЕНО (=0, эталон),
+// не включать без согласования владельца. RnRR им НЕ лечится (тайлы 0x4800
+// реальны, проблема в палитре/OBJ).
+u32 gba_diag_bgmirror = 0;
+// гейт печати диагностики — определён в i2s.c (host). Здесь только читаем.
+extern int i2s_audio_diag(void);
+extern int i2s_audio_diag_set(int on);
+
+// r1091-ДИАГ (событ.) — RnRR «белый/чёрный»: журнал СМЕНЫ видео-регистров.
+// ЗАПИСЬ в кольцо только из горячего цикла ядра (write_io_register16), БЕЗ
+// printf/uart — иначе сбой таймингов. Читает gba_host.c раз в секунду и
+// печатает через host. Кольцо фиксированного размера, переполняется сбросом.
+#define GBA_DIAG_EV_MAX 64
+struct GbaDiagEv { u32 kind; u32 old; u32 new; u32 pc; };
+static struct GbaDiagEv gba_diag_ev[GBA_DIAG_EV_MAX];
+static u32 gba_diag_ev_w = 0;
+// kind: 0=DISPCNT 1=BLDCNT 2=BLDY 3=BG0CNT 4=BG1CNT
+static inline void gba_diag_ev_put(u32 kind, u32 oldv, u32 newv, u32 pc) {
+  u32 i = gba_diag_ev_w;
+  if (i < GBA_DIAG_EV_MAX) { gba_diag_ev[i].kind=kind; gba_diag_ev[i].old=oldv;
+    gba_diag_ev[i].new=newv; gba_diag_ev[i].pc=pc; gba_diag_ev_w = i+1; }
+}
+u32 gba_diag_ev_dump(u32* out) {   // host: скопировать события и сбросить счёт
+  u32 n = gba_diag_ev_w, i;
+  for (i = 0; i < n && i < GBA_DIAG_EV_MAX; i++) {
+    out[i*4+0]=gba_diag_ev[i].kind; out[i*4+1]=gba_diag_ev[i].old;
+    out[i*4+2]=gba_diag_ev[i].new;  out[i*4+3]=gba_diag_ev[i].pc;
+  }
+  gba_diag_ev_w = 0;
+  return n;
+}
+
 /* Memory timings */
 const u8 ws012_nonseq[] = {4, 3, 2, 8};
 const u8 ws0_seq[] = {2, 1};
@@ -618,7 +668,7 @@ void function_cc write_eeprom(u32 unused_address, u32 value)
   u32 gamepak_index = address >> 15;                                          \
   u8 *map = memory_map_read[gamepak_index];                                   \
                                                                               \
-  if(!map)                                                                    \
+if(!map)                                                                    \
     map = load_gamepak_page(gamepak_index & 0x3FF);                           \
                                                                               \
   value = readaddress##type(map, address & 0x7FFF)                            \
@@ -893,13 +943,57 @@ u32 function_cc read_eeprom(void)
                                                                               \
     case 0x02:                                                                \
       /* external work RAM */                                                 \
+      /* r1127-ДИАГ: ловим чтения декодера палитры (pc=0x03002d78) из EWRAM  \
+         — источник распаковки. r1126: затиратель зациклен, пишет 0x1AFFFBFF \
+         (байты FF FB FF 1A, 0xFF=пустой) в OBJ-палитру тысячи раз;         \
+         GBA-DECRD в gamepak не сработал → декодер читает источник из RAM.  \
+         Печатаем адрес/тип/значение возврата для первых чтений. */          \
+      if ((reg[REG_PC] >= 0x03000000u) && (reg[REG_PC] < 0x04000000u)) {     \
+        static u32 c_decram = 0;                                              \
+        c_decram++;                                                           \
+        if (c_decram <= 40) {                                                 \
+          u32 rv = readaddress##type(ewram, (address & 0x3FFFF));             \
+          printf("GBA-DECRAM: adr=%08x pc=%08x type=%d val=%08x cnt=%u\n",    \
+                 (unsigned)address, (unsigned)reg[15], (int)(type),           \
+                 (unsigned)rv, (unsigned)c_decram);                           \
+        }                                                                     \
+      }                                                                       \
       value = readaddress##type(ewram, (address & 0x3FFFF));                  \
       break;                                                                  \
                                                                               \
-    case 0x03:                                                                \
+case 0x03:                                                                \
       /* internal work RAM */                                                 \
-      value = readaddress##type(iwram, (address & 0x7FFF) + 0x8000);          \
-      break;                                                                  \
+      /* r1128-ДИАГ: IWRAM-чтения декодера (pc=0x03002d78). r1127:           \
+         GBA-DECRAM (case 0x02/EWRAM) НЕ показал ни чтения → декодер         \
+         читает источник распаковки из IWRAM (0x03), не из EWRAM.           \
+         Ловим первые 40 чтений IWRAM при pc в IWRAM-диапазоне. */           \
+      if ((reg[REG_PC] >= 0x03000000u) && (reg[REG_PC] < 0x04000000u)) {     \
+        static u32 c_deciw = 0;                                              \
+        c_deciw++;                                                           \
+        if (c_deciw <= 40) {                                                 \
+          u32 rv = readaddress##type(iwram, (address & 0x7FFF) + 0x8000);    \
+          printf("GBA-DECIWRAM: adr=%08x pc=%08x type=%d val=%08x cnt=%u\n", \
+                 (unsigned)address, (unsigned)reg[15], (int)(type),          \
+                 (unsigned)rv, (unsigned)c_deciw);                           \
+        }                                                                    \
+        /* r1129-ДИАГ: разовый дамп IWRAM-области декодера при первом входе  \
+           (показывает, что лежит в буфере/таблице 0x03003000-0x03003400). */ \
+        if (c_deciw == 1) {                                                  \
+          u32 iaddr;                                                         \
+          /* r1130: дамп ТОЧНЫХ адресов чтения декодера. r1129-шаг 0x40      \
+             пропустил 0x030032e0..0x03003320, которые декодер читает. */   \
+          printf("GBA-DECIWDMP2 @030032c0:\n");                             \
+          for (iaddr = 0x030032c0; iaddr < 0x03003320; iaddr += 0x20) {      \
+            printf("  %08x: ", (unsigned)iaddr);                             \
+            for (u32 w = 0; w < 16; w++)                                     \
+              printf("%04x ", (unsigned)eswap16(                             \
+                readaddress16(iwram, ((iaddr + w*2) & 0x7FFF) + 0x8000)));   \
+            printf("\n");                                                    \
+          }                                                                  \
+        }                                                                    \
+      }                                                                      \
+      value = readaddress##type(iwram, (address & 0x7FFF) + 0x8000);         \
+      break;                                                                 \
                                                                               \
     case 0x04:                                                                \
       /* I/O registers */                                                     \
@@ -916,6 +1010,13 @@ u32 function_cc read_eeprom(void)
       address &= 0x1FFFF;                                                     \
       if(address >= 0x18000)                                                  \
         address -= 0x8000;                                                    \
+      /* r1117-ДИАГ (обратимо): зеркало BG VRAM 0x08000-0x0FFFF <-> 0x00000-  \
+         0x07FFF (симметричный алиас). Диагностика RnRR: 0xF000 (scrblk=30)    \
+         пуст, игра может писать карту в 0x7000 и ждать видимости по 0xF000.  \
+         Флаг gba_diag_bgmirror: 0=выкл (эталон), 1=вкл (диагностика).          \
+         Алиас: пары (X, X^0x8000) для X<0x10000 — одна ячейка. */            \
+      if (gba_diag_bgmirror && address < 0x10000 && (address & 0x8000))        \
+        address ^= 0x08000;                                                    \
                                                                               \
       value = readaddress##type(vram, address);                               \
       break;                                                                  \
@@ -1049,11 +1150,21 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
     case REG_DISPCNT:
       // Changing the lowest 3 bits might require object re-sorting
       reg[OAM_UPDATED] |= ((value & 0x07) != (read_ioreg(REG_DISPCNT) & 0x07));
+      // r1091-ДИАГ: событие смены DISPCNT в кольцо (без UART — горячий цикл).
+      // По битам: forced blank (бит7 0x80), фоны (биты8-11), display on (бит15).
+      if ((u16)value != (u16)read_ioreg(REG_DISPCNT))
+        gba_diag_ev_put(0, read_ioreg(REG_DISPCNT), value, reg[REG_PC]);
       write_ioreg(REG_DISPCNT, value);
       break;
 
     case REG_BG0CNT:
     case REG_BG1CNT:
+      // r1092-ДИАГ: смена BG0CNT/BG1CNT — структура уровня (базовые блоки
+      // тайлов/карты, палитра, режим). RnRR после интро включает BG0
+      // (dispcnt=0x1100), но сцена рисуется пустой (px=0xDFDF). Зная BGnCNT
+      // поймём валиден ли указатель на тайловый блок уровня.
+      if ((u16)value != (u16)read_ioreg(ioreg))
+        gba_diag_ev_put(ioreg == REG_BG0CNT ? 3 : 4, read_ioreg(ioreg), value, reg[REG_PC]);
       write_ioreg(ioreg, value & 0xDFFF);
       break;
 
@@ -1063,6 +1174,11 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
       break;
 
     case REG_BLDCNT:
+      // r1091-ДИАГ: фейд-регистр BLDCNT — контроллер смешивания (alpha/fade).
+      // Если RnRR делает fade-out/in, а у нас BLDY застрял — экран белый/чёрный.
+      // Событие смены в кольцо (hot: только память, без UART).
+      if ((u16)(value & 0x3FFF) != (u16)(read_ioreg(ioreg) & 0x3FFF))
+        gba_diag_ev_put(1, read_ioreg(ioreg) & 0x3FFF, value & 0x3FFF, reg[REG_PC]);
       write_ioreg(ioreg, value & 0x3FFF);
       break;
 
@@ -1071,6 +1187,10 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
       break;
 
     case REG_BLDY:
+      // r1091-ДИАГ: если игра уводит яркость в 0 (чёрный) или держит максимум
+      // (белый) и не возвращает — экран замирает в фейде. Событие в кольцо.
+      if ((u16)(value & 0x1F) != (u16)(read_ioreg(ioreg) & 0x1F))
+        gba_diag_ev_put(2, read_ioreg(ioreg) & 0x1F, value & 0x1F, reg[REG_PC]);
       write_ioreg(ioreg, value & 0x001F);
       break;
 
@@ -1198,6 +1318,13 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
 
     // Interrupt flag, clears the bits it tries to write
     case REG_IF:
+      // r1096-ДИАГ: игра в VBlankIntrWait/обработчике пишет IF чтобы сбросить
+      // бит VBlank (0x01). Считаем такие записи — если SWI 0x05 зовётся, а IRQ
+      // доходит, значение растёт по кадрам.
+      if (i2s_audio_diag()) {
+        gba_diag_if_wr++;
+        if (value & 0x01) gba_diag_if_vblank_wr++;
+      }
       write_ioreg(REG_IF, read_ioreg(REG_IF) & (~value));
       break;
 
@@ -1244,6 +1371,10 @@ cpu_alert_type function_cc write_io_register8(u32 address, u32 value)
       reg[CPU_HALT_STATE] = CPU_STOP;
     else
       reg[CPU_HALT_STATE] = CPU_HALT;
+    // r1086-ДИАГ (host): счётчик SWI-Halt (HALTCNT write, 0x301) — RnRR главный
+    // цикл построен на Halt-idle (mGBA-эталон: SWI 0x02 рrастёт, DMA-FIFO звук).
+    // host читает через diag_externs для отчёта GBA-CNT (пустые кадры vs нет).
+    gba_diag_halt_cnt++;
     return CPU_ALERT_HALT;
   }
 
@@ -1262,12 +1393,14 @@ cpu_alert_type function_cc write_io_register8(u32 address, u32 value)
 cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 {
   address &= 0xfffffc;
-  // Handle sound FIFO data write
+  // Handle sound FIFO DMA/mem write (0x040000A0 = FIFO_A, 0x040000A4 = FIFO_B)
   if (address == 0xA0) {
+    gba_diag_fifo_a_cnt++;
     sound_timer_queue32(0, value);
     return CPU_ALERT_NONE;
   }
   else if (address == 0xA4) {
+    gba_diag_fifo_b_cnt++;
     sound_timer_queue32(1, value);
     return CPU_ALERT_NONE;
   }
@@ -1282,6 +1415,18 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 #define write_palette8(address, value)                                        \
 {                                                                             \
   u32 aladdr = address & ~1U;                                                 \
+  /* r1121-ДИАГ: байтовая запись палитры — возможный путь для fffb/1aff       \
+     мимо write_palette16/32 (писал неинструментированным). */               \
+  {                                                                            \
+    static u32 c_pal8 = 0, pal8_done = 0;                                     \
+    c_pal8++;                                                                  \
+    if (!pal8_done && (u32)value != 0) {                                       \
+      pal8_done = 1;                                                           \
+      printf("GBA-PAL8: idx=%03x val=%02x pc=%08x cnt=%u\n",                   \
+             (unsigned)aladdr, (unsigned)(value & 0xFFu),                      \
+             (unsigned)reg[15], (unsigned)c_pal8);                             \
+    }                                                                          \
+  }                                                                            \
   u16 val16 = (value << 8) | value;                                           \
   address16(palette_ram, aladdr) = eswap16(val16);                            \
   address16(palette_ram_converted, aladdr) = convert_palette(val16);          \
@@ -1290,6 +1435,29 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 #define write_palette16(address, value)                                       \
 {                                                                             \
   u32 palette_address = address;                                              \
+  /* r1115-ДИАГ: первая запись в BG-палитру [0,0x100) — кто и что. */         \
+  if (palette_address < 0x100) {                                              \
+    static u32 gba_diag_pal_first = 0;                                        \
+    if (!gba_diag_pal_first) {                                                \
+      gba_diag_pal_first = 1;                                                 \
+      printf("GBA-PALW: idx=%03x val=%04x pc=%08x\n",                          \
+             (unsigned)palette_address, (unsigned)(value & 0xFFFFu),          \
+             (unsigned)reg[15]);                                              \
+    }                                                                         \
+  }                                                                           \
+  /* r1120-ДИАГ (r1124-ПРАВКА): НЕНОЛЕВАЯ запись палитры БЕЗ ROM-фильтра.   \
+     r1123 показал: DMA-градиент стёрт ПОСЛЕ записи значениями fffb/1aff,   \
+     и источник НЕ поймался при pc в ROM (GBA-PAL16 молчал) — значит он     \
+     исполняется из BIOS/IWRAM (pc=0x0300xxxx, как GBA-MAPWRNZ pc=03003604).\
+     Убран фильтр pc>=0x08000000 — ловим ЛЮБУЮ ненулевую запись с pc. */     \
+  if((value & 0xFFFFu) != 0) {                                               \
+    static u32 c_pal16any = 0;                                               \
+    c_pal16any++;                                                            \
+    if (c_pal16any <= 24)                                                    \
+      printf("GBA-PAL16: idx=%03x val=%04x pc=%08x cnt=%u\n",                 \
+             (unsigned)palette_address, (unsigned)(value & 0xFFFFu),         \
+             (unsigned)reg[15], (unsigned)c_pal16any);                       \
+  }                                                                          \
   address16(palette_ram, palette_address) = eswap16(value);                   \
   value = convert_palette(value);                                             \
   address16(palette_ram_converted, palette_address) = value;                  \
@@ -1298,6 +1466,18 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 #define write_palette32(address, value)                                       \
 {                                                                             \
   u32 palette_address = address;                                              \
+  /* r1119-ДИАГ: перехват 32-бит записей палитры (подозрение fffb/1aff = две  \
+     16-бит заливки). Счётчик + первая ненулевая. */                          \
+{                                                                            \
+    static u32 c_pal32 = 0, p32_done = 0;                                       \
+    c_pal32++;                                                                 \
+    if (!p32_done && value != 0) {                                             \
+      p32_done = 1;                                                            \
+      printf("GBA-PAL32: idx=%03x val=%08x pc=%08x cnt=%u\n",                   \
+             (unsigned)palette_address, (unsigned)value,                       \
+             (unsigned)reg[15], (unsigned)c_pal32);                            \
+    }                                                                          \
+}                                                                            \
   u32 value_high = value >> 16;                                               \
   u32 value_low = value & 0xFFFF;                                             \
   address32(palette_ram, palette_address) = eswap32(value);                   \
@@ -1760,7 +1940,33 @@ void function_cc write_gpio(u32 address, u32 value) {
       address &= 0x1FFFF;                                                     \
       if(address >= 0x18000)                                                  \
         address -= 0x8000;                                                    \
-                                                                              \
+      gba_diag_vram_wr++;                                                     \
+      if(address >= 0xF000 && address < 0x18000) gba_diag_vram_map_wr++;      \
+      /* r1116-ДИАГ: счётчик записей CPU в map 0xF000-0xF800 + первый ненулевой,   \
+        и аналогично в OBJ-зону 0x10000-0x14000 (тайлы спрайтов). */          \
+      {                                                                        \
+        static u32 c_mapwr = 0, c_objwr = 0, m_nz = 0, o_nz = 0;               \
+        if (address >= 0xF000 && address < 0xF800) {                           \
+          c_mapwr++;                                                           \
+          if (!m_nz && (type == 32 ? ((u32)value != 0) : ((u32)value != 0))) { \
+            m_nz = 1;                                                          \
+            printf("GBA-MAPWRNZ: adr=%05x val=%08x type=%d pc=%08x cnt=%u\n",  \
+                   (unsigned)address, (unsigned)value, (int)type,              \
+                   (unsigned)reg[15], (unsigned)c_mapwr);                     \
+          }                                                                    \
+        } else if (address >= 0x10000 && address < 0x14000) {                  \
+          c_objwr++;                                                           \
+          if (!o_nz) {                                                         \
+            o_nz = 1;                                                          \
+            printf("GBA-OBJWR: adr=%05x val=%08x type=%d pc=%08x cnt=%u\n",    \
+                   (unsigned)address, (unsigned)value, (int)type,              \
+                   (unsigned)reg[15], (unsigned)c_objwr);                     \
+          }                                                                    \
+        }                                                                      \
+      }                                                                        \
+      /* r1117-ДИАГ: зеркало BG VRAM при записи (симметричный алиас). */     \
+      if (gba_diag_bgmirror && address < 0x10000 && (address & 0x8000))       \
+        address ^= 0x08000;                                                    \
       write_vram##type();                                                     \
       break;                                                                  \
                                                                               \
@@ -2068,7 +2274,18 @@ const dma_region_type dma_region_map[17] =
 #define dma_read_gamepak(type, tfsize)                                        \
   dma_gamepak_check_region(type);                                             \
   read_value = readaddress##tfsize(type##_address_block,                      \
-   type##_ptr & 0x7FFF)                                                       \
+   type##_ptr & 0x7FFF);                                                      \
+  {                                                                           \
+    static u32 dlog_gpak_done = 0;                                            \
+    if (!dlog_gpak_done && ((type##_ptr & 0x1FFFFFF) >= 0x00380000) &&         \
+        ((type##_ptr & 0x1FFFFFF) < 0x00400000)) {                            \
+      dlog_gpak_done = 1;                                                     \
+      printf("GBA-GPAKRD: ptr=%08x reg=%08x blk=%08x val=%08x pc=%08x\n",      \
+             (unsigned)type##_ptr, (unsigned)type##_current_region,           \
+             (unsigned)(uintptr_t)(type##_address_block),                     \
+             (unsigned)read_value, (unsigned)reg[15]);                        \
+    }                                                                         \
+  }
 
 // DMAing from the BIOS/open zone causes previous DMA values to be read
 
@@ -2078,6 +2295,20 @@ const dma_region_type dma_region_map[17] =
   read_value = read_memory##tfsize(type##_ptr)                                \
 
 #define dma_write_iwram(type, tfsize)                                         \
+  /* r1131-ДИАГ: перехват DMA-переноса в IWRAM. Декомпрессор RnRR читает      \
+     собственный код как сжатый поток (r1130: 0x030032e0 = ARМ-инструкции,   \
+     НЕ данные) — указатель на сжатые данные указывает внутрь кода. Ловим   \
+     DMA, который копирует код декомпрессора в IWRAM (адрес 0x0300xxxx):     \
+     адрес назначения, источник (read_value) — не обрывается ли перенос до  \
+     данных, прилегающих к коду. */                                          \
+  if ((type##_ptr & 0x7FFF) >= 0x3000 && (type##_ptr & 0x7FFF) < 0x3C00) {  \
+    static u32 c_dmaiw = 0;                                                   \
+    c_dmaiw++;                                                                \
+    if (c_dmaiw == 1)                                                         \
+      printf("GBA-DMA-IWRAM: dst=%05x srcval=%08x pc=%08x cnt=%u type=%d\n",  \
+             (unsigned)(type##_ptr & 0x7FFF), (unsigned)read_value,          \
+             (unsigned)reg[15], (unsigned)c_dmaiw, (int)(tfsize));            \
+  }                                                                           \
   address##tfsize(iwram + 0x8000, type##_ptr & 0x7FFF) =                      \
                                           eswap##tfsize(read_value);          \
   if (address##tfsize(iwram, type##_ptr & 0x7FFF))                            \
@@ -2086,7 +2317,61 @@ const dma_region_type dma_region_map[17] =
 #define dma_write_vram(type, tfsize) {                                        \
   u32 wraddr = type##_ptr & 0x1FFFF;                                          \
   if (wraddr >= 0x18000) wraddr -= 0x8000;                                    \
+  gba_diag_vram_dma_wr++;                                                     \
+  if (wraddr >= 0xF000 && wraddr < 0x18000) gba_diag_vram_dma_map_wr++;        \
+  /* r1105-ДИАГ: куда идёт DMA-запись в активный charblock. mGBA в 0x4800     \
+     хранит РЕАЛЬНЫЕ тайлы сцены (chrblk=1). Ловим запись в поддиапазоны:     \
+     0x4000-0x4800 (обнуление), 0x4800-0x5000 (тайлы), 0x5000-0x6000,         \
+     0x6000-0x8000. */                                                        \
+  {                                                                            \
+    static u32 dlog_a_done = 0, dlog_b_done = 0, dlog_c_done = 0, dlog_d_done = 0;\
+    if (!dlog_a_done && wraddr >= 0x4000 && wraddr < 0x4800) {                 \
+      dlog_a_done = 1;                                                         \
+      printf("GBA-DMAC4: wraddr=%05x src=%08x val=%08x pc=%08x\n",             \
+             (unsigned)wraddr, (unsigned)src_ptr, (unsigned)read_value,        \
+             (unsigned)reg[15]);                                              \
+    }                                                                          \
+    if (!dlog_b_done && wraddr >= 0x4800 && wraddr < 0x5000) {                 \
+      dlog_b_done = 1;                                                         \
+      printf("GBA-DMAC48: wraddr=%05x src=%08x val=%08x pc=%08x\n",            \
+             (unsigned)wraddr, (unsigned)src_ptr, (unsigned)read_value,        \
+             (unsigned)reg[15]);                                              \
+    }                                                                          \
+    if (!dlog_c_done && wraddr >= 0x5000 && wraddr < 0x6000) {                 \
+      dlog_c_done = 1;                                                         \
+      printf("GBA-DMAC5: wraddr=%05x src=%08x val=%08x pc=%08x\n",             \
+             (unsigned)wraddr, (unsigned)src_ptr, (unsigned)read_value,        \
+             (unsigned)reg[15]);                                              \
+    }                                                                          \
+    if (!dlog_d_done && wraddr >= 0x6000 && wraddr < 0x8000) {                 \
+      dlog_d_done = 1;                                                         \
+      printf("GBA-DMAC6: wraddr=%05x src=%08x val=%08x pc=%08x\n",             \
+             (unsigned)wraddr, (unsigned)src_ptr, (unsigned)read_value,        \
+             (unsigned)reg[15]);                                              \
+    }                                                                          \
+  }                                                                            \
+  if (gba_diag_bgmirror && wraddr < 0x10000 && (wraddr & 0x8000))              \
+    wraddr ^= 0x08000;                                                         \
   address##tfsize(vram, wraddr) = eswap##tfsize(read_value);                  \
+  {                                                                            \
+    static u32 dlog_verify = 0;                                                \
+    if (!dlog_verify && wraddr >= 0x4800 && wraddr < 0x4900) {                 \
+      dlog_verify = 1;                                                         \
+      printf("GBA-DMAWVERIFY: wraddr=%05x vram_sym=%p write=%08x readback=%08x ffcnt=%u\n",\
+             (unsigned)wraddr, (void*)(vram + wraddr),                          \
+             (unsigned)(eswap##tfsize(read_value)),                             \
+             (unsigned)eswap32(*(u32*)(vram + wraddr)), (unsigned)frame_counter);\
+    }                                                                          \
+    static u32 dlog_verify_map = 0;                                            \
+    if (!dlog_verify_map && wraddr >= 0x16fa0 && wraddr < 0x17200) {           \
+      dlog_verify_map = 1;                                                     \
+      printf("GBA-DFMRMAP: wraddr=%05x src=%08x write=%08x readback=%08x ffcnt=%u pc=%08x\n",\
+             (unsigned)wraddr, (unsigned)src_ptr,                               \
+             (unsigned)(eswap##tfsize(read_value)),                             \
+             (unsigned)eswap32(*(u32*)(vram + wraddr)), (unsigned)frame_counter,\
+             (unsigned)reg[15]);                                              \
+    }                                                                          \
+  }                                                                            \
 }
 
 #define dma_write_io(type, tfsize)                                            \
@@ -2096,6 +2381,16 @@ const dma_region_type dma_region_map[17] =
   address##tfsize(oam_ram, type##_ptr & 0x3FF) = eswap##tfsize(read_value)    \
 
 #define dma_write_palette_ram(type, tfsize)                                   \
+  {                                                                            \
+    /* r1120-ДИАГ: DMA-запись в палитру — сколько слов реально и откуда.      \
+       cnt=1 в GBA-PAL32 = до палитры доходит 1 слово вместо палитры. */     \
+    static u32 c_dpal = 0;                                                     \
+    c_dpal++;                                                                  \
+    if (read_value != 0)                                                       \
+      printf("GBA-PAL-DMA: dst=%06x val=%08x len=%u pc=%08x cnt=%u\n",          \
+             (unsigned)(type##_ptr & 0x3FF), (unsigned)read_value,             \
+             (unsigned)length, (unsigned)reg[15], (unsigned)c_dpal);           \
+  }                                                                            \
   write_palette##tfsize(type##_ptr & 0x3FF, read_value)                       \
 
 #define dma_write_ext(type, tfsize)                                           \

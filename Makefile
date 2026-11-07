@@ -67,7 +67,9 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 OBJ  := $(BUILD)/startup.o
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,gba_host gba_compat gba_main gba_gba_memory gba_sound gba_gba_cc_lut gba_gbp gba_cheats gba_cpu gba_video gba_savestate gba_serial gba_serial_proto gba_rfu gba_bios_data))
+OBJ  += $(BUILD)/gba_mgba_host.o
+OBJ  += $(BUILD)/gba_bios_data.o
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,mgba_gba_audio mgba_gba_bios mgba_gba_cheats mgba_gba_core mgba_gba_dma mgba_gba_gba mgba_gba_hle-bios mgba_gba_input mgba_gba_io mgba_gba_memory mgba_gba_overrides mgba_gba_savedata mgba_gba_serialize mgba_gba_sharkport mgba_gba_sio mgba_gba_timer mgba_gba_video mgba_gba_cart_ereader mgba_gba_cart_gpio mgba_gba_cart_matrix mgba_gba_cart_unlicensed mgba_gba_cart_vfame mgba_gba_cheats_codebreaker mgba_gba_cheats_gameshark mgba_gba_cheats_parv3 mgba_gba_renderers_cache-set mgba_gba_renderers_common mgba_gba_renderers_gl mgba_gba_renderers_software-bg mgba_gba_renderers_software-mode0 mgba_gba_renderers_software-obj mgba_gba_renderers_video-software mgba_gba_sio_gbp mgba_arm_arm mgba_arm_decoder-arm mgba_arm_decoder-thumb mgba_arm_decoder mgba_arm_isa-arm mgba_arm_isa-thumb mgba_core_bitmap-cache mgba_core_cache-set mgba_core_cheats mgba_core_config mgba_core_core mgba_core_directories mgba_core_input mgba_core_interface mgba_core_library mgba_core_lockstep mgba_core_log mgba_core_map-cache mgba_core_mem-search mgba_core_rewind mgba_core_serialize mgba_core_sync mgba_core_thread mgba_core_tile-cache mgba_core_timing mgba_util_audio-buffer mgba_util_audio-resampler mgba_util_circle-buffer mgba_util_configuration mgba_util_convolve mgba_util_crc32 mgba_util_elf-read mgba_util_formatting mgba_util_gbk-table mgba_util_geometry mgba_util_gui mgba_util_hash mgba_util_image mgba_util_interpolator mgba_util_md5 mgba_util_memory mgba_util_patch-fast mgba_util_patch-ips mgba_util_patch-ups mgba_util_patch mgba_util_ring-fifo mgba_util_sfo mgba_util_sha1 mgba_util_string mgba_util_table mgba_util_text-codec mgba_util_vector mgba_util_vfs mgba_util_vfs_vfs-fifo mgba_util_vfs_vfs-lzma mgba_util_vfs_vfs-mem mgba_gb_audio mgba_third-party_inih_ini))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,portfolio_system portfolio_cpu portfolio_i8253 portfolio_i8259))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,uart printf libc_min main cxx_runtime udelay h3_hs_timer h3_ccu h3 h3_smp h3_de2 h3_hdmi dw_hdmi h3_lcd gic))
 OBJ  += $(BUILD)/coleco_bios.o
@@ -257,6 +259,13 @@ COL_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-stat
 # (GetOrCreateDisassemblerRecord) — пул 24 МБ за секунды исчерпывается и
 # Coleco «зависает»/падает. Для игры трейс не нужен.
 COL_CXXFLAGS += -DGEARCOLECO_DISABLE_DISASSEMBLER
+# r1083: -DPERFORMANCE — батч RunFor(75) вместо потактного RunFor(1) в
+# RunToVBlank. Без него весь кадр NTSC (~60K тактов) крутится по ОДНОЙ
+# инструкции Z80 на итерацию outer-цикла, на каждую вызываются
+# Video::Tick+Audio::Tick+Memory::Tick → накладные на кадр на порядок выше
+# (игра «тормозила»). Семантика потактовых NMI/VDP инвариантна (Tick ставит
+# флаг RequestNMI, обработка сдвигается на ≤75 тактов). Как на PS2/PSP-эталоне.
+COL_CXXFLAGS += -DPERFORMANCE
 # Файлы ядра (все, кроме miniz — он C)
 COL_CORESRC := GearcolecoCore Memory Processor TMS9918A Audio AY8910 Input ColecoVisionIOPorts opcodes opcodes_cb opcodes_ed TraceLogger VgmRecorder Adam AdamMedia AdamNet F18A F18A_enhancements F18AGPU Cartridge Mapper
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,coleco_host coleco_compat))
@@ -1096,62 +1105,209 @@ $(BUILD)/ngp_renamed.stamp: $(NGP_OBJS)
 	$(TOP)h3_bare/cores/ngp_rename.sh $(NGP_OBJS)
 	touch $@
 
-# ---- GBA (gpSP) ----
-GBA_CFLAGS := $(CFLAGS) -DINLINE=inline
-GBA_INC    := $(INCLUDES)
-# Имена, конфликтующие с другими ядрами (fceumm/gpgx), переименовываем
-# ОДИНАКОВО во всех gpsp-объектах (и определения, и ссылки).
-GBA_RENAME := --redefine-sym vram=gpsp_vram \
-              --redefine-sym reg=gpsp_reg \
-              --redefine-sym cheats=gpsp_cheats \
-              --redefine-sym init_memory=gpsp_init_memory \
-              --redefine-sym init_cpu=gpsp_init_cpu \
-              --redefine-sym load_bios=gpsp_load_bios
+# ---- GBA ядро mGBA: переименование коллизий crc32/strlcpy (r1132) ----
+MGBA_OBJS := $(filter $(addprefix $(BUILD)/,mgba_%),$(OBJ))
+$(BUILD)/mgba_renamed.stamp: $(MGBA_OBJS)
+	$(TOP)h3_bare/cores/mgba_rename.sh $(MGBA_OBJS)
+	touch $@
 
-$(BUILD)/gba_host.o: $(TOP)h3_bare/cores/gba_host.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@ $<
-$(BUILD)/gba_compat.o: $(TOP)h3_bare/cores/gba_sp/gba_compat.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@ $<
+# ---- GBA ядро mGBA: изолированная компиляция mGBA-core (gba+arm+core+util+gb+inih).
+# r1132: полная замена gpsp. У mGBA-core почти все глобалы под уникальными
+# префиксами (GBA*/mCore*/mTiming*), поэтому GBA_RENAME не нужен; единственные
+# коллизии с другими ядрами — crc32 и strlcpy (mgba_util_*), переименовываются
+# скриптом mgba_rename.sh (см. mgba_renamed.stamp). malloc/calloc/free берётся
+# из gameboy_stubs.c (bump-аллокатор).
+MGBA_DIR := $(TOP)h3_bare/cores/gba_mgba
+MGBA_CFLAGS := $(CFLAGS) -DNDEBUG -DMINIMAL_CORE -DM_CORE_GBA -DCOLOR_16_BIT -DCOLOR_5_6_5 -D_BSD_SOURCE -D_DEFAULT_SOURCE -DHAVE_LOCALE
+MGBA_INC := -I$(MGBA_DIR) -I$(MGBA_DIR)/include $(INCLUDES)
+
+$(BUILD)/gba_mgba_host.o: $(TOP)h3_bare/cores/gba_mgba_host.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
 $(BUILD)/gba_bios_data.o: $(TOP)h3_bare/cores/gba_sp/bios_data.S | $(BUILD)
-	$(AS) $(GBA_CFLAGS) -I$(TOP)h3_bare/cores/gba_sp -x assembler-with-cpp -c -o $@ $<
+	$(AS) $(MGBA_CFLAGS) -I$(TOP)h3_bare/cores/gba_sp -x assembler-with-cpp -c -o $@ $<
 
-# --- ядро gpsp: компилим, затем применяем GBA_RENAME ко всем .o ---
-$(BUILD)/gba_main.o: $(TOP)h3_bare/cores/gba_sp/main.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_gba_memory.o: $(TOP)h3_bare/cores/gba_sp/gba_memory.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_sound.o: $(TOP)h3_bare/cores/gba_sp/sound.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_gba_cc_lut.o: $(TOP)h3_bare/cores/gba_sp/gba_cc_lut.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_gbp.o: $(TOP)h3_bare/cores/gba_sp/gbp.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_cheats.o: $(TOP)h3_bare/cores/gba_sp/cheats.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_savestate.o: $(TOP)h3_bare/cores/gba_sp/savestate.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_serial.o: $(TOP)h3_bare/cores/gba_sp/serial.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_serial_proto.o: $(TOP)h3_bare/cores/gba_sp/serial_proto.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_rfu.o: $(TOP)h3_bare/cores/gba_sp/rfu.c | $(BUILD)
-	$(CC) $(GBA_CFLAGS) $(GBA_INC) -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_cpu.o: $(TOP)h3_bare/cores/gba_sp/cpu.cc | $(BUILD)
-	$(CXX) $(CXXFLAGS) $(GBA_CFLAGS) $(GBA_INC) -fno-exceptions -fno-rtti -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
-$(BUILD)/gba_video.o: $(TOP)h3_bare/cores/gba_sp/video.cc | $(BUILD)
-	$(CXX) $(CXXFLAGS) $(GBA_CFLAGS) $(GBA_INC) -fno-exceptions -fno-rtti -c -o $@.tmp $<
-	$(OBJCOPY) $(GBA_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/mgba_gba_audio.o: $(MGBA_DIR)/gba/audio.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_bios.o: $(MGBA_DIR)/gba/bios.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cheats.o: $(MGBA_DIR)/gba/cheats.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_core.o: $(MGBA_DIR)/gba/core.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_dma.o: $(MGBA_DIR)/gba/dma.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_gba.o: $(MGBA_DIR)/gba/gba.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_hle-bios.o: $(MGBA_DIR)/gba/hle-bios.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_input.o: $(MGBA_DIR)/gba/input.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_io.o: $(MGBA_DIR)/gba/io.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_memory.o: $(MGBA_DIR)/gba/memory.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_overrides.o: $(MGBA_DIR)/gba/overrides.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_savedata.o: $(MGBA_DIR)/gba/savedata.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_serialize.o: $(MGBA_DIR)/gba/serialize.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_sharkport.o: $(MGBA_DIR)/gba/sharkport.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_sio.o: $(MGBA_DIR)/gba/sio.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_timer.o: $(MGBA_DIR)/gba/timer.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_video.o: $(MGBA_DIR)/gba/video.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cart_ereader.o: $(MGBA_DIR)/gba/cart/ereader.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cart_gpio.o: $(MGBA_DIR)/gba/cart/gpio.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cart_matrix.o: $(MGBA_DIR)/gba/cart/matrix.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cart_unlicensed.o: $(MGBA_DIR)/gba/cart/unlicensed.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cart_vfame.o: $(MGBA_DIR)/gba/cart/vfame.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cheats_codebreaker.o: $(MGBA_DIR)/gba/cheats/codebreaker.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cheats_gameshark.o: $(MGBA_DIR)/gba/cheats/gameshark.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_cheats_parv3.o: $(MGBA_DIR)/gba/cheats/parv3.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_cache-set.o: $(MGBA_DIR)/gba/renderers/cache-set.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_common.o: $(MGBA_DIR)/gba/renderers/common.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_gl.o: $(MGBA_DIR)/gba/renderers/gl.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_software-bg.o: $(MGBA_DIR)/gba/renderers/software-bg.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_software-mode0.o: $(MGBA_DIR)/gba/renderers/software-mode0.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_software-obj.o: $(MGBA_DIR)/gba/renderers/software-obj.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_renderers_video-software.o: $(MGBA_DIR)/gba/renderers/video-software.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gba_sio_gbp.o: $(MGBA_DIR)/gba/sio/gbp.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_arm.o: $(MGBA_DIR)/arm/arm.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_decoder-arm.o: $(MGBA_DIR)/arm/decoder-arm.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_decoder-thumb.o: $(MGBA_DIR)/arm/decoder-thumb.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_decoder.o: $(MGBA_DIR)/arm/decoder.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_isa-arm.o: $(MGBA_DIR)/arm/isa-arm.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_arm_isa-thumb.o: $(MGBA_DIR)/arm/isa-thumb.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_bitmap-cache.o: $(MGBA_DIR)/core/bitmap-cache.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_cache-set.o: $(MGBA_DIR)/core/cache-set.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_cheats.o: $(MGBA_DIR)/core/cheats.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_config.o: $(MGBA_DIR)/core/config.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_core.o: $(MGBA_DIR)/core/core.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_directories.o: $(MGBA_DIR)/core/directories.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_input.o: $(MGBA_DIR)/core/input.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_interface.o: $(MGBA_DIR)/core/interface.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_library.o: $(MGBA_DIR)/core/library.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_lockstep.o: $(MGBA_DIR)/core/lockstep.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_log.o: $(MGBA_DIR)/core/log.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_map-cache.o: $(MGBA_DIR)/core/map-cache.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_mem-search.o: $(MGBA_DIR)/core/mem-search.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_rewind.o: $(MGBA_DIR)/core/rewind.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_serialize.o: $(MGBA_DIR)/core/serialize.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_sync.o: $(MGBA_DIR)/core/sync.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_thread.o: $(MGBA_DIR)/core/thread.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_tile-cache.o: $(MGBA_DIR)/core/tile-cache.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_core_timing.o: $(MGBA_DIR)/core/timing.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_audio-buffer.o: $(MGBA_DIR)/util/audio-buffer.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_audio-resampler.o: $(MGBA_DIR)/util/audio-resampler.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_circle-buffer.o: $(MGBA_DIR)/util/circle-buffer.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_configuration.o: $(MGBA_DIR)/util/configuration.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_convolve.o: $(MGBA_DIR)/util/convolve.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_crc32.o: $(MGBA_DIR)/util/crc32.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_elf-read.o: $(MGBA_DIR)/util/elf-read.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_formatting.o: $(MGBA_DIR)/util/formatting.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_gbk-table.o: $(MGBA_DIR)/util/gbk-table.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_geometry.o: $(MGBA_DIR)/util/geometry.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_gui.o: $(MGBA_DIR)/util/gui.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_hash.o: $(MGBA_DIR)/util/hash.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_image.o: $(MGBA_DIR)/util/image.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_interpolator.o: $(MGBA_DIR)/util/interpolator.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_md5.o: $(MGBA_DIR)/util/md5.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_memory.o: $(MGBA_DIR)/util/memory.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_patch-fast.o: $(MGBA_DIR)/util/patch-fast.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_patch-ips.o: $(MGBA_DIR)/util/patch-ips.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_patch-ups.o: $(MGBA_DIR)/util/patch-ups.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_patch.o: $(MGBA_DIR)/util/patch.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_ring-fifo.o: $(MGBA_DIR)/util/ring-fifo.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_sfo.o: $(MGBA_DIR)/util/sfo.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_sha1.o: $(MGBA_DIR)/util/sha1.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_string.o: $(MGBA_DIR)/util/string.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_table.o: $(MGBA_DIR)/util/table.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_text-codec.o: $(MGBA_DIR)/util/text-codec.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_vector.o: $(MGBA_DIR)/util/vector.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_vfs.o: $(MGBA_DIR)/util/vfs.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_vfs_vfs-fifo.o: $(MGBA_DIR)/util/vfs/vfs-fifo.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_vfs_vfs-lzma.o: $(MGBA_DIR)/util/vfs/vfs-lzma.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_util_vfs_vfs-mem.o: $(MGBA_DIR)/util/vfs/vfs-mem.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_gb_audio.o: $(MGBA_DIR)/gb/audio.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
+$(BUILD)/mgba_third-party_inih_ini.o: $(MGBA_DIR)/third-party/inih/ini.c | $(BUILD)
+	$(CC) $(MGBA_CFLAGS) $(MGBA_INC) -c -o $@ $<
 
 $(BUILD)/fceumm_%.o: $(TOP)h3_bare/cores/fceumm/%.c | $(BUILD)
 	$(CC) $(FCEUMM_CFLAGS) $(INCLUDES) -c -o $@ $<
@@ -1204,7 +1360,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)
