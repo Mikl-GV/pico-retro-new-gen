@@ -555,6 +555,7 @@ void menu_help(void) {
         "MS 1504: /roms/ms1504 (BIOS/",
         "  programs on SD; built-in",
         "  BIOS (PK300) in flash)",
+        "Radio-86RK: /roms/radio86rk",
         "Folders are created manually:",
         "  Settings -> Create folders",
         "Auto-create is DISABLED",
@@ -600,10 +601,18 @@ void menu_help(void) {
         "  snes.a=A  md.start=ENTER",
         "  snes.l=SHIFT+Q",
         0,
+        // страница 12: Радио-86РК
+        "--- RADIO-86RK ---",
+        "Keyboard: JCUKEN (CapsLock=LAT)",
+        "Shift = SS, Ctrl = US",
+        "Enter = VK, Tab/BS = TAB/ZB",
+        "Arrows, F1..F4, Home",
+        "ESC hold = exit",
+        0,
     };
 
     int page = 0;
-    int total = 12;
+    int total = 13;
 
     for (;;) {
         fb_clear();
@@ -659,7 +668,8 @@ void menu_about(void) {
         "Neo Geo Pocket/Color, MSX, Coleco,",
         "PC Engine/TurboGrafx, ZX Spectrum,",
         "BK-0010/0011M, Atari Portfolio,",
-        "Atari 8-bit, MS 1504, CPC, C64",
+        "Atari 8-bit, MS 1504, CPC, C64,",
+        "Radio-86RK",
         "",
         "Arcade (FinalBurn Neo):",
         "CPS-1 / CPS-2, NEOGEO/MVS,",

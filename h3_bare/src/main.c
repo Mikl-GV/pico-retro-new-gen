@@ -426,9 +426,39 @@ static int ms1504_source_dialog(void) {
     }
 }
 
+// r1185: Радио-86РК — монитор вшит, программы грузятся с SD.
+static int rk86_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Radio-86RK: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. Load programs (SD)",
+                "2. Built-in monitor",
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 600, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return sel + 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1184";
+const char g_fw_version[] = "r1188";
 
 void main(void) {
     int sd_ok = 0;
@@ -436,7 +466,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1184\n");
+    uart_puts("build: r1188\n");
 
     led_init();
     led_set(0);
@@ -758,6 +788,28 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // программы с SD (0x74 ставит run_emulator)
                 rom_browser_run("ms1504", name, "ms1504");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // Радио-86РК: «программы с SD» или «встроенный монитор» (ПЗУ вшито)
+        if (strcmp(id, "radio86rk") == 0) {
+            extern void emu_run_rk86(const uint8_t*, uint32_t, const char*);
+            int src = rk86_source_dialog();
+            if (src == 0) continue;
+            sega_pad_init();                 // чистый пад перед входом
+            tft_help_show("radio86rk");
+            if (src == 2) {                  // встроенный монитор
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_rk86(NULL, 0, "monitor");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // программы с SD (0x74 ставит run_emulator)
+                rom_browser_run("radio86rk", name, "radio86rk");
             }
             sega_pad_init();
             continue;

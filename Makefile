@@ -453,6 +453,29 @@ $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 	$(TOP)h3_bare/cores/ms1504_rename.sh $(MS1504_OBJS)
 	touch $@
 
+# ---- Радио-86РК (порт RK8266: i8080 + ВГ75/ВВ55 + вшитый монитор) ----
+# r1185: CPU — i8080.c (Alexander Demin, GPL-2+), машина/порты — rk86_machine.c,
+# рендер — rk86_video.c, образы монитора 2К и знакогенератора — rk86_data.c.
+# Переименование не нужно: внешние символы только rk86_*/i8080_*, остальное static.
+RK86 := $(TOP)h3_bare/cores/rk86
+RK86_INC := -I$(RK86)
+RK86_CFLAGS := $(CFLAGS) $(RK86_INC)
+RK86_BONES := i8080 rk86_machine rk86_video rk86_data
+OBJ += $(addprefix $(BUILD)/rk86_,$(addsuffix .o,$(RK86_BONES)))
+OBJ += $(BUILD)/rk86_host.o
+
+$(BUILD)/rk86_i8080.o: $(RK86)/i8080.c | $(BUILD)
+	$(CC) $(RK86_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/rk86_rk86_machine.o: $(RK86)/rk86_machine.c | $(BUILD)
+	$(CC) $(RK86_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/rk86_rk86_video.o: $(RK86)/rk86_video.c | $(BUILD)
+	$(CC) $(RK86_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/rk86_rk86_data.o: $(RK86)/rk86_data.c | $(BUILD)
+	$(CC) $(RK86_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/rk86_host.o: $(TOP)h3_bare/cores/rk86_host.c | $(BUILD)
+	$(CC) $(RK86_CFLAGS) $(INCLUDES) -c -o $@ $<
+
+
 # ---- Atari 8-bit (400/800/XL/XE): libretro-core atari800 (вендор) ----
 # r778: ядро в прошивке (host a8_host.c + файловый слой a8_fs.c). ROM-буфер
 # регистрируется в a8_fs; системные OS-ROM вшиты (EMUOS_ALTIRRA).

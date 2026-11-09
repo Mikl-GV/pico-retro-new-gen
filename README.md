@@ -7,7 +7,7 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — вывод I2S0/CPU2
 (48 кГц стерео, MAX98357A); синтез в ядрах сохранён.
 
-Версия прошивки: **r1184** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
+Версия прошивки: **r1188** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
 
 ## Системы (статус из `h3_bare/cores/systems.h`)
 
@@ -16,9 +16,9 @@ Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Зву�
 | Портативные | Game Boy / GBC, Game Gear, GBA (mGBA), Atari Lynx, Neo Geo Pocket / Color |
 | Консоли | Atari 2600, Atari 5200, Atari 7800, Master System, NES / Famicom (Dendy), ColecoVision, PC Engine / TurboGrafx (HuCard), SNES, Mega Drive / Genesis, Sega 32X, GCE Vectrex |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
-| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64/128 (VICE, BIOS вшиты), БК-0010/0011М (ROM вшиты), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит) |
+| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64/128 (VICE, BIOS вшиты), БК-0010/0011М (ROM вшиты), Радио-86РК (монитор вшит), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит) |
 
-Планируются: Радио-86РК, Enterprise 64/128 (см. `docs/ROADMAP.md`).
+Планируются: Enterprise 64/128 (см. `docs/ROADMAP.md`).
 
 ## Сборка и запись
 
@@ -45,7 +45,8 @@ ROM — в `/roms/<id>/` на SD: `.a26`, `.a52`, `.a78`, `.nes`, `.sms`, `.gg`,
 `.gen`/`.md`, `.32x` (Sega 32X, папка `sega32x`), `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`, `.gba`,
 `.rom`/`.mx1`/`.mx2` (MSX), `.vec`, `.col`/`.bin` (Coleco), `.pce`,
 `.z80`/`.sna`/`.tap`/`.tzx` (ZX), `.bin`/`.img` (БК-0010/МС 1504),
-`.xex`/`.car`/`.atr` (Atari 8-bit), `.d64`/`.d71`/`.d81`/`.t64`/`.prg`/`.crt`/`.reu` (C64/C128).
+`.xex`/`.car`/`.atr` (Atari 8-bit), `.d64`/`.d71`/`.d81`/`.t64`/`.prg`/`.crt`/`.reu` (C64/C128),
+`.rk`/`.rkr`/`.gam`/`.pki`/`.bin`/`.rom` (Радио-86РК: готовые программы с заголовком start/end или сырой образ ОЗУ; образ ПЗУ ≤2К заменяет монитор).
 Аркады — папка с сырыми дампами чипов или `.zip` сета в
 `/roms/<cps1|cps2|neogeo|toaplan|cave|segasys|fbneo>/` (список игр — `docs/FBNEO-ROMS.md`).
 
