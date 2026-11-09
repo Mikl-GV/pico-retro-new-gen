@@ -37,6 +37,10 @@ void emu_scale(int src_w, int src_h);
 // влезающий в 1024×600. Чёткая картинка без мыла.
 void emu_scale_int(int src_w, int src_h);
 
+// r1170: сбросить кэш геометрии целочисленного скейла (бордюры будут залиты
+// заново на следующем кадре). Нужен после полной очистки экрана.
+void emu_scale_int_invalidate(void);
+
 // Цвет полей по бокам (XRGB8888). Вызывается перед циклом кадров системы,
 // чтобы поля были своего цвета; 0 = чёрный (по умолчанию).
 void emu_set_border_color(uint32_t rgb888);
@@ -63,6 +67,7 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_32x(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name);

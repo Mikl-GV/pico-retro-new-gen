@@ -7,12 +7,12 @@
 #   make fel        — залить через sunxi-fel
 #   make help       — справка
 #
-# Поведение идентично старому build.sh. Зависимости от заголовков НЕ
-# отслеживаются (нет -MMD/-include *.d): после правки ЛЮБОГО .h нужен
-# make clean && make, иначе объекты останутся со старыми константами.
+# r1155 (E10): зависимости от заголовков отслеживаются (-MMD -MP, файлы
+# build/*.d подключаются в конце). После правки .h достаточно make; clean
+# нужен для смены тулчейна/флагов или после правки самого Makefile.
 
 TOP      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-BUILD    := $(TOP)/build
+BUILD    := $(patsubst %/,%,$(TOP))/build
 BIN      := $(BUILD)/h3_bare.bin
 ELF      := $(BUILD)/h3_bare.elf
 IMG      := $(BUILD)/h3_bare.img
@@ -29,8 +29,12 @@ LD   := $(PREFIX)g++
 OBJCOPY := $(PREFIX)objcopy
 
 # ---- Общие флаги ----
+# r1155 (E10): DEPFLAGS добавляется к каждому набору флагов компиляции;
+# .d-файлы складываются в build/ и подключаются одним -include в конце.
+DEPFLAGS := -MMD -MP
 CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
 CFLAGS += -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG
+CFLAGS += $(DEPFLAGS)
 INCLUDES := -I$(TOP)h3_bare/include -I$(TOP)h3_bare/cores \
 	-I$(TOP)h3_bare/cores/gpgx/core -I$(TOP)h3_bare/cores/gpgx/libretro_inc \
 	-I$(TOP)h3_bare/cores/gpgx/core/z80 -I$(TOP)h3_bare/cores/gpgx/core/m68k \
@@ -252,7 +256,7 @@ $(BUILD)/vecx_vecx_psg.o: $(VECX)/vecx_psg.c | $(BUILD)
 COL := $(TOP)h3_bare/cores/gearcoleco
 COL_SRC := $(COL)/src
 COL_INC := -I$(COL_SRC)
-COL_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
+COL_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS)
 COL_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 # Дизассемблер/трейс-логирование Gearcoleco ОТКЛЮЧЕНО: LogInstructionEvent()
 # вызывается на КАЖДУЮ инструкцию и выделяет record из bump-кучи
@@ -455,7 +459,7 @@ $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 A8 := $(TOP)h3_bare/cores/atari800
 A8_INC := -I$(A8) -I$(A8)/shim -I$(A8)/atari800/src -I$(A8)/libretro \
 	-I$(A8)/libretro/libretro-common/include -I$(A8)/deps/zlib
-A8_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
+A8_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra $(DEPFLAGS) \
 	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
 	$(A8_INC) -D__LIBRETRO__ -D__STDC_FORMAT_MACROS \
 	-Wno-unused -Wno-unused-parameter -Wno-parentheses -Wno-sign-compare \
@@ -538,7 +542,7 @@ $(BUILD)/fs_layer.o: $(TOP)h3_bare/cores/fs_layer.c | $(BUILD)
 CPC := $(TOP)h3_bare/cores/cap32
 CPC_INC := -I$(CPC) -I$(CPC)/cap32 -I$(CPC)/libretro \
 	-I$(CPC)/libretro/microui -I$(CPC)/libretro-common/include
-CPC_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
+CPC_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra $(DEPFLAGS) \
 	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
 	$(CPC_INC) -D__LIBRETRO__ -D__STDC_FORMAT_MACROS -DINLINE="inline" -DHAVE_CONFIG_H \
 	-Wno-unused -Wno-unused-parameter -Wno-parentheses -Wno-sign-compare -Wno-array-bounds \
@@ -741,13 +745,13 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 \
 	-I$(CPS1)/src/burn/drv/sega \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
-CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
+CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
 	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
 	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG
 # C++-файлы вендора БЕЗ -ffreestanding (как Gearcoleco): newlib freestanding
 # не даёт <cmath>/tr1/free, на что опирается FBNeo.
-CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
+CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS) \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
 	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
 	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG \
@@ -939,6 +943,130 @@ $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@ $<
 .PHONY: cps1-obj
 cps1-obj: $(CPS1_OBJ)
+
+# ---- PicoDrive (Sega 32X) ----
+# Вендор ядра — h3_bare/cores/picodrive (pico/ + cpu/{musashi,cz80,sh2}).
+# Голое ядро БЕЗ libretro-обвязки: CPU 68000 -> Musashi (EMU_M68K),
+# Z80 -> cz80 (_USE_CZ80), SH2 (32X) -> интерпретатор cpu/sh2 + mame/sh2pico.
+# Карман CD/карты (pico/cd) и картриджи carthw НЕ входят в линк — для 32X-рома
+# они не нужны, а имена Pico* всё равно присутствуют в других ядрах.
+# rename-скрипт picodrive_rename.sh (objcopy --redefine-sym -> pd_*) снимает
+# коллизии с gpgx (Musashi m68k*, звук YM2612/SN76496), cps1 (m68k),
+# msx/ngp (opll/OPLL*) и прочими под --allow-multiple-definition.
+PICO := $(TOP)h3_bare/cores/picodrive
+PICO_INC := -I$(PICO) -I$(PICO)/pico -I$(PICO)/cpu/musashi -I$(PICO)/cpu/cz80 \
+	-I$(PICO)/zlib -I$(PICO)/platform/common
+PICO_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
+	-Wall -Wextra -O2 \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-DEMU_M68K -D_USE_CZ80 -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN \
+	-DFRONTEND_SUPPORTS_RGB565 -DUSE_16BPP_RENDERING \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration
+
+# SH2 DRC (динкомпилятор): включён по умолчанию, как в эталонном PicoDrive
+# (defaultConfig.s_PicoOpt |= POPT_EN_DRC). Без DRC 32X на A7 исполняется
+# интерпретатором и не держит 60 fps. Выключить: make clean && make PICO_DRC=0
+PICO_DRC ?= 1
+ifeq ($(PICO_DRC),1)
+PICO_CFLAGS += -DDRC_SH2
+PICO_DRC_OBJ := $(BUILD)/pico_sh2_compiler.o $(BUILD)/pico_drc_cmn.o
+else
+PICO_DRC_OBJ :=
+endif
+
+PICO_CORE := pico cart memory state sek z80if videoport draw draw2 mode4 misc eeprom patch debug media sms carthw_cfg
+PICO_32X  := 32x memory draw sh2soc pwm
+PICO_CD   := mcd memory sek cdc cdd cd_image cd_parse gfx gfx_dma misc pcm megasd
+PICO_PICO := pico memory xpcm
+PICO_CARTHW := carthw eeprom_spi
+PICO_SOUND := sound resampler sn76496 ym2612 ym2413 vgm mix
+PICO_OBJ := $(addprefix $(BUILD)/pico_core_,$(addsuffix .o,$(PICO_CORE))) \
+	$(addprefix $(BUILD)/pico_32x_,$(addsuffix .o,$(PICO_32X))) \
+	$(addprefix $(BUILD)/pico_cd_,$(addsuffix .o,$(PICO_CD))) \
+	$(addprefix $(BUILD)/pico_pico_,$(addsuffix .o,$(PICO_PICO))) \
+	$(addprefix $(BUILD)/pico_carthw_,$(addsuffix .o,$(PICO_CARTHW))) \
+	$(addprefix $(BUILD)/pico_sound_,$(addsuffix .o,$(PICO_SOUND))) \
+	$(BUILD)/pico_carthw_svp.o $(BUILD)/pico_carthw_svp_memory.o $(BUILD)/pico_carthw_svp_ssp16.o \
+	$(BUILD)/pico_unzip.o \
+	$(BUILD)/pico_m68kcpu.o $(BUILD)/pico_m68kops.o \
+	$(BUILD)/pico_cz80.o \
+	$(BUILD)/pico_sh2_sh2.o $(BUILD)/pico_sh2_sh2dasm.o $(BUILD)/pico_sh2_sh2pico.o \
+	$(PICO_DRC_OBJ) \
+	$(BUILD)/pico_host.o
+OBJ += $(PICO_OBJ)
+
+# Паттерн-правила по каталогам + rename-скрипт (как cps1)
+$(BUILD)/pico_core_%.o: $(PICO)/pico/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_32x_%.o: $(PICO)/pico/32x/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_cd_%.o: $(PICO)/pico/cd/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_pico_%.o: $(PICO)/pico/pico/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_carthw_%.o: $(PICO)/pico/carthw/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_carthw_svp.o: $(PICO)/pico/carthw/svp/svp.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_carthw_svp_memory.o: $(PICO)/pico/carthw/svp/memory.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_carthw_svp_ssp16.o: $(PICO)/pico/carthw/svp/ssp16.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_sound_%.o: $(PICO)/pico/sound/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_zlib_%.o: $(PICO)/zlib/%.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_unzip.o: $(PICO)/unzip/unzip.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_m68kcpu.o: $(PICO)/cpu/musashi/m68kcpu.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_m68kops.o: $(PICO)/cpu/musashi/m68kops.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_cz80.o: $(PICO)/cpu/cz80/cz80.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_sh2_sh2.o: $(PICO)/cpu/sh2/sh2.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_sh2_sh2dasm.o: $(PICO)/cpu/sh2/mame/sh2dasm.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_sh2_sh2pico.o: $(PICO)/cpu/sh2/mame/sh2pico.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/pico_host.o: $(PICO)/32x_host.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -I$(TOP)h3_bare/src -I$(TOP)h3_bare/platform/fb -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+
+# SH2 DRC (только при PICO_DRC=1): компилятор SH2 + общий DRC-слой.
+# emit_arm.c отдельно НЕ компилируется — его #include-ит cpu/sh2/compiler.c:481.
+# r1172: он же — обязательная зависимость объекта. Без неё правки эмиттера
+# (is_offset_24, дальний переход) не пересобирались: make видел только
+# compiler.c и оставлял старый pico_sh2_compiler.o с прежним кодом.
+$(BUILD)/pico_sh2_compiler.o: $(PICO)/cpu/sh2/compiler.c \
+                               $(PICO)/cpu/drc/emit_arm.c \
+                               $(PICO)/cpu/drc/cmn.h | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+
+$(BUILD)/pico_drc_cmn.o: $(PICO)/cpu/drc/cmn.c | $(BUILD)
+	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
+.PHONY: pico-obj
+pico-obj: $(PICO_OBJ)
 
 # ---- Правила компиляции ----
 $(BUILD):
@@ -1449,3 +1577,15 @@ help:
 # Coleco OS-7 BIOS (вшитый, сборка из bios_data.S)
 $(BUILD)/coleco_bios.o: $(TOP)h3_bare/cores/gearcoleco/bios_data.S | $(BUILD)
 	$(AS) $(CFLAGS) -I$(TOP)h3_bare/cores/gearcoleco -x assembler-with-cpp -c -o $@ $<
+
+# r1155 (E10): зависимости от .h (см. DEPFLAGS). Нативный gcc пишет в .d
+# виндовые пути (E:/...), а MSYS-make внутри работает с /e/... — цели не
+# совпали бы, поэтому .d сводятся в build/deps.mk с конвертацией буквы диска.
+# -include молчит, если deps.mk ещё нет (первая сборка после make clean).
+DEPS_D  := $(sort $(wildcard $(BUILD)/*.d))
+DEPS_MK := $(BUILD)/deps.mk
+ifneq ($(DEPS_D),)
+$(DEPS_MK): $(DEPS_D)
+	@sed -E 's#([A-Za-z]):/#/\L\1/#g' $(DEPS_D) > $@
+-include $(DEPS_MK)
+endif

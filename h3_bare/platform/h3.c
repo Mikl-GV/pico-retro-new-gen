@@ -61,6 +61,7 @@ void mmu_mark_uncached(uint32_t addr) {
     new_entry = (addr & 0xFFF00000u)             // база = физический адрес секции
               | (ref & 0x0008DDF0u)              // сохранить: NS(19), AP[2](15), AP[1:0](11:10), domain(8:5), XN(4)
               | (1u << 12)                       // r855: TEX=001 (Normal Non-cacheable); бит 16 — это S, не TEX
+              | (1u << 16)                       // r1158: S=1 (Shareable) — зона общая для core0 и CPU2 (SMP)
               | (0u << 3) | (0u << 2)            // C=0, B=0 (uncached)
               | 0b10u;                           // section (bits[1:0]=0b10)
 

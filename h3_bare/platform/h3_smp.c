@@ -111,10 +111,20 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
     printf("smp: CPU%u sec=0x%X entry=0x%X\n", (unsigned)cpu, (unsigned)scr, (unsigned)ep);
 
     if (scr & 1u) {
-        /* Non-secure: регистры R_CPUCFG закрыты — будим через PSCI */
-        uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
-        printf("smp: PSCI CPU_ON ret=0x%X\n", (unsigned)r);
-        return r == 0 ? 1 : 0;
+        /* Non-secure: регистры R_CPUCFG закрыты — будим через PSCI.
+         * r1157 (E12): до 3 попыток. Одиночный CPU_ON при занятом/стартующем
+         * ядре возвращал ошибку, и прошивка оставалась без аудио-ядра (звук
+         * молчал). ALREADY_ON/ON_PENDING считаем успехом — ядро уже работает. */
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
+            printf("smp: PSCI CPU_ON ret=0x%X (attempt %d)\n", (unsigned)r, attempt);
+            if (r == 0) return 1;                    /* SUCCESS */
+            if (r == 0xFFFFFFFCu) return 1;          /* ALREADY_ON */
+            if (r == 0xFFFFFFFBu) return 1;          /* ON_PENDING */
+            if (attempt < 3) udelay(2000);
+        }
+        printf("smp: PSCI CPU%u failed after 3 attempts\n", (unsigned)cpu);
+        return 0;
     }
 
     printf("smp: direct R_CPUCFG boot (sram tramp 0x0)\n");

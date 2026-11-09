@@ -17,5 +17,9 @@ int  fb_puts_s15(int x, int y, const char* s, uint32_t color);   // 12px (1.5x)
 void fb_text_center(const char* s, int y, int scale, uint32_t color);
 void fb_clear(void);
 void fb_flush(void);
+// r1159 (E14): dirty-зоны — fb_flush чистит только отмеченную область
+void fb_mark_dirty(int x, int y, int w, int h);
+void fb_dirty_all(void);
+void fb_frame_scaled(void);
 
 #endif

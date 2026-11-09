@@ -44,3 +44,4 @@ tools/ftp_client/__pycache__/
 
 # ��������� ������
 *.lnk
+*.exe

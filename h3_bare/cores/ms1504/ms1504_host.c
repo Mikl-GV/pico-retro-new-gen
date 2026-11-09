@@ -314,6 +314,10 @@ static void ms1504_scale_to_hdmi(void) {
             d[dx] = (r << 16) | (g << 8) | b;
         }
     }
+    // r1166 (E14): картинка 960×600 по центру, поля по бокам не перерисовываются
+    // (остаются фоном от fb_clear) — dirty-зона равна картинке.
+    fb_mark_dirty(offset_x, 0, srcdw, dst_h);
+    fb_frame_scaled();
 }
 
 // показать: рендер 640×400 в ms1504_scr + прямой вывод на HDMI

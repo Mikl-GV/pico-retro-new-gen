@@ -402,6 +402,34 @@ static const char* const set_labels[SET_COUNT] = {
     "Volume",
 };
 
+// r1142: ПОРЯДОК ОТОБРАЖЕНИЯ HDMI-меню настроек (позиция → номер пункта SET_*).
+// Значения enum SET_* трогать НЕЛЬЗЯ — от них зависят числовые case в текущем
+// диспетчере и тап-индексы TFT-меню (tft_drv.c items[7], case 0..6). Поэтому
+// перестановка делается ТОЛЬКО через этот массив порядка: sel/scroll в
+// settings_run позиционируются по индексу рендера, реальный номер пункта
+// извлекается set_order[pos]. Новый порядок задан владельцем.
+static const uint8_t set_order[SET_COUNT] = {
+    SET_WIFI_TRANSFER,   // 0: WiFi Transfer (FTP)
+    SET_AUDIO_TONE,      // 1: Audio test tone
+    SET_AUDIO_VOLUME,    // 2: Volume
+    SET_A2600_DIFF,      // 3: Atari 2600 Difficulty
+    SET_A2600_TV,        // 4: Atari 2600 TV mode
+    SET_INPUT_TEST,      // 5: Input Test for NES / A2600
+    SET_SEGA_PAD,        // 6: Sega 6-button gamepad
+    SET_KEYBOARD_REMAP,  // 7: Keyboard remap (per system)
+    SET_TOUCH_CAL,       // 8: Touch Calibration (TFT)
+    SET_PART_INFO,       // 9: ROM partition info
+    SET_CREATE_FOLDERS,  // 10: Create ROM system folders
+};
+
+// Позиция номера пункта SET_* в порядке отображения set_order[] — для быстрых
+// клавиш 1..7 (sel должен быть Позицией, а не номером пункта).
+static int set_pos_of(int set_idx) {
+    for (int i = 0; i < SET_COUNT; i++)
+        if (set_order[i] == set_idx) return i;
+    return 0;
+}
+
 // r896 (этап 3 звука): подменю «Audio test tone» — выбор частоты стрелками,
 // Enter запускает тон. Проверка тракта I2S0/усилителя на стенде по команде.
 // r897: правильные коды клавиш (Up=82, Down=81, Enter=40, ESC=41 — как в
@@ -509,6 +537,7 @@ static void settings_draw(int sel, int scroll) {
     int last = scroll + SET_VISIBLE;
     if (last > SET_COUNT) last = SET_COUNT;
     for (int i = scroll; i < last; i++) {
+        int set_idx = set_order[i];        // r1142: номер пункта по позиции рендера
         int is_sel = (i == sel);
         uint32_t clr = is_sel ? 0x00FFFF00 : 0x00FFFFFF;
         if (is_sel)
@@ -516,19 +545,19 @@ static void settings_draw(int sel, int scroll) {
         // маркер курсора
         if (is_sel)
             fb_puts_s(58, y, ">", 1, 0x00FFFF00);
-        fb_puts_s(80, y, set_labels[i], 1, clr);
+        fb_puts_s(80, y, set_labels[set_idx], 1, clr);
 
         // Значение справа (для переключаемых)
-        if (i == SET_A2600_DIFF) {
+        if (set_idx == SET_A2600_DIFF) {
             fb_puts_s(440, y, a2600_diff_expert ? "Expert" : "Novice", 1, 0x00AAAAAA);
         }
-        if (i == SET_AUDIO_VOLUME) {
+        if (set_idx == SET_AUDIO_VOLUME) {
             char vbuf[16];
             int vpct = i2s_volume_pct();
             snprintf(vbuf, sizeof(vbuf), "%d%%", vpct);
             fb_puts_s(440, y, vbuf, 1, 0x00AAAAAA);
         }
-        if (i == SET_A2600_TV) {
+        if (set_idx == SET_A2600_TV) {
             fb_puts_s(440, y, a2600_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
         }
         y += 34;
@@ -790,7 +819,7 @@ void settings_run(void) {
 
         // Стрелки влево/вправо: меняют значение переключаемого пункта
         else if (k == 80 || k == 79) {   // LArr / RArr
-            switch (sel) {
+            switch (set_order[sel]) {    // r1142: sel=позиция → номер пункта
             case SET_A2600_DIFF:
                 a2600_diff_expert = !a2600_diff_expert;
                 break;
@@ -811,7 +840,7 @@ void settings_run(void) {
             }
         }
         else if (k == 40) {
-            switch (sel) {
+            switch (set_order[sel]) {    // r1142: sel=позиция → номер пункта
             case SET_CREATE_FOLDERS:
                 create_folders_flow();
                 break;
@@ -843,30 +872,97 @@ void settings_run(void) {
                 break;
             }
         }
-        // клавиши 1..7 — быстрый доступ к пунктам
-        else if (k == 30) { sel = SET_CREATE_FOLDERS; }
-        else if (k == 31) { sel = SET_INPUT_TEST; }
-        else if (k == 32) { sel = SET_A2600_DIFF; }
-        else if (k == 33) { sel = SET_SEGA_PAD; }
-        else if (k == 34) { sel = SET_KEYBOARD_REMAP; }
-        else if (k == 35) { sel = SET_TOUCH_CAL; }
-        else if (k == 36) { sel = SET_PART_INFO; }
+        // клавиши 1..7 — быстрый доступ к пунктам (sel = ПОЗИЦИЯ в порядке отображения)
+        else if (k == 30) { sel = set_pos_of(SET_CREATE_FOLDERS); }
+        else if (k == 31) { sel = set_pos_of(SET_INPUT_TEST); }
+        else if (k == 32) { sel = set_pos_of(SET_A2600_DIFF); }
+        else if (k == 33) { sel = set_pos_of(SET_SEGA_PAD); }
+        else if (k == 34) { sel = set_pos_of(SET_KEYBOARD_REMAP); }
+        else if (k == 35) { sel = set_pos_of(SET_TOUCH_CAL); }
+        else if (k == 36) { sel = set_pos_of(SET_PART_INFO); }
     }
 
 partition_info:
+    // r1144: справочный экран о структуре папок на носителе — ЧИТАБЕЛЬНО,
+    // не сплошным текстом, с прокруткой постранично. Верх — краткие шаги,
+    // затем список /roms/<система>/ по группам (фактические папки systems[]).
+    // Для систем с alt_dir (nes/sms/atari800) — метка "(alt)". Стрелки ^v —
+    // листать, ESC — назад. Пустые группы не печатаются.
     {
-        fb_clear();
-        fb_puts_s(60, 40, "ROM partition setup", 2, 0x00FFAA00);
-        fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
-        fb_puts_s(60, 90, "1. Create FAT32 partition in Windows", 1, 0x00FFFFFF);
-        fb_puts_s(60, 115, "   (DiskPart / GUI / second partition)", 1, 0x00AAAAAA);
-        fb_puts_s(60, 145, "2. Create folder 'roms' in its root", 1, 0x00FFFFFF);
-        fb_puts_s(60, 175, "3. Put ROM files in /roms/<system>/", 1, 0x00FFFFFF);
-        fb_puts_s(60, 205, "4. Insert & reboot the console", 1, 0x00FFFFFF);
-        fb_puts_s(60, 240, "Then Settings -> Create folders", 1, 0x00FFFF00);
-        fb_puts_s(60, 270, "Press any key", 1, 0x00888888);
-        fb_flush();
-        input_wait();
+        // Предварительно: соберём ВСЕ строки дерева (заголовки групп + папки),
+        // чтобы знать, сколько их, и отрисовать постранично.
+        #define PART_MAXLINES 60
+        static char ptxt[PART_MAXLINES][44];
+        static char pkind[PART_MAXLINES];   // 0=папка, 1=заголовок группы
+        int plines = 0;
+        for (int g = 0; g < GROUP_COUNT && plines < PART_MAXLINES; g++) {
+            int has = 0;
+            for (int i = 0; i < (int)NUM_SYSTEMS; i++)
+                if (systems[i].group == g) { has = 1; break; }
+            if (!has) continue;
+            // заголовок группы
+            int rl = 0; const char* gn = group_names[g];
+            while (*gn && rl < 43) ptxt[plines][rl++] = *gn++;
+            ptxt[plines][rl] = 0;
+            pkind[plines++] = 1;
+            // папки группы
+            for (int i = 0; i < (int)NUM_SYSTEMS && plines < PART_MAXLINES; i++) {
+                if (systems[i].group != g) continue;
+                const char* d = system_rom_dir(i);
+                const char* base = systems[i].dir ? systems[i].dir : systems[i].id;
+                rl = 0;
+                ptxt[plines][rl++]='/'; ptxt[plines][rl++]='r'; ptxt[plines][rl++]='o';
+                ptxt[plines][rl++]='m'; ptxt[plines][rl++]='s'; ptxt[plines][rl++]='/';
+                while (*d && rl < 38) ptxt[plines][rl++] = *d++;
+                if (systems[i].alt_dir && strcmp(systems[i].alt_dir, base) != 0) {
+                    ptxt[plines][rl++]=' '; ptxt[plines][rl++]='(';
+                    ptxt[plines][rl++]='a'; ptxt[plines][rl++]='l';
+                    ptxt[plines][rl++]='t'; ptxt[plines][rl++]=')';
+                }
+                ptxt[plines][rl]=0;
+                pkind[plines++] = 0;
+            }
+        }
+        // Видимая область: строки [vtop, vtop+PART_VIS).
+        #define PART_VIS 22
+        int vtop = 0;
+        for (;;) {
+            fb_clear();
+            fb_puts_s(60, 40, "ROM partition info", 2, 0x00FFAA00);
+            fb_fill_rect(60, 70, 200, 2, 0x00FFFFFF);
+            int y = 96;
+            fb_puts_s(60, y,   "FAT32 + '/roms' in root", 1, 0x00FFFFFF); y += 18;
+            fb_puts_s(60, y,   "Put ROMs in /roms/<sys>/", 1, 0x00FFFFFF); y += 18;
+            fb_puts_s(60, y,   "Settings -> Create folders", 1, 0x00FFFF00); y += 26;
+            int last = vtop + PART_VIS;
+            if (last > plines) last = plines;
+            for (int li = vtop; li < last; li++) {
+                uint32_t clr = pkind[li] ? 0x00FFAA00 : 0x00AAAAAA;
+                int ind = pkind[li] ? 0 : 16;
+                fb_puts_s(60 + ind, y, ptxt[li], 1, clr);
+                y += 16;
+            }
+            if (vtop > 0)      fb_puts(58, 85, "^", 0x00888888);
+            if (last < plines) fb_puts(58, 545, "v", 0x00888888);
+            fb_puts(60, FOOTER_Y, "  ^v: page    ESC: back", 0x00888888);
+            fb_flush();
+            int k = input_wait();
+            if (k == 41 || k == 27) break;
+            // r1146: ПРОКРУТКА СТРАНИЦАМИ (не строками) — каждая стрелка листает
+            // на целое видимое окно PART_VIS. Без этого большой список
+            // «подпрыгивал» по одной строке, а не листался страницами.
+            if (k == 82 && vtop > 0) {          // Up / PageUp
+                vtop -= PART_VIS;
+                if (vtop < 0) vtop = 0;
+            }
+            if (k == 81 && last < plines) {     // Down / PageDown
+                vtop += PART_VIS;
+                if (vtop + PART_VIS > plines) {
+                    // последняя позиция — так, чтобы низ списка был виден
+                    vtop = plines > PART_VIS ? plines - PART_VIS : 0;
+                }
+            }
+        }
     }
 }
 

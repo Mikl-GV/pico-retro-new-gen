@@ -227,7 +227,7 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f)
     if (rs_phase >= ((uint64_t)in_n << 16))
         rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
     else
-        rs_phase = 0;
+        rs_phase &= 0xFFFFu;
     for (size_t i = 0; i < o; i++)
         i2s_push_sample(out[2 * i], out[2 * i + 1]);
     return f;

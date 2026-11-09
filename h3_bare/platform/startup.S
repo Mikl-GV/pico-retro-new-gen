@@ -76,6 +76,18 @@ uart_dbg:
      exc_once 9f
      mov r0, #'U'
      bl uart_dbg
+     /* r1171: адрес фолтящей инструкции — без него «U» бесполезен.
+      * LR_und уже сохранён в SRAM 0x880+28 (выше); ARM-состояние: LR = адрес
+      * недопустимой инструкции + 4, поэтому печатаем LR-4. По разнице с базой
+      * tcache_default видно, в каких сгенерированных байтах сидит ошибка. */
+     mov r0, #' '
+     bl uart_dbg
+     ldr r0, =0x880
+     ldr r0, [r0, #28]
+     sub r0, r0, #4
+     bl hex32_uart
+     mov r0, #'\n'
+     bl uart_dbg
  9:  b 9b
 
 /* Обработчик Prefetch Abort: 'P:' + IFAR + ':' + IFSR + hang */

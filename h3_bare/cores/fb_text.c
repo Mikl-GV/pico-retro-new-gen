@@ -109,6 +109,7 @@ const uint8_t font8x8[96][8] = {
 
 // Вывести один символ (x,y = пиксель левого верхнего угла)
 void fb_putchar(int x, int y, char c, uint32_t color) {
+    fb_mark_dirty(x, y, 8, 8);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
@@ -143,6 +144,7 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
     if (x + w > FB_W) w = FB_W - x;
     if (y + h > FB_H) h = FB_H - y;
 if (w <= 0 || h <= 0) return;
+    fb_mark_dirty(x, y, w, h);
     for (int yy = y; yy < y + h; yy++)
         for (int xx = x; xx < x + w; xx++)
             fb[yy * FB_W + xx] = color;
@@ -150,6 +152,7 @@ if (w <= 0 || h <= 0) return;
 
 // Масштабированный символ scale=1..4
 static void fb_putchar_s(int x, int y, char c, int scale, uint32_t color) {
+    fb_mark_dirty(x, y, 8 * scale, 8 * scale);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
@@ -185,6 +188,7 @@ int fb_puts_s(int x, int y, const char* s, int scale, uint32_t color) {
 static const int s15_off[8] = { 0, 2, 3, 5, 6, 8, 9, 11 };
 static const int s15_len[8] = { 2, 1, 2, 1, 2, 1, 2, 1 };
 static void fb_putchar_s15(int x, int y, char c, uint32_t color) {
+    fb_mark_dirty(x, y, 15, 12);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
@@ -213,6 +217,7 @@ int fb_puts_s15(int x, int y, const char* s, uint32_t color) {
 
 void fb_pixel(int x, int y, uint32_t color) {
     if (x < 0 || x >= FB_W || y < 0 || y >= FB_H) return;
+    fb_mark_dirty(x, y, 1, 1);
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
     fb[y * FB_W + x] = color;
 }
@@ -252,9 +257,42 @@ void fb_text_center(const char* s, int y, int scale, uint32_t color) {
 
 // Очистить экран в чёрный
 void fb_clear(void) {
+    fb_dirty_all();
     volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
     for (int i = 0; i < FB_W * FB_H; i++) fb[i] = 0;
 }
+
+// ---- r1159 (E14): dirty-зоны фреймбуфера ----
+// fb_flush чистит D-cache только по записанной области (для кадров, собранных
+// emu_scale/emu_scale_int), а не все 2.4 МБ. Если кадр писался не скейлером
+// (меню, хосты с прямой записью в FB), остаётся полный флеш — безопасный
+// фолбэк, поведение r1158 сохраняется.
+static int g_dx0, g_dy0, g_dx1, g_dy1;   // [x0,x1) x [y0,y1), пиксели
+static int g_dirty_any = 0;
+static int g_scaled_frame = 0;
+
+void fb_mark_dirty(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    int x1 = x + w, y1 = y + h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > FB_W) x1 = FB_W;
+    if (y1 > FB_H) y1 = FB_H;
+    if (x >= x1 || y >= y1) return;
+    if (!g_dirty_any) {
+        g_dx0 = x; g_dy0 = y; g_dx1 = x1; g_dy1 = y1; g_dirty_any = 1;
+        return;
+    }
+    if (x < g_dx0) g_dx0 = x;
+    if (y < g_dy0) g_dy0 = y;
+    if (x1 > g_dx1) g_dx1 = x1;
+    if (y1 > g_dy1) g_dy1 = y1;
+}
+
+void fb_dirty_all(void) { fb_mark_dirty(0, 0, FB_W, FB_H); }
+
+// Скейлер сообщает: кадр целиком перерисован в отмеченном прямоугольнике.
+void fb_frame_scaled(void) { g_scaled_frame = 1; }
 
 // Clean D-cache для фреймбуфера (DE2 читает через DMA, а CPU пишет через
 // write-back cache). Без этого на экране мусор/чёрный экран.
@@ -262,10 +300,22 @@ void fb_clear(void) {
 // (Set/Way-clean-all тут не годится: на этом железе чистил не те линии и
 //  картинка рассыпалась.)
 void fb_flush(void) {
-    uint32_t addr = FB_ADDR & ~0x1Fu;
-    uint32_t end = FB_ADDR + FB_W * FB_H * 4;
-    for (; addr < end; addr += 32) {
-        __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
+    int x0 = 0, y0 = 0, x1 = FB_W, y1 = FB_H;
+    if (g_scaled_frame && g_dirty_any) {
+        x0 = g_dx0 & ~7;                 // 32-байтная линия = 8 пикселей
+        y0 = g_dy0;
+        x1 = (g_dx1 + 7) & ~7;
+        if (x1 > FB_W) x1 = FB_W;
+        y1 = g_dy1;
     }
+    for (int y = y0; y < y1; y++) {
+        uint32_t addr = (FB_ADDR + ((uint32_t)y * FB_W + (uint32_t)x0) * 4u) & ~0x1Fu;
+        uint32_t end  = FB_ADDR + ((uint32_t)y * FB_W + (uint32_t)x1) * 4u;
+        for (; addr < end; addr += 32) {
+            __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
+        }
+    }
+    g_dirty_any = 0;
+    g_scaled_frame = 0;
     __asm volatile("dsb" ::: "memory");
 }

@@ -34,6 +34,7 @@
 #include "btn_pad.h"
 #include "usb_kbd.h"
 #include "usb_msd.h"
+#include "i2s.h"   // r1141: кнопки громкости клавиатуры
 
 #define TOUCH_BUF 16
 
@@ -172,6 +173,33 @@ static void kbd_process_report(const uint8_t* rep) {
 
     uint8_t codes[6]; int cn = 0;
     for (int i = 2; i < 8; i++) if (rep[i]) codes[cn++] = rep[i];
+
+    // r1141: аппаратные кнопки громкости (HID Consumer Page: Volume Up=0xE9,
+    // Volume Down=0xEA, часто в верхнем мультимедиа-ряду). По фронту нажатия
+    // меняем громкость и НЕ передаём сканкод в очередь/удержание (иначе
+    // «доедет» в эмулятор как игровая кнопка). Отчёты приходят только на
+    // изменение, поэтому каждое появление кода = одно нажатие (автоповтор
+    // делает потребитель, здесь не нужен). Работает и в меню, и в игре.
+    // core0-only: g_volume_pct живёт в обычном BSS, гонки с CPU2 нет.
+    {
+        extern void i2s_volume(int);
+        extern int  i2s_volume_pct(void);
+        int vol_delta = 0;
+        for (int j = 0; j < cn; j++) {
+            if (codes[j] == 0xE9) vol_delta += 5;    // Volume Up
+            else if (codes[j] == 0xEA) vol_delta -= 5; // Volume Down
+        }
+        if (vol_delta != 0) {
+            int v = i2s_volume_pct() + vol_delta;
+            if (v > 100) v = 100; if (v < 0) v = 0;
+            i2s_volume(v);
+        }
+        // отфильтровать volume-коды из списка — не для очереди/удержания
+        int dst = 0;
+        for (int j = 0; j < cn; j++)
+            if (codes[j] != 0xE9 && codes[j] != 0xEA) codes[dst++] = codes[j];
+        cn = dst;
+    }
 
     // отпускания: были нажаты, в новом отчёте их нет (в т.ч. пустой отчёт)
     for (int i = 0; i < g_held_n; i++) {

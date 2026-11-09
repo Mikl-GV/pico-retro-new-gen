@@ -4,8 +4,24 @@
 
 extern void uart_putc(char c);
 
+// r1153 (E7): word-циклы вместо побайтовых. Эти функции на hot-path
+// (загрузка ROM, emu_scale, fb_*, кадры ядер). Быстрый 32-битный путь
+// включается только при совпадении выравнивания источника и приёмника —
+// unaligned-доступы к MMIO исключены. Порядок байтов не меняется.
+
 void* memset(void* dst, int c, size_t n) {
     uint8_t* d = (uint8_t*)dst;
+    while (n && ((uintptr_t)d & 3u)) { *d++ = (uint8_t)c; n--; }
+    if (n >= 4) {
+        uint32_t pat = (uint32_t)(uint8_t)c;
+        pat |= pat << 8;
+        pat |= pat << 16;
+        uint32_t* dw = (uint32_t*)d;
+        size_t words = n >> 2;
+        while (words--) *dw++ = pat;
+        d = (uint8_t*)dw;
+        n &= 3u;
+    }
     while (n--) *d++ = (uint8_t)c;
     return dst;
 }
@@ -13,6 +29,15 @@ void* memset(void* dst, int c, size_t n) {
 void* memcpy(void* dst, const void* src, size_t n) {
     uint8_t* d = (uint8_t*)dst;
     const uint8_t* s = (const uint8_t*)src;
+    if ((((uintptr_t)d | (uintptr_t)s) & 3u) == 0) {
+        uint32_t* dw = (uint32_t*)d;
+        const uint32_t* sw = (const uint32_t*)s;
+        size_t words = n >> 2;
+        while (words--) *dw++ = *sw++;
+        d = (uint8_t*)dw;
+        s = (const uint8_t*)sw;
+        n &= 3u;
+    }
     while (n--) *d++ = *s++;
     return dst;
 }
@@ -20,10 +45,30 @@ void* memcpy(void* dst, const void* src, size_t n) {
 void* memmove(void* dst, const void* src, size_t n) {
     uint8_t* d = (uint8_t*)dst;
     const uint8_t* s = (const uint8_t*)src;
+    if (d == s || n == 0) return dst;
+    int word_ok = ((((uintptr_t)d | (uintptr_t)s) & 3u) == 0);
     if (d < s) {
+        if (word_ok) {
+            uint32_t* dw = (uint32_t*)d;
+            const uint32_t* sw = (const uint32_t*)s;
+            size_t words = n >> 2;
+            while (words--) *dw++ = *sw++;
+            d = (uint8_t*)dw;
+            s = (const uint8_t*)sw;
+            n &= 3u;
+        }
         while (n--) *d++ = *s++;
     } else {
         d += n; s += n;
+        if (word_ok) {
+            uint32_t* dw = (uint32_t*)d;
+            const uint32_t* sw = (const uint32_t*)s;
+            size_t words = n >> 2;
+            while (words--) *--dw = *--sw;
+            d = (uint8_t*)dw;
+            s = (const uint8_t*)sw;
+            n &= 3u;
+        }
         while (n--) *--d = *--s;
     }
     return dst;
@@ -32,6 +77,24 @@ void* memmove(void* dst, const void* src, size_t n) {
 int memcmp(const void* a, const void* b, size_t n) {
     const uint8_t* x = (const uint8_t*)a;
     const uint8_t* y = (const uint8_t*)b;
+    if ((((uintptr_t)x | (uintptr_t)y) & 3u) == 0) {
+        const uint32_t* xw = (const uint32_t*)x;
+        const uint32_t* yw = (const uint32_t*)y;
+        size_t words = n >> 2;
+        while (words--) {
+            if (*xw != *yw) {
+                const uint8_t* xb = (const uint8_t*)xw;
+                const uint8_t* yb = (const uint8_t*)yw;
+                for (int i = 0; i < 4; i++)
+                    if (xb[i] != yb[i]) return xb[i] - yb[i];
+                break;   /* недостижимо: слова были разными */
+            }
+            xw++; yw++;
+        }
+        x = (const uint8_t*)xw;
+        y = (const uint8_t*)yw;
+        n &= 3u;
+    }
     while (n--) {
         if (*x != *y) return *x - *y;
         x++; y++;
@@ -161,6 +224,13 @@ int sprintf(char* buf, const char* fmt, ...) {
             do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
             while (i) *d++ = tmp[--i];
             break; }
+        // r1164 (E17/P2-2): %p — формат как у printf.c/vsnprintf ("0x"+hex).
+        case 'p': { uintptr_t v = (uintptr_t)va_arg(ap, void*);
+                    *d++ = '0'; *d++ = 'x';
+                    char tmp[16]; int i = 0;
+                    do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
+                    while (i) *d++ = tmp[--i];
+                    break; }
         default: *d++ = *fmt; break;
         }
     }
@@ -184,13 +254,9 @@ int abs(int x) { return x < 0 ? -x : x; }
 // (USB/OHCI: ED/TD/HCCA, 1 МБ), а не сразу за _hend — прежний вариант рос от
 // _hend вверх и через ~451 КБ наезжал на .coherent → тихая порча структур
 // OHCI (отвал клавиатуры/тача) при накоплении выделений между запусками игр.
-// r725 (уточнение): старт = libh3_coherent_region + 1 МБ (после uncached-окна
-// и L1-таблицы 0x4A40C000..0x4A410000), лимит = _menu_arena (0x4F000000):
-// за ним ROM_BUF (0x50000000) и EMU_FB (0x5F800000). При переполнении
-// возвращаем (void*)-1, как стандартный sbrk.
-extern unsigned char libh3_coherent_region[];
-// r779: куча эмуляторов вынесена ЗА uncached-зону (linker.ld: .gb_heap 0x4A700000).
-// sbrk стартует сразу над кучей (0x4AC00000), лимит — _menu_arena (0x4F000000).
+// r779: куча эмуляторов вынесена в .gb_heap (linker.ld: NOLOAD 0x4A700000,
+// 24 МБ). r1140: sbrk стартует сразу над концом .gb_heap (_gb_heap_end),
+// лимит — _menu_arena минус резерв (SBRK_LIMIT ниже).
 extern unsigned char _gb_heap_end[];
 #define SBRK_START ((char*)_gb_heap_end)
 // r780: лимит кучи — НЕ 0x4F000000 (это НАЧАЛО _menu_arena, linker.ld).
@@ -292,6 +358,18 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
                         out++;
                     }
                     break; }
+        // r1164 (E17/P2-2): %p — как в printf.c (UART-логгер) и newlib:
+        // "0x" + строчный hex без ведущих нулей, NULL → "0x0". Ширина
+        // (%016p) паддит нулями после "0x", паддинг не режет значение.
+        case 'p': { uintptr_t v = (uintptr_t)va_arg(ap, void*);
+                    char tmp[16]; int i = 0;
+                    do { tmp[i++] = "0123456789abcdef"[v & 0xF]; v >>= 4; } while (v);
+                    int padn = width - (i + 2);
+                    if (left > 1) { *d++ = '0'; left--; } out++;
+                    if (left > 1) { *d++ = 'x'; left--; } out++;
+                    while (padn-- > 0) { if (left > 1) { *d++ = '0'; left--; } out++; }
+                    while (i) { if (left > 1) { *d++ = tmp[--i]; left--; } out++; }
+                    break; }
         case 'l': {
             fmt++;
             if (*fmt == 'u') {
@@ -313,7 +391,10 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
         default: if (left > 1) { *d++ = *fmt; left--; } out++; break;
         }
     }
-    if (buf && left > 0) *d = 0;
+    if (buf && n > 0) {
+        if (left > 0) *d = 0;
+        else buf[n - 1] = 0;   // r1140: ровное заполнение (left==0) — гарантированный NUL
+    }
     return (int)out;
 }
 

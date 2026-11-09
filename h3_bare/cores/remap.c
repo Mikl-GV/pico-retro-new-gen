@@ -415,7 +415,14 @@ void remap_save(void) {
         fat_delete_file("/", "retro.cfg");
         return;
     }
-    fat_write_file("/", "retro.cfg", (const uint8_t*)buf, (uint32_t)pl);
+    // r1160 (E15): ошибку записи не глотаем (переполненная/защищённая SD) —
+    // раньше конфиг молча терялся. В релизе логи выводятся только при ошибке.
+    int wr = fat_write_file("/", "retro.cfg", (const uint8_t*)buf, (uint32_t)pl);
+    if (wr < 0) {
+        uart_puts("remap: save retro.cfg failed rc=");
+        uart_print_int(wr);
+        uart_puts("\n");
+    }
 }
 
 // ================= Меню настройки =================

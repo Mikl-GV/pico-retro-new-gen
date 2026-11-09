@@ -159,8 +159,11 @@ static void gpgx_render_emu(int max_w, int max_h) {
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
-    // DC-фильтр CPU2: единый порог 120 Гц (α=2^-6) — как во всех хостах.
-    i2s_dc_shift_set(6);
+    // r1145: «как у эталона» (Genesis Plus GX-фронтенд НЕ добавляет DC-фильтр) —
+    // полное отключение DC-блокера CPU2 на пути MD/SMS. Откат фильтра r1143
+    // (shift=7), по решению владельца: звук должен быть без ФВЧ, как выводит
+    // эталонный Genesis Plus GX.
+    i2s_dc_bypass(1);
     // MD/SMS target кольца — адаптивный (emu_throttle), не хардкодим.
 
     int force_sms = g_force_sms;
@@ -229,7 +232,7 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     config.no_sprite_limit = 0;
     config.hq_fm = 0;
     config.hq_psg = 0;
-    config.filter = 1;
+    config.filter = 0;   // r1141: «вывод как у эмулятора» — без low-pass/EQ ядра (llp/rrp не подмешивают DC)
     config.mono = 0;
     // r595: звуковые поля конфига — по первоисточнику (libretro-gpgx
     // config_default()). Раньше НЕ выставлялись → оставались 0 из статики →
@@ -290,8 +293,13 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
 static void gpgx_audio_out(void) {
     static int16_t abuf[4096];
     int n = audio_update(abuf);
-    for (int i = 0; i < n; i++)
-        i2s_push_sample(abuf[2 * i], abuf[2 * i + 1]);
+    // r1139: пакетная подача одним push_block вместо цикла push_sample.
+    // push_sample делает dsb (системный барьер) на КАЖДУЮ пару (~800/кадр на MD);
+    // push_block — 1 ожидание места + 1 dsb на блок ~800 пар. Backpressure внутри
+    // (ждёт до 75% кольца, дропает переполнение) — при стабильном 48 кГц потока
+    // не накапливается, тишина/пауза не «рычит».
+    if (n > 0)
+        i2s_push_block((const int16_t*)abuf, (uint32_t)n);
 }
 
 void gpgx_run_frame(void) {
@@ -370,6 +378,9 @@ void sms_run_frame(void) {
 int gg_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
+    // r1145-продолжение: Game Gear — тот же путь синтеза PSG/FM, что MD/SMS.
+    // Единый «вывод как у эталона» без DC-фильтра CPU2 (как gpgx_init_game).
+    i2s_dc_bypass(1);
     i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
@@ -408,7 +419,7 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     config.no_sprite_limit = 0;
     config.hq_fm = 0;
     config.hq_psg = 0;
-    config.filter = 1;
+    config.filter = 0;   // r1141: «вывод как у эмулятора» — без low-pass/EQ ядра (llp/rrp не подмешивают DC)
     config.mono = 0;
     // r595: звуковые поля конфига (как в gpgx_init_game и первоисточнике
     // libretro-gpgx config_default()) — без них PSG/FM молчат (preamp=0,

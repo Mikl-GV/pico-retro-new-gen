@@ -69,6 +69,10 @@ void emu_scale(int src_w, int src_h) {
     if (dst_w <= 0) return;
     int dst_h = FB_H;
     int dst_x = (FB_W - dst_w) / 2;
+    // r1159 (E14): отметить область кадра для fb_flush (dirty-зоны)
+    if (g_border_color) fb_mark_dirty(0, 0, FB_W, dst_h);
+    else                fb_mark_dirty(dst_x, 0, dst_w, dst_h);
+    fb_frame_scaled();
     uint32_t* dst = (uint32_t*)FB_ADDR;
 
     // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
@@ -116,10 +120,23 @@ void emu_scale(int src_w, int src_h) {
     }
 }
 
-// ---- integer scale (целочисленный множитель) для портативных систем ----
-// Картинка чёткая: один пиксель исходника = N×N пикселей экрана, поля по
-// бокам (снизу/сверху). Множитель — максимальный, влезающий в 1024×600.
+// ---- integer scale (целочисленный множитель) ----
+// Портативные системы и Sega 32X (r1170): один пиксель исходника = N×N пикселей
+// экрана, поля по периметру. Множитель — максимальный целый, влезающий в 1024×600.
 // Формат на выходе — RGB565 → XRGB8888 в FB_ADDR (как emu_scale).
+// r1170: геометрия последнего отскейленного кадра. При неизменном размере и
+// цвете полей бордюры не перезаливаются каждый кадр — fb_flush чистит D-cache
+// только по области картинки (в 2 раза меньше записи/clean, картинка та же).
+static int s_dw = -1, s_dh = -1, s_dx = -1, s_dy = -1;
+static uint32_t s_border = 0;
+static int s_geom_valid = 0;
+
+// Сброс кэша геометрии: экран очищен/перерисован целиком (emu_prepare, выход
+// из эмулятора) — бордюры надо залить заново.
+void emu_scale_int_invalidate(void) {
+    s_geom_valid = 0;
+}
+
 void emu_scale_int(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;   // r0.198: защита от div-by-0 (как в emu_scale)
     // r0.417 (H3): те же клампы, что в emu_scale — buffer EMU_FB 320×240
@@ -135,10 +152,19 @@ void emu_scale_int(int src_w, int src_h) {
     int dst_h = src_h * mul;
     int dst_x = (FB_W - dst_w) / 2;
     int dst_y = (FB_H - dst_h) / 2;
+    // r1170: поля перерисовываем только при смене геометрии/цвета — иначе
+    // кадр занимает свой прямоугольник, бордюры на экране уже стоят.
+    int repaint_border = g_border_color &&
+        (!s_geom_valid || dst_w != s_dw || dst_h != s_dh ||
+         dst_x != s_dx || dst_y != s_dy || g_border_color != s_border);
+    // r1159 (E14): отметить область кадра для fb_flush (dirty-зоны)
+    if (repaint_border) fb_dirty_all();
+    else                fb_mark_dirty(dst_x, dst_y, dst_w, dst_h);
+    fb_frame_scaled();
     uint32_t* dst = (uint32_t*)FB_ADDR;
 
     // Поля (сверху/снизу/слева/справа)
-    if (g_border_color) {
+    if (repaint_border) {
         // верх
         for (int y = 0; y < dst_y; y++)
             for (int x = 0; x < FB_W; x++)
@@ -171,6 +197,10 @@ void emu_scale_int(int src_w, int src_h) {
                     dst[(dy0 + dy) * FB_W + dx0 + dx] = c;
         }
     }
+    // r1170: запоминаем геометрию — следующий кадр красит только картинку
+    s_dw = dst_w; s_dh = dst_h; s_dx = dst_x; s_dy = dst_y;
+    s_border = g_border_color;
+    s_geom_valid = 1;
 }
 
 void emu_clear_fb(void) {
@@ -206,6 +236,10 @@ void emu_prepare(void) {
     emu_period_us = 16667;   // r622: сброс периода в дефолт — иначе «протечка»
                              // между системами (напр. NGP ставил 16200, а выход
                              // возвращал saved_period от прошлого, не 16667).
+    // r1174: база/долг throttle — состояние emu.c, сбрасываем в единой точке
+    // входа. Раньше это делал каждый host сам; вход в новый эмулятор не должен
+    // наследовать emu_ts0/emu_debt прошлой сессии («владелец времени один»).
+    emu_throttle_reset();
     // r908/r909: звук вывода возвращён (r895+) — сбрасываем индексы ring на
     // входе, чтобы хвост прошлой игры не «доезжал» в новый запуск (TX FIFO не
     // трогаем: его посреди потока FLUSH_TX клинит).
@@ -215,9 +249,17 @@ void emu_prepare(void) {
     i2s_stats_reset();
     // r916: флаг «идёт эмуляция» для CPU2 (долив тишины в тихие места).
     i2s_audio_set_active(1);
+    // r1141: DC-блокер CPU2 глобален для CPU2 (.coherent). Сбрасываем bypass на
+    // входе в ЛЮБОЙ эмулятор (emu_prepare вызывается до host-слоёв) — иначе
+    // включённый в GBA/MD bypass «протёк» бы в остальные системы (NES/SNES/Lynx).
+    // Хосты GBA/MD включают i2s_dc_bypass(1) уже ПОСЛЕ этой точки (в *_init_game).
+    i2s_dc_bypass(0);
     emu_clear_fb();
     fb_clear();
     fb_flush();
+    // r1170: экран очищен — бордюры прошлой сессии стёрты, кэш геометрии
+    // целочисленного скейла недействителен.
+    emu_scale_int_invalidate();
 }
 
 // r910 (Фаза 0): единая точка завершения звукового замера — печатаем итог

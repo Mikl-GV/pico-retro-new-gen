@@ -214,9 +214,9 @@ static int g_i2s_ready  __attribute__((section(".coherent"), aligned(64))) = 0;
 // в тест-тоне, а в играх стартуем тихо и поднимаем в Settings → Volume).
 static int g_volume_pct = 10;
 static int g_muted = 1;                    /* усилитель выключен до init */
-// S.0: гейт вывода эмуляторов. 0 = host-слои не пишут в ring (тон меню —
-// через i2s_push_block — работает всегда). Включается после приёмки
-// тест-тона (i2s_emulators_audio). core0-only, обычный BSS.
+// S.0: гейт вывода эмуляторов. 0 = i2s_push_sample/i2s_push_block не пишут
+// в ring (тон меню идёт через i2s_push_block_raw — работает всегда).
+// Включается после приёмки тест-тона (i2s_emulators_audio). core0-only, BSS.
 static int g_emulators_audio = 0;
 void i2s_emulators_audio(int on) { g_emulators_audio = on ? 1 : 0; }
 // Аудио-диагностика (разовые печати AUDIO-END/DBG-RST/TONE*/NES-AUD/LYNX-AUD и
@@ -411,7 +411,7 @@ void i2s_push_sample(int16_t left, int16_t right) {
 // r942 (P1): backpressure — ждём освобождения места под весь блок (до порога
 // 75%), с таймаутом; иначе продюсер, пушащий пачки быстрее CPU2, накапливает
 // ring до 65535 (эхо ~1 с). По таймауту — дроп остатка (старое поведение).
-uint32_t i2s_push_block(const int16_t* pairs, uint32_t n) {
+static uint32_t i2s_push_block_raw(const int16_t* pairs, uint32_t n) {
     if (!g_i2s_ready || !pairs) return 0;
     // Для очень больших n (n >= ёмкости) ждать весь блок нереально — ждём
     // максимум 75% ёмкости, избыток осядет в цикле записи (дроп по таймауту
@@ -449,6 +449,15 @@ uint32_t i2s_push_block(const int16_t* pairs, uint32_t n) {
     return written;
 }
 
+// r1152 (E6): публичный блок-путь подчиняется тому же гейту, что и
+// i2s_push_sample. Тест-тон вызывает i2s_push_block_raw напрямую — тракт
+// проверяется независимо от того, включён ли звук эмуляторов.
+uint32_t i2s_push_block(const int16_t* pairs, uint32_t n) {
+    if (!g_i2s_ready || !pairs) return 0;
+    if (!g_emulators_audio) return 0;
+    return i2s_push_block_raw(pairs, n);
+}
+
 void i2s_ring_reset(void) {
     // r938: сброс TX FIFO (уничтожает «доезды»/хвост из FIFO после выхода).
     // По эталону r909 FLUSH_TX допустим ТОЛЬКО при выключенном TX_EN, иначе
@@ -483,18 +492,10 @@ void i2s_ring_reset(void) {
 // сигнала. Пока pause=1 CPU2 не пишет FIFO, гонки на сброс нет.
     s_dc_lp_l = 0;
     s_dc_lp_r = 0;
-    uint32_t w0 = SRAM_RING_WR, r0 = SRAM_RING_RD;
-    if (g_audio_diag)
-        printf("DBG-RST: in wr=%u rd=%u beat=%u\n",
-               (unsigned)w0, (unsigned)r0, (unsigned)i2s_audio_beat());
     SRAM_RING_SYNC = 1;
     __asm volatile("dsb" ::: "memory");
     uint32_t t = 0;
-    uint32_t spins = 0;
-    while (SRAM_RING_SYNC && t < 100000u) { t++; spins++; }   // ~потолок; CPU2 снимает флаг
-    if (g_audio_diag)
-        printf("DBG-RST: sync spins=%u done=%d rd=%u\n",
-               (unsigned)spins, SRAM_RING_SYNC ? 0 : 1, (unsigned)SRAM_RING_RD);
+    while (SRAM_RING_SYNC && t < 100000u) { t++; }   // ~потолок; CPU2 снимает флаг
     __asm volatile("dsb" ::: "memory");
     if (SRAM_RING_SYNC) {
         // r954: таймаут — CPU2 не ответил (мёртв/занят). Флаг обязан быть снят
@@ -926,7 +927,7 @@ int i2s_test_tone_cpu2(int hz, int ms) {
             blk[2 * j + 1] = s;
             phase += step;
         }
-        uint32_t got = i2s_push_block(blk, nb);
+        uint32_t got = i2s_push_block_raw(blk, nb);
         written += got;
         // r957: если в кольцо влезло меньше nb (backpressure/дроп), фазу надо
         // откатить на неподанные пары — иначе синус «скачет» вперёд и тон
@@ -1141,7 +1142,7 @@ uint32_t free1 = (I2S_FIFO_STA >> 16) & 0xFFu;
     // r949: вывод звука эмуляторов включён ГЛОБАЛЬНО. Гейт g_emulators_audio
     // введён на этапе тест-тона (S.0), чтобы изолировать тракт; тон доказан
     // на стенде (r948), поэтому host-слои снова пишут в кольцо. Тест-тон это
-    // не затрагивает: он идёт прямым доливом FIFO, мимо гейта.
+    // не затрагивает: он пишет в кольцо через i2s_push_block_raw, мимо гейта.
     i2s_emulators_audio(1);
 
     printf("I2S: ready (48k stereo, PLL 24.576M), emu audio ON\n");

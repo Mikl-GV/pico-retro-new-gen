@@ -137,6 +137,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_ngp(rom, size, sel_name);
     else if (strcmp(sys_id, "megadrive") == 0)
         emu_run_megadrive(rom, size, sel_name);
+    else if (strcmp(sys_id, "32x") == 0)
+        emu_run_32x(rom, size, sel_name);
     else if (strcmp(sys_id, "msx") == 0)
         emu_run_msx(rom, size, sel_name);
     else if (strcmp(sys_id, "vectrex") == 0)

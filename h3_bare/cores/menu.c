@@ -645,17 +645,18 @@ void menu_about(void) {
         "Bare-metal, no OS",
         "",
         "Systems ready:",
-        "Atari 2600 / 5200 / 7800, Lynx",
+        "Atari 2600 / 5200 / 7800, Lynx,",
         "NES/Famicom, SMS, Game Gear,",
         "Mega Drive/Genesis, Game Boy/GBC,",
-        "Game Boy Advance, SNES",
+        "Game Boy Advance, SNES, Vectrex,",
         "Neo Geo Pocket/Color, MSX, Coleco,",
         "PC Engine/TurboGrafx, ZX Spectrum,",
-        "BK-0010/0011M, Atari Portfolio",
+        "BK-0010/0011M, Atari Portfolio,",
+        "Atari 8-bit, MS 1504, CPC, C64",
         "",
         "Arcade (FinalBurn Neo):",
         "CPS-1 / CPS-2, NEOGEO/MVS,",
-        "Toaplan + Cave (68K)",
+        "Sega System 16, Toaplan + Cave",
         "",
         "USB keyboard + UART input",
         "ROMs from SD (FAT32)",
@@ -670,7 +671,7 @@ void menu_about(void) {
         fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
 
         int line = 0;
-        for (int i = 0; i < 23; i++) {
+        for (int i = 0; i < 24; i++) {
             if (i == 0) fb_puts_s(80, 65 + line * 20, lines[i], 2, 0x00FFFFFF);
             else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
             line++;

@@ -198,13 +198,17 @@ static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t 
             if (blk_read(sec_off, g_sector) < 0) return done;
             uint32_t n = 512 - in_sec;
             if (n > want) n = want;
-            // r1001: диагностика — что реально пришло из USB-блока и что
-            // пишем в вызывающий буфер (первые два сектора и на 128-КБ рубеже).
+            // r1154 (E9): трассировка read_chain (r1001) — только при FAT_DBG=1.
+            // В релизе выключена: printf на блокирующем UART (~6 мс) на каждом
+            // первом секторе файла и на 128-КБ рубеже тормозил загрузку ROM.
+#if FAT_DBG
             if (done == 0)
                 printf("read_chain: sec=%u blk=%02X %02X %02X %02X\n",
                        (unsigned)sec_off, g_sector[0], g_sector[1],
                        g_sector[2], g_sector[3]);
+#endif
             memcpy(buf + done, g_sector + in_sec, n);
+#if FAT_DBG
             if (done == 0)
                 printf("read_chain: dst(%08X)=%02X %02X %02X %02X\n",
                        (unsigned)(uintptr_t)buf,
@@ -212,6 +216,7 @@ static uint32_t read_chain(uint32_t cl, uint32_t offset, uint8_t* buf, uint32_t 
             if (done <= 131072u && done + n > 131072u)
                 printf("read_chain: @128K blk=%02X %02X  dst=%02X %02X\n",
                        g_sector[0], g_sector[1], buf[done], buf[done + 1]);
+#endif
             done += n; want -= n;
             in_sec = 0;
             sec_off++;

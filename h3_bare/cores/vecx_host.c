@@ -162,6 +162,11 @@ static void vx_render_hdmi(uint32_t border) {
         int nsy = (int)(y_acc >> 16);
         if (nsy > sy) { if (nsy >= VX_H) nsy = VX_H - 1; sy = nsy; }
     }
+    // r1166 (E14): при border перерисовываются поля (весь экран), иначе — только
+    // центральная колонка картинки. Явная dirty-зона вместо фолбэка fb_flush.
+    if (border) fb_dirty_all();
+    else        fb_mark_dirty(dst_x, 0, dst_w, VX_FB_H);
+    fb_frame_scaled();
 }
 
 // ---- Реализация osint_render() и vecx_snd_push() (архитектура ядра) ----
@@ -177,8 +182,6 @@ void vecx_snd_push(unsigned samps) {
     // каждые 8 циклов MPU ≈ 187500 Гц) и DAC (via_ora<<8, та же сетка).
     // `samps` — число PSG-сэмплов за кадр (dacsamps совпадает по счётчику).
     // Микшируем PSG+DAC и ресемплим 187500→48000 (линейный, фаза 16.16).
-    extern int16_t vx_dacbuf[SIZE_ABUF];
-    (void)vx_dacbuf;   // объявлен выше (vx_dacbuf)
     if (!samps || samps > SIZE_ABUF) samps = SIZE_ABUF;
 
     static uint32_t rs_phase = 0;
@@ -201,10 +204,16 @@ void vecx_snd_push(unsigned samps) {
         out[o++] = (int16_t)s;
         rs_phase += 256000u;   // (187500<<16)/48000
     }
+    // r1163 (E16): фазу между кадрами НЕ сбрасываем (паттерн r1151/r923).
+    // Целая часть относится к отработанным сэмплам кадра: буферы PSG/DAC
+    // перезаполняются с индекса 0, поэтому переносим только дробную часть.
+    // Прежний `rs_phase = 0` терял до 1 сэмпла фазы на каждом кадре, где
+    // остаток был < 1 сэмпла (шаг 256000 = 3.9 сэмпла → ~26% кадров) —
+    // дрожание ±1 выходной сэмпл с частотой кадров.
     if (rs_phase >= ((uint64_t)in_n << 16))
         rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
     else
-        rs_phase = 0;
+        rs_phase &= 0xFFFFu;
     for (unsigned k = 0; k < o; k++)
         i2s_push_sample(out[k], out[k]);   // моно → стерео
 }
@@ -295,10 +304,15 @@ void vecx_render_frame(void) {
 // ---- точка входа emu.c ----
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
-    fb_clear(); fb_flush();
+    // r1143-история: Vectrex был ЕДИНСТВЕННЫМ host БЕЗ emu_prepare() (не сбрасывал
+    // ring I2S/кучу/активность между входами) и БЕЗ emu_audio_stop() на выходе.
+    // С r1143 добавлен единый сброс на входе — иначе повторный вход шёл с хвостом
+    // прошлой сессии (залипшая активность/неразряженное кольцо). Вызов ниже активен.
+    emu_prepare();
     snd_manifest("vectrex", "psg dac");
     if (vecx_init_game(rom, size) != 1) {
         printf("Vectrex: init failed\n");
+        emu_audio_stop();
         return;
     }
     emu_set_border_color(0x00000B14);   // тёмно-синий
@@ -316,5 +330,6 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 exit:
     g_loaded = 0;
+    emu_audio_stop();
     fb_clear(); fb_flush();
 }

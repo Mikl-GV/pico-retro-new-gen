@@ -248,6 +248,7 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
                 for (int x = x0 + dw; x < FB_W_C; x++) row[x] = C64_BG;
             }
         }
+        fb_dirty_all();   // r1166 (E14): поля перерисованы — dirty = весь экран
         g_dw = dw; g_dh = dh; g_x0 = x0; g_y0 = y0;
     }
 
@@ -282,6 +283,10 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
         int ny = (int)(acc_y >> 16);
         if (ny > sy) { if (ny >= (int)height) ny = (int)height - 1; sy = ny; }
     }
+    // r1166 (E14): host_video пишет HDMI FB напрямую — сообщаем fb_flush
+    // перерисованный прямоугольник (поля — только при смене геометрии выше).
+    fb_mark_dirty(x0, y0, dw, dh);
+    fb_frame_scaled();
 }
 
 // ---- environment: ключевые опции ядра ----

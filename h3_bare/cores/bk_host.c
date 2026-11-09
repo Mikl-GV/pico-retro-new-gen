@@ -204,10 +204,13 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f)
         o++;
         rs_phase += 60211u;
     }
+    // r1151: при малой порции фазу НЕ сбрасываем — сохраняем дробную часть
+    // (паттерн r923 в pce_host). Иначе на кадрах с малым числом пар (тишина/
+    // рестарт) линейная интерполяция каждый раз стартует с фазы 0 — щелчки.
     if (rs_phase >= ((uint64_t)in_n << 16))
         rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
     else
-        rs_phase = 0;
+        rs_phase &= 0xFFFFu;
     for (size_t i = 0; i < o; i++)
         i2s_push_sample(out[2 * i], out[2 * i + 1]);
     return f;
@@ -238,6 +241,10 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
             drow[x] = (r << 16) | (g << 8) | b;
         }
     }
+    // r1166 (E14): кадр БК занимает весь HDMI FB (1024×600) — dirty = экран;
+    // явно сообщаем fb_flush, не полагаясь на фолбэк полного флеша.
+    fb_dirty_all();
+    fb_frame_scaled();
 }
 
 static void host_log(enum retro_log_level level, const char* fmt, ...)

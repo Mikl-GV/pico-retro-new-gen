@@ -57,6 +57,11 @@ static const system_entry_t systems[] = {
     SYS("pce",        "PC Engine / TurboGrafx",      CONSOLE,  READY),
     SYS("snes",       "SNES / Super Famicom",        CONSOLE,  READY),
     SYS("megadrive",  "Sega Mega Drive / Genesis",     CONSOLE,  READY),
+    // r1147: Sega 32X (дополнение к Mega Drive) — READY. Ядро — PicoDrive
+    // (h3_bare/cores/picodrive, КАРТРИДЖНЫЙ 32X-путь; CD/SVP/имгарды собраны,
+    // но для 32X-рома не активируются). dir задан явно (не id "32x"), чтобы имя
+    // папки на SD = sega32x, как создано. Ромы — /roms/sega32x/*.bin|gen|md|32x.
+    SYS_DIR("32x", "Sega 32X", "sega32x", CONSOLE, READY),
     SYS_DIR("vectrex", "GCE Vectrex", "GCE Vectrex", CONSOLE, READY),
 
     // -- Аркадные автоматы --

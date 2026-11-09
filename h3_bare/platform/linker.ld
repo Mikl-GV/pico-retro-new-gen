@@ -86,9 +86,9 @@ SECTIONS
     _gb_heap_end = .;
   }
 
-  /* newlib sbrk — сразу над кучей, до _menu_arena. */
-  /* libc_min.c: SBRK_START берёт libh3_coherent_region+1MB (0x4A500000) —
-     пересмотреть позже; см. TODO r779. */
+  /* newlib sbrk — сразу над кучей (_gb_heap_end = 0x4B700000, libc_min.c). */
+  /* libc_min.c: SBRK_START = _gb_heap_end, SBRK_LIMIT = 0x4EF00000. r1140:
+     комментарии синхронизированы с кодом. */
 
   /* Арена меню — фиксированный адрес, гарантированно вне BSS/кучи и до ROM_BUF. */
   _menu_arena = 0x4F000000;
@@ -103,6 +103,9 @@ SECTIONS
     . = ALIGN(4);
     _a8_bss_end = .;
   }
+  /* r1156 (E11): верхняя граница — EMU_FB 0x5F800000 (рост BSS Atari 800
+   * не должен «наехать» на кадровый буфер эмуляторов). */
+  ASSERT(_a8_bss_end <= 0x5F800000, "ERROR: .a8_bss overflow (0x5F000000..0x5F800000 — до EMU_FB)")
 
   /* r1010: файловый слой прошивки (.fs_bss) — НЕ в общем BSS.
    * Слоты g_files (448 байт×16) и g_rom_* жили в .bss рядом с данными
@@ -130,4 +133,8 @@ SECTIONS
     . = ALIGN(4);
     _vice_bss_end = .;
   }
+  /* r1156 (E11): верхняя граница — начало .fs_bss (0x53E00000). Рост BSS VICE
+   * не должен перекрывать слоты файлового слоя (симптом r1010: fopen ok →
+   * fread мусор → «Cannot read image header»). */
+  ASSERT(_vice_bss_end <= 0x53E00000, "ERROR: .vice_bss overflow (0x52000000..0x53E00000 — до .fs_bss)")
 }

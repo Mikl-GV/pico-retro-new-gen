@@ -21,7 +21,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │  host-слои: system_atari_h3.cpp  system_a5200_h3.cpp          │
 │  system_a7800_h3.cpp  nes_host_fceumm.cpp  system_gpgx_h3.c   │
 │  gameboy_host.cpp  lynx_host.cpp  snes_host.cpp  ngp_host.cpp │
-│  vecx_host.c (Vectrex)  gba_host.c (GBA)  msx_host.c (MSX)    │
+│  vecx_host.c (Vectrex)  gba_mgba_host.c  msx_host.c (MSX)    │
 │  coleco_host.cpp  fuse_host.c  pce_host.c  bk_host.c          │
 │  portfolio/system_portfolio.cpp (+ pofo_compat_h3.h)          │
 ├───────────────────────────────────────────────────────────────┤
@@ -71,7 +71,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Пиксели всех систем складываются в **общий буфер EMU_FB** (0x5F800000, 320×240 RGB565),
 затем `emu_scale(src_w, src_h)` растягивает на весь HDMI (1024×600) — высота 600,
-ширина пропорционально, поля по бокам.
+ширина пропорционально, поля по бокам. Исключение — Sega 32X (r1170): целочисленный
+`emu_scale_int` (2× → 640×448/480), поля по периметру.
 
 ### EMU_FB / масштабирование
 
@@ -79,12 +80,17 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Каждый эмулятор пишет кадр в левый верхний угол своего родного разрешения
   (160×192, 256×240, 256×192, 320×240)
 - `emu_scale(w, h)` — nearest neighbour на всю высоту (600), центрирование по X
+- `emu_scale_int(w, h)` — целочисленный множитель `min(1024/w, 600/h)`: пиксель
+  исходника = N×N, поля по периметру. Бордюры заливаются только при смене
+  геометрии/цвета полей (`emu_scale_int_invalidate()` из `emu_prepare`), в
+  остальные кадры `fb_flush` чистит лишь прямоугольник картинки
+- Sega 32X (`32x_host.c`) — на `emu_scale_int`: 640×448 (NTSC 224) / 640×480 (PAL 240)
 - Вызывается в `emu_run_*()` после каждого кадра
 - `emu_set_border_color(rgb888)` — цвет полей по бокам (XRGB8888), свой для каждой
   системы: A2600 — тёмно-янтарный, A5200 — синий, A7800 — бордовый, NES — бордовый,
   SMS — синий, MD — тёмно-синий, Game Boy — зелёный, Lynx — фиолетовый, Portfolio — оливковый,
   SNES — тёмно-синеватый, NGP — тёмно-синий
-- `emu_scale`/`emu_scale_int` клампят вход к 320×240 (`emu.c:64-65,125-126`):
+- `emu_scale`/`emu_scale_int` клампят вход к 320×240 (`emu.c:65-66,143-144`):
   hi-res SNES (512 колонок) читается без выхода за EMU_FB.
 - Vectrex (`vecx_host.c`) и аркады (`cps1_host.cpp`) пишут напрямую в HDMI FB,
   минуя EMU_FB — у них свои таблицы колонок и буферы кадра.
@@ -111,6 +117,10 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ядро: `gpgx/core/` (genesis.c, vdp_*, mem68k, m68k/z80, sound, cart_hw, cd_hw — без CHD/MP3-декодеров)
 - `gpgx_init_game()`: копирует ROM в `cart.rom`, детект SMS (TMR SEGA) / MD, byte-swap
   для 16-бит, конфиг `t_config`, инициализация `bitmap.data[720×576]` (как libretro.c)
+- Звук: вся семейка GPGX (MD/SMS/GG) — «вывод как у эмулятора», DC-фильтр CPU2
+  отключён (`i2s_dc_bypass(1)` в `gpgx_init_game` и `gg_init_game`, r1145/r1149);
+  `config.filter=0` (без low-pass/EQ ядра). `emu_prepare` сбрасывает bypass перед
+  каждой системой (bypass не «протекает» в NES/SNES/Lynx).
 - Рендер: `bitmap.data` (RGB565) + viewport → EMU_FB, MD 320×224, SMS 256×192
 - Ввод: USB-клавиатура → 6-кнопочный геймпад MD (Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start),
   для SMS: S=Pause (кнопка на корпусе), Enter=Start
@@ -138,19 +148,20 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: 48000 Гц стерео пары (binjgb u8→s16), выводится в I2S (r596)
 
-### gba_host.c (Game Boy Advance, gpSP)
+### gba_mgba_host.c (Game Boy Advance, mGBA-core)
 
-- Ядро: `gba_sp/` (gpSP: cpu.cc, video.cc, gba_memory.c, sound.c — интерпретатор, без dynarec)
-- Порт — как FCEUmm/Snes9x: без libretro.c, ядро линкуется напрямую; стабы `gba_compat.c`
-  (time/localtime/netplay/input-savestate), filestream/sscanf — из `fceumm/libretro_compat.c`
-- ROM из памяти: host ставит `g_ram_rom/g_ram_rom_size`, ядро мапит страницы ROM напрямую
-  на ROM_BUF (без копирования и без LRU-аллокаций, которые требуют 32 МБ кучи)
-- BIOS — встроенный open-source 16KB (`bios_data.S` + `bios/open_gba_bios.bin`)
-- Имена, конфликтующие с другими ядрами (fceumm/gpgx), переименованы через `objcopy`
-  (`vram/reg/cheats/init_memory/init_cpu/load_bios` → `gpsp_*`) — см. Makefile `GBA_RENAME`
-- Рендер: `gba_screen_pixels` (240×160 RGB565) → EMU_FB
-- Ввод: USB-клавиатура → кнопки GBA (Z=A X=B S=Select Enter=Start Q=L W=R + Sega-геймпад C=L X=R)
-- Звук: gpSP 32768 Гц → полифазный ресемпл 48000, выводится в I2S (r521/r592)
+- Ядро: `gba_mgba/` (mGBA-core: gba+arm+core+util+gb+third-party/inih+include; без
+  debugger/test/gui/image/scripting/SIO — сеть для картриджа не нужна)
+- Старое ядро gpSP (`gba_sp/`, `gba_host.c`) удалено в r1167; mGBA работает с r1133
+  (gpSP давал белый экран RnRR при живом звуке)
+- Host: `mCoreCreate(GBA)` → `init` → `loadROM(VFileMemChunk)` → `loadBIOS` (вшитый
+  `open_gba_bios`, `bios_data.S`) → `setVideoBuffer(EMU_FB, stride 320)` → `runFrame()`
+- Видео: software-рендер mGBA пишет RGB565 прямо в EMU_FB (240×160) → `emu_scale`
+- Звук: mGBA 32768 Гц стерео → полифазный ресемплер 48 кГц → `i2s_push_block` (r1135);
+  DC-фильтр CPU2 отключён по решению владельца (r1145)
+- Ввод: битмаска `GBA_KEY_*` → `setKeys` (USB-клавиатура + Sega-геймпад)
+- Вендорный лог mGBA подавлен тихим дефолтным логгером в host (r1134); вендор не правится
+- Переименование коллизий с другими ядрами — `mgba_rename.sh` (`crc32`/`strlcpy` → `mgba_*`)
 
 ### msx_host.c (MSX / MSX2, fMSX 6.0)
 
