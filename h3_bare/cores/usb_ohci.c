@@ -740,6 +740,35 @@ int usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
 //  - перед запуском гасим BLE и ждём bulkcur==0 (HC дочитал ED);
 //  - пауза udelay(200) перед BLE (L2-синхронизация by-PA);
 //  - HALTED сбрасываем только после того, как HC отпустил ED.
+// Отпустить bulk-канал после обрыва или таймаута: снять Halted, пересобрать
+// ED, обнулить указатели HC. Без этого следующая передача висит до таймаута
+// (на стенде: одно удаление файла -> каскад TIMEOUT и рассыпавшееся меню).
+static void bulk_release(ohci_regs_t* ohci, ohci_ed_t* ed, uint8_t addr,
+                         uint8_t ep, uint16_t mps, int idx, int di)
+{
+    ohci->ctrl &= ~(1u << 5);   /* BLE off */
+    __asm volatile("dsb" ::: "memory");
+    for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
+
+    /* r969: снять Halted И пересобрать cfg целиком. Раньше писали только
+       head; если HC успел выставить Halted/SKIP в cfg (после обрыва TD),
+       ED оставался мёртвым, и СЛЕДУЮЩАЯ передача висела до таймаута —
+       ровно это видно в логе после каждой короткой IN. */
+    ed->cfg = (uint32_t)(addr & 0x7F)
+            | ((uint32_t)(ep & 0x0F) << 7)
+            | ED_FROM_TD
+            | ((uint32_t)mps << 16);
+    ed->head = (uint32_t)(uintptr_t)&g_bulk_td[idx][di][0];
+    cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
+
+    g_bulk_toggle[idx][di] = 0;
+    ohci->bulkhead = 0;
+    ohci->bulkcur = 0;
+    ohci->donehead = 0;
+    ohci->intrstatus = (1u << 1);   /* W1C: WDH */
+    __asm volatile("dsb" ::: "memory");
+}
+
 static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
                          const uint8_t* out, uint8_t* in,
                          uint32_t len, uint16_t mps, int dir_in) {
@@ -856,6 +885,10 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
                          (unsigned)td->cfg, (unsigned)ohci->hcca,
                          (unsigned)(g_hcca[idx].framenumber & 0xFFFFu),
                          (unsigned)g_hcca[idx].intr[0]);
+            // r1189: таймаут оставлял висящий TD и включённый BLE — каждая
+            // следующая передача тоже висела (каскад TIMEOUT после одного
+            // сбоя). Отпускаем канал тем же путём, что и при ошибке TD.
+            bulk_release(ohci, ed, addr, ep, mps, idx, di);
             return -1;
         }
     }
@@ -877,24 +910,7 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
     }
     if (cc != TD_CC_NOERR) {
         uart0_printf("ohci-bulk: fail d=%d ep=%d cc=0x%X len=%u\n", dir_in, ep, cc, (unsigned)len);
-        // Сброс HALTED только после того, как HC отпустил ED.
-        ohci->ctrl &= ~(1u << 5);   /* BLE off */
-        __asm volatile("dsb" ::: "memory");
-        for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
-        /* r969: снять Halted И пересобрать cfg целиком. Раньше писали только
-           head; если HC успел выставить Halted/SKIP в cfg (после обрыва TD),
-           ED оставался мёртвым, и СЛЕДУЮЩАЯ передача висела до таймаута —
-           ровно это видно в логе после каждой короткой IN. */
-        ed->cfg = (uint32_t)(addr & 0x7F)
-                | ((uint32_t)(ep & 0x0F) << 7)
-                | ED_FROM_TD
-                | ((uint32_t)mps << 16);
-        ed->head = (uint32_t)(uintptr_t)td;   /* снять Halted */
-        cache_clean((uint32_t)(uintptr_t)ed, sizeof(*ed));
-        g_bulk_toggle[idx][di] = 0;
-        ohci->bulkhead = 0;
-        ohci->bulkcur  = 0;
-        __asm volatile("dsb" ::: "memory");
+        bulk_release(ohci, ed, addr, ep, mps, idx, di);
     }
     return (cc == TD_CC_NOERR) ? 0 : -1;
 }

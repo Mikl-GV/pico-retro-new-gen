@@ -327,8 +327,19 @@ void rk86_init(const uint8_t* rom, uint32_t size)
 
 void rk86_run(uint32_t cycles)
 {
+    uint32_t budget = cycles;
+
+    // ПДП ВГ75 останавливает процессор на 4 такта за каждый прочитанный байт
+    // экрана: 78x30 -> 9360 тактов из 35600 (эталон RK8266 считает частоту как
+    // 1780000 - dma_usage*4*50). Без вычета машина работает на треть быстрее.
+    if (rk86_screen.sreg & SREG_VE) {
+        uint32_t dma = (uint32_t)rk86_screen.screen_w *
+                       (uint32_t)rk86_screen.screen_h * 4u;
+        budget = (dma < budget) ? budget - dma : 1u;
+    }
+
     uint32_t done = 0;
-    while (done < cycles) done += (uint32_t)i8080_instruction();
+    while (done < budget) done += (uint32_t)i8080_instruction();
 }
 
 void rk86_vg75_vsync(void)
