@@ -5,8 +5,32 @@
 #include "fb_text.h"
 
 #define FB_ADDR  0x5F900000
+#define FB_ADDR_BACK 0x5F400000u   // r1183: второй буфер (0x5F400000..0x5F660000 свободен:
+                                   // .a8_bss кончается на 0x5F1D7310, EMU_FB с 0x5F800000)
 #define FB_W     1024
 #define FB_H     600
+
+// r1183: двойная буферизация вывода (опция меню, по умолчанию выкл.).
+// Когда включена: кадр собирается в s_fb_draw, в конце кадра fb_flush() отдаёт
+// готовый буфер DE2 (h3_de2_set_ui_addr) и переключает рисование во второй.
+// DE2 защёлкивает адрес по vblank (GLB->DBUFFER=1 в de2_mode_set) — разрыва нет,
+// цена — один кадр задержки. Прямые писатели (C64/CPS1/Vectrex/BK) в опции не
+// участвуют и зовут fb_flip_set(0).
+extern void h3_de2_set_ui_addr(uint32_t addr);
+static uint32_t s_fb_draw = FB_ADDR;   // буфер, в который рисуем прямо сейчас
+static int      s_flip_on  = 0;        // 1 = пинг-понг включён на эту сессию
+
+uint32_t fb_draw_addr(void) { return s_fb_draw; }
+
+void fb_flip_set(int on) {
+    s_flip_on = 0;
+    s_fb_draw = FB_ADDR;
+    h3_de2_set_ui_addr(FB_ADDR);       // DE показывает штатный буфер
+    if (on) {
+        s_flip_on = 1;
+        s_fb_draw = FB_ADDR_BACK;      // кадр собираем во втором, показываем первый
+    }
+}
 
 // Шрифт 8x8 (0x20..0x7F), 1bpp, столбцы слева направо, MSB вверху
 const uint8_t font8x8[96][8] = {
@@ -112,7 +136,7 @@ void fb_putchar(int x, int y, char c, uint32_t color) {
     fb_mark_dirty(x, y, 8, 8);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     for (int row = 0; row < 8; row++) {
         uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -138,7 +162,7 @@ void fb_puts(int x, int y, const char* s, uint32_t color) {
 
 // Залить прямоугольник
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > FB_W) w = FB_W - x;
@@ -155,7 +179,7 @@ static void fb_putchar_s(int x, int y, char c, int scale, uint32_t color) {
     fb_mark_dirty(x, y, 8 * scale, 8 * scale);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     for (int row = 0; row < 8; row++) {
         uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -191,7 +215,7 @@ static void fb_putchar_s15(int x, int y, char c, uint32_t color) {
     fb_mark_dirty(x, y, 15, 12);
     if (c < 0x20 || c > 0x7F) c = '.';
     const uint8_t* glyph = font8x8[c - 0x20];
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     for (int row = 0; row < 8; row++) {
         uint8_t bits = (c == '_' && row == 7) ? 0xFF : glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -218,7 +242,7 @@ int fb_puts_s15(int x, int y, const char* s, uint32_t color) {
 void fb_pixel(int x, int y, uint32_t color) {
     if (x < 0 || x >= FB_W || y < 0 || y >= FB_H) return;
     fb_mark_dirty(x, y, 1, 1);
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     fb[y * FB_W + x] = color;
 }
 
@@ -258,7 +282,7 @@ void fb_text_center(const char* s, int y, int scale, uint32_t color) {
 // Очистить экран в чёрный
 void fb_clear(void) {
     fb_dirty_all();
-    volatile uint32_t* fb = (volatile uint32_t*)FB_ADDR;
+    volatile uint32_t* fb = (volatile uint32_t*)s_fb_draw;
     for (int i = 0; i < FB_W * FB_H; i++) fb[i] = 0;
 }
 
@@ -309,8 +333,8 @@ void fb_flush(void) {
         y1 = g_dy1;
     }
     for (int y = y0; y < y1; y++) {
-        uint32_t addr = (FB_ADDR + ((uint32_t)y * FB_W + (uint32_t)x0) * 4u) & ~0x1Fu;
-        uint32_t end  = FB_ADDR + ((uint32_t)y * FB_W + (uint32_t)x1) * 4u;
+        uint32_t addr = (s_fb_draw + ((uint32_t)y * FB_W + (uint32_t)x0) * 4u) & ~0x1Fu;
+        uint32_t end  = s_fb_draw + ((uint32_t)y * FB_W + (uint32_t)x1) * 4u;
         for (; addr < end; addr += 32) {
             __asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(addr)); // clean MVA
         }
@@ -318,4 +342,12 @@ void fb_flush(void) {
     g_dirty_any = 0;
     g_scaled_frame = 0;
     __asm volatile("dsb" ::: "memory");
+    // r1183: кадр собран и вычищен — при включённой опции отдаём его DE2 и
+    // переключаем рисование во второй буфер. Адрес защёлкнется по vblank;
+    // следующий композит придёт уже отсюда, поэтому кадр цельный.
+    if (s_flip_on) {
+        uint32_t shown = s_fb_draw;
+        h3_de2_set_ui_addr(shown);
+        s_fb_draw = (shown == FB_ADDR) ? FB_ADDR_BACK : FB_ADDR;
+    }
 }

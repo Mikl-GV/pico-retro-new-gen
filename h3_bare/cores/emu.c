@@ -42,6 +42,12 @@ void emu_set_border_color(uint32_t rgb888) {
 // ниже HDMI FB (0x5F900000+2.46МБ) и ниже стеков CPU2/CPU1 — пересечений нет.
 #define FB_ADDR_BACK 0x5F400000u   // второй FB для direct-писателей (до EMU_FB)
 
+// r1183: опция меню «двойная буферизация / без разрыва» (0 = выкл., дефолт).
+// Включается на сессию: emu_prepare() армирует режим в fb_text.c, emu_audio_stop()
+// возвращает штатный вывод в FB_ADDR. Прямые писатели (C64/CPS1/Vectrex/BK) режим
+// не поддерживают и сбрасывают его сами через fb_flip_set(0).
+int g_video_vsync = 0;
+
 void emu_hdmi_flip(void) {
 #if CONFIG_HDMI_DOUBLE_BUF
     // Пометка для документации: здесь переключение адреса DE2 UI-канала.
@@ -260,6 +266,9 @@ void emu_prepare(void) {
     // r1170: экран очищен — бордюры прошлой сессии стёрты, кэш геометрии
     // целочисленного скейла недействителен.
     emu_scale_int_invalidate();
+    // r1183: армируем режим вывода. Если опция включена — рисование уйдёт в
+    // back-буфер, а fb_flush в конце кадра начнёт переключать DE2 по vblank.
+    fb_flip_set(g_video_vsync);
 }
 
 // r910 (Фаза 0): единая точка завершения звукового замера — печатаем итог
@@ -283,6 +292,9 @@ void emu_audio_stop(void) {
     i2s_stats_active(0);
     i2s_audio_set_active(0);   /* r916: звук из игры ушёл — CPU2 тишину больше не доливает */
     i2s_ring_reset();
+    // r1183: сессия закончилась — вернуть DE2 на штатный буфер, иначе меню
+    // нарисуется в back-буфер и не будет видно.
+    fb_flip_set(0);
 }
 
 // r777: звуковой слой вывода удалён — snd_manifest оставлен no-op,
@@ -526,12 +538,20 @@ extern void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name)
 extern void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    extern uint8_t a7800_tv_mode;
+    extern void a7800_set_tv_mode(int mode);
+    extern int a7800_region_pal(void);
     emu_prepare();
+    // r1184: развертка из меню (NTSC / PAL / Auto) — до init, ядро читает
+    // region_type в region_Reset(); эффективный режим известен после init.
+    a7800_set_tv_mode(a7800_tv_mode);
     if (a7800_init_game(rom, size) != 1) {
         printf("A7800: init failed\n"); return;
     }
-    printf("A7800: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    printf("A7800: \"%s\" size=%d (%s)\n", rom_name ? rom_name : "?", (int)size,
+           a7800_region_pal() ? "PAL" : "NTSC");
     emu_set_border_color(0x00281206);   // тёмно-бордовый
+    emu_set_period_us(a7800_region_pal() ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -542,12 +562,19 @@ exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    extern uint8_t a5200_tv_pal;
+    extern void a5200_set_tv_pal(int pal);
     emu_prepare();
+    // r1184: развертка из меню — до init (ядро берёт tv_mode как длину кадра
+    // и для GTIA/коллизий). Дефолт NTSC: 5200-картриджи в основном NTSC.
+    a5200_set_tv_pal(a5200_tv_pal);
     if (a5200_init_game(rom, size) != 1) {
         printf("A5200: init failed\n"); return;
     }
-    printf("A5200: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    printf("A5200: \"%s\" size=%d (%s)\n", rom_name ? rom_name : "?", (int)size,
+           a5200_tv_pal ? "PAL" : "NTSC");
     emu_set_border_color(0x00061428);   // тёмно-синий
+    emu_set_period_us(a5200_tv_pal ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -561,12 +588,15 @@ exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    extern int gpgx_pal(void);   // r1180: регион из заголовка (gpgx vdp_pal)
     emu_prepare();
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
     }
     printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
+    // r1180: PAL-версии SMS идут 50 Гц (иначе ~20% быстрее и звук уплывает).
+    emu_set_period_us(gpgx_pal() ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {

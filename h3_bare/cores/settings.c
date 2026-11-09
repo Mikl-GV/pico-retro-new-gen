@@ -33,6 +33,12 @@ extern int printf(const char* fmt, ...);
 uint16_t emu_period_us = 16667;   // 60 Гц по умолчанию
 uint8_t  a2600_diff_expert = 0;   // Novice по умолчанию
 uint8_t  a2600_tv_pal     = 0;   // A2600 TV-режим: 0 = NTSC, 1 = PAL (только слой A2600)
+// r1184: развертка Atari 5200 и 7800 — отдельные пункты меню.
+// A5200: 0 = NTSC (60 Гц, дефолт — так идут почти все картриджи), 1 = PAL (50 Гц).
+uint8_t  a5200_tv_pal     = 0;
+// A7800: 0 = NTSC, 1 = PAL, 2 = Auto (по байту региона в заголовке картриджа).
+uint8_t  a7800_tv_mode    = 2;
+extern int g_video_vsync;        // r1183: двойная буферизация видео (emu.c), 0 = выкл.
 
 #define PHYS_W 1024
 #define PHYS_H 600
@@ -385,6 +391,14 @@ enum {
     SET_AUDIO_TONE,
     // r898: громкость — ←/→, по умолчанию 10%. В конец (TFT-индексы не трогаем).
     SET_AUDIO_VOLUME,
+    // r1183: видео — двойная буферизация (переключение по vblank). Тоже в конец:
+    // числовые индексы первых пунктов и TFT-меню не сдвигаются.
+    SET_VIDEO_VSYNC,
+    // r1184: TV-режим Atari 5200 и 7800. В конец enum — числовые значения
+    // существующих пунктов (и TFT-индексы) не сдвигаются; порядок отображения
+    // задаёт set_order[] ниже.
+    SET_A5200_TV,
+    SET_A7800_TV,
     SET_COUNT,
 };
 
@@ -400,6 +414,9 @@ static const char* const set_labels[SET_COUNT] = {
     "WiFi Transfer (FTP)",
     "Audio test tone",
     "Volume",
+    "Video: no tearing (+1 frame)",
+    "Atari 5200 TV mode",
+    "Atari 7800 TV mode",
 };
 
 // r1142: ПОРЯДОК ОТОБРАЖЕНИЯ HDMI-меню настроек (позиция → номер пункта SET_*).
@@ -412,14 +429,17 @@ static const uint8_t set_order[SET_COUNT] = {
     SET_WIFI_TRANSFER,   // 0: WiFi Transfer (FTP)
     SET_AUDIO_TONE,      // 1: Audio test tone
     SET_AUDIO_VOLUME,    // 2: Volume
-    SET_A2600_DIFF,      // 3: Atari 2600 Difficulty
-    SET_A2600_TV,        // 4: Atari 2600 TV mode
-    SET_INPUT_TEST,      // 5: Input Test for NES / A2600
-    SET_SEGA_PAD,        // 6: Sega 6-button gamepad
-    SET_KEYBOARD_REMAP,  // 7: Keyboard remap (per system)
-    SET_TOUCH_CAL,       // 8: Touch Calibration (TFT)
-    SET_PART_INFO,       // 9: ROM partition info
-    SET_CREATE_FOLDERS,  // 10: Create ROM system folders
+    SET_VIDEO_VSYNC,     // 3: Video: no tearing (+1 frame)
+    SET_A2600_DIFF,      // 4: Atari 2600 Difficulty
+    SET_A2600_TV,        // 5: Atari 2600 TV mode
+    SET_A5200_TV,        // 6: Atari 5200 TV mode
+    SET_A7800_TV,        // 7: Atari 7800 TV mode
+    SET_INPUT_TEST,      // 8: Input Test for NES / A2600
+    SET_SEGA_PAD,        // 9: Sega 6-button gamepad
+    SET_KEYBOARD_REMAP,  // 10: Keyboard remap (per system)
+    SET_TOUCH_CAL,       // 11: Touch Calibration (TFT)
+    SET_PART_INFO,       // 12: ROM partition info
+    SET_CREATE_FOLDERS,  // 13: Create ROM system folders
 };
 
 // Позиция номера пункта SET_* в порядке отображения set_order[] — для быстрых
@@ -559,6 +579,17 @@ static void settings_draw(int sel, int scroll) {
         }
         if (set_idx == SET_A2600_TV) {
             fb_puts_s(440, y, a2600_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
+        }
+        if (set_idx == SET_VIDEO_VSYNC) {
+            fb_puts_s(440, y, g_video_vsync ? "On" : "Off", 1, 0x00AAAAAA);
+        }
+        if (set_idx == SET_A5200_TV) {
+            fb_puts_s(440, y, a5200_tv_pal ? "PAL" : "NTSC", 1, 0x00AAAAAA);
+        }
+        if (set_idx == SET_A7800_TV) {
+            fb_puts_s(440, y,
+                      a7800_tv_mode == 2 ? "Auto" : (a7800_tv_mode ? "PAL" : "NTSC"),
+                      1, 0x00AAAAAA);
         }
         y += 34;
     }
@@ -826,6 +857,18 @@ void settings_run(void) {
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
                 break;
+            case SET_VIDEO_VSYNC:
+                // r1183: режим применяется на входе в следующий эмулятор
+                // (emu_prepare → fb_flip_set); меню само всегда рисует в FB_ADDR.
+                g_video_vsync = !g_video_vsync;
+                break;
+            case SET_A5200_TV:
+                a5200_tv_pal = !a5200_tv_pal;   // r1184: NTSC ↔ PAL
+                break;
+            case SET_A7800_TV:
+                // r1184: NTSC → PAL → Auto (по заголовку картриджа).
+                a7800_tv_mode = (uint8_t)((a7800_tv_mode + 1u) % 3u);
+                break;
             case SET_AUDIO_VOLUME: {
                 extern int i2s_volume_pct(void);
                 extern void i2s_volume(int p);
@@ -852,6 +895,12 @@ void settings_run(void) {
                 break;
             case SET_A2600_TV:
                 a2600_tv_pal = !a2600_tv_pal;
+                break;
+            case SET_A5200_TV:
+                a5200_tv_pal = !a5200_tv_pal;                       // r1184
+                break;
+            case SET_A7800_TV:
+                a7800_tv_mode = (uint8_t)((a7800_tv_mode + 1u) % 3u); // r1184
                 break;
             case SET_SEGA_PAD:
                 sega_pad_test_run();

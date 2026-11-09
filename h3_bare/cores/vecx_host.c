@@ -309,6 +309,8 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // С r1143 добавлен единый сброс на входе — иначе повторный вход шёл с хвостом
     // прошлой сессии (залипшая активность/неразряженное кольцо). Вызов ниже активен.
     emu_prepare();
+    // r1183: Vectrex рисует в FB_ADDR напрямую (vx_render_hdmi) — штатный буфер.
+    fb_flip_set(0);
     snd_manifest("vectrex", "psg dac");
     if (vecx_init_game(rom, size) != 1) {
         printf("Vectrex: init failed\n");

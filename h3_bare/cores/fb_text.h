@@ -17,6 +17,13 @@ int  fb_puts_s15(int x, int y, const char* s, uint32_t color);   // 12px (1.5x)
 void fb_text_center(const char* s, int y, int scale, uint32_t color);
 void fb_clear(void);
 void fb_flush(void);
+// r1183: двойная буферизация HDMI-вывода (опция меню).
+// fb_flip_set(1) — рисование уходит в back-буфер, fb_flush в конце кадра
+// переключает DE2 на готовый кадр (+1 кадр задержки, разрыва нет).
+// fb_flip_set(0) — штатный режим: всё рисуется в FB_ADDR. fb_draw_addr() —
+// адрес буфера, в который надо писать прямым писателям.
+uint32_t fb_draw_addr(void);
+void fb_flip_set(int on);
 // r1159 (E14): dirty-зоны — fb_flush чистит только отмеченную область
 void fb_mark_dirty(int x, int y, int w, int h);
 void fb_dirty_all(void);

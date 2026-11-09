@@ -334,6 +334,10 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
         return;
     }
     emu_set_border_color(0x00140612);   // тёмно-бордовый (Dendy/NES)
+    // r1182: fceumm сам разбирает iNES/NES2.0 и зовёт FCEUI_SetVidSystem
+    // (ines.c:1441) — регион лежит в FSettings.PAL. Раньше throttle всегда
+    // держал 60 Гц, и PAL/Dendy-сборники шли быстрее на ~20%.
+    emu_set_period_us(FSettings.PAL ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {

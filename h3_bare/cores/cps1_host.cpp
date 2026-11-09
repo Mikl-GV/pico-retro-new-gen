@@ -716,6 +716,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 {
     (void)rom; (void)size;
     emu_prepare();
+    // r1183: CPS1 пишет в FB_ADDR напрямую — двойная буферизация не участвует.
+    fb_flip_set(0);
 
     if (!rom_name || !rom_name[0]) {
         printf("CPS: no game name\n");

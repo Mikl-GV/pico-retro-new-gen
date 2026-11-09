@@ -38,6 +38,20 @@ static uint32_t a7_rom_size = 0;
 // Теперь выделяем свой статический буфер.
 static uint8_t a7_ram[0x4000];
 
+// r1184: развертка из меню настроек. Вызывается до a7800_init_game: он делает
+// prosystem_Reset → region_Reset, которая читает region_type.
+//   0 = NTSC, 1 = PAL, 2 = Auto (по байту региона в заголовке картриджа).
+extern "C" void a7800_set_tv_mode(int mode) {
+    region_type = (mode == 2) ? REGION_AUTO : (mode == 1 ? REGION_PAL : REGION_NTSC);
+}
+
+// Эффективный режим после region_Reset(): PAL, если задан явно, либо Auto и
+// картридж помечен как PAL (та же логика, что в Region.cpp:182).
+extern "C" int a7800_region_pal(void) {
+    return (region_type == REGION_PAL ||
+            (region_type == REGION_AUTO && cartridge_region == REGION_PAL)) ? 1 : 0;
+}
+
 extern byte palette_data[768];
 
 static void a7_build_palette(void) {

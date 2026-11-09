@@ -337,6 +337,10 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
         return;
     }
     emu_set_border_color(0x000B0C18);   // тёмно-синеватый (SNES)
+    // r1181: Snes9x сам определяет регион по заголовку (Settings.PAL); звук уже
+    // считался от 50 Гц, а throttle держал 60 — PAL-игры шли быстрее и картинка
+    // рассинхронивалась со звуком. Период кадра — по региону.
+    emu_set_period_us(Settings.PAL ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {

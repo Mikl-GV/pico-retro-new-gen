@@ -8,8 +8,8 @@
 
 | Группа | Системы (READY) |
 |--------|-----------------|
-| Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (gpSP), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
-| Консоли | Atari 2600 (MCUME), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), GCE Vectrex (vecx) |
+| Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (mGBA-core, r1133), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
+| Консоли | Atari 2600 (MCUME), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), Sega 32X (PicoDrive, r1147), GCE Vectrex (vecx) |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
 | Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE, звук r975), Amstrad CPC (Caprice32), Commodore 64/128 (VICE, r974), БК-0010/0011М (libretro-bk), Atari Portfolio (Fake86), МС 1504 (Fake86) |
 
@@ -33,8 +33,11 @@
 
 - **Читы** — отключены по решению владельца (r500); код-основа остаётся
   (`cheatdb.c`, `gp_cheats.c`). Включение — послойно, после стабилизации.
-- **GBA** — интерпретатор gpSP; для полноценных 60 fps нужен dynarec (ARMv7 JIT)
-  либо -O3 на gba_cpu.o; открытый вопрос производительности.
+- **GBA** — mGBA-core (r1133, вместо удалённого gpSP r1167); звук 32768 Гц →
+  ресемплер 48 кГц. Открытый вопрос — производительность на стенде (RnRR и др.),
+  сравнивается с эталоном; при нехватке — dynarec ARMv7.
+- **Sega 32X** — PicoDrive с DRC SH2 (r1144+), картриджный путь; CD/Mega-CD не
+  развивается. На стенде проверяется темп/картинка/звук (r1173..r1178).
 - **WiFi/ESP** через UART — альтернатива RTL8189FTV.
 - **Тематические рамки (бордюры)** для систем — низкий приоритет.
 - **БК-0010: оверлеи `.OVL`/`.GMS`** — эмуляция ленты отключена; нужна подгрузка

@@ -374,6 +374,9 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     // «lib_malloc/lib_calloc/lib_realloc failed» → «Cannot initialize rombanks
     // resources» → зависание (стенд r1011: 1942.d64 стартует, AIRWOLF2 — нет).
     emu_prepare();
+    // r1183: C64 рисует в FB_ADDR напрямую (g_fb), поэтому режим двойной
+    // буферизации ему не подходит — возвращаем штатный буфер.
+    fb_flip_set(0);
     snd_manifest("c64", "sid");
 
     // BASIC/ROM: rom==NULL -> вшитый BASIC (KERNAL+Basic), нет файла.

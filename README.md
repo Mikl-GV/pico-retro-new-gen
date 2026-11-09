@@ -7,14 +7,14 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — вывод I2S0/CPU2
 (48 кГц стерео, MAX98357A); синтез в ядрах сохранён.
 
-Версия прошивки: **r987** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
+Версия прошивки: **r1184** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
 
 ## Системы (статус из `h3_bare/cores/systems.h`)
 
 | Группа | Системы (READY) |
 |--------|-----------------|
-| Портативные | Game Boy / GBC, Game Gear, GBA, Atari Lynx, Neo Geo Pocket / Color |
-| Консоли | Atari 2600, Atari 5200, Atari 7800, Master System, NES / Famicom (Dendy), ColecoVision, PC Engine / TurboGrafx (HuCard), SNES, Mega Drive / Genesis, GCE Vectrex |
+| Портативные | Game Boy / GBC, Game Gear, GBA (mGBA), Atari Lynx, Neo Geo Pocket / Color |
+| Консоли | Atari 2600, Atari 5200, Atari 7800, Master System, NES / Famicom (Dendy), ColecoVision, PC Engine / TurboGrafx (HuCard), SNES, Mega Drive / Genesis, Sega 32X, GCE Vectrex |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
 | Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64/128 (VICE, BIOS вшиты), БК-0010/0011М (ROM вшиты), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит) |
 
@@ -30,9 +30,10 @@ make sd                  # -> build/h3_bare.img (SD-образ)
 ./build.sh / build.ps1   # тонкие обёртки над make (Linux/Windows)
 ```
 
-Правка любого `.h` → обязателен `make clean && make` (зависимости заголовков
-не отслеживаются). Версия — `rNNN` в `h3_bare/src/main.c`, инкремент на каждую
-компиляцию.
+Правка любого `.h` → `make clean && make` (правило владельца; зависимости
+отслеживаются `-MMD -MP`/`build/deps.mk` с r1155, но чистая сборка страхует от
+рассинхрона макросов/ABI структур). Версия — `rNNN` в `h3_bare/src/main.c`,
+инкремент на каждую компиляцию.
 
 Запись на флешку (прошивка U-Boot читает `h3_bare.bin` с FAT-раздела):
 
@@ -41,7 +42,7 @@ sudo mount /dev/sdX1 /mnt && sudo cp h3_bare.bin /mnt/ && sudo umount /mnt
 ```
 
 ROM — в `/roms/<id>/` на SD: `.a26`, `.a52`, `.a78`, `.nes`, `.sms`, `.gg`,
-`.gen`/`.md`, `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`, `.gba`,
+`.gen`/`.md`, `.32x` (Sega 32X, папка `sega32x`), `.smc`/`.sfc`, `.gb`/`.gbc`, `.lnx`, `.ngp`/`.ngc`, `.gba`,
 `.rom`/`.mx1`/`.mx2` (MSX), `.vec`, `.col`/`.bin` (Coleco), `.pce`,
 `.z80`/`.sna`/`.tap`/`.tzx` (ZX), `.bin`/`.img` (БК-0010/МС 1504),
 `.xex`/`.car`/`.atr` (Atari 8-bit), `.d64`/`.d71`/`.d81`/`.t64`/`.prg`/`.crt`/`.reu` (C64/C128).
@@ -75,5 +76,7 @@ ROM — в `/roms/<id>/` на SD: `.a26`, `.a52`, `.a78`, `.nes`, `.sms`, `.gg`,
 - `docs/CONTROLS.md` — полная карта управления
 - `docs/BUILD.md` — сборка (Linux/Windows) и флаги
 - `docs/HARDWARE.md` — железо, распиновка
+- `docs/AUDIO_REFERENCE.md` — звуковой тракт I2S0/CPU2
 - `docs/FBNEO-ROMS.md` — каталог аркадных ROM
-- `docs/AUDIT_2026-10-29_r848_FIXPLAN.md` — аудит и план исправлений (D1..D9)
+- `docs/AUDIT_2026-11-08.md` — аудит и реестр исправлений
+- `docs/AUDIT_2026-11-01_SOUND_FULL.md` — аудит звука

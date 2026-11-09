@@ -51,8 +51,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw + sega_pad |
 | NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB + sega_pad |
 | SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Sega 32X | **PicoDrive** | C | 320×224 (NTSC) / 320×240 (PAL) → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw + sega_pad |
-| Game Boy Advance | **gpSP** (gpsp) | C/C++ | 240×160 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Game Boy Advance | **mGBA-core** | C | 240×160 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
@@ -71,8 +72,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Пиксели всех систем складываются в **общий буфер EMU_FB** (0x5F800000, 320×240 RGB565),
 затем `emu_scale(src_w, src_h)` растягивает на весь HDMI (1024×600) — высота 600,
-ширина пропорционально, поля по бокам. Исключение — Sega 32X (r1170): целочисленный
-`emu_scale_int` (2× → 640×448/480), поля по периметру.
+ширина пропорционально, поля по бокам. Так же выводится Sega 32X (r1177): 320×224
+даёт 857×600, PAL 320×240 — 800×600.
 
 ### EMU_FB / масштабирование
 
@@ -83,8 +84,13 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - `emu_scale_int(w, h)` — целочисленный множитель `min(1024/w, 600/h)`: пиксель
   исходника = N×N, поля по периметру. Бордюры заливаются только при смене
   геометрии/цвета полей (`emu_scale_int_invalidate()` из `emu_prepare`), в
-  остальные кадры `fb_flush` чистит лишь прямоугольник картинки
-- Sega 32X (`32x_host.c`) — на `emu_scale_int`: 640×448 (NTSC 224) / 640×480 (PAL 240)
+  остальные кадры `fb_flush` чистит лишь прямоугольник картинки. Сейчас не
+  используется ни одной системой (32X переведён на `emu_scale`, r1177) — оставлен
+  как откат для портативок
+- Период кадра консолей берётся из региона ядра (r1179..r1182): MD — `vdp_pal`,
+  SMS — `gpgx_pal()`, SNES — `Settings.PAL`, NES — `FSettings.PAL`; 50 Гц —
+  20000 мкс, 60 Гц — 16667 мкс (`emu_set_period_us`). 32X/5200/7800 — по выбору
+  TV-режима, см. «Settings» ниже
 - Вызывается в `emu_run_*()` после каждого кадра
 - `emu_set_border_color(rgb888)` — цвет полей по бокам (XRGB8888), свой для каждой
   системы: A2600 — тёмно-янтарный, A5200 — синий, A7800 — бордовый, NES — бордовый,
@@ -95,7 +101,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Vectrex (`vecx_host.c`) и аркады (`cps1_host.cpp`) пишут напрямую в HDMI FB,
   минуя EMU_FB — у них свои таблицы колонок и буферы кадра.
 - `.a8_bss` (Atari 800) — 0x5F000000..0x5F1D7310, между zip-зоной и EMU_FB;
-  пересечений нет, но ASSERT на верхнюю границу в `linker.ld` пока не стоит.
+  пересечений нет, верхняя граница закрыта `ASSERT` в `linker.ld` (r1156).
 - `.vice_bss` (VICE, r974) — 0x52000000, NOLOAD, 31 МБ; между ROM_BUF и zip-зоной
   аркад (адрес переиспользуем: параллельных запусков нет). Обнуляется в `startup.S`.
 
@@ -128,6 +134,25 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки)
 - Фикс Comix Zone: в `cart_hw/sram.c` отключён авто-SRAM для игр с `"COMIX ZONE"`
   в заголовке (2MB картридж без батарейки — авто-SRAM по умолчанию ломал зеркало ROM в `$200000`)
+
+### 32x_host.c (Sega 32X, PicoDrive)
+
+- Ядро: `picodrive/` (вендор libretro-picodrive, картриджный путь; CD/SVP/игровые
+  копирайты собраны, но для 32X-ROM не активируются). Каталог ROM — `/roms/sega32x/`
+- `sega32x_init_game()`: `PicoIn.opt = 0` (иначе опции протекают между запусками),
+  затем `POPT_EN_32X` — без него записи 68000 в регистры 0x5100 игнорируются и ядро
+  работает в MD-ветке. `PicoDrawSetOutFormat(PDF_RGB555, 1)` ставится на init и
+  повторно в кадре, когда `PicoIn.AHW & PAHW_32X` (32X-слой включается ADEN-записью
+  в рантайме; без повторной установки он рисует во встроенный DefOutBuff)
+- `PicoDrawSetOutBuf(EMU_FB, 640)` — перед каждым `PicoFrame()`
+- DRC SH2 включён (`PICO_DRC ?= 1`); дальние переходы JIT — через литерал
+- Рендер: 320×224 (NTSC) / 320×240 (PAL) → `emu_scale` (r1177), поля по бокам
+- Звук: PWM/PSG PicoDrive → ресемплер → I2S; DC-фильтр CPU2 отключён
+  (`i2s_dc_bypass(1)`, r1178), внутренние фильтры ядра выключены
+- Период кадра: `emu_set_period_us(vdp_pal ? 20000 : 16667)`; PAL-определение — из
+  заголовка ROM ядром
+- Диагностика `32X diag`: fps/GPU-время/аудио-андерраны в UART (r1173: счёт кадров
+  в `uint64_t` — иначе переполнение на длинном интервале)
 
 ### nes_host_fceumm.cpp (NES/Famicom, FCEUmm)
 
@@ -289,11 +314,19 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | 6 | Touch Calibration (TFT, тач TSC2046I) |
 | 7 | ROM partition info (справка по разметке SD) |
 
-> Порядок пунктов совпадает с TFT-меню (`tft_drv.c`) — при изменении править оба.
-> Настройки частоты кадра **убраны** (r158). Период кадра: по умолчанию 60 Гц
-> (16667 мкс), но системы с собственным темпом ядра/звука имеют свой:
+Порядок отображения задаёт `set_order[]` в `settings.c` (не значения enum — от них
+зависят TFT-индексы и `switch`): WiFi Transfer, Audio test tone, Volume,
+Video: no tearing, A2600 Difficulty, A2600/A5200/A7800 TV mode, Input Test,
+Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
+Пунктов 14, окно — 12 (`SET_VISIBLE`), меню скроллится (`^`/`v` в правом верхнем/
+нижнем углу), значения переключаются ←/→ или Enter.
+
+> Настройки частоты кадра вручную **убраны** (r158). С r1179..r1182 период
+> 50/60 Гц берётся автоматически из региона ядра (MD/SMS/SNES/NES); TV-режим
+> 2600/5200/7800 выбирается пунктами меню. Собственный темп ядра сохранён:
 > Lynx — 75 Гц (плюс слежение за потреблением I2S, r559/r560), NGP — ~61.7 Гц
 > (16200 мкс), GBA — адаптивный период по TX Sample Counter (r562).
+> Пункт «Video: no tearing» (r1183) — двойная буферизация, по умолчанию ВЫКЛ.
 
 ## Ввод (usb_kbd.c / usb_ohci.c)
 

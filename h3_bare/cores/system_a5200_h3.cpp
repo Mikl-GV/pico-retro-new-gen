@@ -43,6 +43,12 @@ int at5_rom_size = 0;
 int ik = 0;
 }
 
+// r1184: выбор развертки из меню настроек. Вызывается до a5200_init_game,
+// потому что ядро использует tv_mode как длину кадра (max_ypos) и в GTIA.
+extern "C" void a5200_set_tv_pal(int pal) {
+    tv_mode = pal ? TV_PAL : TV_NTSC;
+}
+
 extern "C" void *a5_Malloc(int size) {
     void *p = a5_memory_pool + a5_pool_used;
     if (a5_pool_used + size > (int)sizeof(a5_memory_pool)) return NULL;

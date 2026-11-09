@@ -332,6 +332,10 @@ void gpgx_stop(void) {
     printf("GPGX: stopped\n");
 }
 
+// r1180: регион для раннера SMS (emu.c) — vdp_pal выставляется gpgx по
+// заголовку картриджа (core/loadrom.c:1161), снаружи поля не видно.
+int gpgx_pal(void) { return vdp_pal ? 1 : 0; }
+
 // ---- точка входа emu.c для Sega Mega Drive ----
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) {
     (void)rom_name;
@@ -342,6 +346,10 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
         return;
     }
     emu_set_border_color(0x000B1618);   // темно-синий (Mega Drive)
+    // r1179: регион — из заголовка ROM. gpgx сам выставляет vdp_pal
+    // (core/loadrom.c:1161, бит PAL в регионе), но throttle раньше всегда
+    // держал 60 Гц, и PAL-версии шли ~на 20% быстрее и с уплывающим звуком.
+    emu_set_period_us(vdp_pal ? 20000u : 16667u);
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {

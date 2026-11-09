@@ -238,6 +238,9 @@ static int  g_cur_x = 0, g_cur_y = 0;
 #define PAD_CUR_BG  0x00000000
 
 static void render_menu(void) {
+    // r1183: меню всегда рисует в штатный FB_ADDR — даже если эмулятор
+    // завершился аварийно и не успел сбросить режим двойной буферизации.
+    fb_flip_set(0);
     fb_draw_stars();
     fb_puts_s(60, TITLE_Y, "MultiTool Retro", 2, 0x00FF0000);
     fb_fill_rect(60, SEP_Y, 200, 2, 0x00FFFFFF);
@@ -378,6 +381,10 @@ static int input_wait(void) {
 }
 
 int menu_run(void) {
+    // r1183: меню всегда рисует в штатный FB_ADDR. Если эмулятор завершился
+    // аварийно и не успел вернуть режим (fb_flip_set(0)), это гарантирует,
+    // что меню видно, а не уйдёт в невидимый back-буфер.
+    fb_flip_set(0);
     build_menu();
     sort_items();
     build_rows();

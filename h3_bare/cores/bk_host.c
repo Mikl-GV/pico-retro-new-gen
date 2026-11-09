@@ -301,6 +301,8 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    // r1183: BK пишет HDMI-кадр напрямую (host_video) — штатный буфер.
+    fb_flip_set(0);
     snd_manifest("bk0010", "psg covox");
 
     bk_retro_set_environment(host_environment);

@@ -281,6 +281,14 @@ int sega32x_init_game(const uint8_t* rom, uint32_t size) {
     PicoIn.sndOut  = sndbuf;
     PicoIn.writeSound = picodrive_snd_write;
     rs_phase = 0;
+    // r1178: «нет низов, звук игрушечный» — виноват не ядро, а штатный ФВЧ
+    // CPU2 в i2s.c (однополюсный high-pass, fc≈119 Гц): срезает бас и низ
+    // барабанов. У GBA и Mega Drive (gpgx) DC-блокер уже отключается в их
+    // init_game; для 32X этого не делалось (emu_prepare ставит bypass(0) на
+    // входе). Внутренние фильтры ядра при этом выключены: POPT_EN_SNDFILTER
+    // не выставлен, mix_reset(alpha=0) → полоса не режется; FM/PSG ресемплер
+    // (polyphase FIR 53267→44100) остаётся как есть — это часть синтеза.
+    i2s_dc_bypass(1);
 
     PicoInit();
 
