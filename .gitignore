@@ -41,6 +41,15 @@ tools/ftp_client/__pycache__/
 *.docx
 *.doc
 
+# PUAE: некомпилируемое вендорное сырьё (не для репозитория) —
+# сборке из клона не нужно, только раздувает историю:
+#   uae_data/*.wav — внешние runtime-файлы (мы не используем диск-звук)
+#   retrodep/driveclick_wav/*.wav — сырьё для driveclick_wav.c (он уже в коммите)
+#   retrodep/whdload/WHDLoad_files/ — сырьё для WHDLoad_files.zip.c (он уже в коммите)
+h3_bare/cores/puae/sources/uae_data/
+h3_bare/cores/puae/retrodep/driveclick_wav/
+h3_bare/cores/puae/retrodep/whdload/WHDLoad_files/
+
 
 # ��������� ������
 *.lnk
