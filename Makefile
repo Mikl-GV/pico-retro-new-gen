@@ -751,6 +751,36 @@ $(BUILD)/vice_renamed.stamp: $(VICE_OBJS)
 	$(TOP)h3_bare/cores/vice_rename.sh $(VICE_OBJS)
 	touch $@
 
+# ---- Amiga (PUAE / libretro-uae, WinUAE 5.3.1) ----
+# Vendored в h3_bare/cores/puae/ (ядро sources/src + libretro + retrodep).
+# Сборка под Cortex-A7 (classic_armv7_a7 в вендорном Makefile = NESC/SNESC/C64
+# mini — тот же CPU, что H3): -Ofast -flto -marm -mfpu=neon-vfpv4.
+# Состав — из вендорного Makefile.common: puae_sources.mk (генерируется
+# puae_gen_sources.sh), правила — puae_rules.mk (puae_gen_rules.sh).
+# Глобалы набора (retro_*/main/log/crc32/gui/sound/parser...) конфликтуют с
+# другими ядрами — puae_rename.sh переименовывает в puae_* (как vice_*).
+# Host-слой puae_host.o НЕ входит в набор: зовёт puae_retro_*.
+PUAE_ROOT := $(TOP)h3_bare/cores/puae
+include $(PUAE_ROOT)/puae_sources.mk
+include $(PUAE_ROOT)/puae_rules.mk
+# PUAE_OBJS/PUAE_ZOBJS из sources.mk — голые имена; префикс $(BUILD)/ (как VICE).
+PUAE_OBJS_ALL := $(foreach f,$(PUAE_OBJS) $(PUAE_ZOBJS),$(BUILD)/$(f)) $(PUAE_LRC_OBJS)
+OBJ += $(PUAE_OBJS_ALL) $(BUILD)/puae_host.o
+PUAE_INC := -I$(PUAE_ROOT) -I$(PUAE_ROOT)/sources/src -I$(PUAE_ROOT)/sources/src/include \
+	-I$(PUAE_ROOT)/libretro -I$(PUAE_ROOT)/retrodep \
+	-I$(PUAE_ROOT)/libretro-common/include -I$(PUAE_ROOT)/deps/libz -I$(PUAE_ROOT)/deps/7zip
+PUAE_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
+	-std=gnu99 -Wall -Wextra -O2 -fno-strict-aliasing -fwrapv \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-D__LIBRETRO__ -D__STDC_FORMAT_MACROS -D_7ZIP_ST \
+	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration
+$(BUILD)/puae_host.o: $(TOP)h3_bare/cores/puae_host.c | $(BUILD)
+	$(CC) $(PUAE_CFLAGS) $(PUAE_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/puae_renamed.stamp: $(PUAE_OBJS_ALL) $(TOP)h3_bare/cores/puae_rename.sh
+	$(TOP)h3_bare/cores/puae_rename.sh $(PUAE_OBJS_ALL)
+	touch $@
+
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
 # Vendored в h3_bare/cores/cps1/ (не libretro-ядро, а «нативный» FBNeo:
 # host сам выбирает драйвер и крутит BurnDrvFrame). Собственные флаги
@@ -1517,7 +1547,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp $(BUILD)/puae_renamed.stamp
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)

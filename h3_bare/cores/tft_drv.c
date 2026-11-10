@@ -661,6 +661,14 @@ static const struct {
       "Sega Master System",
       {"Arrows = D-Pad","Z = Button 1    X = Button 2","S = Pause","Enter = Start    ESC hold = exit",NULL}
     },
+    { "sg1000",
+      "Sega SG-1000",
+      {"Arrows = D-Pad","Z = Button 1    X = Button 2","Enter = Start    ESC hold = exit",NULL}
+    },
+    { "amiga",
+      "Commodore Amiga",
+      {"USB kbd = клавиатура","Pad: D-Pad = Arrows, A = Fire 1","B = Fire 2    ESC hold = exit","BIOS: встроенный AROS (с SD не грузится)",NULL}
+    },
     { "coleco",
       "ColecoVision",
       {"Arrows = D-Pad","Z = Fire 1    X = Fire 2","Enter = Start    ESC hold = exit",NULL}

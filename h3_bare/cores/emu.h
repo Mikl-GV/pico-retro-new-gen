@@ -58,6 +58,7 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name);   // r1190
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name);
@@ -86,5 +87,6 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name); 
 void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name);        // r963
 void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name);        // r974
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1185
+void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1191 PUAE
 
 #endif

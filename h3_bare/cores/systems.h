@@ -43,6 +43,7 @@ static const system_entry_t systems[] = {
     // -- Портативные консоли --
     SYS("gameboy",    "Game Boy / Game Boy Color",   PORTABLE, READY),
     SYS("gamegear",   "Sega Game Gear",              PORTABLE, READY),
+    SYS("sg1000",     "Sega SG-1000",                CONSOLE,  READY),   // r1190: ядро gpgx, SYSTEM_SG
     SYS("gba",        "Game Boy Advance",            PORTABLE, READY),
     SYS("lynx",       "Atari Lynx",                  PORTABLE, READY),
     SYS("ngp",        "Neo Geo Pocket / Color",      PORTABLE, READY),
@@ -84,6 +85,11 @@ static const system_entry_t systems[] = {
     SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
     SYS("c64",        "Commodore 64/128",         COMPUTER, READY),
+    // r1191: Commodore Amiga (ядро PUAE/libretro-uae, h3_bare/cores/puae).
+    // Запускает ADF-образы с SD (/roms/amiga — папка по id) и уходит в
+    // встроенный AROS-фолбэк, когда Kickstart не вшит (правило владельца:
+    // BIOS вшивается через .incbin, с SD не грузится). Дир по id = "amiga".
+    SYS("amiga",      "Commodore Amiga",         COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };
 

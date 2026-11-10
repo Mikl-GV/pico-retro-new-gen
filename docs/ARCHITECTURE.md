@@ -50,7 +50,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw + sega_pad |
 | NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB + sega_pad |
-| SMS / GG / MD | **Genesis Plus GX** | C | 256×192 / 256×224 / 320×224 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| SMS / GG / SG-1000 / MD | **Genesis Plus GX** | C | 256×192 / 160×144 / 320×224 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Sega 32X | **PicoDrive** | C | 320×224 (NTSC) / 320×240 (PAL) → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Game Boy / GBC | binjgb | C | 160×144 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Game Boy Advance | **mGBA-core** | C | 240×160 → EMU_FB | usb_kbd_get_raw + sega_pad |
@@ -65,6 +65,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | PC Engine / TG | **Beetle PCE Fast** | C | 256×240 → EMU_FB (pce_host.c) | usb_kbd + sega_pad |
 | БК-0010/0011М | **BK-Terak-Emu (libretro)** | C | 512×256 → прямая запись в HDMI FB (bk_host.c:163-174, НЕ через EMU_FB/emu_scale) | usb_kbd (полная клава) + sega_pad |
 | Радио-86РК | **RK8266 (i8080)** | C | 78×30 знакомест 6×8 → прямая запись в HDMI FB (rk86_host.c) | usb_kbd (матрица 8×8) |
+| Commodore Amiga | **PUAE / libretro-uae (WinUAE 5.3.1)** | C | 320×200/256 безусловно → retro_bmp RGB565 → EMU_FB (puae_host.c) | usb_kbd (HID→RETROK) + sega_pad (D-Pad+A/B) |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -119,22 +120,62 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - `a5_DrawLinePal16()` — строка 320px → EMU_FB
 - Заглушки StateSav/SndSave/emuFile — ядро Atari800 тянет много legacy
 
-### system_gpgx_h3.c (SMS/GG/MD, Genesis Plus GX)
+### system_gpgx_h3.c (SMS/GG/SG-1000/MD, Genesis Plus GX)
 
 - Ядро: `gpgx/core/` (genesis.c, vdp_*, mem68k, m68k/z80, sound, cart_hw, cd_hw — без CHD/MP3-декодеров)
 - `gpgx_init_game()`: копирует ROM в `cart.rom`, детект SMS (TMR SEGA) / MD, byte-swap
   для 16-бит, конфиг `t_config`, инициализация `bitmap.data[720×576]` (как libretro.c)
-- Звук: вся семейка GPGX (MD/SMS/GG) — «вывод как у эмулятора», DC-фильтр CPU2
+- Звук: вся семейка GPGX (MD/SMS/GG/SG-1000) — «вывод как у эмулятора», DC-фильтр CPU2
   отключён (`i2s_dc_bypass(1)` в `gpgx_init_game` и `gg_init_game`, r1145/r1149);
   `config.filter=0` (без low-pass/EQ ядра). `emu_prepare` сбрасывает bypass перед
   каждой системой (bypass не «протекает» в NES/SNES/Lynx).
-- Рендер: `bitmap.data` (RGB565) + viewport → EMU_FB, MD 320×224, SMS 256×192
+- Рендер: `bitmap.data` (RGB565) + viewport → EMU_FB, MD 320×224, SMS/SG 256×192, GG 160×144
 - Ввод: USB-клавиатура → 6-кнопочный геймпад MD (Z=A X=B C=C A=X S=Y D=Z Q=Mode Enter=Start),
-  для SMS: S=Pause (кнопка на корпусе), Enter=Start
+  для SMS/SG-1000: 2 кнопки (Z/X), S=Pause (только SMS), Enter=Start
+- SG-1000 (r1190): у SG-картриджей нет сигнатуры «TMR SEGA» — host форсирует
+  `SYSTEM_SG` (`g_force_sg`), VDP встаёт в TMS99xx (`vdp_z80_data_w_sg`/`vdp_tms_ctrl_w`),
+  порты — `z80_sg_port_*` (PSG+RAM+VDP), ввод — 2 кнопки (`io_reg[0x0F]=0xF5`),
+  звук — PSG `PSG_DISCRETE`. Вход через `sg_init_game`/`sg_run_frame` → `emu_run_sg1000`.
 - Вспомогательные: `gpgx_math.c` (sin/cos/pow/log — инициализация таблиц звука),
   `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки)
 - Фикс Comix Zone: в `cart_hw/sram.c` отключён авто-SRAM для игр с `"COMIX ZONE"`
   в заголовке (2MB картридж без батарейки — авто-SRAM по умолчанию ломал зеркало ROM в `$200000`)
+
+### puae_host.c (Commodore Amiga, PUAE/libretro-uae)
+
+- Вендор: `h3_bare/cores/puae/` (WinUAE 5.3.1, GPL-2.0) — вычищены платформенные
+  драйверы (gfx-*/gui-*/jd-*/md-*-gcc/od-*/sd-*/td-*/targets/test/tools/slirp/ppc/...);
+  состав из `Makefile.common` → `puae_sources.mk` + `puae_rules.mk` (181 объект,
+  имена `pz_sources_src_*_c.o`), глобалы набора переименованы в `puae_*`
+  (`puae_rename.sh` — аналог `vice_rename.sh`).
+  - Адаптации под bare-metal: `retrodep/sysconfig.h` — сняты `HAVE_DIRENT_H`
+    (newlib: `#error <dirent.h> not supported`) и `HAVE_DLOPEN` (нет dlfcn.h);
+    `threaddep/thread.{h,c}` — ветка `ALLWINNER_BARE_METAL` (uae_sem_t = счётчик,
+    потоки = последовательный запуск; поле `sem` — для вендорных проверок
+    `blkdev.c`/`scsiemul.c`); `sysdeps.h` — `uae_u32` через `uint32_t` (newlib:
+    `uint32_t == unsigned long`, апстримный `unsigned int` давал conflicting types);
+    восстановлены `md-generic/` (m68k-заголовки для retrodep/machdep), `keymap/`,
+    `ppc/ppcd.h`, заголовки `qemuvga/` (только .h, реализации не собираются);
+    `-std=gnu99` в PUAE_CFLAGS (апстрим `calccrc()` в C23 = конфликт).
+  - Сборка: Cortex-A7 softfp NEON (PUAE официально собирается под
+    `classic_armv7_a7`), JIT закомментирован (только интерпретатор 68k).
+- Host (`puae_host.c`): `emu_run_amiga()` — ADF через `a8_fs_register` (fs_layer,
+  как C64), `puae_retro_load_game`; цикл `puae_retro_run` + `emu_scale(320,240)` +
+  `fb_flush` + `emu_throttle`.
+  - Видео: `retro_bmp` RGB565 (720×574×2×2 max) → EMU_FB 320×240, nearest при superhires
+  - Звук: 44100→48000 стерео (ресемплер как fuse, шаг 60211) → `i2s_push_sample`
+  - Ввод: USB-клава (HID→RETROK) + Sega-пад (D-Pad = стрелки, A = Fire 1, B = Fire 2)
+  - Kickstart: НЕ грузится с SD (правило владельца). `puae_kickstart="aros"` →
+    `changed_prefs.romfile=""` → `load_kickstart_replacement()` (memory.c:1755)
+    распаковывает вшитый `aros.gz` из `aros.rom.c`. Системные директории
+    (GET_SYSTEM_DIRECTORY и др.) возвращают false.
+  - Стабы: dirent (`puae_retro_*` — голые `retro_*` уже заняты msx_compat и др.),
+    POSIX `ftello64/fseeko64/chmod/truncate` (newlib не реализует; файлы идут
+    через VFS).
+- Адреса: `.noinit_fbn` (пул FBNeo 96 МБ) закреплён на 0x54000000 (linker.ld,
+  r1191) — раньше плавал после .bss, а PUAE добавил ~66 МБ .bss → пул накрывал
+  когерентную зону 0x4A400000. Зона 0x54000000..0x5C000000 свободна (fs_bss
+  кончается на 0x54000000, ZIP_BUF2 аркад с 0x5C000000).
 
 ### rk86_host.c (Радио-86РК, порт RK8266)
 

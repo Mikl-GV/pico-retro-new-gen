@@ -517,6 +517,8 @@ extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
 extern int gg_init_game(const uint8_t* rom, uint32_t size);
 extern void gg_run_frame(void);
+extern int sg_init_game(const uint8_t* rom, uint32_t size);
+extern void sg_run_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
 extern int portfolio_exit_requested(void);
@@ -622,6 +624,28 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
         gg_run_frame();
         emu_throttle();
         emu_scale_int(160, 144);
+        fb_flush();
+        if (emu_esc_hold()) goto exit;
+    }
+exit: emu_audio_stop(); fb_clear(); fb_flush();
+}
+
+void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    // r1190: SG-1000 — отдельный слой на ядре gpgx (TMS99xx VDP, 2 кнопки).
+    extern int gpgx_pal(void);   // регион из заголовка (как у SMS)
+    emu_prepare();
+    if (sg_init_game(rom, size) != 1) {
+        printf("SG1000: init failed\n"); return;
+    }
+    printf("SG1000: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emu_set_border_color(0x00141830);   // тёмно-синий (SG-1000)
+    emu_set_period_us(gpgx_pal() ? 20000u : 16667u);
+    emu_throttle_reset();
+    emu_esc_hold_reset();
+    for (;;) {
+        sg_run_frame();
+        emu_throttle();
+        emu_scale(256, 192);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }

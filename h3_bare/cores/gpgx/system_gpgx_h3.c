@@ -1,5 +1,6 @@
 ﻿// system_gpgx_h3.c — host-слой Genesis Plus GX для bare-metal H3.
-// Подключает Sega Mega Drive (ABC/XYZ 6-кнопочный геймпад) и SMS/GG.
+// Покрывает: Sega Mega Drive (ABC/XYZ 6-кнопочный геймпад), Sega Master
+// System, Sega Game Gear и Sega SG-1000 (все — единое ядро gpgx).
 // Жизненный цикл: gpgx_init_game -> цикл (gpgx_run_frame) -> gpgx_stop.
 
 #include <stdint.h>
@@ -45,6 +46,7 @@ t_config config;
 static int g_loaded = 0;
 static int g_is_md  = 0;
 static int g_force_sms = 0;
+static int g_force_sg  = 0;   // r1190: SG-1000 — форс SYSTEM_SG (TMS99xx)
 static int g_vp_w = 320;   // последний viewport width
 static int g_vp_h = 224;   // последний viewport height
 
@@ -91,7 +93,8 @@ static void gpgx_poll_input(void) {
     }
 
     // Клавиатура — через переназначаемый ремап (Settings → Keyboard remap).
-    // Платформа: MD (REMAP_PLAT_MD) или SMS/GG (REMAP_PLAT_SMS / REMAP_PLAT_GG).
+    // Платформа: MD (REMAP_PLAT_MD) или SMS/GG/SG-1000 (REMAP_PLAT_SMS /
+    // REMAP_PLAT_GG). SG-1000 (r1190) идёт по SMS-ветке (2 кнопки).
     int plat = g_is_md ? REMAP_PLAT_MD
               : (system_hw == SYSTEM_GG ? REMAP_PLAT_GG : REMAP_PLAT_SMS);
     if (remap_kbd_pressed(plat, BTN_UP, keys, n))    pad |= INPUT_UP;
@@ -167,7 +170,9 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     // MD/SMS target кольца — адаптивный (emu_throttle), не хардкодим.
 
     int force_sms = g_force_sms;
+    int force_sg  = g_force_sg;
     g_force_sms = 0;
+    g_force_sg  = 0;
 
     if (!rom || size == 0 || size > MAXROMSIZE) {
         printf("GPGX: bad rom\n");
@@ -187,7 +192,13 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     // определяем тип системы: SMS/GG по сигнатуре "TMR SEGA", иначе MD
     system_hw = SYSTEM_MD;
     g_is_md = 1;
-    if (force_sms) {
+    if (force_sg) {
+        // r1190: SG-1000 — принудительно (у картриджей SG нет сигнатуры
+        // "TMR SEGA"). Ядро переключит VDP на TMS99xx (vdp_z80_data_w_sg)
+        // и порты на z80_sg_port_*; регион/частота — как у SMS.
+        system_hw = SYSTEM_SG;
+        g_is_md = 0;
+    } else if (force_sms) {
         system_hw = SYSTEM_SMS;
         g_is_md = 0;
     } else if (size >= 0x4000 && !memcmp(rom + 0x1ff0, "TMR SEGA", 8)) {
@@ -479,4 +490,25 @@ void gg_run_frame(void) {
     gpgx_audio_out();
     // настоящий GG: viewport 160x144 в режиме gg_extra=0
     gpgx_render_emu(160, 144);
+}
+
+// ---- интерфейс для emu.c: Sega SG-1000 через GPGX ----
+// r1190: SG-1000 — самодостаточный слой поверх того же ядра gpgx. От SMS
+// отличается тем, что у картриджей SG нет сигнатуры "TMR SEGA": ядро
+// форсируется в SYSTEM_SG, тогда VDP встаёт в TMS99xx-режим
+// (vdp_z80_data_w_sg / vdp_tms_ctrl_w, vdp_ctrl.c:379) и память 00-3F/80-BF —
+// как у SG-1000 (1 КБ RAM + слот картриджа). Ввод — 2 кнопки (PAD2B),
+// ремап и рендер — как у SMS (REMAP_PLAT_SMS, system_frame_sms, 256x192).
+int sg_init_game(const uint8_t* rom, uint32_t size) {
+    g_force_sg = 1;
+    return gpgx_init_game(rom, size);
+}
+
+void sg_run_frame(void) {
+    if (!g_loaded) return;
+    gpgx_poll_input();
+    RAMCheatUpdate();
+    system_frame_sms(0);
+    gpgx_audio_out();
+    gpgx_render_emu(256, 192);
 }

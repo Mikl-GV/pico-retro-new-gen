@@ -121,6 +121,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_sms(rom, size, sel_name);
     else if (strcmp(sys_id, "gamegear") == 0)
         emu_run_gg(rom, size, sel_name);
+    else if (strcmp(sys_id, "sg1000") == 0)
+        emu_run_sg1000(rom, size, sel_name);   // r1190: SG-1000 /roms/sg1000
     else if (strcmp(sys_id, "nes") == 0)
         emu_run_nes(rom, size, sel_name);
     else if (strcmp(sys_id, "snes") == 0)
@@ -173,6 +175,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_cpc(rom, size, sel_name);       // Amstrad CPC — /roms/cpc (r963)
     else if (strcmp(sys_id, "c64") == 0)
         emu_run_c64(rom, size, sel_name);       // Commodore 64/128 — /roms/c64 (r974)
+    else if (strcmp(sys_id, "amiga") == 0)
+        emu_run_amiga(rom, size, sel_name);     // Commodore Amiga — /roms/amiga (r1191, PUAE)
     else if (strcmp(sys_id, "radio86rk") == 0)
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
     else {
