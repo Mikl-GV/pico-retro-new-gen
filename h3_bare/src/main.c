@@ -1,4 +1,4 @@
-#include <stdint.h>
+﻿#include <stdint.h>
 #include <string.h>
 #include "h3.h"
 #include "uart.h"
@@ -458,7 +458,66 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1193";
+const char g_fw_version[] = "r1208";
+
+// r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
+// TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
+// .coherent (0x4A400000) и sbrk-зоны (0x4BF00000) — проверка, что после
+// переноса таблиц в startup.S карта целая и атрибуты ожидаемые.
+void mmu_l1_dump(const char* tag)
+{
+    uint32_t l0, l1 = 0, mair0, mair1;
+    uint64_t e0, e1, e2, e3, b_c = 0, b_s = 0;
+    __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(l0));
+    l0 &= ~0x3FFFu;
+    __asm volatile("mrc p15, 0, %0, c10, c2, 0" : "=r"(mair0));
+    __asm volatile("mrc p15, 0, %0, c10, c2, 1" : "=r"(mair1));
+    e0 = *(volatile uint64_t*)(l0 + 0);
+    e1 = *(volatile uint64_t*)(l0 + 8);
+    e2 = *(volatile uint64_t*)(l0 + 16);
+    e3 = *(volatile uint64_t*)(l0 + 24);
+    if ((e1 & 3u) == 3u) {
+        l1 = (uint32_t)(e1 & 0xFFFFF000u);
+        if (l1 >= 0x40000000u && l1 < 0x60000000u) {
+            b_c = *(volatile uint64_t*)(l1 + (((0x4A400000u >> 21) & 0x1FFu) * 8u));
+            b_s = *(volatile uint64_t*)(l1 + (((0x4BF00000u >> 21) & 0x1FFu) * 8u));
+        }
+    }
+    printf("LPAE[%s]: ttbr0=%08X mair0=%08X mair1=%08X l0=%08X:%08X %08X:%08X %08X:%08X %08X:%08X\n",
+           tag, (unsigned)l0, (unsigned)mair0, (unsigned)mair1,
+           (unsigned)(e0 >> 32), (unsigned)e0, (unsigned)(e1 >> 32), (unsigned)e1,
+           (unsigned)(e2 >> 32), (unsigned)e2, (unsigned)(e3 >> 32), (unsigned)e3);
+    printf("LPAE[%s]: l1=%08X coherent=%08X:%08X sbrk=%08X:%08X\n",
+           tag, (unsigned)l1,
+           (unsigned)(b_c >> 32), (unsigned)b_c,
+           (unsigned)(b_s >> 32), (unsigned)b_s);
+    // r1207: какие MAIR-индексы реально используют записи U-Boot — чтобы
+    // выбрать СВОБОДНЫЙ для пометки .coherent как Normal Non-cacheable.
+    // 0x01C00000 — периферия (USB/UART/I2C), 0x40000000 — .text,
+    // 0x4A400000 — .coherent, 0x4BF00000 — sbrk, 0x5F800000 — EMU_FB.
+    {
+        uint32_t l0b;
+        uint64_t e, x;
+        const uint32_t adr[5] = { 0x01C00000u, 0x40000000u, 0x4A400000u,
+                                  0x4BF00000u, 0x5F800000u };
+        __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(l0b));
+        l0b &= ~0x3FFFu;
+        printf("LPAE[%s]: attr", tag);
+        for (int i = 0; i < 5; i++) {
+            unsigned ai = 0xFEu;
+            e = *(volatile uint64_t*)(l0b + (((adr[i] >> 30) & 3u) * 8u));
+            if ((e & 3u) == 3u) {
+                uint32_t l1x = (uint32_t)(e & 0xFFFFF000u);
+                if (l1x >= 0x40000000u && l1x < 0x60000000u) {
+                    x = *(volatile uint64_t*)(l1x + (((adr[i] >> 21) & 0x1FFu) * 8u));
+                    if ((x & 3u) == 1u) ai = (unsigned)((x >> 2) & 7u);
+                }
+            }
+            printf(" %08X=%u", (unsigned)adr[i], ai);
+        }
+        printf("\n");
+    }
+}
 
 void main(void) {
     int sd_ok = 0;
@@ -466,7 +525,11 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1193\n");
+    uart_puts("build: r1208\n");
+
+    // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
+    // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.
+    mmu_l1_dump("early");
 
     led_init();
     led_set(0);
@@ -552,6 +615,12 @@ void main(void) {
     // запуск ядер; сам вызов перенесён сюда.)
     extern void mmu_mark_uncached(uint32_t addr);
     extern unsigned char libh3_coherent_region[];
+    // r1203: дорисовки карты DRAM здесь БОЛЬШЕ НЕТ. Причина прошлых Data Abort
+    // (0x4A800000/0x4C000000/0x467AB5F0, F2=0x06 = Translation fault level 2
+    // в LPAE) — не «дыры» в карте, а затёртые стеком L1-таблицы U-Boot'а
+    // (0x5FFF1000/0x5FFF2000 лежат под стеком 0x60000000). Теперь startup.S
+    // копирует L0+L1 в 0x4A40C000.. и карта целая на всём диапазоне DRAM.
+    // Оставляем только пометку .coherent как non-cacheable (DMA OHCI + CPU2).
     mmu_mark_uncached((uint32_t)libh3_coherent_region);
 
     // r735 (FIX «act0/0 beat+0»): mmu_mark_uncached инвалидирует TLB, но НЕ
@@ -570,6 +639,11 @@ void main(void) {
             __asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a)); // DCCIMVAC
         __asm volatile("dsb" ::: "memory");
     }
+
+    // r1199-ДИАГ: снимок L1 сразу после настройки MMU (базовая точка для
+    // сравнения с дампом перед запуском Amiga — см. puae_host.c).
+    extern void mmu_l1_dump(const char* tag);
+    mmu_l1_dump("boot");
 
     // Звук (этап 1, r8xx): ядра стартуем РАНО (после mmu_mark_uncached
     // .coherent) — CPU2 (аудио-ядро) поднимается ДО i2s_init(), чтобы к

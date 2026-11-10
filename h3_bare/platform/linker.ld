@@ -68,9 +68,12 @@ SECTIONS
    * и 0x4A40C000 (L1-таблица). */
   _hend = . ;
 
-  /* Когерентная область (uncached) — VMA ЖЁСТКО 0x4A400000 (main.c передаёт
-   * именно её в mmu_mark_uncached; startup.S копирует L1-таблицу в
-   * 0x4A40C000). Ни пул, ни куча на неё больше не влияют. */
+  /* Когерентная область — VMA ЖЁСТКО 0x4A400000 (DMA-структуры OHCI, звуковое
+   * кольцо, флаги CPU2). Атрибуты НЕ меняются: mmu_mark_uncached с r1206 —
+   * намеренный no-op (non-cacheable ломает OHCI), область остаётся write-back,
+   * когерентность держат cache_clean/invalidate и SRAM A1. LPAE-таблицы —
+   * 0x4A40C000 (L0) и 0x4A410000+ (L1), копирует startup.S. Ни пул, ни куча
+   * на неё больше не влияют. */
   .libh3_coherent 0x4A400000 (NOLOAD) : {
     _coherent_start = .;
     *(.coherent)
@@ -93,9 +96,8 @@ SECTIONS
     _gb_heap_end = .;
   }
 
-  /* newlib sbrk — сразу над кучей (_gb_heap_end = 0x4B700000, libc_min.c). */
-  /* libc_min.c: SBRK_START = _gb_heap_end, SBRK_LIMIT = 0x4EF00000. r1140:
-     комментарии синхронизированы с кодом. */
+  /* newlib sbrk — сразу над кучей: SBRK_START = _gb_heap_end = 0x4BF00000,
+   * SBRK_LIMIT = 0x4EF00000 (резерв под _menu_arena 0x4F000000) — libc_min.c. */
 
   /* Арена меню — фиксированный адрес, гарантированно вне BSS/кучи и до ROM_BUF. */
   _menu_arena = 0x4F000000;

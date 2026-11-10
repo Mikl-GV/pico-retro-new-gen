@@ -221,8 +221,18 @@ static void puae_log(enum retro_log_level lvl, const char* fmt, ...)
     }
 }
 
+extern int uart0_printf(const char* fmt, ...);
+
 static bool host_environment(unsigned cmd, void* data)
 {
+    // r1207-ДИАГ: трассировка первых 80 env-команд. puae_retro_load_game
+    // общается с фронтендом только через этот колбэк — по последнему номеру
+    // видно, на каком шаге загрузка встала (стенд r1206: hang без abort
+    // после выделения 1.5 МБ).
+    {
+        static unsigned s_env_n;
+        if (s_env_n < 80) { uart0_printf("PUAE env %u\n", (unsigned)cmd); s_env_n++; }
+    }
     switch (cmd)
     {
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
@@ -317,6 +327,24 @@ void* puae_malloc(size_t sz)
     ((size_t*)a)[0] = sz;              // заголовок [size]
     g_puae_brk = (char*)(a + sz + 8);
     g_puae_last = sz;
+    // r1199-ДИАГ: крупные выделения + защита от ухода brk из sbrk-зоны
+    // (0x4BF00000..0x4EF00000). Если brk вне диапазона — это следствие
+    // порчи указателя (LIFO-free чужого указателя и т.п.), а не нехватки
+    // памяти: печатаем и отказываем, чтобы не улететь memset'ом в мусор.
+    if ((uintptr_t)g_puae_brk < 0x4BF00000u || (uintptr_t)g_puae_brk > 0x4EF00000u) {
+        printf("PUAE: brk OUT %08X (sz=%u)\n",
+               (unsigned)(uintptr_t)g_puae_brk, (unsigned)sz);
+        g_puae_brk = (char*)(uintptr_t)(-1);
+        return 0;
+    }
+    if (sz >= 65536u) {
+        static unsigned s_big_n;
+        if (s_big_n < 24) {
+            printf("PUAE: alloc %u -> %08X (brk=%08X)\n", (unsigned)sz,
+                   (unsigned)(a + 8), (unsigned)(uintptr_t)g_puae_brk);
+            s_big_n++;
+        }
+    }
     return (void*)(a + 8);
 }
 
@@ -327,6 +355,16 @@ void puae_free(void* p)
     size_t sz = ((size_t*)b)[0];
     if ((char*)b + sz + 8 >= g_puae_brk - (g_puae_last + 8) && (char*)b + 8 >= g_puae_brk - (g_puae_last + 8)) {
         // LIFO: освобождаем хвост — откатываем brk
+        // r1199-ДИАГ: первые 16 откатов — в лог. Если brk откатывается на
+        // указатель ВНЕ sbrk-зоны, следующий malloc вернёт мусор (стенд:
+        // memset по 0x467AB5F0 = символ puae_spixels в .bss).
+        static unsigned s_free_n;
+        if (s_free_n < 16) {
+            printf("PUAE: free rewind %08X sz=%u (brk %08X)\n",
+                   (unsigned)(uintptr_t)b, (unsigned)sz,
+                   (unsigned)(uintptr_t)g_puae_brk);
+            s_free_n++;
+        }
         g_puae_brk = (char*)b;
         g_puae_last = 0;
         if (g_puae_brk < g_puae_brk_low) g_puae_brk = g_puae_brk_low;
@@ -380,6 +418,26 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     puae_heap_reset();
     emu_prepare();
+    // r1199-ДИАГ: снимок L1 перед запуском PUAE (после загрузки ROM с USB):
+    // сравнить с L1["boot"] из main.c — покажет, менялась ли таблица и когда.
+    extern void mmu_l1_dump(const char* tag);
+    mmu_l1_dump("amiga");
+    // r1198-ДИАГ: проверка карты sbrk-зоны ДО первого выделения PUAE
+    // (сжато: печатаем только сводку; при провале — первую плохую секцию).
+    {
+        volatile uint32_t* p;
+        unsigned bad = 0, bad_mb = 0, n = 0;
+        for (p = (volatile uint32_t*)0x4BF00000u;
+             p < (volatile uint32_t*)0x4EF00000u;
+             p += 0x100000u / sizeof(*p), n++) {
+            uint32_t save = *p;
+            *p = 0xA5A5A5A5u;
+            if (*p != 0xA5A5A5A5u) { bad++; if (!bad_mb) bad_mb = n; }
+            *p = save;
+        }
+        printf("sbrk-map: %u/%u OK%s\n", n - bad, n, bad ? " (BAD!)" : "");
+        if (bad) printf("sbrk-map: first bad MB=%u\n", bad_mb);
+    }
     snd_manifest("amiga", "paula");
 
     if (rom && rom_name && rom_name[0]) {
@@ -416,7 +474,9 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     puae_retro_set_input_poll(host_input_poll);
     puae_retro_set_input_state(host_input_state);
 
+    printf("Amiga: init...\n");
     puae_retro_init();
+    printf("Amiga: init ok\n");
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));
@@ -424,6 +484,7 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     info.data = (void*)rom;
     info.size = size;
 
+    printf("Amiga: load...\n");
     if (!puae_retro_load_game(&info)) {
         printf("Amiga: load failed\n");
         puae_retro_deinit();

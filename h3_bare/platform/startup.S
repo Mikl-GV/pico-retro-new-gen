@@ -246,7 +246,86 @@ _prefetch:
     bl hex32_uart
     mov r0, #'\n'
     bl uart_dbg
-    pop {r0-r3, lr}
+    /* r1194-ДИАГ: L1-запись секции фолтящего адреса F1 (DFAR):
+     *   M1 <idx:16bit> <descr:32bit>  — idx = (DFAR>>20)&0xFFF (секция в L1),
+     *     descr = содержимое таблицы (0/мусор -> секция не отображена;
+     *     биты [1:0]=0b10 -> section; [18]=0/1 -> TEX/кэш).
+     * Сохраняем idx в r4, L1 base в r5, дескриптор печатаем через hex32. */
+    push {r0-r5, lr}
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'1'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c6, c0, 0          /* DFAR */
+    lsr r0, r0, #20                    /* r0 = idx = DFAR>>20 (0..0xFFF — макс. phys) */
+    mov r4, r0                        /* сохраняем idx в r4 */
+    bl hex16_uart
+    mrc p15, 0, r5, c2, c0, 0          /* TTBR0 base */
+    ldr r0, =0xFFFFC000                /* маска базы [31:14] (выровн. 16 КБ) */
+    and r5, r5, r0                     /* r5 = L1 base */
+    mov r0, #' '
+    bl uart_dbg
+    mov r0, r4
+    mov r1, r0
+    mov r0, r5
+    add r0, r0, r1, lsl #2             /* &L1[idx] */
+    ldr r0, [r0]                      /* descr */
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    /* M2 <ref>.text L1[0x400] + <DACR> — сравнить domain/AP рабочей секции */
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'2'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mov r0, r5
+    add r0, r0, #0x1000                 /* L1[0x400] = 0x400*4 = 0x1000 */
+    ldr r0, [r0]
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c3, c0, 0          /* DACR */
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    /* M3 <TTBR0> — какая L1-таблица активна в момент abort */
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'3'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c2, c0, 0          /* TTBR0 */
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    /* M4 <TTBCR> — НЕ-ноль = младшие адреса (0x4C..) могут идти в TTBR1 */
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'4'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c2, c0, 2          /* TTBCR */
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    /* M5 <TTBR1> */
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'5'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    mrc p15, 0, r0, c2, c0, 1          /* TTBR1 */
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    pop {r0-r5, lr}
 9:  b 9b
 
 /* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F).
@@ -268,6 +347,17 @@ hex8_uart:
     addhs r0, r0, #('A' - 10)
     bl uart_dbg
     pop {r1, r4, pc}
+
+/* Вывести число r0 (мл. 16 бит) как 4 hex-цифры. */
+.global hex16_uart
+hex16_uart:
+    push {r0, lr}
+    lsr r0, r0, #8
+    bl hex8_uart
+    ldr r0, [sp]
+    uxth r0, r0
+    bl hex8_uart
+    pop {r0, pc}
 
 /* Вывести число r0 как 8 hex-цифр (32 бита).
  * r0.249: счётчик храним НА СТЕКЕ, не в r1 — uart_dbg затирает r1
@@ -391,36 +481,63 @@ _start:
     orr r0, r0, #0xD3
     msr cpsr, r0
 
-    /* r722 (КОРЕНЬ аудио-проблемы): перенос L1-таблицы страниц ИЗ зоны стека.
-     * U-Boot кладёт TTBR0 в 0x5FFF4000 — всего в 48 КБ ниже SVC-стека core0
-     * (0x60000000, растёт ВНИЗ). Глубокие вызовы (printf/fat/GBA-загрузка)
-     * уводили стек ниже 0x5FFFB000 и ЗАТИРАЛИ таблицу страниц → MMU деградировал,
-     * секция .coherent теряла uncached (core0 читал stale из D-cache и не видел
-     * записи CPU2 — «канал рвётся», «CPU2 завис», шум, зависания в разных местах;
-     * на стенде: coherent_l1=0xFFF9FFF3 — мусор вместо легального 0x4A4xxxx3).
-     * Переносим таблицу в uncached-хвост .coherent (0x4A40C000 — после
-     * _coherent_end, до кучи 0x4A500000) и переключаем TTBR0. Стек core0
-     * остаётся на 0x60000000 — теперь он безопасен. Выполняем ДО установки
-     * стека (стек ещё не используется) и ДО любых глубоких C-вызовов. */
-    mrc p15, 0, r0, c2, c0, 0        /* текущий TTBR0 (база L1 U-Boot) */
-    ldr r1, =0x4A40C000              /* новый адрес таблицы (.coherent, uncached) */
-    mov r2, #4096                    /* 4096 слов = 16 КБ */
+    /* r1202 (КОРЕНЬ падений Amiga): U-Boot 2025.01 работает в LPAE.
+     * TTBCR.EAE=1 (стенд: 0x80000F00), DFSR F2=0x06 = Translation fault,
+     * level 2. Таблицы 64-битные: TTBR0 -> L0 (4 КБ), записи L0 -> L1
+     * (2-МБ блоки). Всё это лежит в 0x5FFF1000..0x5FFF4FFF — ровно под
+     * нашим SVC-стеком (0x60000000, растёт ВНИЗ). Глубокие вызовы (PUAE,
+     * FAT) затирали L1 → случайные Data Abort по разным адресам
+     * (0x4A800000, 0x4C000000, 0x467AB5F0) при живой памяти.
+     * Копируем L0 в 0x4A40C000 и все L1, на которые он ссылается, в
+     * 0x4A410000+ (вне стека), правим указатели в L0; TTBR0 = копия.
+     * Выполняется ДО установки стека и до любых глубоких C-вызовов. */
+    mrc p15, 0, r0, c2, c0, 0        /* TTBR0 загрузчика (= L0, LPAE) */
+    /* r1200-ДИАГ: запоминаем TTBR0 загрузчика в SRAM A1 0x8B0 (вне кэшей,
+     * вне диапазона 0x880..0x8A8) — main напечатает для сверки. */
+    ldr r3, =0x8B0
+    str r0, [r3]
+    ldr r1, =0x4A40C000              /* копия L0 (вне стека) */
+    mov r2, #1024                    /* 4 КБ = 512 записей по 8 байт */
 1:  ldr r4, [r0], #4
     str r4, [r1], #4
     subs r2, r2, #1
     bne 1b
     dsb
-    /* clean+invalidate копии (иначе аппаратный walker, идущий в DRAM
-     * напрямую, не увидит dirty-строки D-cache core0 до mmu_mark_uncached) */
+    /* Копируем L1-таблицы, на которые ссылается L0 (для 32-бит хватает
+     * первых 4 записей L0: по 1 ГБ адресного пространства на запись). */
+    ldr r5, =0x4A40C000              /* L0-копия (её и правим) */
+    ldr r6, =0x4A410000              /* куда кладём L1 */
+    mov r7, #4
+    ldr r11, =0xFFFFF000
+2:  ldr r4, [r5]                     /* младшее слово записи L0 */
+    and r8, r4, #3
+    cmp r8, #3                       /* bits[1:0]=0b11 -> table */
+    bne 3f
+    and r8, r4, r11                  /* OA L1-таблицы */
+    mov r9, #1024                    /* 4 КБ = 512 записей */
+4:  ldr r10, [r8], #4
+    str r10, [r6], #4
+    subs r9, r9, #1
+    bne 4b
+    sub r10, r6, #4096               /* OA копии L1 */
+    bic r4, r4, r11                  /* оставить флаги записи */
+    orr r4, r4, r10
+    str r4, [r5]
+3:  add r5, r5, #8
+    subs r7, r7, #1
+    bne 2b
+    dsb
+    /* clean+invalidate копий (иначе аппаратный walker, идущий в DRAM
+     * напрямую, не увидит dirty-строки D-cache core0): L0 + до 4 L1 = 32 КБ */
     ldr r0, =0x4A40C000
-    ldr r1, =0x4A410000              /* +16 КБ */
-2:  mcr p15, 0, r0, c7, c14, 1       /* DCCIMVAC */
+    ldr r1, =0x4A420000              /* +32 КБ */
+5:  mcr p15, 0, r0, c7, c14, 1       /* DCCIMVAC */
     add r0, r0, #32
     cmp r0, r1
-    blo 2b
+    blo 5b
     dsb
     ldr r1, =0x4A40C000
-    mcr p15, 0, r1, c2, c0, 0        /* TTBR0 = новая таблица */
+    mcr p15, 0, r1, c2, c0, 0        /* TTBR0 = копия L0 */
     dsb
     isb
     mov r4, #0
