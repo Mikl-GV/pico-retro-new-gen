@@ -99,6 +99,7 @@ static uint8_t g_pad_report[8] __attribute__((section(".coherent"), aligned(8)))
 
 static int g_pad_x = 512;
 static int g_pad_y = 300;
+static uint8_t g_pad_btn = 0;      // r1237: кнопки boot-mouse (бит0=ЛКМ, бит1=ПКМ, бит2=СКМ)
 
 static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), aligned(8)));
 
@@ -687,6 +688,7 @@ void usb_pad_poll(void) {
     if (!g_pad.found || !g_pad.in_ep) return;
     int drained = 0;
     while (usb_ohci_intr_in_poll(g_pad.base, g_pad_report, 8, 1) > 0 && ++drained < 64) {
+        g_pad_btn = g_pad_report[0];   // r1237: байт кнопок boot-mouse
         int8_t dx = (int8_t)g_pad_report[1];
         int8_t dy = (int8_t)g_pad_report[2];
         if (dx > 1 || dx < -1) g_pad_x += dx * 4;
@@ -702,6 +704,11 @@ int usb_pad_get_pos(int* x, int* y) {
     if (!g_pad.found) return 0;
     *x = g_pad_x; *y = g_pad_y;
     return 1;
+}
+
+// r1237: кнопки тачпада в раскладке boot-mouse (бит0=ЛКМ, бит1=ПКМ, бит2=СКМ).
+int usb_pad_buttons(void) {
+    return g_pad.found ? (int)g_pad_btn : 0;
 }
 
 // ============================================================================

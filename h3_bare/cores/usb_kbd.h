@@ -58,6 +58,7 @@ int usb_input_poll(void);   // объединённый ввод для меню
 // ---- Тачпад (boot mouse, I8 Pro/Novatek) ----
 void usb_pad_poll(void);
 int  usb_pad_get_pos(int* x, int* y);
+int  usb_pad_buttons(void);   // r1237: бит0=ЛКМ, бит1=ПКМ, бит2=СКМ
 
 // ---- Sega-геймпад ----
 void usb_pad_update(void);

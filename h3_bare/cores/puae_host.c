@@ -53,6 +53,10 @@ static char g_path[160] = "game.adf";
 // Джойстик: D-Pad + кнопка → left fire (BTN_A), 2-я кнопка → right/blue (BTN_B).
 // Mapping на Sega-паде: крестовина = D-Pad, A = Fire 1, B = Fire 2.
 static uint16_t g_joy = 0;
+// r1237: мышь Amiga (тачпад). dx/dy считаются за кадр, кнопки — по байту
+// boot-mouse; ядро читает их через RETRO_DEVICE_MOUSE (opt_physicalmouse).
+static int16_t g_mouse_dx = 0, g_mouse_dy = 0;
+static uint8_t g_mouse_l = 0, g_mouse_r = 0, g_mouse_m = 0;
 
 // ---- видео: RGB565 из retro_bmp -> HDMI FB напрямую (emu_scale_rgb565_src).
 // Промежуточный EMU_FB 320×240 убран: ядро отдаёт кадр своей геометрии
@@ -68,11 +72,10 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
         g_geo_printed = 1;
         printf("Amiga video: %ux%u pitch=%u\n", width, height, (unsigned)pitch);
     }
-    // Кадр PUAE масштабируем сразу в HDMI FB: собственный EMU_FB здесь не нужен
-    // (он 320×240, а ядро отдаёт 320×256/640×256/640×512 с полями и pitch —
-    // промежуточное ужатие в 320×240 давало «сдвиг растра» и лишнюю работу).
-    emu_scale_rgb565_src((const uint16_t*)data, (int)width, (int)height,
-                         (int)(pitch >> 1));
+    // r1236: кадр PUAE (720×574) влезает в HDMI 1024×600 как есть — выводим
+    // пиксель в пиксель по центру, без обрезки и без промежуточного 320×240.
+    emu_show_rgb565_native((const uint16_t*)data, (int)width, (int)height,
+                           (int)(pitch >> 1));
 }
 
 // ---- звук: стерео 44100 Гц -> 48000 (шаг 60211, ресемплер как fuse_host) ----
@@ -185,6 +188,30 @@ static void host_input_poll(void)
     if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);   // Fire 2 (B)
     if (sp & 0x0080) j |= (1u << RETRO_DEVICE_ID_JOYPAD_START); // Start
     g_joy = j;
+
+    // r1237: тачпад как мышь Amiga. Ядро (opt_physicalmouse) спрашивает
+    // RETRO_DEVICE_MOUSE; даём относительные dx/dy от абсолютной позиции
+    // тачпада (она в 0..1023 × 0..599, шаг — 4 пикселя за отсчёт HID).
+    usb_pad_poll();
+    static int last_x = 512, last_y = 300, have_last = 0;
+    int mx, my;
+    if (usb_pad_get_pos(&mx, &my)) {
+        if (!have_last) { last_x = mx; last_y = my; have_last = 1; }
+        int dx = mx - last_x, dy = my - last_y;
+        last_x = mx; last_y = my;
+        // 1 экранный пиксель ≈ 2 счёта мыши Amiga по X и по Y (поле 1024×600).
+        if (dx > 63) dx = 63; else if (dx < -63) dx = -63;
+        if (dy > 63) dy = 63; else if (dy < -63) dy = -63;
+        g_mouse_dx = (int16_t)(dx * 2);
+        g_mouse_dy = (int16_t)(dy * 2);
+    } else {
+        g_mouse_dx = 0;
+        g_mouse_dy = 0;
+    }
+    int mb = usb_pad_buttons();
+    g_mouse_l = (mb & 1) ? 1 : 0;
+    g_mouse_r = (mb & 2) ? 1 : 0;
+    g_mouse_m = (mb & 4) ? 1 : 0;
 }
 
 static int16_t host_input_state(unsigned port, unsigned device, unsigned index, unsigned id)
@@ -194,6 +221,18 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
         return (g_joy & (1u << id)) ? 1 : 0;
     if (device == RETRO_DEVICE_KEYBOARD)
         return (id < RETROK_LAST && g_kbd[id]) ? 1 : 0;
+    // r1237: физическая мышь (тачпад); ядро включает её опцией
+    // puae_physicalmouse > 0 и читает здесь dx/dy и кнопки.
+    if (device == RETRO_DEVICE_MOUSE) {
+        switch (id) {
+        case RETRO_DEVICE_ID_MOUSE_X:      return g_mouse_dx;
+        case RETRO_DEVICE_ID_MOUSE_Y:      return g_mouse_dy;
+        case RETRO_DEVICE_ID_MOUSE_LEFT:   return (int16_t)g_mouse_l;
+        case RETRO_DEVICE_ID_MOUSE_RIGHT:  return (int16_t)g_mouse_r;
+        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return (int16_t)g_mouse_m;
+        default: return 0;
+        }
+    }
     return 0;
 }
 
@@ -279,6 +318,9 @@ static bool host_environment(unsigned cmd, void* data)
             if (strcmp(v->key, "puae_cpu_compatibility") == 0) { v->value = "normal"; return true; }
             // Блиттер без ожиданий: быстрее, совместимость достаточна для AROS/игр.
             if (strcmp(v->key, "puae_immediate_blits") == 0) { v->value = "immediate"; return true; }
+            // r1237: физическая мышь. Ядро читает RETRO_DEVICE_MOUSE только при
+            // opt_physicalmouse > 0; host отдаёт тачпад как dx/dy + кнопки.
+            if (strcmp(v->key, "puae_physicalmouse") == 0) { v->value = "1"; return true; }
         }
         return false;
     }
@@ -348,12 +390,13 @@ static char* g_puae_brk = 0;
 static char* g_puae_base = 0;            // r1229: начало арены (для зануления)
 static char* g_puae_brk_low = 0;       // низ арены: откат brk не уходит ниже
 static puae_blk_t* g_puae_free = 0;    // список свободных блоков (payload = next)
-// Лимиты диагностики — на СЕССИЮ (сбрасываются в puae_heap_reset): иначе после
-// первого запуска счётчики исчерпаны, и в следующих видно только часть лога.
-static unsigned g_diag_big_n = 0;
-static unsigned g_diag_free_n = 0;
 static int g_core_inited = 0;   // r1231: ядро между входами не выгружается
-static int g_warm = 0;          // r1233: текущий вход — тёплый (init не звали)
+// r1235: прокрутка арены между сессиями. Слот сдвигает первое выделение на
+// PUAE_ROT_STEP, чтобы адреса не повторялись (иначе статические кэши ядра
+// считают видео/память уже инициализированными).
+#define PUAE_ROT_STEP  (5u * 1024u * 1024u)
+#define PUAE_ROT_SLOTS 5u
+static unsigned g_rot_slot = 0;
 
 // Список свободных: next лежит в payload (минимум 16 байт — блок ≥ 64, ок).
 // Обход ограничен счётчиком: при порче списка лучше потерять блоки, чем висеть.
@@ -388,8 +431,6 @@ static void puae_heap_reset(void)
     g_puae_brk = 0;
     g_puae_brk_low = 0;
     g_puae_free = 0;
-    g_diag_big_n = 0;
-    g_diag_free_n = 0;
 }
 
 void* puae_malloc(size_t sz)
@@ -420,11 +461,6 @@ void* puae_malloc(size_t sz)
         }
         b->busy = 1;
         b->size = sz;
-        if (sz >= 65536u && g_diag_big_n < 24) {
-            printf("PUAE: realloc-use %u -> %08X (free-list)\n", (unsigned)sz,
-                   (unsigned)(uintptr_t)PUAE_PAY(b));
-            g_diag_big_n++;
-        }
         return PUAE_PAY(b);
     }
 
@@ -437,22 +473,14 @@ void* puae_malloc(size_t sz)
     b->size = sz;
     b->total = need;
     g_puae_brk = (char*)(a + need);
-    // r1199-ДИАГ: крупные выделения + защита от ухода brk из sbrk-зоны
-    // (0x4BF00000..0x4EF00000). Если brk вне диапазона — это следствие
-    // порчи указателя, а не нехватки памяти: печатаем и отказываем.
+    // r1199: защита от ухода brk из sbrk-зоны (0x4BF00000..0x4EF00000).
+    // Если brk вне диапазона — это следствие порчи указателя, а не нехватки
+    // памяти: печатаем и отказываем.
     if ((uintptr_t)g_puae_brk < 0x4BF00000u || (uintptr_t)g_puae_brk > 0x4EF00000u) {
         printf("PUAE: brk OUT %08X (sz=%u)\n",
                (unsigned)(uintptr_t)g_puae_brk, (unsigned)sz);
         g_puae_brk = (char*)(uintptr_t)(-1);
         return 0;
-    }
-    if (sz >= 65536u) {
-        if (g_diag_big_n < 24) {
-            printf("PUAE: alloc %u -> %08X (brk=%08X)\n", (unsigned)sz,
-                   (unsigned)(uintptr_t)PUAE_PAY(b),
-                   (unsigned)(uintptr_t)g_puae_brk);
-            g_diag_big_n++;
-        }
     }
     return PUAE_PAY(b);
 }
@@ -479,12 +507,6 @@ void puae_free(void* p)
 
     // Хвост арены отдаём назад через brk — иначе арена не сжимается вообще.
     if ((char*)b + b->total == g_puae_brk) {
-        if (g_diag_free_n < 16) {
-            printf("PUAE: free tail %08X sz=%u (brk %08X)\n",
-                   (unsigned)(uintptr_t)b, (unsigned)b->size,
-                   (unsigned)(uintptr_t)g_puae_brk);
-            g_diag_free_n++;
-        }
         g_puae_brk = (char*)b;
         if (g_puae_brk < g_puae_brk_low) g_puae_brk = g_puae_brk_low;
         return;
@@ -546,37 +568,27 @@ void emu_run_amiga_wb(void)
 
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    // r1231/r1233: ядро остаётся инициализированным между входами (как
-    // RetroArch: между контентами только unload/load, без deinit/init).
-    // Тёплый старт допустим, только если с прошлого входа emu_prepare() не
-    // вызывался никем другим — иначе _sbrk уже сброшен и указатели PUAE мертвы.
-    extern unsigned g_emu_prepare_gen;
-    static unsigned g_amiga_gen = 0;
-    g_warm = (g_core_inited && g_emu_prepare_gen == g_amiga_gen);
-    if (!g_warm) {
-        puae_heap_reset();
-    } else {
-        extern void* _sbrk(int incr);
-        g_puae_brk = (char*)_sbrk(0);   // синхронизация с текущей кучей
-        printf("Amiga: warm restart (ядро не выгружалось, brk=%08X)\n",
-               (unsigned)(uintptr_t)g_puae_brk);
-    }
-    {
-        extern int g_emu_keep_sbrk;
-        g_emu_keep_sbrk = g_warm;   // тёплый старт: _sbrk не откатывать
+    // r1235: каждый вход — холодный старт. Ядро кэширует адреса прошлой
+    // сессии в статиках (init_row_map и др.): при совпадении адресов оно
+    // пропускает переинициализацию и работает по мусору (стенд r1230:
+    // xlinebuffer = -1 → Data Abort в pfield_do_fill_line). Поэтому арена
+    // зануляется и сдвигается на слот прокрутки — адреса сессий различаются.
+    if (g_core_inited) {
+        puae_retro_unload_game();
+        puae_retro_deinit();
+        g_core_inited = 0;
     }
     emu_prepare();
-    g_amiga_gen = g_emu_prepare_gen;
+    puae_heap_reset();
     {
-        extern int g_emu_keep_sbrk;
-        g_emu_keep_sbrk = 0;
+        size_t gap = (size_t)g_rot_slot * PUAE_ROT_STEP;
+        if (gap) (void)puae_malloc(gap);   // резерв-сдвиг, живёт до конца сессии
+        printf("Amiga: cold start, arena slot %u (gap=%u КБ)\n",
+               g_rot_slot, (unsigned)(gap >> 10));
+        g_rot_slot = (g_rot_slot + 1u) % PUAE_ROT_SLOTS;
     }
-    // r1199-ДИАГ: снимок L1 перед запуском PUAE (после загрузки ROM с USB):
-    // сравнить с L1["boot"] из main.c — покажет, менялась ли таблица и когда.
-    extern void mmu_l1_dump(const char* tag);
-    mmu_l1_dump("amiga");
-    // r1198-ДИАГ: проверка карты sbrk-зоны ДО первого выделения PUAE
-    // (сжато: печатаем только сводку; при провале — первую плохую секцию).
+    // r1198: проверка карты sbrk-зоны ДО первого выделения PUAE (сводка;
+    // при провале — номер первой плохой секции). Ловит разъехавшуюся карту MMU.
     {
         volatile uint32_t* p;
         unsigned bad = 0, bad_mb = 0, n = 0;
@@ -592,6 +604,9 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
         if (bad) printf("sbrk-map: first bad MB=%u\n", bad_mb);
     }
     snd_manifest("amiga", "paula");
+    // r1236: PAL-кадр Amiga — 50 Гц (20 мс). Без этого throttle целится в
+    // 16667 мкс от emu_prepare и при быстром ядре догонял бы 60 Гц.
+    emu_set_period_us(20000u);
 
     if (rom && rom_name && rom_name[0]) {
         size_t n = strlen(rom_name);
@@ -631,21 +646,12 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 
     // Проба файлового слоя: ядро монтирует контент как диск только если
-    // path_is_valid() (через stat) подтверждает файл. Одна строка на сессию —
-    // иначе «insert disk» у AROS остаётся без следов в логе.
+    // path_is_valid() (через stat) подтверждает файл. Одна строка на сессию.
     {
         struct stat st;
         int st_ok = (stat(g_path, &st) == 0);
         printf("Amiga fs: stat=%d size=%u\n", st_ok,
                (unsigned)(st_ok ? st.st_size : 0));
-        // r1226: проверяем, что слой отвечает на имя Kickstart и на путь с
-        // ведущим "./" — именно так его склеивает ядро перед path_is_valid().
-        struct stat kb;
-        int k1 = (stat("kick34005.A500", &kb) == 0);
-        unsigned s1 = (unsigned)(k1 ? kb.st_size : 0);
-        int k2 = (stat("./kick34005.A500", &kb) == 0);
-        unsigned s2 = (unsigned)(k2 ? kb.st_size : 0);
-        printf("Amiga fs: kick plain=%d/%u dotted=%d/%u\n", k1, s1, k2, s2);
     }
 
     puae_retro_set_environment(host_environment);
@@ -655,30 +661,18 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     puae_retro_set_input_poll(host_input_poll);
     puae_retro_set_input_state(host_input_state);
 
-    // Проба логов ядра на сессию (см. g_diag_budget): порог INFO живёт, пока не
-    // израсходован бюджет строк, затем сам возвращается на WARN.
-    g_core_log_min = RETRO_LOG_DEBUG;   // r1234-ДИАГ: ищем строки floppy/DOS ядра
-    g_diag_budget = 300;
+    // Логи ядра: порог INFO живёт, пока не израсходован бюджет строк (старт
+    // ядра: KS ver, Known ROM, Disk inserted), затем сам возвращается на WARN.
+    g_core_log_min = RETRO_LOG_INFO;
+    g_diag_budget = 60;
     g_geo_printed = 0;
 
-    // r1233: если между входами готовился другой эмулятор (emu_prepare звали
-    // ещё раз), его сброс _sbrk обнулил кучевые указатели PUAE — тогда только
-    // холодный путь: deinit снесённого состояния нет, поэтому unload + deinit
-    // и заново init.
-    if (g_core_inited && !g_warm) {
-        printf("Amiga: cold restart (между входами работал другой эмулятор)\n");
-        puae_retro_unload_game();
-        puae_retro_deinit();
-        g_core_inited = 0;
-    }
-    if (!g_core_inited) {
-        printf("Amiga: init...\n");
-        puae_retro_init();
-        g_core_inited = 1;
-        printf("Amiga: init ok\n");
-    } else {
-        printf("Amiga: core kept (init skipped)\n");
-    }
+    // r1235: вход всегда холодный (см. блок прокрутки арены выше) — ядро
+    // инициализируется с нуля, статики не несут мусора прошлой сессии.
+    printf("Amiga: init...\n");
+    puae_retro_init();
+    g_core_inited = 1;
+    printf("Amiga: init ok\n");
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));
@@ -751,11 +745,11 @@ exit:
                (double)t_core / (double)nframes / 1000.0,
                (double)t_video / (double)nframes / 1000.0);
     }
-    // r1231: deinit НЕ вызываем — ядро остаётся инициализированным, следующий
-    // вход идёт путём load_game (как смена контента в RetroArch). deinit
-    // освобождал не всё и оставлял video/chipmem-статики в мусоре: стенд r1230
-    // падал на втором входе в pfield_do_fill_line (DFAR=FFFFFFFF).
+    // r1235: закрываем сессию полностью — deinit сносит состояние ядра, а
+    // следующий вход идёт холодным путём (арена зануляется и прокручивается).
     puae_retro_unload_game();
+    puae_retro_deinit();
+    g_core_inited = 0;
     printf("Amiga heap: base=%08X brk=%08X\n",
            (unsigned)(uintptr_t)g_puae_base, (unsigned)(uintptr_t)g_puae_brk);
     emu_audio_stop();

@@ -37,6 +37,10 @@ void emu_scale(int src_w, int src_h);
 // 640×256, 640×512, в т.ч. чересстрочно).
 void emu_scale_rgb565_src(const uint16_t* src, int sw, int sh, int stride_px);
 
+// r1236: прямой вывод кадра без масштабирования, если он влезает в HDMI
+// (Amiga 720×574 в 1024×600): пиксель в пиксель по центру, поля — border.
+void emu_show_rgb565_native(const uint16_t* src, int w, int h, int stride_px);
+
 // Целочисленный scale (integer scale) для портативных: каждый пиксель
 // исходника = N×N на экране, поля по периметру. Максимальный целый множитель,
 // влезающий в 1024×600. Чёткая картинка без мыла.

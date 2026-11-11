@@ -124,10 +124,9 @@ static int path_matches(const char* path) {
 
 // ---- fopen/fread/fseek/ftell/... (поверх зарегистрированного буфера) ----
 
-// r994: диагностика промахов (только ошибки, до 10 строк) — по ней видно,
+// r994: диагностика промахов (только ошибки, до 3 строк) — по ней видно,
 // какой путь просит ядро и какой зарегистрирован host'ом.
 static int g_fs_miss_log FS_BSS = 0;
-static int g_fs_ok_log FS_BSS = 0;
 
 // r1225: второй файл слоя — вшитый Kickstart (kick34005.A500, 256 КБ).
 // Ядро читает его через stat/fopen при старте, ADF монтируется позже, поэтому
@@ -185,14 +184,14 @@ FILE* fopen(const char* path, const char* mode) {
     uint32_t src_size = g_rom_size;
     int which = fs_source(path, &src, &src_size);
     if (!which) {
-        if (g_fs_miss_log < 10) {
+        if (g_fs_miss_log < 3) {
             g_fs_miss_log++;
             printf("fs: fopen miss '%s' (reg '%s')\n",
                    path ? path : "(null)", g_rom_path);
         }
         return NULL;
     }
-    if (which == 1) g_fs_rom_opens++;   // r1229: сколько раз открывали образ
+    if (which == 1) g_fs_rom_opens++;   // образ (ROM/диск), не Kickstart
     for (int i = 0; i < FS_MAX_OPEN; i++) {
         if (g_files[i].magic == FS_SLOT_MAGIC) continue;
         g_files[i].magic = FS_SLOT_MAGIC;
@@ -201,13 +200,7 @@ FILE* fopen(const char* path, const char* mode) {
         g_files[i].pos  = 0;
         g_files[i].eof  = 0;
         g_files[i].err  = 0;
-        g_files[i].dbg  = 1;   // r996: показать первое чтение этого открытия
-        if (g_fs_ok_log < 40) {   // r1230: до 40 — считаем переоткрытия образа
-            g_fs_ok_log++;
-            printf("fs: open#%u kind=%d ok '%s' gsz=%ld ptr=%08X\n",
-                   g_fs_ok_log, which, path, (long)src_size,
-                   (unsigned)(uintptr_t)&g_files[i]);
-        }
+        g_files[i].dbg  = 0;
         return (FILE*)&g_files[i];
     }
     printf("fs: fopen '%s' — все %d слотов заняты (fclose не вызывался?)\n",
@@ -232,31 +225,12 @@ size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
     long want = (long)(size * nmemb);
     if (want <= 0) return 0;
     if (f->pos >= f->size) {
-        if (rlog < 8) {
-            rlog++;
-            printf("fs: fread EOF pos=%ld size=%ld ptr=%08X magic=%08X lr=%08X\n",
-                   (long)f->pos, (long)f->size,
-                   (unsigned)(uintptr_t)stream, (unsigned)f->magic,
-                   (unsigned)(uintptr_t)__builtin_return_address(0));
-        }
         f->eof = 1;
         return 0;
     }
-    // r1005: любой вызов с нашим живым слотом виден (первые 12).
-    if (rlog < 12) { rlog++; printf("fs: fread call pos=%ld size=%ld want=%ld ptr=%08X\n",
-                                    (long)f->pos, (long)f->size, want,
-                                    (unsigned)(uintptr_t)stream); }
     if (f->pos + want > f->size) { want = f->size - f->pos; }
-    g_fs_read_bytes += (unsigned)want;   // r1230: считаем отданное, не запрошенное
+    g_fs_read_bytes += (unsigned)want;   // считаем отданное, не запрошенное
     if (ptr) memcpy(ptr, f->data + f->pos, (size_t)want);
-    // r996: первое чтение после open — что реально отдаём ядру.
-    if (f->dbg) {
-        f->dbg = 0;
-        const uint8_t* d = f->data + f->pos;
-        printf("fs: fread req=%ld got=%ld pos=%ld size=%ld b0=%02X %02X %02X %02X\n",
-               (long)(size * nmemb), (long)want, (long)f->pos, (long)f->size,
-               d[0], d[1], d[2], d[3]);
-    }
     f->pos += want;
     if (f->pos >= f->size) f->eof = 1;
     return (size_t)(want / size);   // число элементов
@@ -267,13 +241,6 @@ int fclose(FILE* stream) {
     // (RFILE*) не трогаем и не обнуляем его память.
     if (!slot_is_ours(stream)) return EOF;
     fs_mfile_t* f = (fs_mfile_t*)(void*)stream;
-    // r1007: трассировка — кто и когда закрывает наши слоты (первые 10).
-    static int cllog FS_BSS = 0;
-    if (cllog < 10) {
-        cllog++;
-        printf("fs: fclose ptr=%08X magic=%08X\n",
-               (unsigned)(uintptr_t)stream, (unsigned)f->magic);
-    }
     f->magic = 0; f->data = 0; f->size = 0; f->pos = 0;
     return 0;
 }
@@ -399,11 +366,11 @@ int unlink(const char* path) { (void)path; return -1; }
 int stat(const char* path, struct stat* st) {
     uint32_t src_size = 0;
     if (!fs_source(path, 0, &src_size)) {
-        // r1226: промах stat виден (ядро проверяет существование через
-        // path_is_valid -> stat). Без этого «ROM not found» не отличить от
-        // несовпадения пути; печатаем первые 8 промахов за сессию.
+        // Промах stat виден: ядро проверяет файл через path_is_valid -> stat,
+        // по этой строке отличаем «нет файла» от «путь не совпал». Не больше
+        // двух строк за сессию — обычные промахи (uae_data, /rom.key) шумят.
         static int slog FS_BSS = 0;
-        if (slog < 8) {
+        if (slog < 2) {
             slog++;
             printf("fs: stat miss '%s' (reg '%s' bios '%s')\n",
                    path ? path : "(null)", g_rom_path, g_bios_path);
@@ -470,11 +437,6 @@ int open(const char* path, int flags, ...) {
         g_fd_pos[i]  = 0;
         g_fd_data[i] = src;
         g_fd_size[i] = src_size;
-        if (g_fd_log < 10) {
-            g_fd_log++;
-            printf("fs: fd open ok '%s' fd=0x%08X\n", path,
-                   (unsigned)(FS_VFD_BASE + i));
-        }
         return FS_VFD_BASE + i;
     }
     printf("fs: fd open '%s' — все %d слотов заняты\n", g_rom_path, FS_MAX_OPEN);
@@ -494,14 +456,6 @@ int read(int fd, void* buf, size_t n) {
     if (want <= 0) return 0;
     if (buf) memcpy(buf, src + pos, (size_t)want);
     g_fd_pos[i] = pos + want;
-    // r998: первое чтение по fd — видно, доходят ли данные до ядра.
-    if (g_fd_log < 15) {
-        g_fd_log++;
-        const uint8_t* d = (const uint8_t*)buf;
-        printf("fs: fd read fd=0x%08X req=%u got=%ld b0=%02X %02X %02X %02X\n",
-               (unsigned)fd, (unsigned)n, want,
-               d ? d[0] : 0, d ? d[1] : 0, d ? d[2] : 0, d ? d[3] : 0);
-    }
     return (int)want;
 }
 

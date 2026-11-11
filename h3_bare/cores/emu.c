@@ -121,6 +121,44 @@ static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
     }
 }
 
+// r1236: прямой вывод кадра «пиксель в пиксель». Amiga отдаёт 720×574, это
+// влезает в HDMI 1024×600 без масштабирования: раньше кадр резался до 640×512
+// и растягивался на 750×600 — по горизонтали пропадали края растра.
+// Кадр больше экрана — уходим на обычный масштаб с полями.
+void emu_show_rgb565_native(const uint16_t* src, int w, int h, int stride_px)
+{
+    if (!src || w <= 0 || h <= 0 || stride_px < w) return;
+    if (w > FB_W || h > FB_H) { emu_scale_rgb565_src(src, w, h, stride_px); return; }
+
+    static int last_w = 0, last_h = 0;
+    int dst_x = (FB_W - w) / 2;
+    int dst_y = (FB_H - h) / 2;
+    uint32_t* dst = (uint32_t*)FB_ADDR;
+    uint32_t border = g_border_color ? g_border_color : 0x00000000u;
+
+    // Поля заливаем один раз на смену геометрии: кадр того же размера их не
+    // трогает, а при уменьшении старые пиксели иначе остались бы на экране.
+    if (last_w != w || last_h != h) {
+        for (int y = 0; y < FB_H; y++) {
+            uint32_t* row = dst + (uint32_t)y * FB_W;
+            for (int x = 0; x < FB_W; x++) row[x] = border;
+        }
+        last_w = w; last_h = h;
+    }
+
+    for (int y = 0; y < h; y++) {
+        const uint16_t* s = src + (size_t)y * stride_px;
+        uint32_t* d = dst + (uint32_t)(dst_y + y) * FB_W + (uint32_t)dst_x;
+        for (int x = 0; x < w; x++) {
+            uint32_t p = s[x];
+            d[x] = (((p >> 11) & 0x1Fu) << 19) | (((p >> 5) & 0x3Fu) << 10) |
+                   ((p & 0x1Fu) << 3);
+        }
+    }
+    fb_mark_dirty(0, 0, FB_W, FB_H);
+    fb_frame_scaled();
+}
+
 void emu_scale(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;
     // r0.417 (H3 аудита): буфер EMU_FB фиксирован 320×240 — клампим входные
@@ -141,18 +179,11 @@ void emu_scale(int src_w, int src_h) {
 }
 
 // Скейл «сырого» RGB565-кадра произвольного размера прямо в HDMI FB.
-// Нужен ядрам, которые отдают кадр не в EMU_FB: Amiga/PUAE даёт 320×256,
-// 640×256, 640×512 (в т.ч. чересстрочно) из своего буфера, с полями и pitch.
-// Пропорции сохраняются (dst_w = sw*FB_H/sh, ограничение FB_W), поля по бокам
-// заливаются цветом g_border_color или чёрным. Раньше такой кадр сперва
-// ужимался в EMU_FB 320×240 (целочисленное деление на каждый пиксель, «сдвиг
-// растра» на чересстрочных кадрах), а потом растягивался в 1024×600.
+// Нужен ядрам, которые отдают кадр не в EMU_FB (кадры больше 1024×600 или
+// нестандартной геометрии), с сохранением пропорций: dst_w = sw*FB_H/sh,
+// ограничение FB_W, поля по бокам — g_border_color или чёрный.
 void emu_scale_rgb565_src(const uint16_t* src, int sw, int sh, int stride_px) {
     if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
-    // Amiga: ядро отдаёт кадр вместе с overscan-полями — 720×574, где активная
-    // область 640×512 (поля 40 по X и 31 по Y). Без обрезки изображение уезжает
-    // вправо/вниз относительно центра экрана. Режем по центру; кадры без полей
-    // (320×256 и т.п.) не трогаем.
     int cx = 0, cy = 0;
     if (sw > 640 && sh > 512) {
         cx = (sw - 640) / 2;
@@ -277,22 +308,10 @@ extern void cheats_reset(void);
 // Хост A8 ставит флаг до emu_prepare: пул для A8 НЕ сбрасывается (растёт
 // медленно, лимит 24 МБ; остальные системы сбрасывают при своём emu_prepare).
 int g_emu_keep_heap = 0;
-// r1231: PUAE держит ядро инициализированным между входами (как RetroArch:
-// deinit не вызывается), поэтому _sbrk нельзя откатывать на старт — иначе
-// следующая сессия получит память, которую держит ядро.
-int g_emu_keep_sbrk = 0;
-// r1233: сколько раз вызывался emu_prepare(). PUAE сравнивает своё значение с
-// текущим: если между его запусками готовился другой эмулятор, тот сбросил
-// _sbrk, и «тёплый» старт ядра уже нельзя — нужен холодный (deinit + init).
-unsigned g_emu_prepare_gen = 0;
 
 void emu_prepare(void) {
-    g_emu_prepare_gen++;
     if (!g_emu_keep_heap) gb_heap_reset();
-    // r1231: g_emu_keep_sbrk — хост не выгружает ядро (PUAE), куча newlib
-    // остаётся на месте; иначе _sbrk отдаст память, занятую ядром.
-    if (!g_emu_keep_sbrk)
-        newlib_heap_reset();   // r0.417 (H2): newlib-куча (_sbrk) не растёт между запусками игр
+    newlib_heap_reset();   // r0.417 (H2): newlib-куча (_sbrk) не растёт между запусками игр
     // r0.417 (M14/M15): читы ОТКЛЮЧЕНЫ до послойной доработки — список всегда
     // пуст на входе в любой эмулятор (включая builtin; rom_browser сбрасывал
     // только свои пути). Пустой список = применение в host-слоях — no-op.
