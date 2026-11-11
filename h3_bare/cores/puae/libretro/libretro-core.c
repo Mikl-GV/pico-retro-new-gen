@@ -4900,6 +4900,10 @@ bool retro_disk_set_eject_state(bool ejected)
                   }
 
                strcpy(changed_prefs.floppyslots[0].df, dc->files[dc->index]);
+               /* r1223: привод читает currprefs.floppyslots[], а DISK_reinsert
+                * лишь извлекает диск — без переноса в currprefs вставка из
+                * disk-control оставалась «пустой» для эмуляции (AROS: insert disk). */
+               strcpy(currprefs.floppyslots[0].df, dc->files[dc->index]);
                floppy_open_redirect(0);
                DISK_reinsert(0);
                break;

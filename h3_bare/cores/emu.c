@@ -14,6 +14,13 @@
 
 extern int printf(const char* fmt, ...);
 
+// Порог вывода логов ядер (значения enum retro_log_level: 0=DEBUG, 1=INFO,
+// 2=WARN, 3=ERROR). Общий для всех host-слоёв: 2 — релизный режим (только
+// предупреждения/ошибки). Почему не INFO по умолчанию: UART блокирующий, и
+// INFO-поток VICE (Set resource, Arg0 …) тормозил эмуляцию (r987). Для
+// отладки конкретного ядра host поднимает порог до 1 на время запуска.
+int g_core_log_min = 2;
+
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
 #define EMU_H   240
@@ -64,6 +71,56 @@ void emu_hdmi_flip(void) {
 // Оптимизация: без делений в пиксельном цикле. Таблица sx[] (индекс исходной
 // колонки для каждой целевой) считается один раз — на Cortex-A7 деление ~12-20
 // тактов, а при 500К+ пикселей это съедало 5-10 мс/кадр.
+// Общий скейлер: RGB565-источник (произвольный шаг строки) -> XRGB8888 в HDMI
+// FB. dst_w/dst_h/dst_x считает вызывающий. fill_borders=1 — поля по бокам
+// заливаются border (нужно, когда кадр приходит не в 320-пиксельный EMU_FB).
+static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
+                               int dst_w, int dst_h, int dst_x,
+                               uint32_t border, int fill_borders)
+{
+    uint32_t* dst = (uint32_t*)FB_ADDR;
+
+    // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
+    // аккумулятор 16.16 — каждая итерация добавляет sw/dst_w, обёртка
+    // по sw (амплитуда = sw, шаг = sw/dst_w).
+    static int sx_tab[FB_W];
+    uint32_t step_x = ((uint32_t)sw << 16) / (uint32_t)dst_w;
+    uint32_t acc_x = step_x >> 1;   // округление к ближайшему
+    for (int dx = 0; dx < dst_w; dx++) {
+        sx_tab[dx] = (int)(acc_x >> 16);
+        acc_x += step_x;
+        if (acc_x >= ((uint32_t)sw << 16)) acc_x -= (uint32_t)sw << 16;
+    }
+
+    // боковые поля
+    if (fill_borders && dst_x > 0) {
+        for (int dy = 0; dy < dst_h; dy++) {
+            uint32_t* row = dst + (uint32_t)dy * FB_W;
+            for (int dx = 0; dx < dst_x; dx++) row[dx] = border;
+            for (int dx = dst_x + dst_w; dx < FB_W; dx++) row[dx] = border;
+        }
+    }
+
+    // Построковый проход: исходная строка = аккумулятор 16.16 => без `/`
+    uint32_t step_y = ((uint32_t)sh << 16) / (uint32_t)dst_h;
+    uint32_t y_acc = step_y >> 1;              // округление к ближайшей строке
+    int sy = 0;
+    for (int dy = 0; dy < dst_h; dy++) {
+        const uint16_t* s = src + (size_t)sy * stride;
+        uint32_t* d = dst + (uint32_t)dy * FB_W + (uint32_t)dst_x;
+        for (int dx = 0; dx < dst_w; dx++) {
+            uint16_t p = s[sx_tab[dx]];
+            uint32_t r = ((p >> 11) & 0x1F) << 3;
+            uint32_t g = ((p >> 5) & 0x3F) << 2;
+            uint32_t b = (p & 0x1F) << 3;
+            d[dx] = (r << 16) | (g << 8) | b;
+        }
+        y_acc += step_y;
+        int nsy = (int)(y_acc >> 16);
+        if (nsy > sy) { if (nsy >= sh) nsy = sh - 1; sy = nsy; }
+    }
+}
+
 void emu_scale(int src_w, int src_h) {
     if (src_w <= 0 || src_h <= 0) return;
     // r0.417 (H3 аудита): буфер EMU_FB фиксирован 320×240 — клампим входные
@@ -79,51 +136,40 @@ void emu_scale(int src_w, int src_h) {
     if (g_border_color) fb_mark_dirty(0, 0, FB_W, dst_h);
     else                fb_mark_dirty(dst_x, 0, dst_w, dst_h);
     fb_frame_scaled();
-    uint32_t* dst = (uint32_t*)FB_ADDR;
+    scale_rgb565_to_fb(EMU_FB, src_w, src_h, EMU_W, dst_w, dst_h, dst_x,
+                       g_border_color, g_border_color ? 1 : 0);
+}
 
-    // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
-    // аккумулятор 16.16 — каждая итерация добавляет src_w/dst_w, обёртка
-    // по src_w (амплитуда = src_w, шаг = src_w/dst_w).
-    static int sx_tab[FB_W];
-    uint32_t step_x = ((uint32_t)src_w << 16) / (uint32_t)dst_w;
-    uint32_t acc_x = step_x >> 1;   // округление к ближайшему
-    for (int dx = 0; dx < dst_w; dx++) {
-        sx_tab[dx] = (int)(acc_x >> 16);
-        acc_x += step_x;
-        if (acc_x >= ((uint32_t)src_w << 16)) acc_x -= (uint32_t)src_w << 16;
+// Скейл «сырого» RGB565-кадра произвольного размера прямо в HDMI FB.
+// Нужен ядрам, которые отдают кадр не в EMU_FB: Amiga/PUAE даёт 320×256,
+// 640×256, 640×512 (в т.ч. чересстрочно) из своего буфера, с полями и pitch.
+// Пропорции сохраняются (dst_w = sw*FB_H/sh, ограничение FB_W), поля по бокам
+// заливаются цветом g_border_color или чёрным. Раньше такой кадр сперва
+// ужимался в EMU_FB 320×240 (целочисленное деление на каждый пиксель, «сдвиг
+// растра» на чересстрочных кадрах), а потом растягивался в 1024×600.
+void emu_scale_rgb565_src(const uint16_t* src, int sw, int sh, int stride_px) {
+    if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
+    // Amiga: ядро отдаёт кадр вместе с overscan-полями — 720×574, где активная
+    // область 640×512 (поля 40 по X и 31 по Y). Без обрезки изображение уезжает
+    // вправо/вниз относительно центра экрана. Режем по центру; кадры без полей
+    // (320×256 и т.п.) не трогаем.
+    int cx = 0, cy = 0;
+    if (sw > 640 && sh > 512) {
+        cx = (sw - 640) / 2;
+        cy = (sh - 512) / 2;
+        sw = 640;
+        sh = 512;
     }
-
-    // левое/правое поле
-    if (g_border_color && dst_x > 0) {
-        for (int dy = 0; dy < dst_h; dy++)
-            for (int dx = 0; dx < dst_x; dx++)
-                dst[dy * FB_W + dx] = g_border_color;
-    }
-    if (g_border_color) {
-        int right = dst_x + dst_w;
-        for (int dy = 0; dy < dst_h; dy++)
-            for (int dx = right; dx < FB_W; dx++)
-                dst[dy * FB_W + dx] = g_border_color;
-    }
-
-    // Построковый проход: исходная строка = аккумулятор 16.16 => без `/`
-    uint32_t step_y = ((uint32_t)src_h << 16) / (uint32_t)dst_h;
-    uint32_t y_acc = step_y >> 1;              // округление к ближайшей строке
-    int sy = 0;
-    for (int dy = 0; dy < dst_h; dy++) {
-        const uint16_t* src = EMU_FB + sy * EMU_W;
-        uint32_t* d = dst + (uint32_t)dy * FB_W + (uint32_t)dst_x;
-        for (int dx = 0; dx < dst_w; dx++) {
-            uint16_t p = src[sx_tab[dx]];
-            uint32_t r = ((p >> 11) & 0x1F) << 3;
-            uint32_t g = ((p >> 5) & 0x3F) << 2;
-            uint32_t b = (p & 0x1F) << 3;
-            d[dx] = (r << 16) | (g << 8) | b;
-        }
-        y_acc += step_y;
-        int nsy = (int)(y_acc >> 16);
-        if (nsy > sy) { if (nsy >= src_h) nsy = src_h - 1; sy = nsy; }
-    }
+    int dst_h = FB_H;
+    int dst_w = (int)(((int64_t)sw * FB_H) / sh);
+    if (dst_w > FB_W) dst_w = FB_W;
+    if (dst_w <= 0) return;
+    int dst_x = (FB_W - dst_w) / 2;
+    fb_mark_dirty(0, 0, FB_W, dst_h);
+    fb_frame_scaled();
+    scale_rgb565_to_fb(src + (size_t)cy * stride_px + cx, sw, sh, stride_px,
+                       dst_w, dst_h, dst_x,
+                       g_border_color ? g_border_color : 0x00000000u, 1);
 }
 
 // ---- integer scale (целочисленный множитель) ----

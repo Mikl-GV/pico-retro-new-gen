@@ -84,7 +84,10 @@ int64_t filestream_tell(RFILE* stream) { (void)stream; return 0; }
 int64_t filestream_get_size(RFILE* stream) { (void)stream; return 0; }
 
 // ---- path/string ----
-int path_is_valid(const char* path) { (void)path; return 0; }
+// r1227: заглушка path_is_valid() удалена — она перекрывала настоящую функцию
+// для ВСЕХ ядер (глобальный символ + --allow-multiple-definition), из-за чего
+// любая проверка пути давала false (PUAE: Kickstart «not found», диск DF0 не
+// монтировался). Реализация одна — fs_layer.c (через stat файлового слоя).
 int string_is_empty(const char* s) { return !s || !*s; }
 
 // ---- memstream: state.c использует для сейвов (RAM-буфер) ----
@@ -228,6 +231,8 @@ int sscanf(const char* str, const char* fmt, ...) {
     return conv;
 }
 
-// newlib ctype-функции используют extern _ctype_[], но мы линкуем -nostdlib.
-// Определяем нулевую таблицу — мапперы (coolgirl.c) ссылаются на неё.
-const char _ctype_[256] = { 0 };
+// _ctype_ живёт в src/libc_min.c — ОДНА таблица на всю прошивку (newlib-раскладка,
+// 257 байт). Здесь раньше была нулевая заглушка [256]: она удовлетворяла линкер,
+// и макросы isspace/isdigit/... во всех ядрах (PUAE, VICE, FBNeo, FCEUmm)
+// возвращали 0. Из-за неё PUAE не разбирал строку инструкции и падал в
+// readcpu.c:abort() («Internal error; line 733», стенд r1212).

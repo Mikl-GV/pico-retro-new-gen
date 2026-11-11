@@ -1,4 +1,4 @@
-﻿# HANDOVER — текущее состояние (r1208)
+﻿# HANDOVER — текущее состояние (r1227)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -34,7 +34,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1208**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1227**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: `Makefile` и `makefile` — два одинаковых файла (правки в ОБА).
 - 32X SH2 DRC опция сборки: `make PICO_DRC=1` (дефолт ВКЛ, r1169);
@@ -190,6 +190,200 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
 - `.noinit_fbn` 0x54000000 (zlib/fbn, ASSERT ≤0x5C000000); `.vice_bss`
   0x52000000; `.fs_bss` 0x53E00000; `.a8_bss` 0x5F000000; `EMU_FB` 0x5F800000;
   FB back 0x5F400000; ZIP_BUF2 0x5C000000.
+- **r1209 (трассировка старта PUAE, ВРЕМЕННО):** стенд r1208 — тот же висяк:
+  `Amiga: load…` → выделения 512K/1M/512K, два `fopen miss '/rom.key'`, затем
+  560041/1M/512K×3/1.5 МБ (brk `4C5D27F0`) и тишина. Добавлено (снять после
+  отладки): маркеры `RL: enter/config/umain ok/first pass/end` в
+  `libretro/libretro-core.c` `retro_load_game`; маркеры `M2: <этап>` в
+  `sources/src/main.c` `real_main2` (graphics_setup, machdep_init, setup_sound,
+  inputdevice_init, target_run, savestate_init, memory_reset, custom_init,
+  DISK_init, init_m68k, gui_update, graphics_init, init_audio); включён
+  встроенный `write_log` PUAE (`uaeunp.c`, лимит 400 строк — раньше `debug=0`
+  и старт ядра шёл молча); в host — трасса env фазы загрузки (`PUAE envL N`,
+  без повторов SET_VARIABLES). По последнему маркеру видно, в каком этапе
+  встало: нет   `M2:` вообще — внутри `target_run()`; после `target_run` — в
+  savestate/memory/custom/DISK/graphics/audio.
+- **r1210 (углублённая трассировка, ВРЕМЕННО):** стенд r1209 дал точку:
+  `M2: DISK_init` есть, `M2: init_m68k` НЕТ → виснет в `init_m68k`
+  (`reset_frame_rate_hack` пуст, `m68k_speed>=0`). Последнее выделение
+  1572864 Б = `65536 * sizeof(struct instr)` из `readcpu.c:966`
+  (`init_table68k`), т.е. дошли до построения таблиц 68k и встали в
+  `build_insn`/`do_merges`/`build_cpufunctbl`. Найдено и исправлено:
+  `write_log` в сборке — пустая заглушка из `gencpu.c` (`uaeunp.c`, где
+  рабочая версия, в объекты НЕ входит), поэтому лог ядра всегда молчал;
+  теперь заглушка пишет в UART (лимит 400 строк). Добавлены: `NC: <шаг>` в
+  `init_m68k`/`build_cpufunctbl`, `RT: free/malloc/init-loop/defs=N/insn N/
+  merges/done` в `readcpu.c init_table68k` (индекс инструкции при каждом
+  `build_insn`), `ret=%08X` (адрес возврата) в лог крупных `puae_malloc` —
+  по нему `addr2line`/`nm` даёт точное место выделения. Правка `uaeunp.c`
+  откачена (файл не компилируется).
+- **r1211 (причина «тишины» найдена):** стенд r1210 — последняя строка
+  `RT: insn 0`, т.е. виснет в **первом же** `build_insn(0)` (defs68k[0] =
+  `ORSR.B #1`). Ключ: `abort()` в прошивке — `for (;;) {}` из
+  `h3_bare/cores/coleco_compat.c:11` (LD-заглушка под libgcc/libstdc++),
+  поэтому любой `abort()` в ядре = немое зависание без дампа и без лога.
+  Добавлено (r1211, временно): все `abort()` в `readcpu.c` заменены на
+  `RT_ABORT()` — печать `RT: ABORT line N` и остановка; маркеры `b: op=…`,
+  `b: mn=…`, `b: src pos/mode`, `b: eol pos/find`, `b: end` внутри
+  `build_insn`. По логу: либо номер строки abort (тогда виден дефект
+  разбора), либо место, где реально крутится цикл.
+  Отдельный вывод для проекта: `abort()` стоит сделать печатающим
+  (адрес возврата) — сейчас он скрывает любые падения во всех ядрах.
+- **r1212 (штатная диагностика вместо заплаток):** все временные трассы
+  удалены (M2/RL/envL/NC/RT/b:/ret=), вендорные файлы PUAE возвращены к
+  исходному виду.
+  - **Единый `panic()`** в `h3_bare/src/libc_min.c`: печатает
+    `PANIC: <причина> code=<n> ret=<адрес возврата>` и останавливает ядро
+    (`wfi`). Через него теперь идут `abort`, `exit`, `_exit`, `_Exit`, `_kill`,
+    `__assert_func` (последний печатает ещё файл:строку и выражение). Глухие
+    заглушки `abort()/_exit()/_kill()` удалены из `coleco_compat.c` — это и был
+    источник «немых» зависаний (PUAE r1210: висяк в `build_insn` без следа).
+    Адрес возврата разворачивается в строку:
+    `arm-none-eabi-addr2line -f -e build/h3_bare.elf <ret>`.
+  - **Логи ядер:** порог вывода один — `int g_core_log_min` в `emu.c`
+    (0=DEBUG…3=ERROR; по умолчанию **2/WARN**). `c64_host.c:c64_log` и
+    `puae_host.c:puae_log` читают его. У PUAE раньше стоял жёсткий
+    `lvl < RETRO_LOG_WARN → return`, поэтому INFO-сообщения ядра (старт CPU,
+    диск, память) не печатались вовсе — теперь `emu_run_amiga` поднимает порог
+    до INFO на время запуска и возвращает WARN при выходе. Для VICE INFO
+    по-прежнему нельзя включать по умолчанию (r987: блокирующий UART тормозил
+    эмуляцию), но аварии VICE (abort/assert) с этого релиза видны.
+  - Прошлые стенды (r1209/r1210) показали: виснет первый же `build_insn(0)`
+    (`RT: insn 0`, `defs68k[0]` = `ORSR.B #1`). Если причина — `abort()`,
+    r1212 напечатает его строку; если снова тишина — это цикл, и тогда нужен
+    точечный пробник именно там (после отладки удалить).
+- **r1213 (КОРЕНЬ падения Amiga: нулевая `_ctype_`):** стенд r1212 дал
+  `puaeI# Internal error; file …/readcpu.c, line 733` + `PANIC: exit code=0
+  ret=4107875C`. Причина: в `cores/fceumm/libretro_compat.c` лежала заглушка
+  `const char _ctype_[256] = { 0 };` («линкуем -nostdlib»). Она удовлетворяла
+  линкер, настоящая таблица не подключалась (libc не линкуется вовсе), поэтому
+  `isspace(' ')` возвращал 0 **во всей прошивке**. Парсер `build_insn` не видел
+  пробел, складывал в `TCHAR mnemonic[10]` всю строку `"ORSR.B  #1"` (переполнение
+  буфера), мнемоника не находилась в `lookuptab` → PUAE-шный `abort()`
+  (`sysdeps.h` подменяет его на `write_log("Internal error…") + exit(0)`) →
+  наш `panic`. FIX: одна newlib-совместимая `_ctype_[257]` в
+  `h3_bare/src/libc_min.c` (индекс 0 = EOF, флаг символа `c` по индексу `c+1`);
+  заглушка удалена. Проверено по образу: `space=0x88, '0'=0x04, 'A'=0x41,
+  'a'=0x42, DEL=0x20, TAB=0x28`.   Это же чинит ctype-зависимый разбор в VICE
+  (C64/C128), FBNeo, FCEUmm, mGBA — «та же проблема в Коммодоре» была реальной.
+- **r1214 (логи, форматтер, видео Amiga):**
+  - **vsnprintf: добавлены `%f`/`%e`/`%g`** (`fmt_double` в `libc_min.c`, без
+    libm: знак, целая часть, prec цифр, округление; `|v|>=1e19` → `inf`),
+    флаги `-`/`+` и точность `.N`; `%s` понимает `%.Ns` как предел длины.
+    Причина: без `%f` аргумент-double НЕ забирался из va_list, и все следующие
+    конверсии читали чужие значения — отсюда мусор в логах PUAE
+    (`V=.4fHz`, `IDX=… (▒▒▒)`, `Reset at 0▒F…`, склейки строк).
+  - **Логи ядер свернуты:** `g_core_log_min` (emu.c) по умолчанию 2/WARN,
+    временный подъём до INFO в `emu_run_amiga` убран. Счётчики диагностики
+    аллокатора PUAE (`alloc`≥64 КБ, `free rewind`) вынесены в файл и
+    сбрасываются в `puae_heap_reset` — лимит теперь на сессию, а не на всё
+    время работы (раньше после первого запуска часть лога пропадала).
+  - **Видео Amiga без двойного масштаба:** новый `emu_scale_rgb565_src`
+    (emu.c/emu.h) — nearest-скейл «сырого» RGB565-кадра произвольной
+    геометрии (320×256 / 640×256 / 640×512, с pitch и полями) сразу в HDMI FB.
+    `host_video` PUAE больше не ужимает кадр в EMU_FB 320×240: именно это давало
+    «сдвиг растра» на чересстрочных кадрах и лишний проход с делением на
+    каждый пиксель. Геометрия стабильна: 320×256 и 640×512 дают одинаковые
+    750×600 по центру, поля — цветом `g_border_color` или чёрным. `emu_scale`
+    отрефакторен на общий `scale_rgb565_to_fb` (поведение прежнее: поля
+    заливаются только при заданном `g_border_color`), цикл `emu_run_amiga`
+    делает только `fb_flush`.
+  - Открытые вопросы Amiga: скорость (интерпретатор 68000 без JIT — JIT в
+    `retrodep/sysconfig.h` закомментирован, jit/*.c не входят в сборку) и
+    кадры с чересстрочной геометрией — проверять на стенде после r1214.
+- **r1215 (диск DF0, ограниченная проба логов, геометрия кадра):**
+  - **Вставка диска:** после `retro_load_game` host вызывает
+    `puae_retro_disk_set_image_index(0)` и `puae_retro_disk_set_eject_state(false)`
+    — это штатный контракт libretro. В ядре
+    (`libretro-core.c: retro_disk_set_eject_state`) вставка идёт через
+    `changed_prefs.floppyslots[0].df` + `DISK_reinsert(0)`; раньше host полагался
+    только на путь в конфиге, и AROS показывал «insert disk» (DF0: не смонтирован).
+  - **Ограниченная проба логов:** `g_diag_budget` (puae_host.c) — на старте
+    сессии порог поднимается до INFO, но не более чем на 120 строк, дальше
+    автоматически возвращается WARN. Видно вставку диска и режимы экрана, UART
+    не заливается, эмуляция не тормозит.
+  - **Геометрия кадра:** одна строка на сессию `Amiga video: WxH pitch=N`
+    (`host_video`) — по ней видно, что именно отдаёт ядро (320×256, 640×512,
+    поля/pitch), чтобы точно поправить «сдвиг вправо».
+  - `#include <stdio.h>` перенесён в шапку `puae_host.c` (printf используется в
+    `host_video` до блока POSIX-стабов).
+- **r1217 (геометрия кадра + замер производительности):** кроп ядра
+  (`puae_crop`) оказался непригоден: с ним ядро отдаёт **320×200 при
+  pitch=1440** — окно уже полной строки, на экране видна только часть кадра
+  («растр больше экрана»). Кроп выключен; overscan режем сами в
+  `emu_scale_rgb565_src`: кадр 720×574 → активные 640×512 по центру (поля 40
+  по X, 31 по Y) → 750×600 на экране, без сдвига вправо/вниз.
+  Добавлен замер в цикле Amiga: на выходе печатается
+  `Amiga perf: fps=… core=…ms video=…ms` (ядро vs скейл+fb_flush) — по нему
+  видно, что именно ограничивает скорость.
+  Состояние диска на стенде r1216: `Amiga fs: stat=1 size=901120` (файл виден
+  fs-слою), но `Amiga disk: mount=0` — ядро не положило контент в свой список
+  дисков (`dc->count == 0`), поэтому AROS просит носитель; разбирать
+  `path_is_valid()`/`dc_add_file` в ядре.
+- **r1218 (режим CPU PUAE):** по умолчанию ядро собирало 68000 в режиме
+  «More compatible» — самый медленный интерпретатор (`Building CPU, 44274
+  opcodes (0 1 1)`). Host отдаёт `puae_cpu_compatibility="normal"`
+  (стало `(0 0 1)`) и `puae_immediate_blits="immediate"`.
+- **r1219 (единый форматтер):** `printf`/`uart0_printf` (`src/printf.c`) теперь
+  сами зовут `vsnprintf` — до этого у них был свой разбор, и `%f` в строке
+  `Amiga perf` печатался литералом (`fps=%.1f`).
+- **r1220 (повторная вставка диска):** ядро применяет `chan`-настройки диска
+  только при `libretro_runloop_active`, поэтому host повторяет
+  `eject(false)` после первого кадра и печатает `Amiga disk retry: mount=N`.
+- **r1221 (JIT — отказ, откачено в r1222):** `#define JIT` в
+  `retrodep/sysconfig.h` + `-DJIT` + объекты `jit/compemu*` не собираются:
+  `traps.h`/`memory.h` ждут `uae_u32`-типы из полного билда, `compemu_support`
+  — C++. Vendor-порт libretro JIT не поддерживает; для скорости нужен реальный
+  порт, а не флаги.
+- **r1223 (currprefs диска):** в `retro_disk_set_eject_state` после записи в
+  `changed_prefs.floppyslots[0].df` добавлено копирование в
+  `currprefs.floppyslots[0].df`: привод при вставке читает именно currprefs,
+  а `DISK_reinsert()` только извлекает диск и помечает смену. Стенд: retry
+  даёт `mount=1`, но AROS всё равно просит носитель.
+- **r1224 (счётчики чтений fs):** `g_fs_read_ops`/`g_fs_read_bytes` в
+  `cores/fs_layer.c` (`fread` и fd-`read`), на выходе печатается
+  `Amiga disk reads=N bytes=N` — отличает «привод не читает образ» от
+  «образ читается, но не признан загрузочным».
+- **r1225 (вшитый Kickstart 1.3 + второй файл в fs-слое):**
+  - Владелец положил эталоны в `emulator-refs/bios` (`kick12/13/20/30/31/40.rom`
+    по 512 КБ). `kick13.rom` — две побайтно одинаковые половины по 256 КБ,
+    MD5 первой `82a21c1890cae844b3df741f2762d48d` = **Kickstart 1.3 rev 34.5
+    (A500)**. Из первой половины собран `h3_bare/cores/puae/bios/kick34005.A500`
+    (262144 б) и вшит: `h3_bare/cores/puae/kickstart_data.S` (`.incbin`,
+    символы `puae_kick13_rom`/`_end`), правило — `Makefile`
+    (`build/puae_kickstart_data.o`, `$(AS) -I$(PUAE_ROOT)`).
+  - `cores/fs_layer.c`: **второй файл** слоя — `fs_register_bios()` +
+    `path_matches_bios()` + `fs_source()` (какой буфер отдать: образ или BIOS).
+    Через `fs_source` работают `fopen`/`stat`/`access`/`open`; у fd-доступа
+    свой буфер на дескриптор (`g_fd_data[]`/`g_fd_size[]`), иначе `read`/`lseek`
+    читали образ. Мост — `a8_fs_register_bios()` в `cores/atari800/a8_fs.c`.
+  - `cores/puae_host.c`: `GET_SYSTEM_DIRECTORY` отдаёт `"."` (было `false`),
+    `puae_kickstart="kick34005.A500"` (было `"aros"`), Kickstart регистрируется
+    до `retro_load_game`. Ядро склеивает `"." + "/kick34005.A500"`, проверяет
+    через `stat` (слой отвечает размером 262144) и пишет
+    `kickstart_rom_file=./kick34005.A500` в конфиг; AROS остаётся значением
+    `"aros"`.
+  - Образ вырос на 262 КБ: 34 553 964 б (r1224 — 34 291 308 б). Блоб в
+    `.data` (`puae_kick13_rom`, `0x40000`; адрес символа плавает с порядком
+    объектов — см. `docs/MEMORY.md`).
+- **r1226 (диагностика путей fs):** стенд r1225 дал `fs: bios … size=262144`
+  и `Amiga fs: stat=1`, но ядро печатало `Kickstart ROM "kick34005.A500"
+  not found!`. Добавлены промахи `fs: stat miss '<путь>'` (до 8 за сессию) и
+  проба в host: `Amiga fs: kick plain=<ok>/<size> dotted=<ok>/<size>`.
+  Стенд r1226: проба `plain=1/262144 dotted=1/262144` (слой отвечает верно),
+  при этом ядро зовёт `stat` только для `./uae_data`, `.`, `./uae`, `/TEMP`,
+  а путь Kickstart до `stat` не доходит вовсе.
+- **r1227 (КОРЕНЬ «not found» и «insert disk»: заглушка `path_is_valid`):**
+  в прошивке единственным определением `path_is_valid` был стаб
+  `cores/fceumm/libretro_compat.c` (`return 0`), и из-за
+  `--allow-multiple-definition` он перекрывал настоящие реализации
+  libretro-common у ВСЕХ ядер. Ядра проверяют существование файла именно этой
+  функцией, поэтому PUAE не находил Kickstart, а диск DF0 не проходил проверку
+  пути (`mount` без чтения, `Amiga disk reads=0`); та же ложь работала и для
+  образов других систем. FIX: стаб удалён, одна реализация —
+  `cores/fs_layer.c: path_is_valid()` (`stat` слоя + ненулевой размер).
+  В сборке символ единственный (`build/fs_layer.o`), `linkcheck: OK`.
+  Образ r1227 — 34 554 412 б.
 
 ## 4. Системы (id → ядро / host)
 
@@ -234,21 +428,26 @@ c64 | VICE (`cores/vice`) | c64_host.c | vice_bss отдельно
 - **ВАЖНО**: правило `build/puae_renamed.stamp` ДОЛЖНО зависеть от
   `puae_rename.sh` (`Makefile:780`) — иначе правки скрипта не перезапускают
   переименование (тут ловили r1193: `calloc` в memory.o оставался глобальным).
-- Видео RGB565 retro_bmp→EMU_FB 320×240 (nearest для superhires); аудио
-  44100→48000 стерео; ввод USB-клава (HID→RETROK)+Sega-пад; environ
-  `puae_kickstart="aros"` (BIOS вшит через `.incbin` aros.rom.c, с SD НЕ
-  грузится); `puae_model="auto"`.
-- Ромы: `/roms/amiga/*.adf` (id="amiga"). Стенд ждёт подтверждения запуска ADF
-  с r1193 (предыдущие abort F1=0x4A800000 — причина fix'а).
+- Видео: `emu_scale_rgb565_src` — RGB565-кадр ядра (720×574 и др., с полями и
+  pitch) масштабируется сразу в HDMI FB, EMU_FB 320×240 не используется;
+  overscan режется вручную (640×512 по центру). Аудио 44100→48000 стерео;
+  ввод USB-клава (HID→RETROK) + Sega-пад; environ
+  `puae_kickstart="kick34005.A500"` (вшитый Kickstart 1.3 rev 34.5, `.incbin`
+  `cores/puae/bios/kick34005.A500`; AROS остаётся значением `"aros"`, с SD
+  ничего не грузится); `puae_model="auto"`, `puae_cpu_compatibility="normal"`.
+- Ромы: `/roms/amiga/*.adf` (id="amiga"). ADF виден fs-слою
+  (`stat=1 size=901120`), но ядро не монтирует его в DF0 — открытый вопрос
+  (см. r1223/r1224 в дельтах).
 
 ## 6. Известные ограничения / TODO
 
 - **32X требует стенда** (DRC на H3): BC Racers, Star Trek — нет `U`-падения
   после r1172; `32X diag` fps/масштаб.
-- **Amiga: зависание после `init`** (r1206: abort'а нет, PUAE аллоцирует до
-  `4C4527F0`, экрана нет). Прошить **r1207/r1208**, снять лог: последний
-  `PUAE env N …` + какой маркер `Amiga:` напечатан последним → там и встало
-  (`init` = создание ядра, `load` = `puae_retro_load_game`).
+- **Amiga: диск DF0 не монтируется** (`Amiga disk retry: mount=1`, но AROS
+  просит носитель). С r1224 на выходе печатается `Amiga disk reads=N bytes=N`:
+  `0` — привод не читает образ (путь/currprefs), `>0` — образ читается, но не
+  признан загрузочным. Скорость заморожена владельцем (интерпретатор без JIT,
+  `core≈33 мс`, в Windows-сборке так же медленно).
 - Файл с SD-образами для Amiga — только ADF (Kickstart вшит).
 - **Карта памяти и правила размещения — `docs/MEMORY.md`** (обязательно перед
   добавлением секций/буферов/ядер; там же LPAE-устройство и свободные зоны).

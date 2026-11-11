@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>   // r1227: bool для path_is_valid()
 #include <string.h>
 #include <stdio.h>   // FILE* (newlib), нам нужен только тип для сигнатур
 #include <sys/stat.h>   // r994: struct stat/S_IFREG — stat() «существования»
@@ -42,6 +43,10 @@ typedef struct {
 
 // Внешние метки .fs_bss (linker.ld) — для проверки диапазона слотов.
 extern char _fs_bss_start[], _fs_bss_end[];
+
+// r1224: диагностика «disk insert» — сколько раз и сколько байт реально читали.
+unsigned g_fs_read_ops = 0;
+unsigned g_fs_read_bytes = 0;
 
 static int slot_is_ours(const void* stream) {
     if (!stream) return 0;
@@ -117,9 +122,61 @@ static int path_matches(const char* path) {
 static int g_fs_miss_log FS_BSS = 0;
 static int g_fs_ok_log FS_BSS = 0;
 
+// r1225: второй файл слоя — вшитый Kickstart (kick34005.A500, 256 КБ).
+// Ядро читает его через stat/fopen при старте, ADF монтируется позже, поэтому
+// оба буфера должны быть доступны одновременно (один слот уже занят образом).
+static char     g_bios_path[FS_ROM_PATH_MAX] FS_BSS;
+static const uint8_t* g_bios_data FS_BSS = 0;
+static uint32_t g_bios_size FS_BSS = 0;
+
+void fs_register_bios(const char* path, const void* data, uint32_t size) {
+    if (!path || !data) { g_bios_data = 0; g_bios_size = 0; g_bios_path[0] = 0; return; }
+    size_t n = strlen(path);
+    if (n >= FS_ROM_PATH_MAX) n = FS_ROM_PATH_MAX - 1;
+    memcpy(g_bios_path, path, n);
+    g_bios_path[n] = 0;
+    g_bios_data = (const uint8_t*)data;
+    g_bios_size = size;
+    printf("fs: bios '%s' size=%u ptr=0x%08X\n",
+           g_bios_path, (unsigned)g_bios_size, (unsigned)(uintptr_t)data);
+}
+
+// Те же правила сопоставления, что у path_matches (без регистра, без ведущих
+// '/' и '.'), но для второго слота.
+static int path_matches_bios(const char* path) {
+    if (!path || !g_bios_path[0] || !g_bios_data) return 0;
+    const char* a = skip_path_prefix(path);
+    const char* b = skip_path_prefix(g_bios_path);
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+// Какой буфер отдаём по запрошенному пути: 1 — образ (ROM/диск), 2 — Kickstart.
+static int fs_source(const char* path, const uint8_t** data, uint32_t* size) {
+    if (path_matches(path)) {
+        if (data) *data = g_rom_data;
+        if (size) *size = g_rom_size;
+        return 1;
+    }
+    if (path_matches_bios(path)) {
+        if (data) *data = g_bios_data;
+        if (size) *size = g_bios_size;
+        return 2;
+    }
+    return 0;
+}
+
 FILE* fopen(const char* path, const char* mode) {
     (void)mode;
-    if (!path_matches(path)) {
+    const uint8_t* src = g_rom_data;
+    uint32_t src_size = g_rom_size;
+    if (!fs_source(path, &src, &src_size)) {
         if (g_fs_miss_log < 10) {
             g_fs_miss_log++;
             printf("fs: fopen miss '%s' (reg '%s')\n",
@@ -130,8 +187,8 @@ FILE* fopen(const char* path, const char* mode) {
     for (int i = 0; i < FS_MAX_OPEN; i++) {
         if (g_files[i].magic == FS_SLOT_MAGIC) continue;
         g_files[i].magic = FS_SLOT_MAGIC;
-        g_files[i].data = g_rom_data;
-        g_files[i].size = (long)g_rom_size;
+        g_files[i].data = src;
+        g_files[i].size = (long)src_size;
         g_files[i].pos  = 0;
         g_files[i].eof  = 0;
         g_files[i].err  = 0;
@@ -139,7 +196,7 @@ FILE* fopen(const char* path, const char* mode) {
         if (g_fs_ok_log < 5) {
             g_fs_ok_log++;
             printf("fs: fopen ok '%s' gsz=%ld slot.size=%ld data=%08X ptr=%08X\n",
-                   path, (long)g_rom_size, (long)g_files[i].size,
+                   path, (long)src_size, (long)g_files[i].size,
                    (unsigned)(uintptr_t)g_files[i].data,
                    (unsigned)(uintptr_t)&g_files[i]);
         }
@@ -151,6 +208,7 @@ FILE* fopen(const char* path, const char* mode) {
 }
 
 size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
+    g_fs_read_ops++; g_fs_read_bytes += (unsigned)(size * nmemb);
     // r1011: слот обязан быть НАШИМ (в .fs_bss + magic). VICE-VFS передаёт сюда
     // stream->fp — если слот затёрт/чужой указатель (RFILE), не читаем мусор.
     if (!slot_is_ours(stream)) return 0;
@@ -330,19 +388,41 @@ int unlink(const char* path) { (void)path; return -1; }
 // отменялся — пользователь попадал в BASIC/READY. Теперь для пути, под
 // которым зарегистрирован ROM-буфер, stat() отдаёт обычный файл с размером.
 int stat(const char* path, struct stat* st) {
-    if (!path_matches(path)) return -1;
+    uint32_t src_size = 0;
+    if (!fs_source(path, 0, &src_size)) {
+        // r1226: промах stat виден (ядро проверяет существование через
+        // path_is_valid -> stat). Без этого «ROM not found» не отличить от
+        // несовпадения пути; печатаем первые 8 промахов за сессию.
+        static int slog FS_BSS = 0;
+        if (slog < 8) {
+            slog++;
+            printf("fs: stat miss '%s' (reg '%s' bios '%s')\n",
+                   path ? path : "(null)", g_rom_path, g_bios_path);
+        }
+        return -1;
+    }
     if (st) {
         memset(st, 0, sizeof(*st));
         st->st_mode = S_IFREG | 0444;
-        st->st_size = (off_t)g_rom_size;
+        st->st_size = (off_t)src_size;
     }
     return 0;
 }
 int fstat(int fd, struct stat* st) { (void)fd; if (st) memset(st, 0, sizeof(*st)); return -1; }
 
+// r1227: libretro-овский path_is_valid() — одна реализация на всю прошивку.
+// Раньше её подменяла заглушка fceumm/libretro_compat.c (всегда 0), поэтому
+// ядра считали несуществующим любой путь: PUAE — Kickstart и диск («insert
+// disk»), остальные — свои образы. Семантика libretro: путь существует, если
+// это файл (у нас — зарегистрированный буфер) ненулевого размера.
+bool path_is_valid(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_size > 0;
+}
+
 // access(): зарегистрированный образ читается (F_OK/R_OK), но не пишется.
 int access(const char* path, int mode) {
-    if (!path_matches(path)) return -1;
+    if (!fs_source(path, 0, 0)) return -1;
     if (mode & 2 /* W_OK */) return -1;
     return 0;
 }
@@ -357,11 +437,17 @@ int access(const char* path, int mode) {
 #define FS_VFD_BASE 0x70000000
 static long g_fd_pos[FS_MAX_OPEN] FS_BSS;
 static int  g_fd_used[FS_MAX_OPEN] FS_BSS;
+// r1225: дескриптор помнит свой буфер (образ или вшитый Kickstart) — слотов
+// теперь два, и read/lseek не могут брать g_rom_* напрямую.
+static const uint8_t* g_fd_data[FS_MAX_OPEN] FS_BSS;
+static uint32_t g_fd_size[FS_MAX_OPEN] FS_BSS;
 static int  g_fd_log FS_BSS = 0;   // r998: диагностика fd-пути (первые вызовы)
 
 int open(const char* path, int flags, ...) {
     (void)flags;
-    if (!path_matches(path)) {
+    const uint8_t* src = 0;
+    uint32_t src_size = 0;
+    if (!fs_source(path, &src, &src_size)) {
         if (g_fd_log < 5) {
             g_fd_log++;
             printf("fs: fd open miss '%s' (reg '%s')\n",
@@ -373,6 +459,8 @@ int open(const char* path, int flags, ...) {
         if (g_fd_used[i]) continue;
         g_fd_used[i] = 1;
         g_fd_pos[i]  = 0;
+        g_fd_data[i] = src;
+        g_fd_size[i] = src_size;
         if (g_fd_log < 10) {
             g_fd_log++;
             printf("fs: fd open ok '%s' fd=0x%08X\n", path,
@@ -385,14 +473,17 @@ int open(const char* path, int flags, ...) {
 }
 
 int read(int fd, void* buf, size_t n) {
+    g_fs_read_ops++; g_fs_read_bytes += (unsigned)n;
     int i = fd - FS_VFD_BASE;
     if (i < 0 || i >= FS_MAX_OPEN || !g_fd_used[i]) return -1;
     long pos = g_fd_pos[i];
-    if (pos >= (long)g_rom_size) return 0;
+    const uint8_t* src = g_fd_data[i];
+    long src_size = (long)g_fd_size[i];
+    if (pos >= src_size) return 0;
     long want = (long)n;
-    if (pos + want > (long)g_rom_size) want = (long)g_rom_size - pos;
+    if (pos + want > src_size) want = src_size - pos;
     if (want <= 0) return 0;
-    if (buf) memcpy(buf, g_rom_data + pos, (size_t)want);
+    if (buf) memcpy(buf, src + pos, (size_t)want);
     g_fd_pos[i] = pos + want;
     // r998: первое чтение по fd — видно, доходят ли данные до ядра.
     if (g_fd_log < 15) {
@@ -411,7 +502,7 @@ off_t lseek(int fd, off_t off, int whence) {
     long base;
     if (whence == SEEK_SET)      base = 0;
     else if (whence == SEEK_CUR) base = g_fd_pos[i];
-    else if (whence == SEEK_END) base = (long)g_rom_size;
+    else if (whence == SEEK_END) base = (long)g_fd_size[i];
     else return (off_t)-1;
     long np = base + (long)off;
     if (np < 0) np = 0;
@@ -422,7 +513,7 @@ off_t lseek(int fd, off_t off, int whence) {
 int close(int fd) {
     int i = fd - FS_VFD_BASE;
     if (i < 0 || i >= FS_MAX_OPEN) return -1;
-    if (g_fd_used[i]) { g_fd_used[i] = 0; g_fd_pos[i] = 0; return 0; }
+    if (g_fd_used[i]) { g_fd_used[i] = 0; g_fd_pos[i] = 0; g_fd_data[i] = 0; g_fd_size[i] = 0; return 0; }
     return -1;
 }
 

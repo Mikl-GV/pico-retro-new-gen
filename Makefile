@@ -765,7 +765,7 @@ include $(PUAE_ROOT)/puae_sources.mk
 include $(PUAE_ROOT)/puae_rules.mk
 # PUAE_OBJS/PUAE_ZOBJS из sources.mk — голые имена; префикс $(BUILD)/ (как VICE).
 PUAE_OBJS_ALL := $(foreach f,$(PUAE_OBJS) $(PUAE_ZOBJS),$(BUILD)/$(f)) $(PUAE_LRC_OBJS)
-OBJ += $(PUAE_OBJS_ALL) $(BUILD)/puae_host.o
+OBJ += $(PUAE_OBJS_ALL) $(BUILD)/puae_host.o $(BUILD)/puae_kickstart_data.o
 PUAE_INC := -I$(PUAE_ROOT) -I$(PUAE_ROOT)/sources/src -I$(PUAE_ROOT)/sources/src/include \
 	-I$(PUAE_ROOT)/libretro -I$(PUAE_ROOT)/retrodep \
 	-I$(PUAE_ROOT)/libretro-common/include -I$(PUAE_ROOT)/deps/libz -I$(PUAE_ROOT)/deps/7zip
@@ -777,6 +777,10 @@ PUAE_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestandin
 	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration
 $(BUILD)/puae_host.o: $(TOP)h3_bare/cores/puae_host.c | $(BUILD)
 	$(CC) $(PUAE_CFLAGS) $(PUAE_INC) $(INCLUDES) -c -o $@ $<
+# Вшитый Kickstart 1.3 rev 34.5 (A500, 256 КБ): .incbin bios/kick34005.A500.
+# Путь инклюда относителен kickstart_data.S — ассемблер ищет его по -I$(PUAE_ROOT).
+$(BUILD)/puae_kickstart_data.o: $(TOP)h3_bare/cores/puae/kickstart_data.S $(TOP)h3_bare/cores/puae/bios/kick34005.A500 | $(BUILD)
+	$(AS) $(PUAE_CFLAGS) -I$(PUAE_ROOT) -x assembler-with-cpp -c -o $@ $<
 $(BUILD)/puae_renamed.stamp: $(PUAE_OBJS_ALL) $(TOP)h3_bare/cores/puae_rename.sh
 	$(TOP)h3_bare/cores/puae_rename.sh $(PUAE_OBJS_ALL)
 	touch $@

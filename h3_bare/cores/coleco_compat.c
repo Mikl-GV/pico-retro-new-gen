@@ -7,8 +7,9 @@
 #include <stdint.h>
 #include "uart.h"
 
-// abort() — libgcc unwind и libstdc++ ссылаются на него.
-void abort(void) { for (;;) {} }
+// abort/_exit/_Exit/_kill/__assert_func живут в src/libc_min.c (panic с
+// адресом возврата). Здесь их больше нет: молчаливый for(;;) скрывал падения
+// ядер (стенд Amiga r1210: висяк без следа в UART).
 
 // __cxa_atexit — регистрация глобальных деструкторов. Заглушка:
 // возвращаем 0 (успех), но ничего не регистрируем. Для bare-metal
@@ -44,8 +45,6 @@ int atexit(void (*func)(void)) { (void)func; return 0; }
 // r180: _write выводит в UART0. Log_func/Gearcoleco используют newlib puts —
 // раньше newlib stdio молча «глотал» вывод (буфер stdout аллоцировался из
 // bump-пула эмуляторов и затирался gb_heap_reset на следующем запуске).
-void _exit(int code) { (void)code; for (;;) {} }
-
 int _close(int fd) { (void)fd; return -1; }
 int _fstat(int fd, void* st) { (void)fd; (void)st; return -1; }
 int _getentropy(void* buf, unsigned len) { (void)buf; (void)len; return -1; }
@@ -66,5 +65,4 @@ int _write(int fd, const void* buf, unsigned len) {
     }
     return (int)len;
 }
-int _kill(int pid, int sig) { (void)pid; (void)sig; return -1; }
 int _getpid(void) { return 1; }

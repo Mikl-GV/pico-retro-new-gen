@@ -16,3 +16,10 @@ void fs_register(const char* path, const void* data, uint32_t size);
 void a8_fs_register(const char* path, const void* data, uint32_t size) {
     fs_register(path, data, size);
 }
+
+// r1225: второй файл слоя — вшитый BIOS/Kickstart (путь отличается от образа).
+void fs_register_bios(const char* path, const void* data, uint32_t size);
+
+void a8_fs_register_bios(const char* path, const void* data, uint32_t size) {
+    fs_register_bios(path, data, size);
+}

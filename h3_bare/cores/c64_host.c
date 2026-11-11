@@ -293,9 +293,11 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
 // Ошибки/предупреждения ядра печатаем в UART (как cpc r968) — видно
 // "Failed to load" и пр.
 static void c64_log(enum retro_log_level lvl, const char* fmt, ...) {
-    // Логи только по ошибкам/предупреждениям: INFO-поток VICE (Set resource,
-    // Arg0 и пр.) на блокирующем UART тормозил эмуляцию (r987).
-    if (lvl < RETRO_LOG_WARN) return;
+    // Порог общий (emu.c:g_core_log_min), по умолчанию WARN: INFO-поток VICE
+    // (Set resource, Arg0 и пр.) на блокирующем UART тормозил эмуляцию (r987).
+    // Аварии ядра (abort/assert/_exit) с r1212 идут через PANIC в libc_min.c.
+    extern int g_core_log_min;
+    if ((int)lvl < g_core_log_min) return;
     extern int uart0_printf(const char* fmt, ...);
     uart0_printf(lvl == RETRO_LOG_ERROR ? "  c64# " : "  c64: ");
     if (fmt) {

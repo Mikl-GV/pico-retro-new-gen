@@ -18,10 +18,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdio.h>
+#include <sys/stat.h>
 
 #include "libretro.h"
 
 #include "emu.h"
+#include "h3_hs_timer.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -51,32 +54,25 @@ static char g_path[160] = "game.adf";
 // Mapping на Sega-паде: крестовина = D-Pad, A = Fire 1, B = Fire 2.
 static uint16_t g_joy = 0;
 
-// ---- видео: RGB565 из retro_bmp -> EMU_FB 320x240 ----
-#define EMU_FB_ADDR 0x5F800000u
-#define EMU_FB_W    320
-#define EMU_FB_H    240
+// ---- видео: RGB565 из retro_bmp -> HDMI FB напрямую (emu_scale_rgb565_src).
+// Промежуточный EMU_FB 320×240 убран: ядро отдаёт кадр своей геометрии
+// (320×256/640×256/640×512, с полями и pitch), и ужатие в 320×240 давало
+// «сдвиг растра» на чересстрочных кадрах плюс лишнюю работу каждый кадр.
+static int g_geo_printed = 0;
+extern unsigned g_fs_read_ops, g_fs_read_bytes;   // fs_layer.c: чтения образа   // геометрия кадра печатается раз на сессию
 
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
     if (!data || width == 0 || height == 0) return;
-    uint16_t* dst = (uint16_t*)EMU_FB_ADDR;
-    const uint16_t* src = (const uint16_t*)data;
-    size_t sp = pitch >> 1;   // байты -> uint16
-
-    if (width <= EMU_FB_W && height <= EMU_FB_H) {
-        for (unsigned y = 0; y < height; y++)
-            memcpy(dst + (size_t)y * EMU_FB_W, src + (size_t)y * sp, width * sizeof(uint16_t));
-    } else {
-        // SuperHires (720x574) -> 320x240 (nearest), как fuse_host
-        for (unsigned y = 0; y < EMU_FB_H; y++) {
-            unsigned sy = (y * height) / EMU_FB_H;
-            if (sy >= height) sy = height - 1;
-            const uint16_t* srow = src + (size_t)sy * sp;
-            uint16_t* drow = dst + (size_t)y * EMU_FB_W;
-            for (unsigned x = 0; x < EMU_FB_W; x++)
-                drow[x] = srow[(x * width) / EMU_FB_W];
-        }
+    if (!g_geo_printed) {
+        g_geo_printed = 1;
+        printf("Amiga video: %ux%u pitch=%u\n", width, height, (unsigned)pitch);
     }
+    // Кадр PUAE масштабируем сразу в HDMI FB: собственный EMU_FB здесь не нужен
+    // (он 320×240, а ядро отдаёт 320×256/640×256/640×512 с полями и pitch —
+    // промежуточное ужатие в 320×240 давало «сдвиг растра» и лишнюю работу).
+    emu_scale_rgb565_src((const uint16_t*)data, (int)width, (int)height,
+                         (int)(pitch >> 1));
 }
 
 // ---- звук: стерео 44100 Гц -> 48000 (шаг 60211, ресемплер как fuse_host) ----
@@ -205,11 +201,26 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 // Встроенный AROS-фолбэк (Kickstart не нужен) — правило владельца: BIOS вшит,
 // с SD не грузится. Директории возвращаем "/" (fs_layer) — туда ядро пытается
 // сходить за kick34005.A500, не находит → AROS.
+// Порог логов ядра — общий (emu.c:g_core_log_min). PUAE отдаёт сообщения через
+// log_cb с RETRO_LOG_INFO; при пороге WARN они глушились, и старт ядра шёл
+// молча. Для отладки Amiga порог поднимается до INFO в emu_run_amiga.
+extern int g_core_log_min;
+
+// Ограниченная проба логов: на старте сессии порог поднимается до INFO, но не
+// более чем на g_diag_budget строк — дальше автоматически возвращается WARN.
+// Так отладочный лог ядра (вставка диска, режимы экрана) не заливает UART и не
+// тормозит эмуляцию в обычной работе.
+static int g_diag_budget = 0;
+
 static void puae_log(enum retro_log_level lvl, const char* fmt, ...)
 {
-    if (lvl < RETRO_LOG_WARN) return;
+    if ((int)lvl < g_core_log_min) return;
+    if (g_diag_budget > 0 && --g_diag_budget == 0)
+        g_core_log_min = RETRO_LOG_WARN;
     extern int uart0_printf(const char* fmt, ...);
-    uart0_printf("  puae# ");
+    static const char tag[] = { 'D', 'I', 'W', 'E' };
+    unsigned t = (unsigned)lvl;
+    uart0_printf("  puae%c# ", tag[t < 4 ? t : 3]);
     if (fmt) {
         va_list ap;
         char buf[512];
@@ -225,14 +236,6 @@ extern int uart0_printf(const char* fmt, ...);
 
 static bool host_environment(unsigned cmd, void* data)
 {
-    // r1207-ДИАГ: трассировка первых 80 env-команд. puae_retro_load_game
-    // общается с фронтендом только через этот колбэк — по последнему номеру
-    // видно, на каком шаге загрузка встала (стенд r1206: hang без abort
-    // после выделения 1.5 МБ).
-    {
-        static unsigned s_env_n;
-        if (s_env_n < 80) { uart0_printf("PUAE env %u\n", (unsigned)cmd); s_env_n++; }
-    }
     switch (cmd)
     {
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
@@ -243,16 +246,36 @@ static bool host_environment(unsigned cmd, void* data)
         return true;
     }
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+        // Каталог нужен ядру, чтобы собрать путь к Kickstart: оно склеивает
+        // system_dir + имя и проверяет его через stat (файловый слой). Вшитый
+        // KS регистрируется в fs_layer под именем "kick34005.A500", поэтому
+        // достаточно "." — ведущие "./" слой отбрасывает.
+        if (data) *(const char**)data = ".";
+        return true;
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
     case RETRO_ENVIRONMENT_GET_CONTENT_DIRECTORY:
-        return false;   // пусто — ядро идёт в AROS-фолбэк (вшитый)
+        return false;
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         struct retro_variable* v = (struct retro_variable*)data;
         if (v && v->key) {
             if (strcmp(v->key, "puae_model") == 0)    { v->value = "auto"; return true; }
-            if (strcmp(v->key, "puae_kickstart") == 0) { v->value = "aros"; return true; }
+            // Вшитый Kickstart 1.3 rev 34.5 (A500, 256 КБ). Ядро склеивает путь
+            // system_dir + это имя и проверяет его через stat — файловый слой
+            // отдаёт буфер из flash. AROS остаётся доступен значением "aros".
+            if (strcmp(v->key, "puae_kickstart") == 0) { v->value = "kick34005.A500"; return true; }
             if (strcmp(v->key, "puae_fastmem_size") == 0) { v->value = "0"; return true; }
             if (strcmp(v->key, "puae_chipmem_size") == 0) { v->value = "1"; return true; }
+            // Кроп ядра НЕ включаем: с ним оно отдаёт 320×200 при pitch=1440
+            // (окно уже полной строки), и на экране видно часть кадра. Поля
+            // overscan режим срезает сам в emu_scale_rgb565_src (720×574 -> 640×512).
+            if (strcmp(v->key, "puae_crop") == 0) { v->value = "disabled"; return true; }
+            // Скорость: по умолчанию ядро шло в «More compatible» 68000
+            // ("Building CPU, 44274 opcodes (0 1 1)"), а это самый медленный
+            // интерпретатор PUAE. "normal" — обычный, в разы быстрее;
+            // «More compatible» нужен лишь отдельным играм.
+            if (strcmp(v->key, "puae_cpu_compatibility") == 0) { v->value = "normal"; return true; }
+            // Блиттер без ожиданий: быстрее, совместимость достаточна для AROS/игр.
+            if (strcmp(v->key, "puae_immediate_blits") == 0) { v->value = "immediate"; return true; }
         }
         return false;
     }
@@ -287,11 +310,10 @@ void puae_retro_closedir(struct RDIR* rdir) { (void)rdir; }
 // ---- POSIX-стабы для newlib: ftello64/fseeko64 объявлены в stdio.h, но не
 // реализованы в libc; chmod/truncate отсутствуют (fsdb-код hardfile их зовёт,
 // в bare-metal файлы идут через VFS/fs_layer — реальные вызовы не достигают).
-#include <stdio.h>
 _off64_t ftello64(FILE* f) { return (_off64_t)ftello(f); }
 _off64_t fseeko64(FILE* f, _off64_t off, int whence) { return (_off64_t)fseeko(f, (_off_t)off, whence); }
-int chmod(const char* path, unsigned mode) { (void)path; (void)mode; return 0; }
-int truncate(const char* path, long length) { (void)path; (void)length; return 0; }
+int chmod(const char* path, mode_t mode) { (void)path; (void)mode; return 0; }
+int truncate(const char* path, off_t length) { (void)path; (void)length; return 0; }
 
 // ---- собственный аллокатор PUAE (puae_malloc/puae_calloc/puae_realloc/puae_free)
 // на sbrk-зоне (0x4B700000+), куда пул gameboy_stubs НЕ ходит. Причина:
@@ -305,12 +327,18 @@ extern void* _sbrk(int incr);          // libc_min.c (bump, SBRK_LIMIT 0x4EF0000
 static char* g_puae_brk = 0;
 static char* g_puae_brk_low = 0;       // LIFO-свободный хвост (realloc/free хвоста)
 static size_t g_puae_last = 0;         // размер последнего блока
+// Лимиты диагностики — на СЕССИЮ (сбрасываются в puae_heap_reset): иначе после
+// первого запуска счётчики исчерпаны, и в следующих видно только часть лога.
+static unsigned g_diag_big_n = 0;
+static unsigned g_diag_free_n = 0;
 
 static void puae_heap_reset(void)
 {
     g_puae_brk = 0;
     g_puae_brk_low = 0;
     g_puae_last = 0;
+    g_diag_big_n = 0;
+    g_diag_free_n = 0;
 }
 
 void* puae_malloc(size_t sz)
@@ -338,11 +366,10 @@ void* puae_malloc(size_t sz)
         return 0;
     }
     if (sz >= 65536u) {
-        static unsigned s_big_n;
-        if (s_big_n < 24) {
+        if (g_diag_big_n < 24) {
             printf("PUAE: alloc %u -> %08X (brk=%08X)\n", (unsigned)sz,
                    (unsigned)(a + 8), (unsigned)(uintptr_t)g_puae_brk);
-            s_big_n++;
+            g_diag_big_n++;
         }
     }
     return (void*)(a + 8);
@@ -358,12 +385,11 @@ void puae_free(void* p)
         // r1199-ДИАГ: первые 16 откатов — в лог. Если brk откатывается на
         // указатель ВНЕ sbrk-зоны, следующий malloc вернёт мусор (стенд:
         // memset по 0x467AB5F0 = символ puae_spixels в .bss).
-        static unsigned s_free_n;
-        if (s_free_n < 16) {
+        if (g_diag_free_n < 16) {
             printf("PUAE: free rewind %08X sz=%u (brk %08X)\n",
                    (unsigned)(uintptr_t)b, (unsigned)sz,
                    (unsigned)(uintptr_t)g_puae_brk);
-            s_free_n++;
+            g_diag_free_n++;
         }
         g_puae_brk = (char*)b;
         g_puae_last = 0;
@@ -467,12 +493,46 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     extern void a8_fs_register(const char* path, const void* data, uint32_t size);
     a8_fs_register(g_path, rom, size);
 
+    // Вшитый Kickstart (kickstart_data.S, bios/kick34005.A500). Регистрируем
+    // вторым файлом слоя: ядро читает его при старте тем же fopen/stat, что и
+    // образ, поэтому оба буфера должны быть живы одновременно.
+    {
+        extern void a8_fs_register_bios(const char* path, const void* data, uint32_t size);
+        extern const unsigned char puae_kick13_rom[], puae_kick13_rom_end[];
+        a8_fs_register_bios("kick34005.A500", puae_kick13_rom,
+                            (uint32_t)(puae_kick13_rom_end - puae_kick13_rom));
+    }
+
+    // Проба файлового слоя: ядро монтирует контент как диск только если
+    // path_is_valid() (через stat) подтверждает файл. Одна строка на сессию —
+    // иначе «insert disk» у AROS остаётся без следов в логе.
+    {
+        struct stat st;
+        int st_ok = (stat(g_path, &st) == 0);
+        printf("Amiga fs: stat=%d size=%u\n", st_ok,
+               (unsigned)(st_ok ? st.st_size : 0));
+        // r1226: проверяем, что слой отвечает на имя Kickstart и на путь с
+        // ведущим "./" — именно так его склеивает ядро перед path_is_valid().
+        struct stat kb;
+        int k1 = (stat("kick34005.A500", &kb) == 0);
+        unsigned s1 = (unsigned)(k1 ? kb.st_size : 0);
+        int k2 = (stat("./kick34005.A500", &kb) == 0);
+        unsigned s2 = (unsigned)(k2 ? kb.st_size : 0);
+        printf("Amiga fs: kick plain=%d/%u dotted=%d/%u\n", k1, s1, k2, s2);
+    }
+
     puae_retro_set_environment(host_environment);
     puae_retro_set_video_refresh(host_video);
     puae_retro_set_audio_sample(host_audio_sample);
     puae_retro_set_audio_sample_batch(host_audio_sample_batch);
     puae_retro_set_input_poll(host_input_poll);
     puae_retro_set_input_state(host_input_state);
+
+    // Проба логов ядра на сессию (см. g_diag_budget): порог INFO живёт, пока не
+    // израсходован бюджет строк, затем сам возвращается на WARN.
+    g_core_log_min = RETRO_LOG_INFO;
+    g_diag_budget = 120;
+    g_geo_printed = 0;
 
     printf("Amiga: init...\n");
     puae_retro_init();
@@ -490,19 +550,53 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
         puae_retro_deinit();
         return;
     }
+    // Монтируем контент как диск DF0. Важно: при index==0 и eject_state==false
+    // ядро выходит по раннему return и НИЧЕГО не монтирует (стенд r1215 —
+    // AROS так и остался с «insert disk»). Поэтому делаем реальный переход:
+    // eject → insert, тогда срабатывает ветка floppyslots[0].df + DISK_reinsert.
+    extern bool puae_retro_disk_set_image_index(unsigned index);
+    extern bool puae_retro_disk_set_eject_state(bool ejected);
+    puae_retro_disk_set_image_index(0);
+    puae_retro_disk_set_eject_state(true);
+    printf("Amiga disk: mount=%d\n", (int)puae_retro_disk_set_eject_state(false));
+
     printf("Amiga: started (%s, %u bytes)\n", g_path[0] ? g_path : "AROS/BIOS", (unsigned)size);
 
     emu_set_border_color(0x00080814);   // тёмно-синий
     emu_throttle_reset();
     emu_esc_hold_reset();
+    // Замер: сколько времени уходит на ядро и сколько на видео (скейл+flush).
+    // Итог печатается на выходе — по нему видно, что именно тормозит.
+    uint32_t t_core = 0, t_video = 0, nframes = 0;
+    int remount_done = 0;
     for (;;) {
-        puae_retro_run();
+        uint32_t t0 = h3_hs_timer_lo_us();
+        puae_retro_run();          // кадр PUAE -> host_video -> emu_scale_rgb565_src
+        uint32_t t1 = h3_hs_timer_lo_us();
+        // Ядро применяет часть настроек (и вставку диска) только когда прогон
+        // уже идёт (libretro_runloop_active). Поэтому после первого кадра
+        // повторяем eject→insert один раз.
+        if (!remount_done) {
+            remount_done = 1;
+            printf("Amiga disk retry: mount=%d\n",
+                   (int)puae_retro_disk_set_eject_state(false));
+        }
         emu_throttle();
-        emu_scale(320, 240);
         fb_flush();
+        uint32_t t2 = h3_hs_timer_lo_us();
+        t_core += t1 - t0;
+        t_video += t2 - t1;
+        nframes++;
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    if (nframes) {
+        printf("Amiga disk reads=%u bytes=%u\n", g_fs_read_ops, g_fs_read_bytes);
+        printf("Amiga perf: fps=%.1f core=%.1fms video=%.1fms\n",
+               (double)nframes * 1000000.0 / (double)(t_core + t_video),
+               (double)t_core / (double)nframes / 1000.0,
+               (double)t_video / (double)nframes / 1000.0);
+    }
     puae_retro_unload_game();
     puae_retro_deinit();
     emu_audio_stop();

@@ -239,9 +239,78 @@ int sprintf(char* buf, const char* fmt, ...) {
     return (int)(d - buf);
 }
 
+// ---- ctype: единственная таблица на всю прошивку -------------------------
+// На неё опираются макросы newlib <ctype.h> (isspace/isdigit/isupper/...)
+// во ВСЕХ ядрах (PUAE, VICE, FBNeo, FCEUmm...), а libc не линкуется
+// (-nostdlib). Раскладка как в newlib: индекс 0 — EOF, индекс c+1 — флаги
+// символа c. Флаги из newlib ctype.h:
+//   _U 01, _L 02, _N 04, _S 010, _P 020, _C 040, _X 0100, _B 0200.
+// Раньше в cores/fceumm/libretro_compat.c лежала нулевая заглушка [256] —
+// она удовлетворяла линкер, и настоящая таблица не подключалась: isspace()
+// всегда возвращал 0. Из-за этого PUAE не мог разобрать строку инструкции
+// ("ORSR.B  #1"), буфер мнемоники переполнялся, и ядро уходило в
+// readcpu.c:abort() (стенд r1212, «Internal error; line 733»).
+const char _ctype_[257] = {
+    0x00,                                   /* EOF: индекс 0 — EOF */
+    /* 0x00 */ 0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x28,0x28,0x28,0x28,0x28,0x20,0x20,
+    /* 0x10 */ 0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20,
+    /* 0x20 */ 0x88,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x10,
+    /* 0x30 */ 0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x10,0x10,0x10,0x10,0x10,0x10,
+    /* 0x40 */ 0x10,0x41,0x41,0x41,0x41,0x41,0x41,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,
+    /* 0x50 */ 0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x10,0x10,0x10,0x10,0x10,
+    /* 0x60 */ 0x10,0x42,0x42,0x42,0x42,0x42,0x42,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,
+    /* 0x70 */ 0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x10,0x10,0x10,0x10,0x20,
+    /* 0x80 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0x90 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xA0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xB0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xC0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xD0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xE0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    /* 0xF0 */ 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+};
+
+// ---- Аварийная остановка (единая точка) ----------------------------------
+// Все «аварийные» выходы libc/libstdc++/ядер (abort/exit/_exit/_Exit/_kill/
+// assert) идут через panic(): печатаем причину и адрес ВОЗВРАТА, затем
+// останавливаем ядро. Раньше abort()/_exit() были глухими for(;;) — падения
+// ядер (PUAE/VICE/FBNeo) выглядели как зависание без следа в UART.
+// Адрес возврата: `arm-none-eabi-addr2line -f -e build/h3_bare.elf <ret>`.
+extern int uart0_printf(const char* fmt, ...);
+
+__attribute__((noreturn)) static void panic(const char* what, unsigned code,
+                                           unsigned ret) {
+    uart0_printf("\nPANIC: %s code=%u ret=%08X\n", what, code, ret);
+    for (;;) __asm volatile("wfi");
+}
+
 void exit(int code) {
-    (void)code;
-    while (1) __asm volatile("wfi");
+    panic("exit", (unsigned)code, (unsigned)(uintptr_t)__builtin_return_address(0));
+}
+
+void _exit(int code) {
+    panic("_exit", (unsigned)code, (unsigned)(uintptr_t)__builtin_return_address(0));
+}
+
+void _Exit(int code) {
+    panic("_Exit", (unsigned)code, (unsigned)(uintptr_t)__builtin_return_address(0));
+}
+
+void abort(void) {
+    panic("abort", 0, (unsigned)(uintptr_t)__builtin_return_address(0));
+}
+
+int _kill(int pid, int sig) {
+    (void)pid;
+    panic("kill", (unsigned)sig, (unsigned)(uintptr_t)__builtin_return_address(0));
+}
+
+// newlib assert(): печатаем файл/строку/выражение — падения ядер на assert
+// (частая практика в VICE/FBNeo) больше не молчат.
+void __assert_func(const char* file, int line, const char* func, const char* expr) {
+    uart0_printf("\nASSERT: %s:%d %s: %s\n",
+                 file ? file : "?", line, func ? func : "?", expr ? expr : "?");
+    panic("assert", (unsigned)line, (unsigned)(uintptr_t)__builtin_return_address(0));
 }
 
 int abs(int x) { return x < 0 ? -x : x; }
@@ -304,6 +373,67 @@ int putchar(int c) {
     return c;
 }
 
+// ---- %f без libm ----------------------------------------------------------
+// Нужен логам ядер: PUAE печатает частоты как "%.4f". Пока конверсии не было,
+// vsnprintf не забирал аргумент-double из va_list, и ВСЕ следующие %d/%s читали
+// чужие значения — лог превращался в мусор (стенд r1213: "IDX=… (▒▒▒)",
+// «V=.4fHz»). Печатаем знак, целую часть и ровно prec цифр после точки.
+// |v| >= 1e19 (в логах не встречается) — "inf", чтобы не переполнять счётчик.
+static int fmt_double(char* out, int cap, double v, int prec) {
+    int n = 0;
+    const char* s;
+
+    if (prec < 0) prec = 6;
+    if (prec > 9) prec = 9;
+
+    if (v != v) {                                   // NaN
+        s = "nan";
+        while (*s && n < cap) out[n++] = *s++;
+        return n;
+    }
+    if (__builtin_isinf(v) || v >= 1.0e19 || v <= -1.0e19) {
+        if (v < 0 && n < cap) out[n++] = '-';
+        s = "inf";
+        while (*s && n < cap) out[n++] = *s++;
+        return n;
+    }
+    if (v < 0) { if (n < cap) out[n++] = '-'; v = -v; }
+
+    unsigned long long ipart = (unsigned long long)v;
+    double fpart = v - (double)ipart;
+
+    // округление дробной части к prec знакам (перенос в целую — редкость)
+    double scale = 1.0;
+    for (int i = 0; i < prec; i++) scale *= 10.0;
+    fpart += 0.5 / scale;
+    if (fpart >= 1.0) { fpart -= 1.0; ipart++; }
+
+    char ibuf[24];
+    int il = 0;
+    if (ipart == 0) {
+        ibuf[il++] = '0';
+    } else {
+        while (ipart && il < (int)sizeof(ibuf)) {
+            ibuf[il++] = (char)('0' + (int)(ipart % 10u));
+            ipart /= 10u;
+        }
+    }
+    while (il && n < cap) out[n++] = ibuf[--il];
+
+    if (prec > 0) {
+        if (n < cap) out[n++] = '.';
+        for (int i = 0; i < prec && n < cap; i++) {
+            fpart *= 10.0;
+            int dg = (int)fpart;
+            if (dg < 0) dg = 0;
+            if (dg > 9) dg = 9;
+            out[n++] = (char)('0' + dg);
+            fpart -= (double)dg;
+        }
+    }
+    return n;
+}
+
 int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
     // Стандартный контракт snprintf: если buf==NULL или n==0 — не писать,
     // вернуть длину строки, которая была бы записана (C99). VICE-шный
@@ -321,17 +451,53 @@ int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap) {
         }
         fmt++;
 
+        // Флаги '-' (влево) и '+' (всегда знак) — нужны для %f в логах ядер.
+        int left_align = 0;
+        while (*fmt == '-' || *fmt == '+') {
+            if (*fmt == '-') left_align = 1;
+            fmt++;
+        }
+
         // Ширина: %Nd, %NX, %04X и т.п. (паддинг — нулями)
         int width = 0;
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
 
+        // Точность: %.4f, %2.4f (для %s — предел длины, для целых не применяется)
+        int prec = -1;
+        if (*fmt == '.') {
+            fmt++;
+            prec = 0;
+            while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); fmt++; }
+        }
+
         switch (*fmt) {
+        // %f и родственные (e/E/g/G печатаем как f — для логов достаточно):
+        // без этой ветки аргумент-double не забирался из va_list, и все
+        // последующие конверсии читали чужие значения (мусор в логах ядер).
+        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': {
+                    double v = va_arg(ap, double);
+                    char tmp[64];
+                    int len = fmt_double(tmp, (int)sizeof(tmp), v, prec);
+                    int pad = width > len ? width - len : 0;
+                    if (!left_align) {
+                        while (pad-- > 0) { if (left > 1) { *d++ = ' '; left--; } out++; }
+                    }
+                    for (int i = 0; i < len; i++) { if (left > 1) { *d++ = tmp[i]; left--; } out++; }
+                    if (left_align) {
+                        int pad2 = width > len ? width - len : 0;
+                        while (pad2-- > 0) { if (left > 1) { *d++ = ' '; left--; } out++; }
+                    }
+                    break; }
         case 's': { const char* s = va_arg(ap, const char*);
                     if (!s) s = "(null)";
                     // r0.417 (L4): width применяется и к %s (паддинг пробелами)
                     int sl = 0; while (s[sl]) sl++;
+                    if (prec >= 0 && sl > prec) sl = prec;   // %.Ns — предел длины
                     while (sl < width) { if (left > 1) { *d++ = ' '; left--; } out++; sl++; width--; }
-                    while (*s) { if (left > 1) { *d++ = *s; left--; } out++; s++; } break; }
+                    for (int i = 0; s[i] && (prec < 0 || i < prec); i++) {
+                        if (left > 1) { *d++ = s[i]; left--; } out++;
+                    }
+                    break; }
         case 'd': case 'i': { int v = va_arg(ap, int);
                     // r0.417 (L4): INT_MIN без signed overflow (0u-u ≡ |v|)
                     unsigned u = (unsigned)v;

@@ -1,6 +1,9 @@
 #include <stdarg.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "uart.h"
+
+extern int vsnprintf(char* buf, size_t n, const char* fmt, va_list ap);
 
 static void pputc(char c) {
     if (c == '\n') uart_putc('\r');
@@ -82,20 +85,34 @@ static int do_printf(const char* fmt, va_list ap) {
     return 0;
 }
 
+// Форматирование — в ОДНОМ месте (libc_min.c:vsnprintf): там поддержаны
+// %f/%e/%g, точность и флаги. Раньше здесь был свой do_printf без плавающей
+// точки: лог "Amiga perf: fps=%.1f ..." печатал формат буквально, а
+// необслуженный %f ещё и сдвигал аргументы.
 int uart0_printf(const char* fmt, ...) {
+    char buf[640];
     va_list ap;
     va_start(ap, fmt);
-    int r = do_printf(fmt, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    return r;
+    for (const char* p = buf; *p; p++) {
+        if (*p == '\n') uart_putc('\r');
+        uart_putc(*p);
+    }
+    return n;
 }
 
 int printf(const char* fmt, ...) {
+    char buf[640];
     va_list ap;
     va_start(ap, fmt);
-    int r = do_printf(fmt, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    return r;
+    for (const char* p = buf; *p; p++) {
+        if (*p == '\n') uart_putc('\r');
+        uart_putc(*p);
+    }
+    return n;
 }
 
 // r978: vprintf/vfprintf — наша безопасная реализация поверх do_printf (uart).
