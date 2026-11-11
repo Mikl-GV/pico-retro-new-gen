@@ -63,6 +63,10 @@ static uint8_t g_mouse_l = 0, g_mouse_r = 0, g_mouse_m = 0;
 // (320×256/640×256/640×512, с полями и pitch), и ужатие в 320×240 давало
 // «сдвиг растра» на чересстрочных кадрах плюс лишнюю работу каждый кадр.
 static int g_geo_printed = 0;
+// r1240: ядро зовёт host_video ИЗ retro_run, поэтому «core=» в Amiga perf
+// включает вывод кадра. Считаем его отдельно, чтобы видеть чистую эмуляцию.
+static uint32_t g_vid_us_sum = 0;
+static uint32_t g_vid_frames = 0;
 extern unsigned g_fs_read_ops, g_fs_read_bytes, g_fs_rom_opens;   // fs_layer.c: чтения образа
 
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
@@ -74,8 +78,11 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     }
     // r1236: кадр PUAE (720×574) влезает в HDMI 1024×600 как есть — выводим
     // пиксель в пиксель по центру, без обрезки и без промежуточного 320×240.
+    uint32_t t0 = h3_hs_timer_lo_us();
     emu_show_rgb565_native((const uint16_t*)data, (int)width, (int)height,
                            (int)(pitch >> 1));
+    g_vid_us_sum += h3_hs_timer_lo_us() - t0;
+    g_vid_frames++;
 }
 
 // ---- звук: стерео 44100 Гц -> 48000 (шаг 60211, ресемплер как fuse_host) ----
@@ -113,6 +120,10 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f)
 // RETRO_DEVICE_KEYBOARD (RETROK_*). Джойстик — из Sega-пада, клавиатура — USB.
 static uint8_t g_kbd[RETROK_LAST];
 static uint16_t g_kbd_prev[RETROK_LAST];
+// r1239: PUAE узнаёт о клавишах ТОЛЬКО через колбэк
+// RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK (retro_key_event_state[code]);
+// опроса RETRO_DEVICE_KEYBOARD ядру недостаточно (этим оно читает хоткеи).
+static retro_keyboard_event_t g_kbd_event = 0;
 
 // HID-сканкод -> RETROK (тот же маппинг, что в c64_host)
 static uint16_t hid_to_retrok(uint8_t sc)
@@ -188,6 +199,21 @@ static void host_input_poll(void)
     if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);   // Fire 2 (B)
     if (sp & 0x0080) j |= (1u << RETRO_DEVICE_ID_JOYPAD_START); // Start
     g_joy = j;
+
+    // r1239: фронты клавиш в ядро. PUAE держит матрицу Amiga через
+    // retro_key_event_state[code], который заполняет только колбэк из
+    // SET_KEYBOARD_CALLBACK; сравнение с прошлым кадром даёт press/release.
+    if (g_kbd_event) {
+        uint16_t mods = 0;
+        if (g_kbd[RETROK_LSHIFT] || g_kbd[RETROK_RSHIFT]) mods |= RETROKMOD_SHIFT;
+        if (g_kbd[RETROK_LCTRL] || g_kbd[RETROK_RCTRL]) mods |= RETROKMOD_CTRL;
+        if (g_kbd[RETROK_LALT] || g_kbd[RETROK_RALT]) mods |= RETROKMOD_ALT;
+        for (unsigned k = 0; k < RETROK_LAST; k++) {
+            if ((uint8_t)g_kbd_prev[k] == g_kbd[k]) continue;
+            g_kbd_prev[k] = g_kbd[k];
+            g_kbd_event(g_kbd[k] ? true : false, k, (uint32_t)k, mods);
+        }
+    }
 
     // r1237: тачпад как мышь Amiga. Ядро (opt_physicalmouse) спрашивает
     // RETRO_DEVICE_MOUSE; даём относительные dx/dy от абсолютной позиции
@@ -279,6 +305,14 @@ static bool host_environment(unsigned cmd, void* data)
     {
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
         return (*(unsigned*)data) == RETRO_PIXEL_FORMAT_RGB565;
+    // r1239: ядро отдаёт сюда retro_keyboard_event; без регистрации клавиатура
+    // Amiga мертва (ядро ставит retro_key_event_state только из колбэка).
+    case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: {
+        const struct retro_keyboard_callback* cb =
+            (const struct retro_keyboard_callback*)data;
+        if (cb) g_kbd_event = cb->callback;
+        return g_kbd_event != 0;
+    }
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
         struct retro_log_callback* cb = (struct retro_log_callback*)data;
         if (cb) cb->log = puae_log;
@@ -391,6 +425,7 @@ static char* g_puae_base = 0;            // r1229: начало арены (дл
 static char* g_puae_brk_low = 0;       // низ арены: откат brk не уходит ниже
 static puae_blk_t* g_puae_free = 0;    // список свободных блоков (payload = next)
 static int g_core_inited = 0;   // r1231: ядро между входами не выгружается
+static int g_warm = 0;          // r1241: текущий вход — тёплый (init не звали)
 // r1235: прокрутка арены между сессиями. Слот сдвигает первое выделение на
 // PUAE_ROT_STEP, чтобы адреса не повторялись (иначе статические кэши ядра
 // считают видео/память уже инициализированными).
@@ -568,24 +603,40 @@ void emu_run_amiga_wb(void)
 
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    // r1235: каждый вход — холодный старт. Ядро кэширует адреса прошлой
-    // сессии в статиках (init_row_map и др.): при совпадении адресов оно
-    // пропускает переинициализацию и работает по мусору (стенд r1230:
-    // xlinebuffer = -1 → Data Abort в pfield_do_fill_line). Поэтому арена
-    // зануляется и сдвигается на слот прокрутки — адреса сессий различаются.
-    if (g_core_inited) {
-        puae_retro_unload_game();
-        puae_retro_deinit();
-        g_core_inited = 0;
-    }
-    emu_prepare();
-    puae_heap_reset();
-    {
+    // r1241: по умолчанию — ТЁПЛЫЙ вход (как r1234): ядро не выгружается,
+    // арена и _sbrk сохраняются. Холодный путь (unload+deinit+init) оставлен
+    // только на первый вход и после другого эмулятора (тот сбрасывает _sbrk).
+    // Причина: на стенде r1240 холодный вход со второй сессии ломал ROM —
+    // гость исполнял 0xFFFF по 0xFC082C (B-Trap, CPU halted): ядро после
+    // deinit не переинициализирует карту памяти полностью.
+    extern unsigned g_emu_prepare_gen;
+    static unsigned g_amiga_gen = 0;
+    g_warm = (g_core_inited && g_emu_prepare_gen == g_amiga_gen);
+    if (!g_warm) {
+        if (g_core_inited) {
+            puae_retro_unload_game();
+            puae_retro_deinit();
+            g_core_inited = 0;
+        }
+        puae_heap_reset();
         size_t gap = (size_t)g_rot_slot * PUAE_ROT_STEP;
         if (gap) (void)puae_malloc(gap);   // резерв-сдвиг, живёт до конца сессии
         printf("Amiga: cold start, arena slot %u (gap=%u КБ)\n",
                g_rot_slot, (unsigned)(gap >> 10));
         g_rot_slot = (g_rot_slot + 1u) % PUAE_ROT_SLOTS;
+    } else {
+        extern void* _sbrk(int incr);
+        g_puae_brk = (char*)_sbrk(0);   // синхронизация с текущей кучей
+    }
+    {
+        extern int g_emu_keep_sbrk;
+        g_emu_keep_sbrk = g_warm;   // тёплый вход: _sbrk не откатывать
+    }
+    emu_prepare();
+    g_amiga_gen = g_emu_prepare_gen;
+    {
+        extern int g_emu_keep_sbrk;
+        g_emu_keep_sbrk = 0;
     }
     // r1198: проверка карты sbrk-зоны ДО первого выделения PUAE (сводка;
     // при провале — номер первой плохой секции). Ловит разъехавшуюся карту MMU.
@@ -666,13 +717,19 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_core_log_min = RETRO_LOG_INFO;
     g_diag_budget = 60;
     g_geo_printed = 0;
+    g_vid_us_sum = 0;
+    g_vid_frames = 0;
 
-    // r1235: вход всегда холодный (см. блок прокрутки арены выше) — ядро
-    // инициализируется с нуля, статики не несут мусора прошлой сессии.
-    printf("Amiga: init...\n");
-    puae_retro_init();
-    g_core_inited = 1;
-    printf("Amiga: init ok\n");
+    // r1241: init только на холодном входе; при тёплом ядро уже инициализировано
+    // (смена контента, как в RetroArch: unload/load без deinit/init).
+    if (!g_core_inited) {
+        printf("Amiga: init...\n");
+        puae_retro_init();
+        g_core_inited = 1;
+        printf("Amiga: init ok\n");
+    } else {
+        printf("Amiga: core kept (init skipped)\n");
+    }
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));
@@ -744,12 +801,16 @@ exit:
                (double)nframes * 1000000.0 / (double)(t_core + t_video),
                (double)t_core / (double)nframes / 1000.0,
                (double)t_video / (double)nframes / 1000.0);
+        if (g_vid_frames)
+            printf("Amiga split: video-in-core=%.1fms emu-only=%.1fms\n",
+                   (double)g_vid_us_sum / (double)g_vid_frames / 1000.0,
+                   ((double)t_core - (double)g_vid_us_sum) /
+                       (double)nframes / 1000.0);
     }
-    // r1235: закрываем сессию полностью — deinit сносит состояние ядра, а
-    // следующий вход идёт холодным путём (арена зануляется и прокручивается).
+    // r1241: deinit НЕ вызываем — ядро остаётся инициализированным, следующий
+    // вход идёт путём unload/load. Холодный путь (deinit+init) применяется
+    // только при первом входе и после другого эмулятора (см. начало функции).
     puae_retro_unload_game();
-    puae_retro_deinit();
-    g_core_inited = 0;
     printf("Amiga heap: base=%08X brk=%08X\n",
            (unsigned)(uintptr_t)g_puae_base, (unsigned)(uintptr_t)g_puae_brk);
     emu_audio_stop();

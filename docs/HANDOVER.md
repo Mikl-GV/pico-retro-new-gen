@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1238)
+# HANDOVER — текущее состояние (r1241)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -34,7 +34,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1238**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1241**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая
@@ -527,6 +527,38 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
     `INFO` с бюджетом 60 строк (стартовые строки KS/диска видны, DEBUG-поток
     ушёл). Сводки `sbrk-map`, `Amiga fs: stat`, `Amiga heap`, `Amiga perf`
     оставлены — значимые.
+- **r1239 (клавиатура Amiga):**
+  - Причина «ввод не работает»: PUAE держит матрицу клавиш в
+    `retro_key_event_state[]`, которую заполняет ТОЛЬКО
+    `retro_keyboard_event` из `RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK`.
+    Host этот вызов не обрабатывал (отвечал false) — ядро не получало ни
+    одного нажатия; опрос `RETRO_DEVICE_KEYBOARD` ядро использует лишь для
+    своих хоткеев.
+  - FIX: `host_environment` запоминает колбэк, `host_input_poll()` каждый
+    кадр сравнивает набор клавиш с прошлым и шлёт фронты press/release
+    (`g_kbd_prev`, модификаторы SHIFT/CTRL/ALT). Мышь продолжала работать.
+- **r1240 (раздельный замер видео и эмуляции):**
+  - Ядро зовёт `host_video()` ИЗ `retro_run()`, поэтому строка
+    `Amiga perf: … core=…` включала вывод кадра. Добавлена вторая строка
+    `Amiga split: video-in-core=… emu-only=…` — по ней видно, что именно
+    занимает кадр: конвертация 720×574 → 1024×600 или 68000-ядро.
+  - `SERIAL: period=372, baud=9600, hsyncs=14, bits=8, PC=fc2234` — не
+    периодический вызов, а разовый лог `retrodep/serial_host.c:281`: гость
+    (Kickstart 1.3) один раз программирует эмулируемый serial-порт. Имя порта
+    пустое → `serempty_enabled`, хостового I/O нет; на скорость не влияет.
+- **r1241 (повторный вход снова тёплый):**
+  - Стенд r1240 показал: второй вход — `B-Trap FFFF at 00FC082C`, затем
+    `CPU halted: reason = 10 PC=0fc082c`. В гостевой памяти ROM = 0xFFFF:
+    холодный рестарт (deinit/init) не перезаливает Kickstart, вход ломается.
+  - Полный холодный путь (`unload`+`deinit`+`init`) и прокрутка арены оставлены
+    ТОЛЬКО для первого входа и для случая, когда между запусками Amiga
+    готовился другой эмулятор (`g_emu_prepare_gen` сменился).
+  - Обычный повторный вход — тёплый, как r1231–r1233: `init` не зовём,
+    `unload`/`load` меняют контент, арена и `_sbrk` не откатываются
+    (`g_emu_keep_sbrk = 1`), `puae_retro_deinit()` на выходе не вызывается.
+  - В `emu.c` возвращены `g_emu_keep_sbrk` и `g_emu_prepare_gen`
+    (инкремент в `emu_prepare()`, `newlib_heap_reset()` только при нулевом
+    флаге) — без них тёплый вход терял кучу ядра.
 
 ## 4. Системы (id → ядро / host)
 
