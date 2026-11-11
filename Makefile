@@ -779,7 +779,8 @@ $(BUILD)/puae_host.o: $(TOP)h3_bare/cores/puae_host.c | $(BUILD)
 	$(CC) $(PUAE_CFLAGS) $(PUAE_INC) $(INCLUDES) -c -o $@ $<
 # Вшитый Kickstart 1.3 rev 34.5 (A500, 256 КБ): .incbin bios/kick34005.A500.
 # Путь инклюда относителен kickstart_data.S — ассемблер ищет его по -I$(PUAE_ROOT).
-$(BUILD)/puae_kickstart_data.o: $(TOP)h3_bare/cores/puae/kickstart_data.S $(TOP)h3_bare/cores/puae/bios/kick34005.A500 | $(BUILD)
+# r1232: в том же kickstart_data.S лежит диск Workbench 1.3 (bios/wb13.adf).
+$(BUILD)/puae_kickstart_data.o: $(TOP)h3_bare/cores/puae/kickstart_data.S $(TOP)h3_bare/cores/puae/bios/kick34005.A500 $(TOP)h3_bare/cores/puae/bios/wb13.adf | $(BUILD)
 	$(AS) $(PUAE_CFLAGS) -I$(PUAE_ROOT) -x assembler-with-cpp -c -o $@ $<
 $(BUILD)/puae_renamed.stamp: $(PUAE_OBJS_ALL) $(TOP)h3_bare/cores/puae_rename.sh
 	$(TOP)h3_bare/cores/puae_rename.sh $(PUAE_OBJS_ALL)

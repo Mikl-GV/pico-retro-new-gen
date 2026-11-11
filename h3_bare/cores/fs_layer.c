@@ -47,6 +47,9 @@ extern char _fs_bss_start[], _fs_bss_end[];
 // r1224: диагностика «disk insert» — сколько раз и сколько байт реально читали.
 unsigned g_fs_read_ops = 0;
 unsigned g_fs_read_bytes = 0;
+// r1229: сколько раз ядро открывало сам образ (ADF/ROM). Косвенно показывает,
+// не переоткрывает ли оно диск на каждом кадре (смена диска ломает boot).
+unsigned g_fs_rom_opens = 0;
 
 static int slot_is_ours(const void* stream) {
     if (!stream) return 0;
@@ -84,6 +87,10 @@ void fs_register(const char* path, const void* data, uint32_t size) {
     // образ и его размер (сверка с тем, что позже просит fopen ядра).
     printf("fs: reg '%s' size=%u ptr=0x%08X\n",
            g_rom_path, (unsigned)g_rom_size, (unsigned)(uintptr_t)data);
+    // r1230: счётчики — на сессию (иначе в логе второго запуска сумма обеих).
+    g_fs_read_ops = 0;
+    g_fs_read_bytes = 0;
+    g_fs_rom_opens = 0;
 }
 
 // r994: VICE собран с UNIX_COMPILE, поэтому archdep_expand_path() через
@@ -176,7 +183,8 @@ FILE* fopen(const char* path, const char* mode) {
     (void)mode;
     const uint8_t* src = g_rom_data;
     uint32_t src_size = g_rom_size;
-    if (!fs_source(path, &src, &src_size)) {
+    int which = fs_source(path, &src, &src_size);
+    if (!which) {
         if (g_fs_miss_log < 10) {
             g_fs_miss_log++;
             printf("fs: fopen miss '%s' (reg '%s')\n",
@@ -184,6 +192,7 @@ FILE* fopen(const char* path, const char* mode) {
         }
         return NULL;
     }
+    if (which == 1) g_fs_rom_opens++;   // r1229: сколько раз открывали образ
     for (int i = 0; i < FS_MAX_OPEN; i++) {
         if (g_files[i].magic == FS_SLOT_MAGIC) continue;
         g_files[i].magic = FS_SLOT_MAGIC;
@@ -193,11 +202,10 @@ FILE* fopen(const char* path, const char* mode) {
         g_files[i].eof  = 0;
         g_files[i].err  = 0;
         g_files[i].dbg  = 1;   // r996: показать первое чтение этого открытия
-        if (g_fs_ok_log < 5) {
+        if (g_fs_ok_log < 40) {   // r1230: до 40 — считаем переоткрытия образа
             g_fs_ok_log++;
-            printf("fs: fopen ok '%s' gsz=%ld slot.size=%ld data=%08X ptr=%08X\n",
-                   path, (long)src_size, (long)g_files[i].size,
-                   (unsigned)(uintptr_t)g_files[i].data,
+            printf("fs: open#%u kind=%d ok '%s' gsz=%ld ptr=%08X\n",
+                   g_fs_ok_log, which, path, (long)src_size,
                    (unsigned)(uintptr_t)&g_files[i]);
         }
         return (FILE*)&g_files[i];
@@ -208,7 +216,7 @@ FILE* fopen(const char* path, const char* mode) {
 }
 
 size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
-    g_fs_read_ops++; g_fs_read_bytes += (unsigned)(size * nmemb);
+    g_fs_read_ops++;
     // r1011: слот обязан быть НАШИМ (в .fs_bss + magic). VICE-VFS передаёт сюда
     // stream->fp — если слот затёрт/чужой указатель (RFILE), не читаем мусор.
     if (!slot_is_ours(stream)) return 0;
@@ -239,6 +247,7 @@ size_t fread(void* ptr, size_t size, size_t nmemb, FILE* stream) {
                                     (long)f->pos, (long)f->size, want,
                                     (unsigned)(uintptr_t)stream); }
     if (f->pos + want > f->size) { want = f->size - f->pos; }
+    g_fs_read_bytes += (unsigned)want;   // r1230: считаем отданное, не запрошенное
     if (ptr) memcpy(ptr, f->data + f->pos, (size_t)want);
     // r996: первое чтение после open — что реально отдаём ядру.
     if (f->dbg) {

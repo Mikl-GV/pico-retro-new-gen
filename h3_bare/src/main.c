@@ -335,6 +335,36 @@ static int c64_source_dialog(void) {
     }
 }
 
+// r1232: Amiga — 1 = вшитый диск Workbench 1.3 (DF0), 2 = ADF с SD, 0 = назад.
+static int amiga_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Commodore Amiga: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. Workbench 1.3 (built-in disk, KS 1.3)",
+                "2. Disk image (.adf) from SD"
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 760, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 1 : 2;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 // r787: выбор машины Atari 8-bit (как MSX/ZX/BK). Индексы совпадают с
 // a8_machine_variants в a8_host.c. Возвращает индекс или -1 (ESC).
 extern int a8_machine_count(void);
@@ -458,7 +488,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1227";
+const char g_fw_version[] = "r1234";
 
 // r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
 // TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
@@ -525,7 +555,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1227\n");
+    uart_puts("build: r1234\n");
 
     // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
     // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.
@@ -947,6 +977,30 @@ void main(void) {
                 }
             }
             sega_pad_init();
+            continue;
+        }
+
+        // Commodore Amiga: вшитый Workbench 1.3 (DF0, KS 1.3) или ADF с SD.
+        // r1232: отдельный пункт, как у C64/A8, вместо прямого браузера.
+        if (strcmp(id, "amiga") == 0) {
+            for (;;) {
+                int src = amiga_source_dialog();   // 1 = WB вшит, 2 = ADF с SD
+                if (src == 0) break;               // ESC — назад в главное меню
+                sega_pad_init();
+                tft_help_show("amiga");
+                if (src == 1) {
+                    *(volatile uint32_t*)0x74u = 1;   // TFT (CPU1) заморожен
+                    __asm volatile("dsb st" ::: "memory");
+                    emu_run_amiga_wb();
+                    usb_wait_release_all();
+                    usb_kbd_restart_intr();
+                    *(volatile uint32_t*)0x74u = 0;
+                    __asm volatile("dsb st" ::: "memory");
+                } else {
+                    rom_browser_run("amiga", name, "amiga");
+                }
+                sega_pad_init();
+            }
             continue;
         }
 

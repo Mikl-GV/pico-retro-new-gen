@@ -4,16 +4,16 @@
 // звук 44100->48000 (ресемплер как fuse_host), ввод — Sega-геймпад
 // (D-Pad + 2 fire) + USB-клавиатура.
 //
-// Жизненный цикл: emu_run_amiga() -> puae_retro_* (переименовано из retro_*):
-//   puae_retro_set_environment/video/audio/input...
-//   puae_retro_init -> puae_retro_load_game(&info) -> цикл puae_retro_run()
-//   -> puae_retro_unload_game + puae_retro_deinit.
+// Жизненный цикл (r1231): ядро остаётся инициализированным между входами,
+// как смена контента в RetroArch:
+//   первый вход: puae_retro_init -> puae_retro_load_game(&info) -> цикл run()
+//                -> puae_retro_unload_game (deinit НЕ вызывается);
+//   повторный:   emu_prepare без сброса кучи -> load_game -> цикл run().
 //
-// Kickstart: НЕ грузим с SD (правило владельца — BIOS вшит). Ядро имеет
-// встроенный AROS-фолбэк (aros.rom.c), который активируется, когда ядро
-// не находит kick34005.A500/kick40068.A1200 в system-директории. Host
-// возвращает для GET_SYSTEM_DIRECTORY пустую строку — ядро идёт в AROS.
-// (Позже можно вшить настоящий Kickstart через bios_data.S-паттерн.)
+// Kickstart и системный диск вшиты (правило владельца — BIOS/ROM не с SD):
+//   bios/kick34005.A500 — Kickstart 1.3 через fs_layer (второй файл слоя);
+//   bios/wb13.adf       — Workbench 1.3 для пункта меню emu_run_amiga_wb().
+// GET_SYSTEM_DIRECTORY отдаёт ".", чтобы ядро искало Kickstart в слое.
 
 #include <stdint.h>
 #include <string.h>
@@ -59,7 +59,7 @@ static uint16_t g_joy = 0;
 // (320×256/640×256/640×512, с полями и pitch), и ужатие в 320×240 давало
 // «сдвиг растра» на чересстрочных кадрах плюс лишнюю работу каждый кадр.
 static int g_geo_printed = 0;
-extern unsigned g_fs_read_ops, g_fs_read_bytes;   // fs_layer.c: чтения образа   // геометрия кадра печатается раз на сессию
+extern unsigned g_fs_read_ops, g_fs_read_bytes, g_fs_rom_opens;   // fs_layer.c: чтения образа
 
 static void host_video(const void* data, unsigned width, unsigned height, size_t pitch)
 {
@@ -265,6 +265,9 @@ static bool host_environment(unsigned cmd, void* data)
             if (strcmp(v->key, "puae_kickstart") == 0) { v->value = "kick34005.A500"; return true; }
             if (strcmp(v->key, "puae_fastmem_size") == 0) { v->value = "0"; return true; }
             if (strcmp(v->key, "puae_chipmem_size") == 0) { v->value = "1"; return true; }
+            // Slow RAM (0.5 МБ в трапдоле) НЕ включаем: на стенде r1228 она дала
+            // Exception 3 (address error) в 0xC000B0 — загрузчик AmigaDOS
+            // переезжает в slow RAM и падает. A500 остаётся с 0.5 МБ chip. 
             // Кроп ядра НЕ включаем: с ним оно отдаёт 320×200 при pitch=1440
             // (окно уже полной строки), и на экране видно часть кадра. Поля
             // overscan режим срезает сам в emu_scale_rgb565_src (720×574 -> 640×512).
@@ -324,19 +327,67 @@ int truncate(const char* path, off_t length) { (void)path; (void)length; return 
 // Простой bump + LIFO-free: сессия Amiga живёт от emu_run_amiga до выхода,
 // память сбрасывается при повторном входе (sbrk-бросок в emu_prepare).
 extern void* _sbrk(int incr);          // libc_min.c (bump, SBRK_LIMIT 0x4EF00000)
+// r1234: арена PUAE — bump + список свободных блоков (first-fit). Раньше был
+// чистый bump с LIFO-откатом хвоста: освобождённые блоки в середине не
+// возвращались, и при тёплом перезапуске ядра арена росла на ~20 МБ за вход
+// (стенд r1233: на третьем входе «out of memory for chipmem» → PANIC newcpu.c:2010).
+#define PUAE_BLK_MAGIC 0x5041424Cu   // 'PABL'
+#define PUAE_HDR_SIZE  32u           // заголовок блока
+#define PUAE_MIN_SPLIT 64u           // меньше не делим: осколок бесполезен
+
+typedef struct puae_blk {
+    uint32_t magic;
+    uint32_t busy;      // 1 = занят, 0 = свободен
+    size_t   size;      // запрошенный размер полезной части
+    size_t   total;     // полный размер блока с заголовком (кратен 16)
+} puae_blk_t;
+
+#define PUAE_PAY(b) ((void*)((char*)(b) + PUAE_HDR_SIZE))
+
 static char* g_puae_brk = 0;
-static char* g_puae_brk_low = 0;       // LIFO-свободный хвост (realloc/free хвоста)
-static size_t g_puae_last = 0;         // размер последнего блока
+static char* g_puae_base = 0;            // r1229: начало арены (для зануления)
+static char* g_puae_brk_low = 0;       // низ арены: откат brk не уходит ниже
+static puae_blk_t* g_puae_free = 0;    // список свободных блоков (payload = next)
 // Лимиты диагностики — на СЕССИЮ (сбрасываются в puae_heap_reset): иначе после
 // первого запуска счётчики исчерпаны, и в следующих видно только часть лога.
 static unsigned g_diag_big_n = 0;
 static unsigned g_diag_free_n = 0;
+static int g_core_inited = 0;   // r1231: ядро между входами не выгружается
+static int g_warm = 0;          // r1233: текущий вход — тёплый (init не звали)
+
+// Список свободных: next лежит в payload (минимум 16 байт — блок ≥ 64, ок).
+// Обход ограничен счётчиком: при порче списка лучше потерять блоки, чем висеть.
+#define PUAE_WALK_MAX 8192u
+
+static void puae_blk_unlink(puae_blk_t* b)
+{
+    puae_blk_t** pp = &g_puae_free;
+    unsigned guard = 0;
+    while (*pp) {
+        if (++guard > PUAE_WALK_MAX) { g_puae_free = 0; return; }
+        if (*pp == b) { *pp = *(puae_blk_t**)PUAE_PAY(b); return; }
+        pp = (puae_blk_t**)PUAE_PAY(*pp);
+    }
+}
+
+static void puae_blk_push(puae_blk_t* b)
+{
+    *(puae_blk_t**)PUAE_PAY(b) = g_puae_free;
+    g_puae_free = b;
+}
 
 static void puae_heap_reset(void)
 {
+    // r1229: арена перед новой сессией обнуляется. Ядро держит статические
+    // указатели (chipmem_bank/bogomem_bank, строки prefs) на прошлую арену:
+    // retro_deinit() освобождает не всё, и второй вход иначе читает объекты
+    // прошлого запуска как валидные (стенд r1228: чёрный растр на повторе).
+    if (g_puae_base && g_puae_brk && g_puae_brk > g_puae_base &&
+        g_puae_brk != (char*)(uintptr_t)-1)
+        memset(g_puae_base, 0, (size_t)(g_puae_brk - g_puae_base));
     g_puae_brk = 0;
     g_puae_brk_low = 0;
-    g_puae_last = 0;
+    g_puae_free = 0;
     g_diag_big_n = 0;
     g_diag_free_n = 0;
 }
@@ -348,17 +399,47 @@ void* puae_malloc(size_t sz)
         g_puae_brk = (char*)_sbrk(0);
         if (g_puae_brk == (char*)-1) return 0;
         g_puae_brk_low = g_puae_brk;
+        if (!g_puae_base) g_puae_base = g_puae_brk;   // r1229: начало арены
     }
+    size_t need = PUAE_HDR_SIZE + (((uintptr_t)sz + 15u) & ~(uintptr_t)15u);
+
+    // r1234: сначала ищем подходящий освобождённый блок (first-fit).
+    unsigned guard = 0;
+    for (puae_blk_t* b = g_puae_free; b; b = *(puae_blk_t**)PUAE_PAY(b)) {
+        if (++guard > PUAE_WALK_MAX) { g_puae_free = 0; break; }
+        if (b->magic != PUAE_BLK_MAGIC || b->busy || b->total < need) continue;
+        puae_blk_unlink(b);
+        if (b->total - need >= PUAE_MIN_SPLIT) {
+            puae_blk_t* rest = (puae_blk_t*)((char*)b + need);
+            rest->magic = PUAE_BLK_MAGIC;
+            rest->busy = 0;
+            rest->size = 0;
+            rest->total = b->total - need;
+            b->total = need;
+            puae_blk_push(rest);
+        }
+        b->busy = 1;
+        b->size = sz;
+        if (sz >= 65536u && g_diag_big_n < 24) {
+            printf("PUAE: realloc-use %u -> %08X (free-list)\n", (unsigned)sz,
+                   (unsigned)(uintptr_t)PUAE_PAY(b));
+            g_diag_big_n++;
+        }
+        return PUAE_PAY(b);
+    }
+
     char* p = g_puae_brk;
-    uintptr_t a = ((uintptr_t)p + 7u) & ~(uintptr_t)7u;
-    if (_sbrk((int)(a - (uintptr_t)p + (uintptr_t)sz + 8)) == (void*)-1) return 0;
-    ((size_t*)a)[0] = sz;              // заголовок [size]
-    g_puae_brk = (char*)(a + sz + 8);
-    g_puae_last = sz;
+    uintptr_t a = ((uintptr_t)p + 15u) & ~(uintptr_t)15u;
+    if (_sbrk((int)(a - (uintptr_t)p + need)) == (void*)-1) return 0;
+    puae_blk_t* b = (puae_blk_t*)a;
+    b->magic = PUAE_BLK_MAGIC;
+    b->busy = 1;
+    b->size = sz;
+    b->total = need;
+    g_puae_brk = (char*)(a + need);
     // r1199-ДИАГ: крупные выделения + защита от ухода brk из sbrk-зоны
     // (0x4BF00000..0x4EF00000). Если brk вне диапазона — это следствие
-    // порчи указателя (LIFO-free чужого указателя и т.п.), а не нехватки
-    // памяти: печатаем и отказываем, чтобы не улететь memset'ом в мусор.
+    // порчи указателя, а не нехватки памяти: печатаем и отказываем.
     if ((uintptr_t)g_puae_brk < 0x4BF00000u || (uintptr_t)g_puae_brk > 0x4EF00000u) {
         printf("PUAE: brk OUT %08X (sz=%u)\n",
                (unsigned)(uintptr_t)g_puae_brk, (unsigned)sz);
@@ -368,33 +449,47 @@ void* puae_malloc(size_t sz)
     if (sz >= 65536u) {
         if (g_diag_big_n < 24) {
             printf("PUAE: alloc %u -> %08X (brk=%08X)\n", (unsigned)sz,
-                   (unsigned)(a + 8), (unsigned)(uintptr_t)g_puae_brk);
+                   (unsigned)(uintptr_t)PUAE_PAY(b),
+                   (unsigned)(uintptr_t)g_puae_brk);
             g_diag_big_n++;
         }
     }
-    return (void*)(a + 8);
+    return PUAE_PAY(b);
 }
 
 void puae_free(void* p)
 {
     if (!p) return;
-    uint8_t* b = (uint8_t*)p - 8;
-    size_t sz = ((size_t*)b)[0];
-    if ((char*)b + sz + 8 >= g_puae_brk - (g_puae_last + 8) && (char*)b + 8 >= g_puae_brk - (g_puae_last + 8)) {
-        // LIFO: освобождаем хвост — откатываем brk
-        // r1199-ДИАГ: первые 16 откатов — в лог. Если brk откатывается на
-        // указатель ВНЕ sbrk-зоны, следующий malloc вернёт мусор (стенд:
-        // memset по 0x467AB5F0 = символ puae_spixels в .bss).
+    // r1229/r1234: освобождаем только ЖИВЫЕ блоки текущей арены. Указатели
+    // прошлой сессии и мусорные значения отсекаются проверкой заголовка:
+    // без неё free откатывал brk под живые данные (стенд r1228).
+    if (!g_puae_base) return;
+    puae_blk_t* b = (puae_blk_t*)((char*)p - PUAE_HDR_SIZE);
+    if ((char*)b < g_puae_base || (char*)b + PUAE_HDR_SIZE > g_puae_brk) return;
+    if (b->magic != PUAE_BLK_MAGIC || !b->busy) return;
+    b->busy = 0;
+
+    // Слияние со следующим блоком, если он свободен и внутри арены.
+    puae_blk_t* nx = (puae_blk_t*)((char*)b + b->total);
+    if ((char*)nx + PUAE_HDR_SIZE <= g_puae_brk &&
+        nx->magic == PUAE_BLK_MAGIC && !nx->busy) {
+        puae_blk_unlink(nx);
+        b->total += nx->total;
+    }
+
+    // Хвост арены отдаём назад через brk — иначе арена не сжимается вообще.
+    if ((char*)b + b->total == g_puae_brk) {
         if (g_diag_free_n < 16) {
-            printf("PUAE: free rewind %08X sz=%u (brk %08X)\n",
-                   (unsigned)(uintptr_t)b, (unsigned)sz,
+            printf("PUAE: free tail %08X sz=%u (brk %08X)\n",
+                   (unsigned)(uintptr_t)b, (unsigned)b->size,
                    (unsigned)(uintptr_t)g_puae_brk);
             g_diag_free_n++;
         }
         g_puae_brk = (char*)b;
-        g_puae_last = 0;
         if (g_puae_brk < g_puae_brk_low) g_puae_brk = g_puae_brk_low;
+        return;
     }
+    puae_blk_push(b);
 }
 
 void* puae_calloc(size_t n, size_t sz)
@@ -408,9 +503,10 @@ void* puae_calloc(size_t n, size_t sz)
 void* puae_realloc(void* p, size_t sz)
 {
     if (!p) return puae_malloc(sz);
-    uint8_t* b = (uint8_t*)p - 8;
-    size_t old = ((size_t*)b)[0];
-    if (old >= sz) return p;           // shrink — оставляем (bump)
+    puae_blk_t* b = (puae_blk_t*)((char*)p - PUAE_HDR_SIZE);
+    if (b->magic != PUAE_BLK_MAGIC) return puae_malloc(sz);
+    size_t old = b->size;
+    if (old >= sz) return p;           // shrink — оставляем как есть
     void* np = puae_malloc(sz);
     if (!np) return 0;
     memcpy(np, p, old);
@@ -440,10 +536,41 @@ char* puae_strndup(const char* s, size_t n)
 }
 
 // ---- точка входа emu.c (как c64/fuse) ----
+void emu_run_amiga_wb(void)
+{
+    extern const unsigned char puae_wb13_adf[], puae_wb13_adf_end[];
+    uint32_t n = (uint32_t)(puae_wb13_adf_end - puae_wb13_adf);
+    printf("Amiga WB: вшитый диск %u байт\n", (unsigned)n);
+    emu_run_amiga(puae_wb13_adf, n, "wb13.adf");
+}
+
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-    puae_heap_reset();
+    // r1231/r1233: ядро остаётся инициализированным между входами (как
+    // RetroArch: между контентами только unload/load, без deinit/init).
+    // Тёплый старт допустим, только если с прошлого входа emu_prepare() не
+    // вызывался никем другим — иначе _sbrk уже сброшен и указатели PUAE мертвы.
+    extern unsigned g_emu_prepare_gen;
+    static unsigned g_amiga_gen = 0;
+    g_warm = (g_core_inited && g_emu_prepare_gen == g_amiga_gen);
+    if (!g_warm) {
+        puae_heap_reset();
+    } else {
+        extern void* _sbrk(int incr);
+        g_puae_brk = (char*)_sbrk(0);   // синхронизация с текущей кучей
+        printf("Amiga: warm restart (ядро не выгружалось, brk=%08X)\n",
+               (unsigned)(uintptr_t)g_puae_brk);
+    }
+    {
+        extern int g_emu_keep_sbrk;
+        g_emu_keep_sbrk = g_warm;   // тёплый старт: _sbrk не откатывать
+    }
     emu_prepare();
+    g_amiga_gen = g_emu_prepare_gen;
+    {
+        extern int g_emu_keep_sbrk;
+        g_emu_keep_sbrk = 0;
+    }
     // r1199-ДИАГ: снимок L1 перед запуском PUAE (после загрузки ROM с USB):
     // сравнить с L1["boot"] из main.c — покажет, менялась ли таблица и когда.
     extern void mmu_l1_dump(const char* tag);
@@ -530,13 +657,28 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     // Проба логов ядра на сессию (см. g_diag_budget): порог INFO живёт, пока не
     // израсходован бюджет строк, затем сам возвращается на WARN.
-    g_core_log_min = RETRO_LOG_INFO;
-    g_diag_budget = 120;
+    g_core_log_min = RETRO_LOG_DEBUG;   // r1234-ДИАГ: ищем строки floppy/DOS ядра
+    g_diag_budget = 300;
     g_geo_printed = 0;
 
-    printf("Amiga: init...\n");
-    puae_retro_init();
-    printf("Amiga: init ok\n");
+    // r1233: если между входами готовился другой эмулятор (emu_prepare звали
+    // ещё раз), его сброс _sbrk обнулил кучевые указатели PUAE — тогда только
+    // холодный путь: deinit снесённого состояния нет, поэтому unload + deinit
+    // и заново init.
+    if (g_core_inited && !g_warm) {
+        printf("Amiga: cold restart (между входами работал другой эмулятор)\n");
+        puae_retro_unload_game();
+        puae_retro_deinit();
+        g_core_inited = 0;
+    }
+    if (!g_core_inited) {
+        printf("Amiga: init...\n");
+        puae_retro_init();
+        g_core_inited = 1;
+        printf("Amiga: init ok\n");
+    } else {
+        printf("Amiga: core kept (init skipped)\n");
+    }
 
     struct retro_game_info info;
     memset(&info, 0, sizeof(info));
@@ -547,18 +689,26 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     printf("Amiga: load...\n");
     if (!puae_retro_load_game(&info)) {
         printf("Amiga: load failed\n");
-        puae_retro_deinit();
+        puae_retro_unload_game();
         return;
     }
-    // Монтируем контент как диск DF0. Важно: при index==0 и eject_state==false
-    // ядро выходит по раннему return и НИЧЕГО не монтирует (стенд r1215 —
-    // AROS так и остался с «insert disk»). Поэтому делаем реальный переход:
-    // eject → insert, тогда срабатывает ветка floppyslots[0].df + DISK_reinsert.
+    // r1234: НЕ выдёргиваем диск, вставленный ядром при load_game. Ручной
+    // eject→insert переводит привод в «диск сменился» уже ПОСЛЕ первого
+    // прохода m68k_go, и Kickstart остаётся на экране «вставьте диск» (стенд
+    // r1233: и Workbench 1.3, и игровой ADF ведут себя одинаково). Ядро само
+    // пишет «Disk (1) inserted in drive DF0» — этого достаточно. Ручной путь
+    // остаётся только как страховка, если индекс образа ядро не приняло.
     extern bool puae_retro_disk_set_image_index(unsigned index);
     extern bool puae_retro_disk_set_eject_state(bool ejected);
-    puae_retro_disk_set_image_index(0);
-    puae_retro_disk_set_eject_state(true);
-    printf("Amiga disk: mount=%d\n", (int)puae_retro_disk_set_eject_state(false));
+    int disk_mounted;
+    if (puae_retro_disk_set_image_index(0)) {
+        disk_mounted = 1;
+        printf("Amiga disk: mount=1 (контент смонтирован ядром)\n");
+    } else {
+        puae_retro_disk_set_eject_state(true);
+        disk_mounted = (int)puae_retro_disk_set_eject_state(false);
+        printf("Amiga disk: mount=%d (ручная вставка)\n", disk_mounted);
+    }
 
     printf("Amiga: started (%s, %u bytes)\n", g_path[0] ? g_path : "AROS/BIOS", (unsigned)size);
 
@@ -574,12 +724,15 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
         puae_retro_run();          // кадр PUAE -> host_video -> emu_scale_rgb565_src
         uint32_t t1 = h3_hs_timer_lo_us();
         // Ядро применяет часть настроек (и вставку диска) только когда прогон
-        // уже идёт (libretro_runloop_active). Поэтому после первого кадра
-        // повторяем eject→insert один раз.
+        // уже идёт (libretro_runloop_active). Повторяем вставку один раз и
+        // ТОЛЬКО если первая не удалась: лишний eject→insert во время загрузки
+        // поднимает DSKCHANGE, Kickstart перезапускает boot и уходит в цикл
+        // (стенд r1227: диск читается, но на экране «рука с дискетой»).
         if (!remount_done) {
             remount_done = 1;
-            printf("Amiga disk retry: mount=%d\n",
-                   (int)puae_retro_disk_set_eject_state(false));
+            if (!disk_mounted)
+                printf("Amiga disk retry: mount=%d\n",
+                       (int)puae_retro_disk_set_eject_state(false));
         }
         emu_throttle();
         fb_flush();
@@ -591,14 +744,20 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 exit:
     if (nframes) {
-        printf("Amiga disk reads=%u bytes=%u\n", g_fs_read_ops, g_fs_read_bytes);
+        printf("Amiga disk reads=%u bytes=%u opens=%u\n",
+               g_fs_read_ops, g_fs_read_bytes, g_fs_rom_opens);
         printf("Amiga perf: fps=%.1f core=%.1fms video=%.1fms\n",
                (double)nframes * 1000000.0 / (double)(t_core + t_video),
                (double)t_core / (double)nframes / 1000.0,
                (double)t_video / (double)nframes / 1000.0);
     }
+    // r1231: deinit НЕ вызываем — ядро остаётся инициализированным, следующий
+    // вход идёт путём load_game (как смена контента в RetroArch). deinit
+    // освобождал не всё и оставлял video/chipmem-статики в мусоре: стенд r1230
+    // падал на втором входе в pfield_do_fill_line (DFAR=FFFFFFFF).
     puae_retro_unload_game();
-    puae_retro_deinit();
+    printf("Amiga heap: base=%08X brk=%08X\n",
+           (unsigned)(uintptr_t)g_puae_base, (unsigned)(uintptr_t)g_puae_brk);
     emu_audio_stop();
     fb_clear();
     fb_flush();

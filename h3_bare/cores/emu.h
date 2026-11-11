@@ -93,5 +93,6 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name);      
 void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name);        // r974
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1185
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1191 PUAE
+void emu_run_amiga_wb(void);   // r1232: вшитый диск Workbench 1.3 (DF0)
 
 #endif

@@ -733,6 +733,11 @@ static const struct {
       "Amstrad CPC",
       {"Keyboard emulation","Enter = BIOS/BASIC","Z/X/C/A = joy fire 1..4","D-Pad = joystick","ESC hold = exit",NULL}
     },
+    // r1232: Amiga (PUAE) — вшитый KS 1.3, системный диск в DF0.
+    { "amiga",
+      "Commodore Amiga",
+      {"Workbench 1.3 or .adf from SD","Keyboard emulation (A500)","Pad: D-Pad + A/B (fire 1/2)","Start = fire 2","ESC hold = exit",NULL}
+    },
     // r122: About по тап-иконке на TFT (не трогает HDMI)
     { "about",
       "MultiTool Retro",
