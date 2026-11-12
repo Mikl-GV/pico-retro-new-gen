@@ -59,6 +59,9 @@ int usb_input_poll(void);   // объединённый ввод для меню
 void usb_pad_poll(void);
 int  usb_pad_get_pos(int* x, int* y);
 int  usb_pad_buttons(void);   // r1237: бит0=ЛКМ, бит1=ПКМ, бит2=СКМ
+// r1257: сырые дельты трекпада без усиления ×4 (для эмуляторов с относительным
+// курсором). Забирает и обнуляет накопленное; 0 — трекпада нет.
+int  usb_mouse_take_delta(int* dx, int* dy);
 
 // ---- Sega-геймпад ----
 void usb_pad_update(void);

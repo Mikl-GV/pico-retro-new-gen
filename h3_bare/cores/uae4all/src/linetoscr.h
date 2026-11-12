@@ -67,10 +67,21 @@ static void LNAME (int dpix, int stoppos)
 	    }
 
 #else
+#if defined(HDOUBLE)
+	/* r1258: lores при кадре 640 — каждый пиксель источника в два подряд,
+	 * поэтому 320 нативных точек ровно заполняют 640-пиксельную строку. */
+	while (dpix < stoppos) {
+	    unsigned short c = (colors_for_drawing.acolors[pixdata.apixels[spix]]);
+	    buf[dpix++] = c;
+	    buf[dpix++] = c;
+	    spix += SRC_INC;
+	}
+#else
 	while (dpix < stoppos) {
 	    buf[dpix++]= (colors_for_drawing.acolors[pixdata.apixels[spix]]);
 	    spix += SRC_INC;
 	}
+#endif
 #endif
     src_pixel = (int)spix;
 }

@@ -243,23 +243,42 @@ static uint16_t hid_to_retrok(uint8_t sc) {
 static void u4a_input_poll(void) {
     usb_kbd_poll();
     usb_pad_poll();
-    // r1248: тачпад/мышь как порт 0. Позиция абсолютная (0..1023 × 0..599),
-    // ядру нужны относительные dx/dy; масштаб 2 счёта на пиксель — как в
-    // puae_host (r1237), иначе курсор Amiga еле ползёт.
+    // r1257: плавное движение. Раньше брали позицию «виртуального курсора»
+    // (usb_kbd двигал её на dx*4) и домножали ещё на 2 — на экране 320 px это
+    // давало прыжки в 8 пикселей на единицу отчёта, попадать было невозможно.
+    // Теперь берём сырые дельты трекпада, сглаживаем EMA (вес 1/4) и
+    // масштабируем 1/3 с накоплением дробного остатка: медленное движение не
+    // теряется, резкое не проскакивает.
+#define MOUSE_SCALE_NUM 1
+#define MOUSE_SCALE_DEN 3
+    static int32_t acc_x = 0, acc_y = 0;   // остаток в 1/16 пикселя
+    static int32_t sm_x = 0, sm_y = 0;     // сглаженное смещение, 1/16
     static int last_x = 0, last_y = 0, have_last = 0;
-    int mx, my;
-    if (usb_pad_get_pos(&mx, &my)) {
-        if (!have_last) { last_x = mx; last_y = my; have_last = 1; }
-        int dx = mx - last_x, dy = my - last_y;
-        last_x = mx; last_y = my;
-        if (dx > 63) dx = 63; else if (dx < -63) dx = -63;
-        if (dy > 63) dy = 63; else if (dy < -63) dy = -63;
-        g_mouse_dx = (int16_t)(dx * 2);
-        g_mouse_dy = (int16_t)(dy * 2);
+    int rdx = 0, rdy = 0;
+    if (usb_mouse_take_delta(&rdx, &rdy)) {
+        sm_x = (sm_x * 3 + rdx * 16) / 4;
+        sm_y = (sm_y * 3 + rdy * 16) / 4;
     } else {
-        g_mouse_dx = 0;
-        g_mouse_dy = 0;
+        // Нет относительного источника — старый путь по абсолютной позиции.
+        int mx, my;
+        if (usb_pad_get_pos(&mx, &my)) {
+            if (!have_last) { last_x = mx; last_y = my; have_last = 1; }
+            sm_x = (mx - last_x) * 8;   // множитель 1/2 в 1/16-шкале
+            sm_y = (my - last_y) * 8;
+            last_x = mx; last_y = my;
+        } else {
+            sm_x = sm_y = 0;
+        }
     }
+    acc_x += sm_x * MOUSE_SCALE_NUM / MOUSE_SCALE_DEN;
+    acc_y += sm_y * MOUSE_SCALE_NUM / MOUSE_SCALE_DEN;
+    int odx = (int)(acc_x >> 4), ody = (int)(acc_y >> 4);
+    acc_x -= (int32_t)(odx << 4);
+    acc_y -= (int32_t)(ody << 4);
+    if (odx > 24) odx = 24; else if (odx < -24) odx = -24;
+    if (ody > 24) ody = 24; else if (ody < -24) ody = -24;
+    g_mouse_dx = (int16_t)odx;
+    g_mouse_dy = (int16_t)ody;
     int mb = usb_pad_buttons();
     g_mouse_l = (mb & 1) ? 1 : 0;
     g_mouse_r = (mb & 2) ? 1 : 0;

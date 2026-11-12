@@ -75,11 +75,21 @@ static void LNAME (int dpix, int stoppos)
 
 
 #else
+#if defined(HDOUBLE)
+	    /* r1258: dual playfield в lores — тот же приём удвоения пикселя. */
+	    while (dpix < stoppos) {
+		register unsigned short d = colors_for_drawing.acolors[lookup[pixdata.apixels[spix]]];
+		buf[dpix++] = d;
+		buf[dpix++] = d;
+		spix += SRC_INC;
+	    }
+#else
 	    while (dpix < stoppos) {
 		register unsigned short d = colors_for_drawing.acolors[lookup[pixdata.apixels[spix]]];
 		buf[dpix++] = d;
 		spix += SRC_INC;
 	    }
+#endif
 #endif
 
 

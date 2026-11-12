@@ -30,7 +30,7 @@ extern unsigned prefs_chipmem_size;
 extern int prefs_gfx_framerate, changed_gfx_framerate;
 extern int m68k_speed;
 
-#define PREFS_GFX_WIDTH 320
+#define PREFS_GFX_WIDTH 640
 // r1251: PAL-кадр Amiga — 320x256. Было 240: нижние 16 строк не попадали в
 // растр (обрезался низ экрана и текст), плюс встроенный статусбар ядра
 // отъедал ещё несколько строк.

@@ -684,6 +684,11 @@ int usb_touch_poll(int* x, int* y, int* pressed) {
 }
 
 // ---- Тачпад (I8 Pro boot mouse): накопление курсора из dx/dy ----
+// r1257: отдельные счётчики сырых дельт для эмуляторов. g_pad_x/y усилены ×4
+// и годятся только для «виртуального курсора» меню; эмулятору нужны честные
+// дельты, иначе на экране 320 px курсор прыгает.
+static int32_t g_mdx = 0, g_mdy = 0;
+
 void usb_pad_poll(void) {
     if (!g_pad.found || !g_pad.in_ep) return;
     int drained = 0;
@@ -691,6 +696,8 @@ void usb_pad_poll(void) {
         g_pad_btn = g_pad_report[0];   // r1237: байт кнопок boot-mouse
         int8_t dx = (int8_t)g_pad_report[1];
         int8_t dy = (int8_t)g_pad_report[2];
+        g_mdx += dx;
+        g_mdy += dy;
         if (dx > 1 || dx < -1) g_pad_x += dx * 4;
         if (dy > 1 || dy < -1) g_pad_y += dy * 4;
         if (g_pad_x < 0) g_pad_x = 0;
@@ -703,6 +710,15 @@ void usb_pad_poll(void) {
 int usb_pad_get_pos(int* x, int* y) {
     if (!g_pad.found) return 0;
     *x = g_pad_x; *y = g_pad_y;
+    return 1;
+}
+
+// r1257: забрать накопленные сырые дельты (обнуляет счётчики).
+int usb_mouse_take_delta(int* dx, int* dy) {
+    if (!g_pad.found) return 0;
+    if (dx) *dx = (int)g_mdx;
+    if (dy) *dy = (int)g_mdy;
+    g_mdx = g_mdy = 0;
     return 1;
 }
 

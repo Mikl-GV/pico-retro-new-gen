@@ -59,11 +59,11 @@
 
 
 #define GFXVIDINFO_PIXBYTES 2
-#define GFXVIDINFO_WIDTH 320
+#define GFXVIDINFO_WIDTH 640
 #define GFXVIDINFO_HEIGHT 256
 #define MAXBLOCKLINES 240
 #define VISIBLE_LEFT_BORDER 72
-#define VISIBLE_RIGHT_BORDER 392
+#define VISIBLE_RIGHT_BORDER 712
 #define LINETOSCR_X_ADJUST_BYTES 144
 /*
 #define VISIBLE_LEFT_BORDER 64
@@ -400,24 +400,28 @@ static int unpainted;
 
 #define LNAME pfiled_do_linetoscr_0
 #define SRC_INC 1
+#define HDOUBLE 1
 #include "linetoscr.h"
 #undef SRC_INC
+#undef HDOUBLE
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1
-#define SRC_INC 2
+#define SRC_INC 1
 #include "linetoscr.h"
 #undef SRC_INC
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_0_dual
 #define SRC_INC 1
+#define HDOUBLE 1
 #include "linetoscr2.h"
 #undef SRC_INC
+#undef HDOUBLE
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1_dual
-#define SRC_INC 2
+#define SRC_INC 1
 #include "linetoscr2.h"
 #undef SRC_INC
 #undef LNAME
@@ -475,7 +479,12 @@ static _INLINE_ void pfield_init_linetoscr (void)
 
     /* Now, compute some offsets.  */
 
-    res_shift = - bplres;
+    /* r1258: кадр 640 px. Окно теперь всегда вдвое шире нативного lores-
+     * разрешения (res_shift=1), поэтому координаты окна 0..640 совпадают с
+     * буфером и в lores, и в hires: hires рисуется 1:1, lores — удвоением
+     * пикселя в linetoscr (HDOUBLE). Раньше здесь было -bplres: hires
+     * сжимался в 320 через res_shift и терял каждый второй столбец. */
+    res_shift = 1 - bplres;
     if (res_shift) {
 	if (bpldualpf)
 		pfield_do_linetoscr=(line_draw_func *)pfiled_do_linetoscr_1_dual;
