@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1260)
+# HANDOVER — текущее состояние (r1261)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,6 +8,20 @@
 
 ## 0. Последние правки
 
+- **r1261 (2026-11-12): C64/128 — диагностика автозапуска, разбор лога T64.**
+  - По логу стенда: `AKILL.T64` — это **лента** (T64), не диск. VICE сначала
+    пробует образ как флоппи (`autostart_disk` → `Filesystem Image Probe:
+    Import GCR: Unknown GCR image version 32`), потом ленту; ни то, ни другое
+    не сработало, но причины не видны: порог логов ядра — WARN.
+  - В host (`c64_host.c`) на время `vice_retro_load_game` и первых 200 кадров
+    порог поднимается до INFO (`g_core_log_min = 1`), затем возвращается.
+    В логе появятся `Autodetecting image type of …`, `… recognized as disk
+    image` / `tape image`, `Attached file … as a tape image`, причины отказа.
+  - Это временная диагностика: после разбора вернуть WARN (убрать три строки).
+  - Сборка r1261: `h3_bare.bin` 22 683 004 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C9F4, `.data` 0x410672F0..0x415A1D7C;
+    `puae_kick13_rom=0x413A9304`, `puae_wb13_adf=0x413E9304`.
+  - Точка восстановления: тег `restore-r1260` (r1260 — Amiga 640 в норме).
 - **r1260 (2026-11-12): Amiga/UAE4All — убраны чёрные полосы через столбец.**
   - В r1259 hires-ветка писала только `buf[dpix<<1]`, то есть один столбец на
     пиксель окна: второй (нечётный) столбец каждой пары оставался чёрным —
@@ -394,7 +408,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1260**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1261**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая

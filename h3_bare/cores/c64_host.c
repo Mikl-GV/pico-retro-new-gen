@@ -49,6 +49,11 @@ void vice_retro_get_system_av_info(struct retro_system_av_info*);
 // c64_fs.c: регистрация ROM-буфера под путём (для fopen->rfopen)
 void c64_fs_register(const char* path, const void* data, uint32_t size);
 
+// r1261: порог логов ядра (emu.c). На время загрузки поднимаем до INFO —
+// только так видно, почему autostart не принял образ («autodetecting image
+// type», «recognized as disk/tape», «Cannot attach ...»).
+extern int g_core_log_min;
+
 // ---- ROM: путь из rom_browser (имя файла), буфер в ROM_BUF ----
 static char     g_path[160] = "game.d64";
 static uint16_t g_joy = 0;
@@ -454,8 +459,17 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     info.data = (void*)rom;
     info.size = size;
 
+    // r1261: ДИАГНОСТИКА (временно): INFO ядра на время загрузки и первых
+    // кадров. Иначе ошибки автозапуска теряются — по умолчанию порог WARN.
+    // После 200 кадров (~4 с) возвращаем прежний уровень, чтобы не заливать
+    // блокирующий UART.
+    int log_save = g_core_log_min;
+    g_core_log_min = 1;
+    printf("C64: INFO-логи ядра включены на время запуска\n");
+
     if (!vice_retro_load_game(&info)) {
         printf("C64: load failed\n");
+        g_core_log_min = log_save;
         vice_retro_deinit();
         return;
     }
@@ -483,12 +497,19 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_throttle_reset();
     emu_esc_hold_reset();
 
+    // Через 200 кадров возвращаем уровень логов, поднятый перед load_game.
+    int c64_frames = 0;
     for (;;) {
         vice_retro_run();
         emu_throttle();
         fb_flush();   // host_video уже пишет в HDMI FB (1024x600)
+        if (++c64_frames == 200) {
+            g_core_log_min = log_save;
+            printf("C64: INFO-логи ядра выключены\n");
+        }
         if (emu_esc_hold()) break;
     }
+    g_core_log_min = log_save;
 
     // r993: сброс «всего, что передавали ядру». Пока ядро ещё живо, отпускаем
     // ему все клавиши, которые host держал нажатыми (по g_kbd_prev), и обнуляем
