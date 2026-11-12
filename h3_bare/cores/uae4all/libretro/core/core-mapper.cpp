@@ -109,8 +109,10 @@ void read_joystick(int nr, unsigned int *dir, int *button)
     if ((nr == 0) && (SHOWKEY==1) || (pauseg==1) || (MOUSE_EMULATED==1) || (JOYSTICK_EMULATED==-1))
         return;
 
-    if ((nr == 1) && (!second_joystick_enable))
-        return;
+    // r1255: раньше при !second_joystick_enable выходили сразу, и joy0dir
+    // оставался от прошлого нажатия — в игре «залипало» направление. Теперь
+    // состояние порта 1 читаем всегда, а какой источник отдавать в JOY0DAT
+    // (мышь или джойстик) решает Retro_PollEvent по активности.
 
     if (left) up = !up;
     if (right) down = !down;
@@ -519,19 +521,8 @@ int Retro_PollEvent()
         if(KEYBOARD_PROCESS==1 || (JOYSTICK_EMULATED==-1) && (MOUSE_EMULATED==-1))
             Process_keyboard();
 
-        if(second_joystick_enable)
-        {
-         
-        }
-        else
-        {
-            if (input_state_cb(1, RETRO_DEVICE_JOYPAD, 0,RETRO_DEVICE_ID_JOYPAD_B) ||
-                input_state_cb(1, RETRO_DEVICE_JOYPAD, 0,RETRO_DEVICE_ID_JOYPAD_A))
-            {
-                LOGI("Switch to joystick mode for Port 0.\n");
-                second_joystick_enable = 1;
-            }
-        }
+        // r1255: режим (мышь/джойстик) больше не защёлкивается по нажатию
+        // A/B — переключаем ниже по фактической активности устройств.
     }
     else // if pauseg=0
     {
@@ -622,11 +613,27 @@ int Retro_PollEvent()
     mouse_l    |= input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2);
     mouse_r    |= input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2);
 
-    if ((mouse_l || mouse_r) && (second_joystick_enable))
+    // r1255: источник для JOY0DAT выбираем по активности. Джойстик — любое
+    // направление или огонь на порту 1, мышь — движение либо клик. Флаг не
+    // залипает: шевельнули мышь — порт 0 снова мышь (do_mouse_hack), нажали
+    // на пад/стрелки — снова джойстик. Клики при этом не глотаются.
     {
-        mouse_l = mouse_r = 0;
-        LOGI("Switch to mouse mode for Port 0.\n");
-        second_joystick_enable = 0;   // disable 2nd joystick if mouse activated...
+        int joy_active =
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP)    ||
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN)  ||
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT)  ||
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT) ||
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B)     ||
+            input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
+        int mouse_active = (rmouse_x != 0) || (rmouse_y != 0) || mouse_l || mouse_r;
+
+        if (joy_active && !second_joystick_enable) {
+            second_joystick_enable = 1;
+            LOGI("Port 0: joystick (port 1 active).\n");
+        } else if (mouse_active && second_joystick_enable) {
+            second_joystick_enable = 0;
+            LOGI("Port 0: mouse.\n");
+        }
     }
 
     static int mmbL=0,mmbR=0;

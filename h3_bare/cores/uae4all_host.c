@@ -457,6 +457,29 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
         uint32_t t0 = h3_hs_timer_lo_us();
         u4a_retro_run();          // m68k_go + flush_audio + video_cb
         uint32_t t1 = h3_hs_timer_lo_us();
+        // r1256: диагностика ввода — раз в секунду и только при изменении,
+        // чтобы не заливать UART во время игры. pad — скан пада, kbd — стрелки
+        // и Space (клавиатура дублирует джойстик), mouse — последний dx/dy.
+        {
+            static uint32_t in_t = 0;
+            static uint32_t in_last = 0xFFFFFFFFu;
+            uint32_t now_in = h3_hs_timer_lo_us();
+            if (now_in - in_t > 1000000u) {
+                in_t = now_in;
+                uint32_t pad = pad_scan_combined();
+                uint32_t kb = (g_kbd[RETROK_UP] ? 1u : 0u) | (g_kbd[RETROK_DOWN] ? 2u : 0u)
+                            | (g_kbd[RETROK_LEFT] ? 4u : 0u) | (g_kbd[RETROK_RIGHT] ? 8u : 0u)
+                            | (g_kbd[RETROK_SPACE] ? 0x10u : 0u);
+                uint32_t mb2 = (uint32_t)(usb_pad_buttons() & 3);
+                uint32_t st = pad | (kb << 16) | (mb2 << 24);
+                if (st != in_last) {
+                    in_last = st;
+                    printf("  INPUT pad=%03X kbd=%02X mouse=%d/%d btn=%u\n",
+                           (unsigned)pad, (unsigned)kb,
+                           (int)g_mouse_dx, (int)g_mouse_dy, (unsigned)mb2);
+                }
+            }
+        }
         if (nframes == 0) {
             uint32_t crc_post = mmu_tables_crc();
             printf("Amiga DIAG: mmu-crc post=%08X guard=%d %s\n",
