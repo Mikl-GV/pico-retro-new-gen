@@ -403,10 +403,8 @@ static int unpainted;
 
 #define LNAME pfiled_do_linetoscr_0
 #define SRC_INC 1
-#define HDOUBLE 1
 #include "linetoscr.h"
 #undef SRC_INC
-#undef HDOUBLE
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1
@@ -417,10 +415,8 @@ static int unpainted;
 
 #define LNAME pfiled_do_linetoscr_0_dual
 #define SRC_INC 1
-#define HDOUBLE 1
 #include "linetoscr2.h"
 #undef SRC_INC
-#undef HDOUBLE
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1_dual
@@ -487,7 +483,7 @@ static _INLINE_ void pfield_init_linetoscr (void)
 
     /* r1259: res_shift переводит дельту окна в пиксели источника (apixels):
      * lores — 1:1, hires — вдвое плотнее. Это НЕ масштаб вывода; вывод
-     * удваивает linetoscr (HDOUBLE / SRC_INC). */
+     * удваивает linetoscr (два столбца на пиксель окна). */
     res_shift = - bplres;
     if (res_shift) {
 	if (bpldualpf)

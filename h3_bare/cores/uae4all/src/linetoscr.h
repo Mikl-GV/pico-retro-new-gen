@@ -67,24 +67,16 @@ static void LNAME (int dpix, int stoppos)
 	    }
 
 #else
-#if defined(HDOUBLE)
-	/* r1259: lores — пиксель источника в два столбца буфера (640 px),
-	 * индекс вывода = 2*dpix-относительно сдвинутой базы. */
+	/* r1260: на пиксель окна приходится два столбца буфера.
+	 * lores (SRC_INC 1): оба из одного пикселя источника (удвоение);
+	 * hires (SRC_INC 2): из двух соседних пикселей источника.
+	 * Раньше hires писал только один столбец — чёрные полосы через пиксель. */
 	while (dpix < stoppos) {
-	    unsigned short c = (colors_for_drawing.acolors[pixdata.apixels[spix]]);
-	    buf[(dpix << 1)] = c;
-	    buf[(dpix << 1) + 1] = c;
+	    buf[(dpix << 1)]     = (colors_for_drawing.acolors[pixdata.apixels[spix]]);
+	    buf[(dpix << 1) + 1] = (colors_for_drawing.acolors[pixdata.apixels[spix + SRC_INC - 1]]);
 	    dpix++;
 	    spix += SRC_INC;
 	}
-#else
-	/* hires: 640 точек источника в 640 столбцов буфера, 1:1 */
-	while (dpix < stoppos) {
-	    buf[dpix << 1]= (colors_for_drawing.acolors[pixdata.apixels[spix]]);
-	    dpix++;
-	    spix += SRC_INC;
-	}
-#endif
 #endif
     src_pixel = (int)spix;
 }

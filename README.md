@@ -7,7 +7,7 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — вывод I2S0/CPU2
 (48 кГц стерео, MAX98357A); синтез в ядрах сохранён.
 
-Версия прошивки: **r1259** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
+Версия прошивки: **r1260** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
 
 ## Системы (статус из `h3_bare/cores/systems.h`)
 

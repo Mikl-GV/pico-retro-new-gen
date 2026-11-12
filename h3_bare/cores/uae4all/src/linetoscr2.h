@@ -75,22 +75,14 @@ static void LNAME (int dpix, int stoppos)
 
 
 #else
-#if defined(HDOUBLE)
-	    /* r1259: dual playfield в lores — тот же вывод в два столбца. */
+	    /* r1260: два столбца буфера на пиксель окна — lores дублирует,
+	     * hires берёт два соседних пикселя источника (SRC_INC). */
 	    while (dpix < stoppos) {
-		register unsigned short d = colors_for_drawing.acolors[lookup[pixdata.apixels[spix]]];
-		buf[(dpix << 1)] = d;
-		buf[(dpix << 1) + 1] = d;
+		buf[(dpix << 1)]     = colors_for_drawing.acolors[lookup[pixdata.apixels[spix]]];
+		buf[(dpix << 1) + 1] = colors_for_drawing.acolors[lookup[pixdata.apixels[spix + SRC_INC - 1]]];
 		dpix++;
 		spix += SRC_INC;
 	    }
-#else
-	    while (dpix < stoppos) {
-		buf[dpix << 1] = colors_for_drawing.acolors[lookup[pixdata.apixels[spix]]];
-		dpix++;
-		spix += SRC_INC;
-	    }
-#endif
 #endif
 
 
