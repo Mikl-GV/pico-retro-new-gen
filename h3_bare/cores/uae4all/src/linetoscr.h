@@ -68,17 +68,20 @@ static void LNAME (int dpix, int stoppos)
 
 #else
 #if defined(HDOUBLE)
-	/* r1258: lores при кадре 640 — каждый пиксель источника в два подряд,
-	 * поэтому 320 нативных точек ровно заполняют 640-пиксельную строку. */
+	/* r1259: lores — пиксель источника в два столбца буфера (640 px),
+	 * индекс вывода = 2*dpix-относительно сдвинутой базы. */
 	while (dpix < stoppos) {
 	    unsigned short c = (colors_for_drawing.acolors[pixdata.apixels[spix]]);
-	    buf[dpix++] = c;
-	    buf[dpix++] = c;
+	    buf[(dpix << 1)] = c;
+	    buf[(dpix << 1) + 1] = c;
+	    dpix++;
 	    spix += SRC_INC;
 	}
 #else
+	/* hires: 640 точек источника в 640 столбцов буфера, 1:1 */
 	while (dpix < stoppos) {
-	    buf[dpix++]= (colors_for_drawing.acolors[pixdata.apixels[spix]]);
+	    buf[dpix << 1]= (colors_for_drawing.acolors[pixdata.apixels[spix]]);
+	    dpix++;
 	    spix += SRC_INC;
 	}
 #endif

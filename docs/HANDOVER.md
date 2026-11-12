@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1258)
+# HANDOVER — текущее состояние (r1259)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,7 +8,21 @@
 
 ## 0. Последние правки
 
-- **r1258 (2026-11-12): Amiga/UAE4All — кадр 640 px, hires без децимации.**
+- **r1259 (2026-11-12): Amiga/UAE4All — 640 кадр без сдвига геометрии.**
+  - В r1258 была ошибка: `res_shift` — это перевод дельты окна в пиксели
+    источника (apixels), а не масштаб вывода; окно осталось 72..392, и весь
+    кадр писался в левую половину буфера (справа чёрный прямоугольник).
+  - Теперь геометрия не тронута (`res_shift = -bplres`, `VISIBLE_RIGHT_BORDER`
+    392), а масштабируется только вывод: `dest = 2*(dpix - 72)`
+    (`LINETOSCR_X_ADJUST_BYTES` 288 = 72*2 px), в `linetoscr`/`linetoscr2`
+    индекс `dpix << 1`; lores-варианты с `HDOUBLE` пишут два столбца,
+    hires-варианты (`SRC_INC 2`) — один столбец на каждый из 640 пикселей
+    источника. `pfield_do_fill_line` и `fill_line` тоже пишут удвоенно
+    (у `fill_line` левая граница — `VISIBLE_LEFT_BORDER << 2` байт).
+  - Сборка r1259: `h3_bare.bin` 22 682 748 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C964, `.data` 0x410671F0..0x415A1C7C;
+    `puae_kick13_rom=0x413A9204`, `puae_wb13_adf=0x413E9204`.
+- **r1258 (2026-11-12): Amiga/UAE4All — кадр 640 px (первый заход, см. r1259).**
   - `PREFS_GFX_WIDTH` и `GFXVIDINFO_WIDTH` → 640; `VISIBLE_RIGHT_BORDER`
     392 → 712 (левая граница и `LINETOSCR_X_ADJUST_BYTES` те же, окно
     0..640 в буфере).
@@ -364,7 +378,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1258**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1259**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая

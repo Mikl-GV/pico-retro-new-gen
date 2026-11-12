@@ -63,8 +63,11 @@
 #define GFXVIDINFO_HEIGHT 256
 #define MAXBLOCKLINES 240
 #define VISIBLE_LEFT_BORDER 72
-#define VISIBLE_RIGHT_BORDER 712
-#define LINETOSCR_X_ADJUST_BYTES 144
+#define VISIBLE_RIGHT_BORDER 392
+/* r1259: координаты окна остаются в «низких» пикселях (72..392), а строка
+ * буфера — 640 px. Сдвиг базы и индексация в linetoscr удваиваются:
+ * dest = 2*(dpix - 72), поэтому LINETOSCR_X_ADJUST = 72*2 px = 288 байт. */
+#define LINETOSCR_X_ADJUST_BYTES 288
 /*
 #define VISIBLE_LEFT_BORDER 64
 #define VISIBLE_RIGHT_BORDER 384
@@ -407,7 +410,7 @@ static int unpainted;
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1
-#define SRC_INC 1
+#define SRC_INC 2
 #include "linetoscr.h"
 #undef SRC_INC
 #undef LNAME
@@ -421,7 +424,7 @@ static int unpainted;
 #undef LNAME
 
 #define LNAME pfiled_do_linetoscr_1_dual
-#define SRC_INC 1
+#define SRC_INC 2
 #include "linetoscr2.h"
 #undef SRC_INC
 #undef LNAME
@@ -431,12 +434,15 @@ static line_draw_func *pfield_do_linetoscr=(line_draw_func *)pfiled_do_linetoscr
 
 static void pfield_do_fill_line(int start, int stop)
 {
-    register uae_u16 *b = &(((uae_u16 *)xlinebuffer)[start]);
+    /* r1259: границы/заливка — те же координаты окна, но два столбца буфера. */
+    register uae_u16 *b = &(((uae_u16 *)xlinebuffer)[start << 1]);
     register xcolnr col = colors_for_drawing.acolors[0];
     register int i;
     register int max=(stop-start);
-    for (i = 0; i < max; i++,b++)
+    for (i = 0; i < max; i++, b += 2) {
 	*b = col;
+	*(b + 1) = col;
+    }
 }
 
 /* Initialize the variables necessary for drawing a line.
@@ -479,12 +485,10 @@ static _INLINE_ void pfield_init_linetoscr (void)
 
     /* Now, compute some offsets.  */
 
-    /* r1258: кадр 640 px. Окно теперь всегда вдвое шире нативного lores-
-     * разрешения (res_shift=1), поэтому координаты окна 0..640 совпадают с
-     * буфером и в lores, и в hires: hires рисуется 1:1, lores — удвоением
-     * пикселя в linetoscr (HDOUBLE). Раньше здесь было -bplres: hires
-     * сжимался в 320 через res_shift и терял каждый второй столбец. */
-    res_shift = 1 - bplres;
+    /* r1259: res_shift переводит дельту окна в пиксели источника (apixels):
+     * lores — 1:1, hires — вдвое плотнее. Это НЕ масштаб вывода; вывод
+     * удваивает linetoscr (HDOUBLE / SRC_INC). */
+    res_shift = - bplres;
     if (res_shift) {
 	if (bpldualpf)
 		pfield_do_linetoscr=(line_draw_func *)pfiled_do_linetoscr_1_dual;
@@ -529,7 +533,9 @@ static __inline__ void fill_line (void)
     nints = GFXVIDINFO_WIDTH >> 1;
     nrem = nints & 7;
     nints &= ~7;
-    start = (int *)(((char *)xlinebuffer) + (VISIBLE_LEFT_BORDER << 1));
+    /* r1259: база строки сдвинута на 2*72 px, поэтому и левая граница
+     * берётся в удвоенных пикселях (72 px -> 288 байт). */
+    start = (int *)(((char *)xlinebuffer) + (VISIBLE_LEFT_BORDER << 2));
     val = colors_for_drawing.acolors[0];
     val |= val << 16;
 #ifdef DEBUG_BLITTER
