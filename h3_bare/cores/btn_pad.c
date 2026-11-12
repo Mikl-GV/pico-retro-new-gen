@@ -118,6 +118,12 @@ int btn_pad_dbg_init(void) {
     return btn_pad_probe(1);
 }
 
+/* r1272 (RT-14): состояние дебаунсера живёт в файле, чтобы его можно было
+   сбросить на входе в эмулятор (emu_prepare) — иначе нажатие, принятое в
+   игре, давало фантомный фронт в меню. */
+static uint16_t g_btn_stable = 0;
+static unsigned g_btn_seq = 0;
+
 uint16_t btn_pad8_scan(void) {
     uint8_t r;
 
@@ -152,17 +158,23 @@ uint16_t btn_pad8_scan(void) {
     // кнопок (не автоповтор) незаметно, дребезг вырезается.
     // Джойстик (sega_pad.c) НЕ трогаем — у него свой протокол/тайминги.
     enum { BTN_DEBOUNCE = 3 };
-    static uint16_t stable = 0;
-    static unsigned seq = 0;
-    if (raw == stable) {
-        seq = 0;
-        return stable;
+    if (raw == g_btn_stable) {
+        g_btn_seq = 0;
+        return g_btn_stable;
     }
-    if (++seq >= BTN_DEBOUNCE) {
-        stable = raw;
-        seq = 0;
+    if (++g_btn_seq >= BTN_DEBOUNCE) {
+        g_btn_stable = raw;
+        g_btn_seq = 0;
     }
-    return stable;
+    return g_btn_stable;
+}
+
+/* r1272 (RT-14): дебаунсер переживал выход из эмулятора — нажатие, принятое в
+   игре, «доезжало» фронтом в меню. Сброс дёргается из emu_prepare(). */
+void btn_pad_debounce_reset(void)
+{
+    g_btn_stable = 0;
+    g_btn_seq = 0;
 }
 
 uint16_t pad_scan_combined(void) {

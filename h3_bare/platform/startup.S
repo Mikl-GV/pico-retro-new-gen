@@ -616,7 +616,7 @@ _start:
     /* clean+invalidate копий (иначе аппаратный walker, идущий в DRAM
      * напрямую, не увидит dirty-строки D-cache core0): L0 + до 4 L1 = 32 КБ */
     ldr r0, =0x4A40C000
-    ldr r1, =0x4A420000              /* +32 КБ */
+    ldr r1, =0x4A414000              /* L0 16 КБ + 4 L1 по 4 КБ = ровно 32 КБ (r1271) */
 5:  mcr p15, 0, r0, c7, c14, 1       /* DCCIMVAC */
     add r0, r0, #32
     cmp r0, r1

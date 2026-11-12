@@ -78,7 +78,7 @@ static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
                                int dst_w, int dst_h, int dst_x,
                                uint32_t border, int fill_borders)
 {
-    uint32_t* dst = (uint32_t*)FB_ADDR;
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
 
     // Предрасчёт исходной колонки для каждой целевой (nearest neighbour):
     // аккумулятор 16.16 — каждая итерация добавляет sw/dst_w, обёртка
@@ -125,25 +125,37 @@ static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
 // влезает в HDMI 1024×600 без масштабирования: раньше кадр резался до 640×512
 // и растягивался на 750×600 — по горизонтали пропадали края растра.
 // Кадр больше экрана — уходим на обычный масштаб с полями.
+/* r1271 (CORE-04): геометрия нативного вывода не должна переживать выход из
+   ядра — иначе первый кадр меню после смены разрешения не перерисовывается. */
+static int g_native_last_w = 0, g_native_last_h = 0;
+
+void emu_native_geom_reset(void)
+{
+    g_native_last_w = 0;
+    g_native_last_h = 0;
+}
+
 void emu_show_rgb565_native(const uint16_t* src, int w, int h, int stride_px)
 {
     if (!src || w <= 0 || h <= 0 || stride_px < w) return;
     if (w > FB_W || h > FB_H) { emu_scale_rgb565_src(src, w, h, stride_px); return; }
 
-    static int last_w = 0, last_h = 0;
     int dst_x = (FB_W - w) / 2;
     int dst_y = (FB_H - h) / 2;
-    uint32_t* dst = (uint32_t*)FB_ADDR;
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
     uint32_t border = g_border_color ? g_border_color : 0x00000000u;
 
     // Поля заливаем один раз на смену геометрии: кадр того же размера их не
     // трогает, а при уменьшении старые пиксели иначе остались бы на экране.
-    if (last_w != w || last_h != h) {
+    // r1277 (E-01): при пинг-понге кадр уходит в ДРУГОЙ буфер — поля надо
+    // залить и в нём, иначе оптимизация «геометрия не менялась» оставит там
+    // мусор. При выключенной опции поведение прежнее.
+    if (g_native_last_w != w || g_native_last_h != h || fb_flip_active()) {
         for (int y = 0; y < FB_H; y++) {
             uint32_t* row = dst + (uint32_t)y * FB_W;
             for (int x = 0; x < FB_W; x++) row[x] = border;
         }
-        last_w = w; last_h = h;
+        g_native_last_w = w; g_native_last_h = h;
     }
 
     for (int y = 0; y < h; y++) {
@@ -255,14 +267,14 @@ void emu_scale_int(int src_w, int src_h) {
     int dst_y = (FB_H - dst_h) / 2;
     // r1170: поля перерисовываем только при смене геометрии/цвета — иначе
     // кадр занимает свой прямоугольник, бордюры на экране уже стоят.
-    int repaint_border = g_border_color &&
+    int repaint_border = fb_flip_active() || (g_border_color &&
         (!s_geom_valid || dst_w != s_dw || dst_h != s_dh ||
-         dst_x != s_dx || dst_y != s_dy || g_border_color != s_border);
+         dst_x != s_dx || dst_y != s_dy || g_border_color != s_border));
     // r1159 (E14): отметить область кадра для fb_flush (dirty-зоны)
     if (repaint_border) fb_dirty_all();
     else                fb_mark_dirty(dst_x, dst_y, dst_w, dst_h);
     fb_frame_scaled();
-    uint32_t* dst = (uint32_t*)FB_ADDR;
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
 
     // Поля (сверху/снизу/слева/справа)
     if (repaint_border) {
@@ -371,6 +383,8 @@ void emu_prepare(void) {
     // r1170: экран очищен — бордюры прошлой сессии стёрты, кэш геометрии
     // целочисленного скейла недействителен.
     emu_scale_int_invalidate();
+    emu_native_geom_reset();   // r1271 (CORE-04): геометрия кадра прошлой сессии не наследуется
+    btn_pad_debounce_reset();  // r1272 (RT-14): дебаунсер кнопок не наследует состояние игры
     // r1183: армируем режим вывода. Если опция включена — рисование уйдёт в
     // back-буфер, а fb_flush в конце кадра начнёт переключать DE2 по vblank.
     fb_flip_set(g_video_vsync);
@@ -417,7 +431,8 @@ void snd_manifest(const char* sys, const char* cores) {
 // C5: база сдвигается на +period от СТАРОЙ базы (а не на now), а всё, что
 // ушло на эмуляцию сверх периода, засчитывается в emu_debt. Следующий кадр
 // ждёт период - debt: мелкая переработка догоняется, дрейф не копится.
-static uint32_t emu_ts0 = 0;      // следующая «распланированная» граница кадра
+static uint32_t emu_ts0 = 0;
+static uint32_t emu_last_pairs = 0;   // r1271 (CORE-03): дельта пар прошлой сессии      // следующая «распланированная» граница кадра
 static int32_t  emu_debt = 0;     // переработка [мкс], вычтем из следующего wait
 
 // r989: setter периода кадра — системы с PAL-частотой (C64/C128 50 Гц) ставят
@@ -452,7 +467,6 @@ void emu_throttle(void) {
         // A2600-выбор в меню), т.к. источник — реальный поток, а не хардкод.
         // target = 2 кадра текущего EMA-темпа → FIFO не пустеет между кадрами
         // (меньше under-мусора), латентность не растёт.
-        static uint32_t emu_last_pairs = 0;
         uint32_t pairs_now = 0, dummy = 0;
         {
             uint32_t fmax, fmin, drop, under;
@@ -505,6 +519,7 @@ void emu_throttle(void) {
 void emu_throttle_reset(void) {
     emu_ts0 = 0;
     emu_debt = 0;
+    emu_last_pairs = 0;   // r1271 (CORE-03): дельта прошлой сессии не должна гасить EMA
 }
 
 // ---- единый выход из эмулятора: удержание ~0.9 с ----

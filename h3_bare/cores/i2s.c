@@ -163,15 +163,10 @@ static inline int16_t* ring_r(void) { return (int16_t*)SRAM_RING_R_ADDR; }
 
 // ---- Почта core0↔CPU2 (аудио-ядро) в .coherent ----
 static volatile uint32_t g_audio_state  __attribute__((section(".coherent"), aligned(64))) = 0; /* 1 = CPU2 в цикле */
-static volatile uint32_t g_audio_cmd    __attribute__((section(".coherent"), aligned(64))) = 0;
-static volatile uint32_t g_audio_seq    __attribute__((section(".coherent"), aligned(64))) = 0;
-static volatile uint32_t g_audio_ack    __attribute__((section(".coherent"), aligned(64))) = 0;
-static volatile uint32_t g_audio_beat   __attribute__((section(".coherent"), aligned(64))) = 0;
-static volatile uint32_t g_audio_paused_f __attribute__((section(".coherent"), aligned(64))) = 0;
-// r916: 1 = активная эмуляция (ставит core0 в emu_prepare, снимает в
-// emu_audio_stop). По нему CPU2 доливает ТИШИНУ при пустом кольце ТОЛЬКО в
-// играх; в меню флаг =0 → FIFO не трогает (r914-зависание меню исключено).
-static volatile uint8_t g_audio_active __attribute__((section(".coherent"), aligned(32))) = 0;
+/* r1278 (D-04): g_audio_cmd/seq/ack/beat/paused_f удалены — командный канал
+   (AUDIO_CMD_*) не реализован: пауза идёт через SRAM_AUDIO_PAUSED, beat —
+   через SRAM_AUDIO_BEAT. Дубль флага «в игре» (g_audio_active) в .coherent
+   никто не читал — остался только SRAM_AUDIO_ACTIVE. */
 
 // r941 (аудит r918, P2): состояние DC-блокера CPU2 (однополюсный high-pass).
 // Вынесено из локальных static i2s_poll_fill в .coherent, чтобы core0 мог
@@ -292,11 +287,6 @@ void i2s_volume(int p) {
 }
 int i2s_volume_pct(void) { return g_volume_pct; }
 int i2s_ready(void) { return g_i2s_ready; }
-
-void i2s_mute(int m) {
-    g_muted = m ? 1 : 0;
-    i2s_apply_amp();
-}
 
 // r941 (аудит r918, C1): DC-блокер/фильтр настраивается через битовый сдвиг
 // α=2^-shift. Хосты передают shift (6 → ~119 Гц на 48 кГц). Ранее это был
@@ -536,14 +526,8 @@ uint32_t i2s_ring_fill(void) {
 }
 
 // r943: целевая высота кольца (пар) для throttle — per-system (≈2 кадра звука
-// эмулятора). Если эмулятор пушит пачку за кадр (NES/Dandy 800 пар/кадр) и
-// кольцо держать на этой высоте, FIFO не пустеет между кадрами (нет under-
-// мусора). Клаmp к верхнему порогу заполнения (не дать латентность >эха).
-void i2s_ring_set_target(uint32_t pairs) {
-    if (pairs < 64) pairs = 64;
-    if (pairs > I2S_RING_MAX_FILL / 2) pairs = I2S_RING_MAX_FILL / 2;
-    s_ring_target = pairs;
-}
+// эмулятора). Значение ведёт адаптивный наблюдатель (i2s_ring_observe_frame),
+// внешний сеттер не нужен.
 uint32_t i2s_ring_target(void) {
     return s_ring_target;
 }
@@ -691,21 +675,11 @@ void i2s_audio_poll_cmd(void) {
     SRAM_AUDIO_ACK = cmd;
 }
 void i2s_audio_set_state(int on) { g_audio_state = on ? 1 : 0; }
-void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; g_audio_active = on ? 1 : 0; }  /* r916: флаг «в игре». Ставится core0 в emu_prepare, снимается в emu_audio_stop. ТЕКУЩАЯ РЕАЛИЗАЦИЯ: флаг записывается (SRAM A1 + .coherent), но в hot-path CPU2 (i2s_poll_fill) при пустом кольце выполняется break без подмеса тишины и без чтения этого флага — silence-fill не реализован; underrun не маскируется (виден в статистике). Первичная диагностика и для будущих слоёв. */
+void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; }  /* r916: флаг «в игре». Ставится core0 в emu_prepare, снимается в emu_audio_stop. ТЕКУЩАЯ РЕАЛИЗАЦИЯ: флаг пишется в SRAM A1, но в hot-path CPU2 (i2s_poll_fill) при пустом кольце выполняется break без подмеса тишины и без чтения этого флага — silence-fill не реализован; underrun не маскируется (виден в статистике). Первичная диагностика и для будущих слоёв. */
 void i2s_audio_set_beat(uint32_t b) { SRAM_AUDIO_BEAT = b; }
 int  i2s_audio_core_active(void) { return (int)g_audio_state; }
 uint32_t i2s_audio_beat(void) { return SRAM_AUDIO_BEAT; }
 int  i2s_audio_paused(void) { return (int)SRAM_AUDIO_PAUSED; }
-
-// ---- Прочее API (сохранено из совместимости) ----
-void i2s_click(void) {
-    // Короткий клик меню — 10 пар 1 кГц через ring (не блокирует).
-    if (!g_i2s_ready) return;
-    for (int i = 0; i < 10; i++) {
-        int16_t s = (int16_t)(((i & 1) ? 6000 : -6000));
-        i2s_push_sample(s, s);
-    }
-}
 
 // ================= ПРЯМОЙ ТЕСТ-ТОН (r948) =================
 // Тон для меню и для старта выводится НАПРЯМУЮ в TX FIFO с core0 — без кольца

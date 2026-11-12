@@ -12,6 +12,12 @@ int  usb_ohci_ctrl_transfer(uint32_t base, uint8_t addr, uint8_t ep_in,
                             uint8_t* data, uint32_t data_len, int dir_in,
                             uint32_t timeout_ms);
 void usb_ohci_set_mps(uint16_t mps);
+
+// r1276 (D-05): обслуживание D-cache для DMA (L1 by MVA + L2 by PA, H3).
+// EHCI-путь (usb_hc.c) держит qH/qTD в .coherent, но .coherent — write-back,
+// поэтому структуры и буферы передач прогоняются через эти же операции.
+void usb_cache_clean(uint32_t addr, uint32_t size);
+void usb_cache_invalidate(uint32_t addr, uint32_t size);
 int  usb_ohci_root_port_connected(uint32_t base, int port);
 int  usb_ohci_port_reset(uint32_t base, int port);
 int  usb_ohci_port_low_speed(uint32_t base, int port);

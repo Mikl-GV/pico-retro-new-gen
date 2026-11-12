@@ -348,6 +348,7 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!a8_retro_load_game(&info)) {
         printf("A8: load failed\n");
         a8_retro_deinit();
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     // r787: retro_unload_game() (с прошлого входа) оставляет pauseg=-1, а
@@ -385,6 +386,7 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     extern void* a8_Screen_atari;
     a8_retro_ExitGraphics();
     a8_Screen_atari = 0;
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }
 

@@ -1,15 +1,16 @@
 // i2s.h — звуковой слой I2S0 (H3, PCM0) для эмуляторов.
 //
 // АРХИТЕКТУРА (этап 1, спроектировано по железу H3 — даташит + sun4i-i2s.c):
-//   core0 (эмулятор) --i2s_push_sample--> ring (.coherent, uncached)
+//   core0 (эмулятор) --i2s_push_sample--> ring (SRAM A1, r957)
 //   CPU2 (аудио-ядро) --долив-->          I2S0 TX FIFO (guard TXE_CNT)
 //
 // Темп задаёт АППАРАТНЫЙ TX FIFO (ровно 48 кГц из делителей MCLK/BCLK),
 // CPU2 лишь переносит пары ring→FIFO, пока FIFO не полон. Запись в полный
 // FIFO исключена guard'ом TXE_CNT (корень старого AHB-зависания).
 //
-// Без DMA и без GIC (оба в истории не работали). Ring и почта — в
-// .coherent (uncached через mmu_mark_uncached) — видны и core0, и CPU2.
+// Без DMA и без GIC (оба в истории не работали). Кольцо и его индексы — в
+// SRAM A1; почта и флаги — в .coherent (DRAM write-back: mmu_mark_uncached
+// с r1206 — no-op, видимость держат SRAM-дубли и явные операции кэша).
 #ifndef I2S_H
 #define I2S_H
 
@@ -27,7 +28,6 @@ extern "C" {
 int  i2s_init(void);                    // 0 = готово, -1 = ошибка init
 int  i2s_ready(void);                   // 1 = I2S работает, тык пары принимает
 uint32_t i2s_ring_fill(void);           // r940: текущее заполнение кольца (пар), для throttle
-void i2s_ring_set_target(uint32_t pairs); // r943: целевая высота кольца (пар) для throttle — per-system
 uint32_t i2s_ring_target(void);          // r943: текущий target кольца
 void i2s_ring_observe_frame(uint32_t pairs); // r944: адаптивный target из фактического потока (PAL/NTSC сам)
 void i2s_ring_reset(void);              // сброс ring+FIFO (смена игры/старт)
@@ -46,8 +46,6 @@ void i2s_dc_shift_set(int shift);       // α=2^-shift для ФВЧ CPU2 (де�
 void i2s_dc_bypass(int on);             // r956: 1 = тест без DC-фильтра, 0 = штатный ФВЧ
 void i2s_volume(int percent);           // громкость 0..100; 0% = PA10(SD)=0 (мьют усилителя)
 int  i2s_volume_pct(void);
-void i2s_mute(int mute);                // 1 = усилитель выключен (PA10=0)
-void i2s_click(void);                   // короткий клик меню (через ring)
 void i2s_emulators_audio(int on);       // S.0: 1 = host-слои пишут в ring (по умолч. 0)
 
 // ---- Аудио-диагностика (выключена по умолчанию) ----
@@ -63,7 +61,7 @@ uint32_t i2s_audio_beat(void);
 void     i2s_audio_cmd(uint32_t cmd);   // core0 → CPU2 (пауза/резюм)
 void     i2s_audio_poll_cmd(void);      // CPU2: принять команды core0
 void     i2s_audio_set_state(int on);
-void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт. Флаг записывается (SRAM A1+.coherent), но при пустом кольце CPU2 НЕ подмешивает тишину — silence-fill не реализован
+void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт. Флаг пишется в SRAM A1, но при пустом кольце CPU2 НЕ подмешивает тишину — silence-fill не реализован
 void     i2s_audio_set_beat(uint32_t b);
 int      i2s_audio_paused(void);
 int      i2s_poll_fill(void);           // CPU2: долить ring→FIFO (пачки)

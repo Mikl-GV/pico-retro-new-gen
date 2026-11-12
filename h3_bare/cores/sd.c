@@ -101,9 +101,11 @@ static int mmc_send_cmd(uint32_t idx, uint32_t arg, uint32_t flags) {
 }
 
 // Poll STATUS FIFO level, читаем слова — как U-Boot mmc_trans_data_by_cpu
+// r1271 (D-22): писать в буфер вызывающего через uint8_t* — каст в uint32_t*
+// на невыровненном адресе давал Data Abort (LDR/STR требуют 4-байт).
 static int mmc_read_data(uint8_t* buf, uint32_t bytes) {
     uint32_t word_cnt = bytes >> 2;
-    uint32_t* dst = (uint32_t*)buf;
+    uint8_t* dst = buf;
     uint32_t i = 0;
 
     while (i < word_cnt) {
@@ -120,8 +122,11 @@ static int mmc_read_data(uint8_t* buf, uint32_t bytes) {
         if (n == 0 && (st & STATUS_FIFO_FULL)) n = 32;
         if (n == 0) n = 1;  // хотя бы одно
 
-        for (uint32_t j = 0; j < n && i < word_cnt; j++)
-            dst[i++] = MMC->fifo;
+        for (uint32_t j = 0; j < n && i < word_cnt; j++) {
+            uint32_t w = MMC->fifo;
+            memcpy(dst + (i << 2), &w, 4);   // r1271 (D-22): слово по байтам, без требования выравнивания
+            i++;
+        }
     }
 
     // ждём DATA_OVER — сигнал, что передача завершена

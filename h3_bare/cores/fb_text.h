@@ -24,6 +24,9 @@ void fb_flush(void);
 // адрес буфера, в который надо писать прямым писателям.
 uint32_t fb_draw_addr(void);
 void fb_flip_set(int on);
+// r1277 (E-01): включён ли пинг-понг буферов (нужно писателям, которые
+// оптимизируют перерисовку полей по неизменной геометрии).
+int  fb_flip_active(void);
 // r1159 (E14): dirty-зоны — fb_flush чистит только отмеченную область
 void fb_mark_dirty(int x, int y, int w, int h);
 void fb_dirty_all(void);

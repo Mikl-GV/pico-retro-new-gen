@@ -313,7 +313,7 @@ void __assert_func(const char* file, int line, const char* func, const char* exp
     panic("assert", (unsigned)line, (unsigned)(uintptr_t)__builtin_return_address(0));
 }
 
-int abs(int x) { return x < 0 ? -x : x; }
+int abs(int x) { return x < 0 ? (int)(0u - (unsigned)x) : x; }
 
 // newlib-заглушки (некоторые модули тянут _sbrk / _gettimeofday)
 // Простой bump-аллокатор. Без free — для эмуляторов это нормально: память
@@ -344,8 +344,11 @@ void* _sbrk(int incr) {
     char* cur = g_brk;
     if (incr > 0) {
         uintptr_t a = ((uintptr_t)cur + 7u) & ~(uintptr_t)7u;
+        // r1271 (CORE-02): incr больше остатка зоны — отказ ДО сложения,
+        // иначе a + incr переполняет uintptr_t и отдаёт адрес в чужой зоне.
+        if (a >= (uintptr_t)SBRK_LIMIT) return (void*)-1;
+        if ((uintptr_t)incr >= (uintptr_t)SBRK_LIMIT - a) return (void*)-1;
         uintptr_t next = a + (uintptr_t)incr;
-        if (next >= SBRK_LIMIT) return (void*)-1;   // переполнение кучи
         g_brk = (char*)next;
         return (void*)a;
     }
@@ -358,8 +361,10 @@ void* _sbrk(int incr) {
 int _gettimeofday(void* tv, void* tz) {
     // r180: newlib time() читает tv.tv_sec при успешном возврате 0; оставлять
     // стековый мусор нельзя — иначе rand-seed'ы эмуляторов получают мусор.
+    // r1271 (CORE-01): struct timeval на ARM EABI — 8 байт (два 32-битных поля),
+    // прежние 16 затирали соседнюю переменную вызывающего.
     (void)tz;
-    if (tv) { volatile char* p = (volatile char*)tv; for (size_t i = 0; i < 16; i++) p[i] = 0; }
+    if (tv) { volatile char* p = (volatile char*)tv; for (size_t i = 0; i < 8; i++) p[i] = 0; }
     return -1;   // время недоступно — time() вернёт (time_t)-1
 }
 

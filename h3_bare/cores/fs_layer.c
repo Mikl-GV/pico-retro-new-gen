@@ -447,7 +447,8 @@ int open(const char* path, int flags, ...) {
     (void)flags;
     const uint8_t* src = 0;
     uint32_t src_size = 0;
-    if (!fs_source(path, &src, &src_size)) {
+    int which = fs_source(path, &src, &src_size);
+    if (!which) {
         if (g_fd_log < 5) {
             g_fd_log++;
             printf("fs: fd open miss '%s' (reg '%s')\n",
@@ -455,6 +456,7 @@ int open(const char* path, int flags, ...) {
         }
         return -1;
     }
+    if (which == 1) g_fs_rom_opens++;   // r1273: образ (ROM/диск) в fd-пути тоже считаем
     for (int i = 0; i < FS_MAX_OPEN; i++) {
         if (g_fd_used[i]) continue;
         g_fd_used[i] = 1;

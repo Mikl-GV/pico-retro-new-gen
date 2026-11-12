@@ -249,6 +249,9 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     fat_entry_t* list = fat_scratch();
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
     sort_entries(list, n);
+    if (g_fat_dir_truncated)
+        printf("rom_browser: WARN %s list truncated at %d (files beyond limit hidden)\n",
+               path, n);
     printf("rom_browser: %s n=%d\n", path, n);
     // (пофайловый список убран из отладки — спамил дерево при каждом входе)
 
@@ -403,10 +406,15 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 fb_puts_s(80, 240, "  Enter: DELETE    ESC: cancel", 1, 0x00888888);
                 fb_flush();
 
+                // r1271 (RT-01): отпускание Enter/пада ДО второго диалога. Иначе
+                // автоповтор клавиатуры (350 мс) пробивает «Are you SURE?» и файл
+                // удаляется одним удержанием клавиши.
+                usb_wait_release_all();
                 confirm = input_wait();
                 if (confirm == 41) { dirty = 1; continue; }   // ESC
                 if (confirm != 40) { dirty = 1; continue; }
 
+                usb_wait_release_all();   // r1271: и перед самой записью на SD
                 int r = fat_delete_file(path, del_name);
                 if (r == 0) {
                     // перечитываем список

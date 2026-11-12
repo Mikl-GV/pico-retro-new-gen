@@ -333,6 +333,7 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!bk_retro_load_game(&info)) {
         printf("BK: load failed\n");
         bk_retro_deinit();
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     printf("BK: %s [%s]: %s (%u bytes)\n", g_model, bk_rom_label(g_model),
@@ -354,5 +355,6 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     bk_retro_unload_game();
     bk_retro_deinit();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

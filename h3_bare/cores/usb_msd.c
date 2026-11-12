@@ -141,6 +141,8 @@ static int usb_msd_cmd(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t cb_l
 int usb_msd_read10(struct usb_msd_dev* dev, uint32_t lba, uint32_t count, uint8_t* data) {
     if (!dev || !data || count == 0) return -1;
     uint32_t bs = dev->block_size ? dev->block_size : 512;
+    /* r1271 (D-37): count*bs в 32 битах переполнялся → zero-length TD. */
+    if (count > 0xFFFFFFFFu / bs) return -1;
     uint8_t cdb[10] = {
         0x28, 0,
         (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
@@ -154,6 +156,7 @@ int usb_msd_read10(struct usb_msd_dev* dev, uint32_t lba, uint32_t count, uint8_
 int usb_msd_write10(struct usb_msd_dev* dev, uint32_t lba, uint32_t count, const uint8_t* data) {
     if (!dev || !data || count == 0) return -1;
     uint32_t bs = dev->block_size ? dev->block_size : 512;
+    if (count > 0xFFFFFFFFu / bs) return -1;   // r1271 (D-37): то же, что в read10
     uint8_t cdb[10] = {
         0x2A, 0,
         (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),

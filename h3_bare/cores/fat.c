@@ -36,6 +36,10 @@ static void fat_free_chain(uint32_t fc);   /* r971 */
 static fat_blk_read_t  g_blk_rd = sd_read_sector;
 static fat_blk_write_t g_blk_wr = sd_write_sector;
 
+/* r1271 (D-13): признак того, что read_dir оборвался по max (или ошибке), и
+   список неполон: UI может предупредить вместо тихой потери файлов. */
+int g_fat_dir_truncated = 0;
+
 static int blk_read(uint32_t lba, void* buf) {
     return g_blk_rd ? g_blk_rd(lba, buf) : sd_read_sector(lba, buf);
 }
@@ -311,6 +315,7 @@ static int parse_dir_entry(const uint8_t* e, fat_entry_t* out, char* lfn, int* l
 // ---- чтение директории (кластеры) ----
 static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
     if (cl < 2 || cl >= 2 + g_total_clusters) return 0;   /* r853: кластер вне тома */
+    g_fat_dir_truncated = 0;   /* r1278 (F-05): флаг относится к ЭТОМУ списку */
     int count = 0;
     char lfn[FAT_NAME_LEN] = {0};
     int lfn_len = 0;
@@ -320,7 +325,11 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
     while (cl && cl < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t sec = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster; s++) {
-            if (blk_read(sec + s, g_sector) < 0) return count;
+            if (blk_read(sec + s, g_sector) < 0) {
+                lfn[0] = 0; lfn_len = 0;   // r1271 (D-13): недособранный LFN не тащим дальше
+                g_fat_dir_truncated = 1;   // r1273: и при ошибке чтения список неполон
+                return count;
+            }
             for (int i = 0; i < 512; i += 32) {
                 const uint8_t* e = g_sector + i;
                 int r = parse_dir_entry(e, &out[count], lfn, &lfn_len);
@@ -331,7 +340,7 @@ static int read_dir(uint32_t cl, fat_entry_t* out, int max) {
                         (out[count].name[1] == 0 || (out[count].name[1] == '.' && out[count].name[2] == 0)))
                         continue;
                     count++;
-                    if (count >= max) return count;
+                    if (count >= max) { g_fat_dir_truncated = 1; return count; }   // r1271 (D-13): обрыв виден снаружи
                 }
             }
         }
@@ -487,7 +496,15 @@ uint32_t off = (e * esize) % 512;
     if (g_sec_per_cluster == 0) return -1;
     if (g_num_fats == 0) return -1;
 
-    g_data_start = part_lba + g_reserved + g_num_fats * g_fat_size;
+    /* r1271 (D-16): сумма проверяется ДО записи — при большом part_lba
+       или битом BPB она переполняла 32 бита и давала заведомо неверный
+       g_data_start (а с ним и все адреса кластеров). */
+    {
+        uint64_t ds = (uint64_t)part_lba + (uint64_t)g_reserved +
+                      (uint64_t)g_num_fats * (uint64_t)g_fat_size;
+        if (ds > 0xFFFFFFFFu) return -1;
+        g_data_start = (uint32_t)ds;
+    }
     uint32_t total_sectors = le32(g_sector + 32);
     if (g_data_start >= total_sectors) return -1;
     g_total_clusters = (total_sectors - g_data_start) / g_sec_per_cluster;
@@ -755,16 +772,25 @@ int fat_mkdir(const char* parent_path, const char* name) {
     return 0;
 }
 
-// Удалить файл: dir = например "/roms/nes", name = "game.nes".
-// Имя сравнивается с ПОЛНЫМ именем (LFN если есть, иначе 8.3) — браузер
-// отдаёт LFN-имена, поэтому 8.3-сравнение не находило файл.
-// Помечает 0xE5 саму запись и ВСЕ её LFN-фрагменты (в т.ч. в предыдущих
-// секторах директории), затем освобождает кластеры в обеих FAT.
-int fat_delete_file(const char* dir, const char* name) {
+/* r1274 (K-01/F-02): найти запись файла в каталоге — саму 8.3-запись и её
+   LFN-фрагменты. Имя сравнивается с ПОЛНЫМ (LFN если есть, иначе 8.3):
+   браузер отдаёт LFN-имена, поэтому 8.3-сравнение файл не находило.
+   Возвращает 1 и заполняет out (последний элемент — 8.3-запись), иначе 0.
+   Нужна и удалению, и замене файла: замена пишет новую запись в свободный
+   слот, а старую гасит только после успешной записи — иначе в каталоге
+   оставался дубль со ссылкой на освобождённую цепочку. */
+typedef struct {
+    int      cnt;                 /* LFN-фрагменты + 8.3-запись */
+    uint32_t sec[21];
+    int      off[21];
+    uint32_t first_cluster;
+} dentry_loc_t;
+
+static int find_dentry_loc(const char* dir, const char* name, dentry_loc_t* out) {
     fat_entry_t d;
     char buf[FAT_NAME_LEN];
-    if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return -1;
-    if (d.size != 0) return -1;  // не директория
+    if (!path_lookup(dir, &d, buf, FAT_NAME_LEN)) return 0;
+    if (d.size != 0) return 0;   // не директория
 
     // LFN-фрагменты копятся при обходе ВПЕРЁД (они лежат ПЕРЕД своей 8.3
     // записью), вместе с адресами секторов — чтобы потом пометить 0xE5
@@ -786,11 +812,11 @@ int fat_delete_file(const char* dir, const char* name) {
     while (cl && cl < 0x0FFFFFF8 && !found && walk_guard++ < clim) {
         uint32_t base = cluster_to_sector(cl);
         for (uint32_t s = 0; s < g_sec_per_cluster && !found; s++) {
-            if (blk_read(base + s, g_sector) < 0) return -1;
+            if (blk_read(base + s, g_sector) < 0) return 0;
             for (int i = 0; i < 512 && !found; i += 32) {
                 uint8_t first = g_sector[i];
                 uint8_t attr = g_sector[i + 11];
-                if (first == 0x00) return -1;    // конец директории — дальше нет
+                if (first == 0x00) return 0;     // конец директории — дальше нет
                 if (first == 0xE5) { lfn_cnt = 0; lfn_max = 0; continue; } // удалённая
 
                 if (attr == 0x0F) {
@@ -872,22 +898,31 @@ int fat_delete_file(const char* dir, const char* name) {
         }
         if (!found) cl = fat_next_cluster(cl);
     }
-    if (!found || target_first == 0) return -1;
-
-    // Пометить 0xE5 все LFN-фрагменты найденного файла
+    if (!found) return 0;
     for (int k = 0; k < lfn_cnt; k++) {
-        if (blk_read(lfn_lba[k], g_sector) < 0) continue;
-        g_sector[lfn_off[k]] = 0xE5;
-        if (blk_write(lfn_lba[k], g_sector) < 0) return -1;
+        out->sec[k] = lfn_lba[k];
+        out->off[k] = lfn_off[k];
     }
+    out->cnt = lfn_cnt + 1;
+    out->sec[lfn_cnt] = entry_sec;
+    out->off[lfn_cnt] = entry_off;
+    out->first_cluster = target_first;
+    return 1;
+}
 
-    // Теперь пометить 0xE5 саму 8.3 запись (уже после LFN, чтобы не перезатереть)
-    if (blk_read(entry_sec, g_sector) < 0) return -1;
-    g_sector[entry_off] = 0xE5;
-    if (blk_write(entry_sec, g_sector) < 0) return -1;
-
-    // Освободить кластеры файла в обеих FAT (с защитой от цикла в цепочке)
-    fat_free_chain(target_first);
+// Удалить файл: dir = например "/roms/nes", name = "game.nes".
+// Помечает 0xE5 саму запись и все её LFN-фрагменты, затем освобождает
+// кластеры в обеих FAT. Нулевой первый кластер (пустой файл) — не ошибка,
+// цепочки у него нет: r1274/F-02 — раньше такие файлы не удалялись вовсе.
+int fat_delete_file(const char* dir, const char* name) {
+    dentry_loc_t loc;
+    if (!find_dentry_loc(dir, name, &loc)) return -1;
+    for (int k = 0; k < loc.cnt; k++) {
+        if (blk_read(loc.sec[k], g_sector) < 0) return -1;
+        g_sector[loc.off[k]] = 0xE5;
+        if (blk_write(loc.sec[k], g_sector) < 0) return -1;
+    }
+    if (loc.first_cluster >= 2) fat_free_chain(loc.first_cluster);
     return 0;
 }
 
@@ -962,7 +997,9 @@ int fat_write_file(const char* dir_path, const char* name, const uint8_t* data, 
     fat_entry_t old;
     if (fat_find(dir_path, name, &old)) {
         FATLOG("  fat: wr1b delete old size=%u\r\n", old.size);
-        fat_delete_file(dir_path, name);
+        /* r1274: не игнорируем провал удаления — иначе рядом с новым файлом
+           осталась бы старая запись, и LIST/FIND видели бы её первой. */
+        if (fat_delete_file(dir_path, name) < 0) return -1;
     }
     FATLOG("  fat: wr1c alloc %u cl\r\n", (len + (g_sec_per_cluster*512) - 1) / (g_sec_per_cluster*512));
 
@@ -1133,6 +1170,12 @@ static struct {
     uint32_t first_cluster;
     uint32_t last_cluster;
     uint32_t prev_first;    /* r971: first_cluster СТАРОГО файла (если был) */
+    /* r1274 (K-01): старая запись каталога (8.3 + LFN) и её исходные байты.
+       Гасим 0xE5 только в fat_write_end, после записи новой записи. */
+    int      old_cnt;
+    uint32_t old_sec[21];
+    int      old_off[21];
+    uint8_t  old_raw[21][32];
     uint32_t cur_cluster;   /* 0 = нужно выделить следующий */
     uint32_t size;
     uint32_t cl_off;        /* смещение внутри текущего кластера */
@@ -1166,20 +1209,33 @@ int fat_write_begin(const char* dir_path, const char* name) {
        фиксируем её и продолжаем — иначе все последующие STOR получали 550. */
     if (g_wr.active) fat_write_end();
     if (!dir_path || !name || !name[0]) return -1;
+    memset(&g_wr, 0, sizeof(g_wr));   /* r1274: чистим и слоты старой записи */
 
     fat_entry_t parent;
     char pbuf[FAT_NAME_LEN];
     if (!path_lookup(dir_path, &parent, pbuf, FAT_NAME_LEN)) return -1;
     if (parent.size != 0) return -1;
 
-    /* r971: старый файл НЕ удаляем здесь. Раньше DELETE происходил до записи
-       данных: при обрыве STOR старый файл оказывался уничтоженным, а новый —
-       пустым/частичным. Теперь dentry старого файла остаётся нетронутой до
-       самого успешного fat_write_end (там освобождаем prev_first), а в
-       fat_abort_write старая цепочка сохраняется как была. */
-    fat_entry_t old;
+    /* r971: старый файл НЕ удаляем здесь: при обрыве STOR он остаётся
+       целым. r1274: запоминаем адрес его записи (вместе с LFN-фрагментами);
+       fat_write_end погасит её 0xE5 только после успешной записи новой.
+       Раньше старая запись оставалась в каталоге, находилась LIST/FIND
+       первой и указывала на уже освобождённую цепочку. */
     uint32_t prev_first = 0;
-    if (fat_find(dir_path, name, &old)) prev_first = old.first_cluster;
+    dentry_loc_t old;
+    if (find_dentry_loc(dir_path, name, &old)) {
+        prev_first = old.first_cluster;
+        g_wr.old_cnt = old.cnt;
+        for (int k = 0; k < old.cnt; k++) {
+            g_wr.old_sec[k] = old.sec[k];
+            g_wr.old_off[k] = old.off[k];
+            if (blk_read(old.sec[k], g_sector) < 0) {
+                memset(&g_wr, 0, sizeof(g_wr));
+                return -1;
+            }
+            memcpy(g_wr.old_raw[k], g_sector + old.off[k], 32);
+        }
+    }
 
     uint32_t dsec; int doff;
     /* r836: LFN — длинные имена (и имена с недопустимыми для 8.3 символами)
@@ -1217,7 +1273,8 @@ int fat_write_begin(const char* dir_path, const char* name) {
     for (int k = 12; k < 32; k++) g_sector[doff + k] = 0;
     if (blk_write(dsec, g_sector) < 0) return -1;
 
-    memset(&g_wr, 0, sizeof(g_wr));
+    /* g_wr уже обнулён в начале функции; old_* сохранены выше и должны
+       дожить до fat_write_end — здесь их не трогаем. */
     g_wr.active = 1;
     g_wr.dentry_sec = dsec;
     g_wr.dentry_off = doff;
@@ -1293,10 +1350,22 @@ int fat_write_end(void) {
     g_sector[off + 30] = (uint8_t)((sz >> 16) & 0xFF);
     g_sector[off + 31] = (uint8_t)((sz >> 24) & 0xFF);
     if (blk_write(g_wr.dentry_sec, g_sector) < 0) return -1;
+    /* r1274 (K-01): новая запись на диске — гасим старую 8.3-запись и все её
+       LFN-фрагменты (в исходные байты возвращаем только первый символ 0xE5).
+       Цепочку старого файла освобождаем, лишь если погашены ВСЕ его записи:
+       иначе в каталоге осталась бы ссылка на освобождённые кластеры. */
+    int old_ok = 1;
+    for (int k = 0; k < g_wr.old_cnt; k++) {
+        if (blk_read(g_wr.old_sec[k], g_sector) < 0) { old_ok = 0; continue; }
+        memcpy(g_sector + g_wr.old_off[k], g_wr.old_raw[k], 32);
+        g_sector[g_wr.old_off[k]] = 0xE5;
+        if (blk_write(g_wr.old_sec[k], g_sector) < 0) old_ok = 0;
+    }
+    g_wr.old_cnt = 0;
     /* r971: записи каталога указывают на НОВУЮ цепочку — теперь можно
        освободить кластеры старого файла (он был заменён). Раньше DELETE
        происходил до записи и при обрыве STOR старый файл терялся. */
-    if (g_wr.prev_first) fat_free_chain(g_wr.prev_first);
+    if (g_wr.prev_first && old_ok) fat_free_chain(g_wr.prev_first);
     return (int)g_wr.size;
 }
 

@@ -389,6 +389,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fb_flush();
         udelay(2500000);
         fb_clear(); fb_flush();
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
 
@@ -447,6 +448,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!fuse_retro_load_game(&info)) {
         printf("FUSE: load failed\n");
         fuse_retro_deinit();
+        emu_audio_stop();   /* r1278 */
         return;
     }
     i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
@@ -465,6 +467,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fb_flush();
         udelay(2000000);
         fb_clear(); fb_flush();
+        emu_audio_stop();   /* r1278 */
         return;
     }
 
@@ -484,5 +487,6 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     fuse_retro_unload_game();
     fuse_retro_deinit();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

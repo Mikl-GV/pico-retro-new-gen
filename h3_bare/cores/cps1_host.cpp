@@ -106,12 +106,16 @@ static int g_frame_h = CPS1_H;   // высота активного кадра: 
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
 
 // ---- ROM-источники (выбранная игра) ----
-// zip-буферы: основной 0x50000000 (92 МБ, крупнейшие сеты NEOGEO ~84 МБ),
-// BIOS/родителя 0x5C000000 (48 МБ). Между ними запас; выше до HDMI FB
-// (~0x5F900000) ещё свободно.
+// r1275 (K-02): zip игры до 64 МБ — в 0x50000000 (ROM_BUF браузера, во время
+// игры свободен). Сеты больше 64 МБ (NEOGEO kof2003 и т.п.) — в зону
+// 0x44C00000..0x4A400000 (88 МБ над .bss, ниже .coherent): прежние 92 МБ от
+// 0x50000000 залезали в пул FBNeo 0x54000000 и затирались при BurnDrvInit.
+// BIOS/родителя — 0x5C000000 (48 МБ), как было.
 #define ZIP_BUF1 ((uint8_t*)0x50000000u)
+#define ZIP_BUF_BIG ((uint8_t*)0x44C00000u)
 #define ZIP_BUF2 ((uint8_t*)0x5C000000u)
-#define ZIP_MAX  (92u * 1024u * 1024u)   // крупнейшие сеты ~84 МБ (NEOGEO)
+#define ZIP_MAX  (64u * 1024u * 1024u)   // ROM_BUF до .vice_bss/пула
+#define ZIP_MAX_BIG (88u * 1024u * 1024u)   // .bss..coherent, крупные сеты
 #define ZIP_MAX2 (48u * 1024u * 1024u)   // буфер родителя/BIOS ниже EMU_FB
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
 static const uint8_t* g_zip_data = NULL;
@@ -721,6 +725,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 
     if (!rom_name || !rom_name[0]) {
         printf("CPS: no game name\n");
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
 
@@ -753,6 +758,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
         fb_flush();
+        emu_audio_stop();   /* r1278 */
         return;
     }
     nBurnDrvActive = (UINT32)idx;
@@ -772,14 +778,17 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         }
     }
 
-    // zip игры — целиком в ROM_BUF (браузер его больше не использует)
+    // zip игры — целиком в буфер (браузер ROM_BUF больше не использует)
     char zipname[FAT_NAME_LEN];
     snprintf(zipname, sizeof(zipname), "%s.zip", game);
     fat_entry_t zf;
-    if (fat_find(root, zipname, &zf) && zf.size > 0 && (uint32_t)zf.size <= ZIP_MAX) {
+    int have_zip = fat_find(root, zipname, &zf) && zf.size > 0;
+    if (have_zip && (uint32_t)zf.size > ZIP_MAX_BIG) have_zip = 0;
+    if (have_zip) {
+        uint8_t* zbuf = ((uint32_t)zf.size <= ZIP_MAX) ? ZIP_BUF1 : ZIP_BUF_BIG;
         load_progress("(zip)");   // чтение большого архива может идти секунды
-        if (fat_read_file(&zf, 0, ZIP_BUF1, (uint32_t)zf.size) >= 0) {
-            g_zip_data = ZIP_BUF1;
+        if (fat_read_file(&zf, 0, zbuf, (uint32_t)zf.size) >= 0) {
+            g_zip_data = zbuf;
             g_zip_size = (uint32_t)zf.size;
         }
     }
@@ -854,6 +863,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_text_center("CPS-1: load failed", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
         fb_flush();
+        /* r1278 (A-02): провал BurnDrvInit оставлял частично выделенные
+           ресурсы и инициализированные чипы до следующего запуска. */
+        BurnDrvExit();
+        emu_audio_stop();
         return;
     }
     // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
@@ -902,6 +915,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emu_audio_stop();   /* r1278 */
             return;
         }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
@@ -925,6 +939,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emu_audio_stop();   /* r1278 */
             return;
         }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
@@ -947,6 +962,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emu_audio_stop();   /* r1278 */
             return;
         }
         int nw = (fw > 0 && fw <= CPS1_W) ? fw : TOA_W;
@@ -1032,6 +1048,7 @@ for (;;) {
 
     BurnDrvExit();
     emu_period_us = saved_period;   // r0.390: вернуть общий период (60 Гц)
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }
 

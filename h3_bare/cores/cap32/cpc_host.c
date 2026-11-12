@@ -404,6 +404,7 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!cpc_retro_load_game(&info)) {
         printf("CPC: load failed\n");
         cpc_retro_deinit();
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     printf("CPC: started (%s, %u bytes)\n", g_path[0] ? g_path : "BIOS/BASIC", (unsigned)size);
@@ -433,5 +434,6 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     cpc_retro_unload_game();
     cpc_retro_deinit();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

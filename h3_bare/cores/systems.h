@@ -85,10 +85,10 @@ static const system_entry_t systems[] = {
     SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
     SYS("c64",        "Commodore 64/128",         COMPUTER, READY),
-    // r1191: Commodore Amiga (ядро PUAE/libretro-uae, h3_bare/cores/puae).
-    // Запускает ADF-образы с SD (/roms/amiga — папка по id) и уходит в
-    // встроенный AROS-фолбэк, когда Kickstart не вшит (правило владельца:
-    // BIOS вшивается через .incbin, с SD не грузится). Дир по id = "amiga".
+    // r1243: Commodore Amiga — ядро UAE4All (h3_bare/cores/uae4all,
+    // uae4all_host.c); PUAE из сборки выведен. Запускает ADF-образы с SD
+    // (/roms/amiga — папка по id); Kickstart 1.3 вшит через .incbin
+    // (правило владельца: BIOS с SD не грузится). Дир по id = "amiga".
     SYS("amiga",      "Commodore Amiga",         COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };

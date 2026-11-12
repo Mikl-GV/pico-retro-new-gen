@@ -19,6 +19,7 @@
 #include "h3_ccu.h"
 #include "uart.h"
 #include "usb_msd.h"
+#include "usb_ohci.h"   /* r1276: usb_cache_clean/invalidate */
 
 extern int printf(const char* fmt, ...);
 
@@ -104,6 +105,11 @@ static int ehci_wait_done(struct ehci_qtd* t, int n) {
     ehci_wr(0x18, (uint32_t)(uintptr_t)&g_qh);   /* ASYNCLISTADDR */
     ehci_wr(0x00, ehci_rd(0x00) | (1u << 5) | (1u << 0));   /* ASE=1, RS=1 */
     for (uint32_t spin = 0; spin < 0xFFFFFu; spin++) {
+        /* r1276 (D-05): HC пишет token в DRAM, а qTD лежит в write-back
+           .coherent. Без invalidate CPU читает свою копию строки и вечно
+           видит ACTIVE (таймаут на живой передаче). */
+        usb_cache_invalidate((uint32_t)(uintptr_t)t,
+                             (uint32_t)n * sizeof(struct ehci_qtd));
         int done = 1;
         for (int i = 0; i < n; i++)
             if (t[i].qt_token & EHCI_QTD_ACTIVE) { done = 0; break; }
@@ -120,6 +126,10 @@ static int ehci_run_chain(struct ehci_qtd* t, int n) {
     g_qh.qh_next  = 0;
     g_qh.qh_token = 0;
     __asm volatile("dmb sy" ::: "memory");
+    /* r1276 (D-05): qH/qTD — в write-back .coherent; HC читает DRAM. */
+    usb_cache_clean((uint32_t)(uintptr_t)&g_qh, sizeof(g_qh));
+    usb_cache_clean((uint32_t)(uintptr_t)t,
+                    (uint32_t)n * sizeof(struct ehci_qtd));
     return ehci_wait_done(t, n);
 }
 
@@ -142,6 +152,7 @@ static int usb_ehci_ctrl_mps(const uint8_t* setup, const uint8_t* out_data,
     for (int i = 0; i < 5; i++) qh->qh_buf[i] = 0;
 
     for (int i = 0; i < 8; i++) g_setup[i] = setup[i];
+    usb_cache_clean((uint32_t)(uintptr_t)g_setup, sizeof(g_setup));  /* r1276 */
     ehci_qtd_fill(&t[0], g_setup, 8, EHCI_QTD_PID_SETUP, 0);
     t[0].qt_next = (uint32_t)(uintptr_t)&t[1];
 
@@ -149,12 +160,20 @@ static int usb_ehci_ctrl_mps(const uint8_t* setup, const uint8_t* out_data,
         ehci_qtd_fill(&t[1], in_buf, in_len, EHCI_QTD_PID_IN, 0);
         t[1].qt_next = (uint32_t)(uintptr_t)&t[2];
         ehci_qtd_fill(&t[2], 0, 0, EHCI_QTD_PID_OUT, 1);
-        return ehci_run_chain(t, 3);
+        /* r1276 (D-05): грязные строки буфера дали бы запись DMA в DRAM, а
+           затем сброс старого кэша поверх принятых данных. */
+        if (in_buf) usb_cache_clean((uint32_t)(uintptr_t)in_buf, in_len);
+        int rc = ehci_run_chain(t, 3);
+        if (in_buf) usb_cache_invalidate((uint32_t)(uintptr_t)in_buf, in_len);
+        return rc;
     }
     if (out_data) {
-        for (uint32_t i = 0; i < out_len && i < sizeof(g_ehci_buf); i++)
-            g_ehci_buf[i] = out_data[i];
+        // r1271 (D-33): проверка размера ДО копирования — раньше хвост молча
+        // терялся, а функция возвращала успех.
         if (out_len > sizeof(g_ehci_buf)) return -1;
+        for (uint32_t i = 0; i < out_len; i++)
+            g_ehci_buf[i] = out_data[i];
+        usb_cache_clean((uint32_t)(uintptr_t)g_ehci_buf, out_len);   /* r1276 */
         ehci_qtd_fill(&t[1], g_ehci_buf, out_len, EHCI_QTD_PID_OUT, 0);
         t[1].qt_next = (uint32_t)(uintptr_t)&t[2];
         ehci_qtd_fill(&t[2], 0, 0, EHCI_QTD_PID_IN, 1);
@@ -172,6 +191,7 @@ int usb_ehci_ctrl(const uint8_t* setup, const uint8_t* out_data, uint32_t out_le
 static int usb_ehci_bulk_out(uint8_t ep, uint16_t mps, const uint8_t* data, uint32_t len) {
     if (len > sizeof(g_ehci_buf)) return -1;
     for (uint32_t i = 0; i < len; i++) g_ehci_buf[i] = data[i];
+    usb_cache_clean((uint32_t)(uintptr_t)g_ehci_buf, len);   /* r1276 (D-05) */
     g_qh.qh_link  = 1;
     g_qh.qh_endpt = (uint32_t)(g_usb_addr & 0x7Fu)
                   | EHCI_QH_EPN(ep) | EHCI_QH_EPS_HS | EHCI_QH_MAXP(mps);
@@ -191,7 +211,12 @@ static int usb_ehci_bulk_in(uint8_t ep, uint16_t mps, uint8_t* data, uint32_t le
     g_qh.qh_token = 0;
     for (int i = 0; i < 5; i++) g_qh.qh_buf[i] = 0;
     ehci_qtd_fill(&g_qtd[0], data, len, EHCI_QTD_PID_IN, 1);
-    return ehci_run_chain(g_qtd, 1);
+    /* r1276 (D-05): приёмник IN — чужой буфер (FAT-сектор, дескриптор):
+       гасим грязные строки до DMA и забираем из DRAM после. */
+    if (data) usb_cache_clean((uint32_t)(uintptr_t)data, len);
+    int rc = ehci_run_chain(g_qtd, 1);
+    if (data) usb_cache_invalidate((uint32_t)(uintptr_t)data, len);
+    return rc;
 }
 
 // Bullk-маршрут выбирается глобально: EHCI (HS) или OHCI (FS/LS). Ставится
@@ -234,7 +259,6 @@ static int usb_ohci_activate_flash_pre(void) {
                                       uint8_t* data, uint32_t data_len, int dir_in,
                                       uint32_t timeout_ms);
     extern void usb_ohci_set_mps(uint16_t mps);
-    extern int usb_ohci_bulk_toggle_reset(uint32_t base);
     extern void usb_ohci_bot_recover(uint32_t base);
     const uint32_t base = g_pre_base;   /* r903: база из HID-скана (B400/C400) */
     static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
@@ -466,7 +490,6 @@ int usb_ohci_enumerate_flash(void) {
                                       uint8_t* data, uint32_t data_len, int dir_in,
                                       uint32_t timeout_ms);
     extern void usb_ohci_set_mps(uint16_t mps);
-    extern int usb_ohci_bulk_toggle_reset(uint32_t base);
     extern void usb_ohci_bot_recover(uint32_t base);
 
     const uint32_t base = 0x01C1B400u;   /* PHY1 OHCI (компаньон EHCI) */

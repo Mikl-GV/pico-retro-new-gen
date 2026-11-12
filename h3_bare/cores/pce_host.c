@@ -212,6 +212,7 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!rom || size == 0 || size > 4096u * 1024u) {
         printf("PCE: no rom\n");
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
 
@@ -238,6 +239,7 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!retro_load_game(&info)) {
         printf("PCE: load failed\n");
         retro_deinit();
+        emu_audio_stop();   /* r1278 */
         return;
     }
     printf("PCE: started (%u bytes)\n", (unsigned)size);
@@ -257,5 +259,6 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     retro_unload_game();
     retro_deinit();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

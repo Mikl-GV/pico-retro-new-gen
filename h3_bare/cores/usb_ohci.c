@@ -107,9 +107,10 @@ static uint16_t    g_mps = 8;
 // Оба ED цепляются через NextED: HCCA → ED0 → ED1.
 // PLE и HCCA-таблицу настраивает только slot 0; slot 1 только цепляет ED.
 //
-// ВСЕ эти структуры живут в uncached-области libh3_coherent_region (секция
-// .coherent в linker.ld, 1 МБ), помечены uncached через MMU. Без этого
-// write-back D-cache затирает toggle-биты, которые HC обновляет в DRAM.
+// ВСЕ эти структуры живут в libh3_coherent_region (секция .coherent в
+// linker.ld, VMA 0x4A400000). Область остаётся write-back (r1206:
+// mmu_mark_uncached — намеренный no-op), поэтому когерентность держат явные
+// cache_clean/cache_invalidate (L1 by MVA + L2 by PA), а не атрибуты MMU.
 
 static ohci_ed_t   g_int_ed[2][2] __attribute__((section(".coherent"), aligned(16)));
 // r1063: ЗАМКНУТОЕ кольцо TD (по 8 на слот). HC сам продвигается по TD.next,
@@ -359,6 +360,10 @@ static inline void cache_invalidate(uint32_t addr, uint32_t size) {
         __asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(a));  /* DCIMVAC */
     __asm volatile("dsb" ::: "memory");
 }
+
+/* r1276 (D-05): экспорт для EHCI (usb_hc.c) — та же реализация, без копии. */
+void usb_cache_clean(uint32_t addr, uint32_t size) { cache_clean(addr, size); }
+void usb_cache_invalidate(uint32_t addr, uint32_t size) { cache_invalidate(addr, size); }
 
 // Полный цикл тактов/PHY (по uli reference + ICR для AHB burst)
 // r801 (по замечанию владельца): сбрасываем и ставим ТОЛЬКО свои биты (маска),

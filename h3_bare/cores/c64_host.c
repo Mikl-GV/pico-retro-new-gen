@@ -481,6 +481,7 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     if (!loaded) {
         printf("C64: load failed\n");
         vice_retro_deinit();
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     printf("C64: started (%s, %u bytes)\n", g_path[0] ? g_path : "BIOS/BASIC", (unsigned)size);
@@ -539,5 +540,6 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     vice_retro_unload_game();
     vice_retro_deinit();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

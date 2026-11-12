@@ -579,6 +579,7 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     memset(image_buffer, 0, sizeof(image_buffer));   // свой кадр-буфер не чистится emu_prepare
     if (!msx_init_game(rom, size)) {
         printf("MSX: init failed\n");
+        emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     emu_set_border_color(0x00000000);
@@ -615,5 +616,6 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
 exit:
     emu_period_us = saved_period;   // r0.210: вернуть общий период
     msx_stop();
+    emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
 }

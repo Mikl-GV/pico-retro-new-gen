@@ -6,6 +6,10 @@
 #define FAT_MAX_ENTRIES 256
 #define FAT_NAME_LEN    128
 
+/* r1271 (D-13): 1 = последний read_dir оборвался (упёрлись в FAT_MAX_ENTRIES
+   или ошибка чтения) — список неполон, вызывающий может предупредить. */
+extern int g_fat_dir_truncated;
+
 typedef struct {
     uint32_t first_cluster;
     uint32_t size;

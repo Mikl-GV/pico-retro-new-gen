@@ -1172,8 +1172,12 @@ void tft_core_main(void) {
     TFT_PROBE3 = tft_touch_probe_cs(0, 0x90);
     TFT_STAT = 0x0D;
 
-    if (tft_init() < 0) { TFT_STAT = 9; for (;;) __asm volatile("wfi"); }
-    TFT_STAT = 2;
+/* r1271 (D-48): провал tft_init не должен отправлять CPU1 в вечный wfi —
+   тогда панель терялась до перезагрузки. Метим статус и всё равно идём в
+   рабочий цикл: он продолжает обновлять HEARTBEAT и TFT_CMD, а core0 по
+   TFT_STAT видит причину. */
+    if (tft_init() < 0) TFT_STAT = 9;
+    else TFT_STAT = 2;
     // r120: SRAM-почта не zero-инициализируется — чистим при старте
     TFT_BTN = 0;
     TFT_HELP_ID = 0;

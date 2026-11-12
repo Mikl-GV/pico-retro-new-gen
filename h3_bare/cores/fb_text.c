@@ -21,6 +21,7 @@ static uint32_t s_fb_draw = FB_ADDR;   // буфер, в который рису
 static int      s_flip_on  = 0;        // 1 = пинг-понг включён на эту сессию
 
 uint32_t fb_draw_addr(void) { return s_fb_draw; }
+int fb_flip_active(void) { return s_flip_on; }
 
 void fb_flip_set(int on) {
     s_flip_on = 0;
@@ -29,6 +30,11 @@ void fb_flip_set(int on) {
     if (on) {
         s_flip_on = 1;
         s_fb_draw = FB_ADDR_BACK;      // кадр собираем во втором, показываем первый
+        /* r1277 (E-01): оба буфера стартуют чёрными. Иначе в чередующемся
+           буфере поля/края кадра показывают мусор из DRAM (в него ещё никто
+           не писал). Один раз на включение опции. */
+        memset((void*)(uintptr_t)FB_ADDR, 0, (size_t)FB_W * FB_H * 4);
+        memset((void*)(uintptr_t)FB_ADDR_BACK, 0, (size_t)FB_W * FB_H * 4);
     }
 }
 
