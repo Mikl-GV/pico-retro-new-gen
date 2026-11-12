@@ -751,39 +751,85 @@ $(BUILD)/vice_renamed.stamp: $(VICE_OBJS)
 	$(TOP)h3_bare/cores/vice_rename.sh $(VICE_OBJS)
 	touch $@
 
-# ---- Amiga (PUAE / libretro-uae, WinUAE 5.3.1) ----
-# Vendored в h3_bare/cores/puae/ (ядро sources/src + libretro + retrodep).
-# Сборка под Cortex-A7 (classic_armv7_a7 в вендорном Makefile = NESC/SNESC/C64
-# mini — тот же CPU, что H3): -Ofast -flto -marm -mfpu=neon-vfpv4.
-# Состав — из вендорного Makefile.common: puae_sources.mk (генерируется
-# puae_gen_sources.sh), правила — puae_rules.mk (puae_gen_rules.sh).
-# Глобалы набора (retro_*/main/log/crc32/gui/sound/parser...) конфликтуют с
-# другими ядрами — puae_rename.sh переименовывает в puae_* (как vice_*).
-# Host-слой puae_host.o НЕ входит в набор: зовёт puae_retro_*.
-PUAE_ROOT := $(TOP)h3_bare/cores/puae
-include $(PUAE_ROOT)/puae_sources.mk
-include $(PUAE_ROOT)/puae_rules.mk
-# PUAE_OBJS/PUAE_ZOBJS из sources.mk — голые имена; префикс $(BUILD)/ (как VICE).
-PUAE_OBJS_ALL := $(foreach f,$(PUAE_OBJS) $(PUAE_ZOBJS),$(BUILD)/$(f)) $(PUAE_LRC_OBJS)
-OBJ += $(PUAE_OBJS_ALL) $(BUILD)/puae_host.o $(BUILD)/puae_kickstart_data.o
-PUAE_INC := -I$(PUAE_ROOT) -I$(PUAE_ROOT)/sources/src -I$(PUAE_ROOT)/sources/src/include \
-	-I$(PUAE_ROOT)/libretro -I$(PUAE_ROOT)/retrodep \
-	-I$(PUAE_ROOT)/libretro-common/include -I$(PUAE_ROOT)/deps/libz -I$(PUAE_ROOT)/deps/7zip
-PUAE_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding \
-	-std=gnu99 -Wall -Wextra -O2 -fno-strict-aliasing -fwrapv \
-	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
-	-D__LIBRETRO__ -D__STDC_FORMAT_MACROS -D_7ZIP_ST \
+# ---- Amiga (UAE4All / libretro-порт Chips, замена PUAE r1243) ----
+# Vendored в h3_bare/cores/uae4all/ (ядро src + libretro обвязка + deps/libz).
+# Сборка libretro-режима; CPU-ядро — Cyclone (ARM ассемблерная, самый быстрый
+# на Cortex-A7). zfile/savestate используют zlib — своя копия deps/libz.
+# Глобалы набора (memory/custom/sound/...) конфликтуют с другими ядрами —
+# uae4all_rename.sh (префикс u4a_). Host-слой uae4all_host.o НЕ входит в набор.
+# Правила: явный список (паттерн u4a_%.o конфликтует с wildcard-объектами).
+U4A_ROOT := $(TOP)h3_bare/cores/uae4all
+# .cpp верхнего уровня (в src/) + m68k (cyclone), vkbd, libretro-обвязка
+U4A_CPP := src/audio src/autoconf src/blitfunc src/blittable src/blitter src/cia \
+	src/compiler src/custom src/disk src/drawing src/ersatz src/gfxutil src/gui \
+	src/keybuf src/main src/md-support src/memory src/missing src/retrogfx \
+	src/savedisk src/savestate src/sound_retro src/writelog src/zfile
+U4A_CPP += src/m68k/cyclone/m68k_intrf src/m68k/m68k_cmn_intrf src/vkbd/vkbd
+U4A_CPP += libretro/core/libretro-core libretro/core/core-mapper libretro/core/graph libretro/core/vkbd
+# .s (Cyclone) + zlib (из копии deps/libz)
+U4A_ASM := src/m68k/cyclone/cyclone src/m68k/cyclone/memhandlers
+U4A_Z   := adler32 compress crc32 deflate gzclose gzlib gzread gzwrite \
+	inffast inflate inftrees trees uncompr zutil
+U4A_OBJS := $(foreach f,$(U4A_CPP),$(BUILD)/u4a_$(subst /,_,$(f)).o) \
+            $(foreach f,$(U4A_ASM),$(BUILD)/u4a_$(subst /,_,$(f)).o) \
+            $(foreach f,$(U4A_Z),$(BUILD)/u4a_z_$(f).o)
+OBJ += $(U4A_OBJS) $(BUILD)/u4a_host.o
+U4A_INC := -I$(U4A_ROOT) -I$(U4A_ROOT)/src -I$(U4A_ROOT)/src/include \
+	-I$(U4A_ROOT)/src/menu -I$(U4A_ROOT)/src/vkbd \
+	-I$(U4A_ROOT)/libretro/core -I$(U4A_ROOT)/libretro/include -I$(U4A_ROOT)/deps/libz
+# C++-ядро — БЕЗ -ffreestanding (как Gearcoleco/CPS1 C++): newlib freestanding
+# не даёт hosted-заголовков (requires_hosted.h), ломается malloc/atoi/PRId64.
+# r1246: -mfpu=vfpv3-d16 ВМЕСТО neon. Причина (стенд r1245): Cyclone (asm m68k)
+# зовёт C-функции с SP, не выровненным на 8 по AAPCS, а gcc с NEON генерит
+# `vld1.64 {d16-d17},[sp :64]` — этот вариант требует 8-байтного выравнивания
+# и даёт Alignment fault (LPAE DFSR=0x21) на стеке. VFP (vldr/vstr) терпит
+# 4-байтное выравнивание, поэтому NEON из этого набора убираем — ядру он не
+# нужен (целочисленная эмуляция), а остальные ядра собираются с NEON как прежде.
+U4A_CFLAGS := -mcpu=cortex-a7 -mfpu=vfpv3-d16 -mfloat-abi=softfp -marm \
+	-std=gnu99 -Wall -Wextra -O3 -fomit-frame-pointer -fno-strict-aliasing -fwrapv \
+	-fno-exceptions -fno-rtti -fno-threadsafe-statics \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG -D__LIBRETRO__ \
+	-DNO_MAIN_IN_MAIN_C -DNO_VKBD -DEMULATED_JOYSTICK -DUSE_ZFILE=1 -DCYCLONE_CORE=1 \
+	-DUSE_CYCLONE_CORE -DUSE_CYCLONE_MEMHANDLERS -DUSE_FAME_CORE -DUSE_UNDERSCORE \
+	-DOS_WITHOUT_MEMORY_MANAGEMENT -DROM_PATH_PREFIX=\"./\" -DDATA_PREFIX=\"./data/\" -DSAVE_PREFIX=\"./\" \
+	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
 	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
 	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration
-$(BUILD)/puae_host.o: $(TOP)h3_bare/cores/puae_host.c | $(BUILD)
-	$(CC) $(PUAE_CFLAGS) $(PUAE_INC) $(INCLUDES) -c -o $@ $<
-# Вшитый Kickstart 1.3 rev 34.5 (A500, 256 КБ): .incbin bios/kick34005.A500.
-# Путь инклюда относителен kickstart_data.S — ассемблер ищет его по -I$(PUAE_ROOT).
-# r1232: в том же kickstart_data.S лежит диск Workbench 1.3 (bios/wb13.adf).
-$(BUILD)/puae_kickstart_data.o: $(TOP)h3_bare/cores/puae/kickstart_data.S $(TOP)h3_bare/cores/puae/bios/kick34005.A500 $(TOP)h3_bare/cores/puae/bios/wb13.adf | $(BUILD)
-	$(AS) $(PUAE_CFLAGS) -I$(PUAE_ROOT) -x assembler-with-cpp -c -o $@ $<
-$(BUILD)/puae_renamed.stamp: $(PUAE_OBJS_ALL) $(TOP)h3_bare/cores/puae_rename.sh
-	$(TOP)h3_bare/cores/puae_rename.sh $(PUAE_OBJS_ALL)
+# Правила: явные имена объектов -> путь в дереве
+define U4A_RULE_cpp
+$(BUILD)/u4a_$(subst /,_,$(1)).o: $(U4A_ROOT)/$(1).cpp | $(BUILD)
+	$(CXX) $(U4A_CFLAGS) $(U4A_INC) $(INCLUDES) -c -o $$@ $$<
+endef
+$(foreach f,$(U4A_CPP),$(eval $(call U4A_RULE_cpp,$(f))))
+# r1247: libretro-core.cpp подключает cmdline.cpp через #include — без явной
+# зависимости правка cmdline.cpp не пересобирала объект (тот же класс, что
+# pico_sh2_compiler.o/emit_arm.c). Держим путь в форме $(U4A_ROOT).
+$(BUILD)/u4a_libretro_core_libretro-core.o: $(U4A_ROOT)/libretro/core/cmdline.cpp
+define U4A_RULE_s
+$(BUILD)/u4a_$(subst /,_,$(1)).o: $(U4A_ROOT)/$(1).s | $(BUILD)
+	$(AS) $(U4A_CFLAGS) $(U4A_INC) $(INCLUDES) -c -o $$@ $$<
+endef
+$(foreach f,$(U4A_ASM),$(eval $(call U4A_RULE_s,$(f))))
+define U4A_RULE_z
+$(BUILD)/u4a_z_$(1).o: $(U4A_ROOT)/deps/libz/$(1).c | $(BUILD)
+	$(CC) $(U4A_CFLAGS) $(U4A_INC) $(INCLUDES) -c -o $$@ $$<
+endef
+$(foreach f,$(U4A_Z),$(eval $(call U4A_RULE_z,$(f))))
+$(BUILD)/u4a_host.o: $(TOP)h3_bare/cores/uae4all_host.c | $(BUILD)
+	$(CC) $(U4A_CFLAGS) $(U4A_INC) $(INCLUDES) -c -o $@ $<
+# Вшитые BIOS (правило владельца): Kickstart 1.3 + Workbench 1.3 через
+# существующий kickstart_data.S (puae) — символы puae_kick13_rom/wb13_adf
+# переиспользуются host-слоем uae4all (те же .incbin).
+$(BUILD)/u4a_kickstart_data.o: $(TOP)h3_bare/cores/puae/kickstart_data.S $(TOP)h3_bare/cores/puae/bios/kick34005.A500 $(TOP)h3_bare/cores/puae/bios/wb13.adf | $(BUILD)
+	$(AS) $(U4A_CFLAGS) -I$(TOP)h3_bare/cores/puae -x assembler-with-cpp -c -o $@ $<
+OBJ += $(BUILD)/u4a_kickstart_data.o
+# Стабы POSIX-функций, которых нет в bare-metal (glob/usleep — не в fs_layer)
+$(BUILD)/u4a_stubs.o: $(TOP)h3_bare/cores/uae4all_stubs.c | $(BUILD)
+	$(CC) $(U4A_CFLAGS) $(U4A_INC) $(INCLUDES) -c -o $@ $<
+OBJ += $(BUILD)/u4a_stubs.o
+$(BUILD)/u4a_renamed.stamp: $(U4A_OBJS) $(TOP)h3_bare/cores/uae4all_rename.sh
+	$(TOP)h3_bare/cores/uae4all_rename.sh $(U4A_OBJS)
 	touch $@
 
 # ---- CPS-1 (FinalBurn Neo, Capcom Play System 1) ----
@@ -1552,7 +1598,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp $(BUILD)/puae_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp $(BUILD)/u4a_renamed.stamp
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)

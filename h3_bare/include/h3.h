@@ -161,6 +161,9 @@ typedef enum T_H3_IRQn {
 #include <stddef.h>
 
 void mmu_mark_uncached(uint32_t addr);   // пометить 2-МБ LPAE-блок uncached (для DMA/OHCI)
+uint32_t mmu_tables_crc(void);           // CRC L0+L1 копий (0x4A40C000..0x4A420000), для детекта порчи
+void mmu_guard_arm(void);                // заполнить guard-маркеры вокруг копий таблиц
+int  mmu_guard_broken(void);             // число испорченных слов guard-зон (0 = целы)
 
 #ifdef __cplusplus
 # define	__I		volatile		///< defines 'read only' permissions

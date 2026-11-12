@@ -246,34 +246,74 @@ _prefetch:
     bl hex32_uart
     mov r0, #'\n'
     bl uart_dbg
-    /* r1194-ДИАГ: L1-запись секции фолтящего адреса F1 (DFAR):
-     *   M1 <idx:16bit> <descr:32bit>  — idx = (DFAR>>20)&0xFFF (секция в L1),
-     *     descr = содержимое таблицы (0/мусор -> секция не отображена;
-     *     биты [1:0]=0b10 -> section; [18]=0/1 -> TEX/кэш).
-     * Сохраняем idx в r4, L1 base в r5, дескриптор печатаем через hex32. */
-    push {r0-r5, lr}
+    /* r1245-ДИАГ (LPAE!): M1 <idx0> <idx1> L0=<hi>:<lo> L1=<hi>:<lo>
+     * TTBR0 -> L0 (4 КБ); L0[idx0] -> L1; L1[idx1] -> 2-МБ блок.
+     *   idx0 = (DFAR>>30)&3, idx1 = (DFAR>>21)&0x1FF.
+     * r1194 считал idx = DFAR>>20 (short-descriptor): в LPAE это выходит за
+     * 4-КБ таблицу, поэтому в логе печатался мусор (0xFFFFFFFF), а не
+     * настоящий дескриптор. Здесь разбираем оба уровня и печатаем их как
+     * 64-битные: <hi>:<lo>. Регистры r5 (L0 base), r6 (DFAR), r7 (idx0)
+     * hex-функции не трогают (они портят только r0,r1,r4). */
+    push {r0-r7, lr}
+    mrc p15, 0, r6, c6, c0, 0          /* r6 = DFAR */
+    mrc p15, 0, r5, c2, c0, 0          /* TTBR0 */
+    ldr r0, =0xFFFFC000
+    and r5, r5, r0                     /* r5 = L0 base */
     mov r0, #'M'
     bl uart_dbg
     mov r0, #'1'
     bl uart_dbg
     mov r0, #' '
     bl uart_dbg
-    mrc p15, 0, r0, c6, c0, 0          /* DFAR */
-    lsr r0, r0, #20                    /* r0 = idx = DFAR>>20 (0..0xFFF — макс. phys) */
-    mov r4, r0                        /* сохраняем idx в r4 */
-    bl hex16_uart
-    mrc p15, 0, r5, c2, c0, 0          /* TTBR0 base */
-    ldr r0, =0xFFFFC000                /* маска базы [31:14] (выровн. 16 КБ) */
-    and r5, r5, r0                     /* r5 = L1 base */
+    mov r0, r6, lsr #30
+    and r0, r0, #3
+    mov r7, r0                         /* r7 = idx0 */
+    bl hex8_uart
     mov r0, #' '
     bl uart_dbg
-    mov r0, r4
-    mov r1, r0
-    mov r0, r5
-    add r0, r0, r1, lsl #2             /* &L1[idx] */
-    ldr r0, [r0]                      /* descr */
+    mov r0, r6, lsr #21
+    movw r1, #0x1FF
+    and r0, r0, r1
+    bl hex16_uart                      /* idx1 */
+    mov r0, #' '
+    bl uart_dbg
+    add r0, r5, r7, lsl #3             /* &L0[idx0] */
+    ldr r0, [r0, #4]                   /* L0 descr hi */
+    bl hex32_uart
+    mov r0, #':'
+    bl uart_dbg
+    add r0, r5, r7, lsl #3
+    ldr r0, [r0]                       /* L0 descr lo */
     bl hex32_uart
     mov r0, #' '
+    bl uart_dbg
+    add r0, r5, r7, lsl #3
+    ldr r0, [r0]                       /* L0 lo */
+    and r2, r0, #3
+    cmp r2, #3                         /* bits[1:0]=0b11 -> table */
+    bne 7f
+    ldr r1, =0xFFFFF000
+    and r3, r0, r1                     /* r3 = L1 base */
+    mov r1, r6, lsr #21
+    movw r2, #0x1FF
+    and r1, r1, r2
+    add r0, r3, r1, lsl #3
+    ldr r0, [r0, #4]                   /* L1 descr hi */
+    bl hex32_uart
+    mov r0, #':'
+    bl uart_dbg
+    mov r1, r6, lsr #21
+    movw r2, #0x1FF
+    and r1, r1, r2
+    add r0, r3, r1, lsl #3
+    ldr r0, [r0]                       /* L1 descr lo */
+    bl hex32_uart
+    b 8f
+7:  mov r0, #'-'                       /* L0 не table — L1 отсутствует */
+    bl uart_dbg
+    mov r0, #'-'
+    bl uart_dbg
+8:  mov r0, #' '
     bl uart_dbg
     /* M2 <ref>.text L1[0x400] + <DACR> — сравнить domain/AP рабочей секции */
     mov r0, #'M'
@@ -282,9 +322,20 @@ _prefetch:
     bl uart_dbg
     mov r0, #' '
     bl uart_dbg
-    mov r0, r5
-    add r0, r0, #0x1000                 /* L1[0x400] = 0x400*4 = 0x1000 */
-    ldr r0, [r0]
+    /* M2 <descr .text>: в LPAE путь VA 0x40000000 -> L0[1] -> L1[0];
+     * печатаем дескриптор .text (эталон: рабочая запись WB) + DACR.
+     * r4.1: r5 теперь L0 base (см. M1), поэтому L1 ищем через L0[1]. */
+    mov r0, #'M'
+    bl uart_dbg
+    mov r0, #'2'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    add r0, r5, #8                     /* &L0[1] (VA 0x40000000) */
+    ldr r0, [r0]                       /* L0[1].lo */
+    ldr r1, =0xFFFFF000
+    and r0, r0, r1                     /* L1 base */
+    ldr r0, [r0]                       /* L1[0].lo = дескриптор .text */
     bl hex32_uart
     mov r0, #' '
     bl uart_dbg
@@ -292,7 +343,7 @@ _prefetch:
     bl hex32_uart
     mov r0, #' '
     bl uart_dbg
-    /* M3 <TTBR0> — какая L1-таблица активна в момент abort */
+    /* M3 <TTBR0> — какая L0-таблица активна в момент abort */
     mov r0, #'M'
     bl uart_dbg
     mov r0, #'3'
@@ -325,7 +376,42 @@ _prefetch:
     bl hex32_uart
     mov r0, #'\n'
     bl uart_dbg
-    pop {r0-r5, lr}
+    /* r1244-ДИАГ: SP_svc и LR_svc — какой стек и кто вызвал в момент Data
+     * Abort (аналог BL-блока в _prefetch). Внутри _dataabort мы в ABT-режиме
+     * (r13_abt), поэтому банк SVC читаем переключением CPSR.M. */
+    mov r0, #'S'
+    bl uart_dbg
+    mov r0, #'P'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    cps #0x13
+    mov r0, sp
+    cps #0x17
+    push {r0}
+    mov r0, #'R'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    pop {r0}
+    bl hex32_uart
+    mov r0, #' '
+    bl uart_dbg
+    cps #0x13
+    mov r0, lr
+    cps #0x17
+    push {r0}
+    mov r0, #'L'
+    bl uart_dbg
+    mov r0, #'R'
+    bl uart_dbg
+    mov r0, #' '
+    bl uart_dbg
+    pop {r0}
+    bl hex32_uart
+    mov r0, #'\n'
+    bl uart_dbg
+    pop {r0-r7, lr}
 9:  b 9b
 
 /* Вывести число r0 (мл. 8 бит) как 2 hex-цифры (0-9A-F).

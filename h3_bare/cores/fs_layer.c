@@ -147,20 +147,44 @@ void fs_register_bios(const char* path, const void* data, uint32_t size) {
            g_bios_path, (unsigned)g_bios_size, (unsigned)(uintptr_t)data);
 }
 
+// r1247: UAE4All просит Kickstart по умолчанию как "kick.rom" (main.cpp:
+// default_prefs -> romfile), а вшитый ROM регистрируется под настоящим именем
+// ("kick34005.A500"). Без синонима ядро молча уходит на ersatz-ROM, и промаха
+// не видно: лимит g_fs_miss_log к этому моменту уже израсходован на df0/df1.
+static int path_is_default_kick_name(const char* path) {
+    static const char alias[] = "kick.rom";
+    const char* a = skip_path_prefix(path);
+    for (size_t i = 0; i < sizeof(alias); i++) {
+        char ca = a[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (ca != alias[i]) return 0;
+    }
+    return 1;
+}
+
+static int g_bios_alias_logged FS_BSS = 0;
+
 // Те же правила сопоставления, что у path_matches (без регистра, без ведущих
 // '/' и '.'), но для второго слота.
 static int path_matches_bios(const char* path) {
     if (!path || !g_bios_path[0] || !g_bios_data) return 0;
     const char* a = skip_path_prefix(path);
     const char* b = skip_path_prefix(g_bios_path);
+    int same = 1;
     while (*a && *b) {
         char ca = *a, cb = *b;
         if (ca >= 'A' && ca <= 'Z') ca += 32;
         if (cb >= 'A' && cb <= 'Z') cb += 32;
-        if (ca != cb) return 0;
+        if (ca != cb) { same = 0; break; }
         a++; b++;
     }
-    return *a == *b;
+    if (same && *a == *b) return 1;
+    if (!path_is_default_kick_name(path)) return 0;
+    if (!g_bios_alias_logged) {
+        g_bios_alias_logged = 1;
+        printf("fs: bios alias 'kick.rom' -> '%s'\n", g_bios_path);
+    }
+    return 1;
 }
 
 // Какой буфер отдаём по запрошенному пути: 1 — образ (ROM/диск), 2 — Kickstart.

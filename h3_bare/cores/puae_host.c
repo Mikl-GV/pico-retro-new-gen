@@ -426,6 +426,7 @@ static char* g_puae_brk_low = 0;       // низ арены: откат brk не
 static puae_blk_t* g_puae_free = 0;    // список свободных блоков (payload = next)
 static int g_core_inited = 0;   // r1231: ядро между входами не выгружается
 static int g_warm = 0;          // r1241: текущий вход — тёплый (init не звали)
+static unsigned g_warm_count = 0; // r1242: счётчик тёплых входов подряд (вариант B)
 // r1235: прокрутка арены между сессиями. Слот сдвигает первое выделение на
 // PUAE_ROT_STEP, чтобы адреса не повторялись (иначе статические кэши ядра
 // считают видео/память уже инициализированными).
@@ -612,6 +613,20 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
     extern unsigned g_emu_prepare_gen;
     static unsigned g_amiga_gen = 0;
     g_warm = (g_core_inited && g_emu_prepare_gen == g_amiga_gen);
+    // r1242 (вариант B владельца): тёплый вход не возвращает арену между
+    // сессиями (стенд: brk растёт ~15 МБ/вход, на 4-м — «virtual memory
+    // exhausted (rtarea)»). Каждый 2-й вход делаем полный холодный цикл
+    // (unload+deinit+init + puae_heap_reset + прокрутка слота), как r1235 —
+    // это сбрасывает арену и возвращает brk к началу, не ломая карту ROM,
+    // которую r1241 чинил для первого входа.
+    if (g_warm && g_warm_count >= 1u) {
+        printf("Amiga: forced cold (warm#%u)\n", g_warm_count);
+        puae_retro_unload_game();
+        puae_retro_deinit();
+        g_core_inited = 0;
+        g_warm = 0;
+        g_warm_count = 0;
+    }
     if (!g_warm) {
         if (g_core_inited) {
             puae_retro_unload_game();
@@ -624,7 +639,9 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name)
         printf("Amiga: cold start, arena slot %u (gap=%u КБ)\n",
                g_rot_slot, (unsigned)(gap >> 10));
         g_rot_slot = (g_rot_slot + 1u) % PUAE_ROT_SLOTS;
+        g_warm_count = 0;
     } else {
+        g_warm_count++;
         extern void* _sbrk(int incr);
         g_puae_brk = (char*)_sbrk(0);   // синхронизация с текущей кучей
     }

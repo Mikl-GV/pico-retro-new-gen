@@ -1,8 +1,294 @@
-# HANDOVER — текущее состояние (r1241)
+# HANDOVER — текущее состояние (r1255)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
 > Правила проекта — `AGENTS.md` (единственный источник правил).
+
+---
+
+## 0. Последние правки
+
+- **r1255 (2026-11-12): Amiga/UAE4All — стабильный режим ввода, откат
+  усреднения hires.**
+  - **START больше не отдаётся на порту 0.** Ядро трактует его как
+    переключатель `MOUSE_EMULATED` (`core-mapper.cpp`), из-за чего каждое
+    нажатие сбивало режим — в логах поток `Switch to mouse emulation` /
+    `Switch-off`. Порт 0 теперь отдаёт только `SELECT` (экранная клава),
+    `L`/`R` (смена диска).
+  - **Откат r1254:** усреднение пары пикселей в hires дало «двоится/размывает»
+    (`linetoscr.h`, `mix565` убран). Вернулись к выбору одного пикселя.
+    Полноценный hires требует кадра 640x256: геометрия ядра жёстко завязана на
+    320 (`GFXVIDINFO_WIDTH`, `VISIBLE_LEFT/RIGHT_BORDER`, `MAX_PIXELS_PER_LINE`,
+    `PREFS_GFX_WIDTH`), нужна отдельная правка с удвоением lores и
+    согласованием OSD (`VIRTUAL_WIDTH`) — в этом релизе не делалась.
+  - **Цепочка ввода (как ядро получает устройства):**
+    - клавиатура: HID → `hid_to_retrok()` → `g_kbd[RETROK]` →
+      `Process_keyboard()` → `Key_State[]` → раскладка Amiga (`keybuf`);
+    - мышь: `usb_pad_get_pos()/usb_pad_buttons()` → `RETRO_DEVICE_MOUSE` →
+      `core-mapper.cpp: rmouse_x/y` → `lastmx/lastmy` → `custom.cpp:
+      do_mouse_hack()` → `JOY0DAT` (работает, когда `MOUSE_EMULATED != 1`
+      и `second_joystick_enable == 0`);
+    - джойстик: пад или стрелки/`Space` (порт 1) → `read_joystick(1)` →
+      `joy0dir/joy0button` → `JOY0DAT`/`POTGOR`; включается первым нажатием
+      огня (`second_joystick_enable = 1`), возврат к мыши — клик мыши.
+  - Сборка r1255: `h3_bare.bin` 22 682 100 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C6DC, `.data` 0x41066F70..0x415A19F4,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8F80`,
+    `puae_wb13_adf=0x413E8F80`.
+- **r1254 (2026-11-12): Amiga/UAE4All — длинные имена дисков, клавиатура в играх,
+  hires-текст.**
+  - **Диск не монтировался из-за обрезки имени.** Ядро копирует путь в
+    `uae4all_image_file[128]` (`strncpy(...,127)`), а тип диска определяет по
+    хвосту пути (`cmdline.cpp: pre_main`). У длинных имён хвост становился
+    `.ad` вместо `.adf` → ядро уходило в ветку `-s floppy0=...`, `parse_cmdline`
+    её не знает (`skipping unknown option: "-s"`), `Disk 0` оставался от
+    прошлой игры, а `drive_insert` падал (`DISK ins0 ... -> FAIL`).
+    **FIX:** host регистрирует образ под коротким `df0.adf` и это же имя отдаёт
+    в `gi.path`. Бонус: имя совпадает с дефолтом `prefs_df[0]="./df0.adf"`,
+    поэтому `DISK_init` ставит диск сразу (в логе `DISK ins0 './df0.adf' -> ok`).
+  - **Клавиатура как джойстик порта 1** (`u4a_input_state`): стрелки — крестовина,
+    `Space` — fire1, `Ctrl/Alt` — fire2. Геймпад в логе не поднимается
+    (`sega_pad: init FAIL`), поэтому без этого в играх не было направлений.
+  - **hires-текст**: в hires ядро брало каждый второй пиксель (`SRC_INC 2`),
+    из-за чего буквы WB/DOS теряли столбцы. Теперь пара усредняется
+    (`drawing.cpp: mix565`, `linetoscr.h`), буфер остаётся 320 — полный кадр
+    640x256 потребует отдельного согласования OSD (`VIRTUAL_WIDTH`).
+  - Сборка r1254: `h3_bare.bin` 22 682 180 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C724, `.data` 0x41066FC0..0x415A1A44,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8FD0`,
+    `puae_wb13_adf=0x413E8FD0`.
+- **r1253 (2026-11-12): Amiga/UAE4All — вертикальный кадр (низ уезжал за экран).**
+  Причина: `mainMenu_vpos` по умолчанию **1** (`retrogfx.cpp`) →
+  `minfirstline = MINFIRSTLINE_PAL + 8`, картинка сдвинута вниз на 8 строк и
+  низ растра обрезан; плюс host сам отдавал ядру опцию
+  `uae4all_statusbar = "on"`, из-за чего встроенный статусбар снова отъедал
+  строки (правка r1251 «statusbar=0» перебивалась опцией).
+  - **FIX:** `uae4all_host.c` отдаёт `uae4all_vpos = "0"` и
+    `uae4all_statusbar = "off"`; `retrogfx.cpp: mainMenu_vpos = 0`.
+  - **Осталось (отдельная задача):** в hires (`bplres == 1`) ядро берёт каждый
+    второй пиксель — `drawing.cpp: SRC_INC 2` для `pfiled_do_linetoscr_1`,
+    поэтому 640 колонок WB/DOS сжимаются в 320 и буквы выглядят «сжатыми по X
+    с вырезанными столбцами». Нужен кадр 640x256: `PREFS_GFX_WIDTH 640`,
+    `SRC_INC 1`, согласование страйда OSD (`VIRTUAL_WIDTH`) и `gfx_rowbytes`.
+  - Сборка r1253: `h3_bare.bin` 22 682 116 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C6CC, `.data` 0x41066F80..0x415A1A04,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8F90`,
+    `puae_wb13_adf=0x413E8F90`.
+- **r1252 (2026-11-12): Amiga/UAE4All — аспект 4:3, текст больше не сжат по X.**
+  После r1251 кадр стал 320x256, а `emu_scale_rgb565_src` масштабирует
+  пропорционально источнику: 320x256 → 750x600 (1.25). У Amiga PAL пиксель
+  неквадратный, кадр обязан занимать 4:3 — поэтому шрифт в DOS/Workbench
+  выглядел сжатым по горизонтали.
+  - **FIX:** в `emu.c` добавлен `emu_scale_rgb565_src_aspect(src, sw, sh,
+    stride, num, den)` — ширину задаёт аспект, высота всегда `FB_H`; host
+    (`uae4all_host.c: u4a_video`) вызывает его с 4:3 → 800x600 по центру.
+    Для hires/чересстрочных режимов (640x256, 640x512) аспект тот же.
+  - Сборка r1252: `h3_bare.bin` 22 682 116 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C6C4, `.data` 0x41066F80..0x415A1A04,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8F90`,
+    `puae_wb13_adf=0x413E8F90`.
+- **r1251 (2026-11-12): Amiga/UAE4All — ввод (порты, F-клавиши) и растр.**
+  - **Порты не зеркалятся** (`uae4all_host.c: u4a_input_state`). Ядро на порту 0
+    ждёт мышь и хоткеи (`core-mapper.cpp`: SELECT=vkbd, START=мышь/джой,
+    L/R=смена диска), на порту 1 — джойстик (`read_joystick(1) -> joy0dir`).
+    При зеркалировании A/B порта 0 читались как кнопки мыши: каждое нажатие
+    переключало «joystick → mouse → joystick» (в логе r1250 — десятки строк
+    `Switch to joystick/mouse mode` подряд), а направления обнулялись, потому
+    что `read_joystick(1)` при `second_joystick_enable == 0` сразу возвращает
+    `dir = 0`. Теперь порт 0 отдаёт только START/SELECT/L/R, порт 1 — полный
+    пад, мышь — только порт 0.
+  - **F1..F12**: HID-сканкоды `0x3A..0x45` → `RETROK_F1..F12`; раньше
+    функциональные клавиши не мапились вообще.
+  - **Растр**: `PREFS_GFX_HEIGHT` (`options.h`) и `GFXVIDINFO_HEIGHT`
+    (`drawing.cpp`) переведены с 240 на 256 — PAL-кадр Amiga 320x256 целиком;
+    встроенный статусбар ядра отключён (`retrogfx.cpp: mainMenu_statusbar=0`),
+    он отъедал строки растра и рисовал мелкий текст поверх картинки (OSD
+    рисует host). Скалер `emu_scale_rgb565_src` тянет 320x256 → 750x600.
+  - Сборка r1251: `h3_bare.bin` 22 681 796 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C5AC, `.data` 0x41066E40..0x415A18C4,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8E50`,
+    `puae_wb13_adf=0x413E8E50`.
+- **r1250 (2026-11-12): Amiga/UAE4All — утечка и висячие буферы между входами.**
+  `zfile_exit()` освобождал только `uae4all_disk_memory[2]`; ROM-буфер
+  (`uae4all_rom_memory`, 512 КБ), `uae4all_extra_buffer` (896 КБ) и
+  `uae4all_disk_orig[2]` (по 896 КБ) оставались в куче навсегда — ~3.2 МБ за
+  вход. Хост сбрасывает кучу перед запуском, поэтому со второго входа
+  `uae4all_rom_memory` был не NULL уже после сброса: `uae4all_rom_fopen()`
+  не перезагружал Kickstart, а `read_kickstart()` читал мусор из сброшенной
+  кучи. Отсюда чёрный экран на третьем входе и `Cyclone problem: branched to
+  unknown memory location` после другого эмулятора.
+  - **FIX (`zfile.cpp`):** `zfile_exit()` освобождает ROM, extra и `disk_orig`
+    (и обнуляет их длины/CRC); `uae4all_rom_reinit()` освобождает буфер перед
+    обнулением; `uae4all_init_rom()` освобождает старый буфер перед новой
+    аллокацией.
+  - Сборка r1250: `h3_bare.bin` 22 681 732 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C54C, `.data` 0x41066DF0..0x415A1884,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8E10`,
+    `puae_wb13_adf=0x413E8E10`.
+- **r1249 (2026-11-12): Amiga/UAE4All — диагностика монтирования диска и ROM.**
+  Стенд r1248: `rom_opens=0` во всех входах, `fs: bios alias` не появлялся,
+  с третьего входа чёрный экран, на четвёртом — `Cyclone problem: branched to
+  unknown memory location: 566c66`.
+  - Установлено: `libretro-core.cpp:444` сам подставляет в `romfile`
+    `system_dir + "kick34005.A500"`, поэтому промаха по `kick.rom` нет —
+    синоним из r1247 остаётся лишь страховкой для сборок без этой строки.
+  - `g_fs_miss_log` — общий счётчик на процесс (не сбрасывается), поэтому в
+    повторных запусках промахи `fopen` не видны; `rom_opens` инкрементится
+    только при вскрытии образа через `fopen`, значит 0 = `drive_insert`
+    не вызывался ни разу.
+  - Добавлены логи: `Amiga ROM: '<file>' -> ok|ERSATZ crc=… first=…`
+    (`memory.cpp: reload_kickstart`), `DISK chg<i> prefs='…' changed='…'`
+    (`disk.cpp: DISK_check_change`), `DISK ins<i> '…' -> ok|FAIL`
+    (`disk.cpp: drive_insert`).
+  - Сборка r1249: `h3_bare.bin` 22 681 540 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C48C, `.data` 0x41066D30..0x415A17C4,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8D50`,
+    `puae_wb13_adf=0x413E8D50`.
+  - Следующий шаг — один стенд-прогон r1249 с двумя входами: по этим трём
+    строкам видно, доходит ли дело до `drive_insert` и грузится ли Kickstart.
+- **r1248 (2026-11-12): Amiga/UAE4All — мышь порта 0.** Ядро спрашивает
+  физическую мышь через `RETRO_DEVICE_MOUSE` (`core-mapper.cpp:586-605`,
+  `rmouse_x/y` → `lastmx/lastmy`), а хост отвечал 0 — курсор Amiga стоял.
+  - **FIX (host):** `u4a_input_poll` читает `usb_pad_get_pos`/`usb_pad_buttons`
+    (относительные dx/dy, ±63, масштаб 2 счёта на пиксель — как в
+    `puae_host.c` r1237), `u4a_input_state` отдаёт X/Y/LEFT/RIGHT.
+  - Сборка r1248: `h3_bare.bin` 22 681 668 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C58C, `.data` 0x41066DB0..0x415A1844,
+    `.bss` 0x415A2000..0x44B3D850; `puae_kick13_rom=0x413A8DD0`,
+    `puae_wb13_adf=0x413E8DD0`.
+- **r1247 (2026-11-12): Amiga/UAE4All — игры не стартовали (Kickstart не
+  грузился + накопление argv).** Стенд r1246: растр и картинка есть, клавиши
+  доходят, но меню загрузки нет; в логе `Parsing 3/6/9/12 parameters`,
+  `skipping unknown option: "uae4all"`.
+  - **Причина 1:** ядро просит Kickstart по умолчанию как `kick.rom`
+    (`main.cpp: default_prefs -> romfile`), а `fs_layer` регистрирует вшитый
+    ROM под настоящим именем `kick34005.A500` → промах → `init_ersatz_rom`
+    (заглушка вместо Kickstart). Промах не виден: лимит `g_fs_miss_log` (3)
+    израсходован на `./df0.adf`/`./df1.adf` из `DISK_init`.
+  - **Причина 2:** `pre_main` не сбрасывал `PARAMCOUNT`, а `parse_cmdline` —
+    `ARGUC`: список аргументов копился от запуска к запуску (3→6→9→12) и
+    переполнял `XARGV[64]`.
+  - **FIX:** `path_matches_bios` (`fs_layer.c`) считает `kick.rom` синонимом
+    единственного зарегистрированного BIOS (+ лог `fs: bios alias ...`);
+    `PARAMCOUNT = 0` в `pre_main`, `ARGUC = 0` в `parse_cmdline`; в `Makefile`
+    явная зависимость `u4a_libretro_core_libretro-core.o` от `cmdline.cpp`
+    (он подключается через `#include`, иначе правки не пересобирались).
+  - Проверка на стенде: строка `fs: bios alias 'kick.rom' -> 'kick34005.A500'`
+    и `rom_opens=N` в `Amiga perf` (N>0 — образ игры реально вскрыт).
+- **r1246 (2026-11-12): Amiga/UAE4All — НАЙДЕН КОРЕНЬ и исправлен:
+  Alignment fault из-за NEON на невыровненном SP.** Стенд r1245 дал:
+  `mmu-crc pre=C7569561 guard=0` → `post=C7569561 guard=0 ok` (карта и
+  окрестности ЦЕЛЫ), `M1 01 00FF L0=…4A411003 L1=…5FE00449` (дескрипторы
+  валидны), `F1=0x5FFFFC14`, `F2=0x21`, `F5=0x40696DD4` (в `update_adkmasks`).
+  - **F2=0x21 в LPAE — это Alignment fault**, а не external abort (на этом
+    вели следствие: сбой при walk исключён CRC+guard+M1).
+  - Фолтящая инструкция — `vld1.64 {d16-d17}, [sp :64]` (LR−8 =
+    `0x40696DCC`): NEON-загрузка с выравниванием 64 бита требует SP,
+    кратного 8. `DFAR=0x5FFFFC14` (`%8 == 4`) — **SP не выровнен**.
+  - Причина невыровненного SP: C-функцию зовёт **Cyclone (asm m68k)**,
+    который не держит 8-байтное выравнивание по AAPCS, а gcc для UAE4All
+    собран с `-mfpu=neon` и потому генерит `vld1/vst1` по стеку.
+  - **FIX (Makefile):** `U4A_CFLAGS` переведён с `-mfpu=neon` на
+    `-mfpu=vfpv3-d16`. VFP (`vldr/vstr`) допускает 4-байтное выравнивание,
+    SP ему удовлетворяет. Остальные ядра по-прежнему собираются с NEON.
+    Проверено `objdump`: NEON-инструкций в `u4a_*` C/C++ объектах нет.
+  - Сборка r1246: `h3_bare.bin` 22 681 220 б (меньше на ~15 КБ — NEON-код
+    заменён VFP), linkcheck OK. Адреса: `.text` 0x40000000..0x40B2C42C,
+    `.data` 0x41066BF0..0x415A1684, `.bss` 0x415A2000..0x44B3D850;
+    `puae_kick13_rom=0x413A8C10`, `puae_wb13_adf=0x413E8C10`.
+  - Диагностика r1245 (`M1` в LPAE, `SP/LR` SVC, `mmu_tables_crc`,
+    guard-маркеры) оставлена — она пригодится для будущих ядер.
+- **r1245 (2026-11-12): Amiga/UAE4All — углублённая диагностика Data Abort
+  (MMU-таблицы + SP/LR).** После r1244 диск монтируется (`Disk 0=wb13.adf`,
+  `Parsing 3 parameters`), но первый кадр падал: `F1=0x5FFFFA04`, `F2=0x21`,
+  `F5=0x40696C54` (в `update_adkmasks`). Установлено:
+  - карта стека исправна: `L1[5FE00000]=5FE00449` (WB), `L1[60000000]=60000441`;
+  - `M1` считал индекс как `DFAR>>20` (short-descriptor) — в LPAE это вне
+    4-КБ таблицы, печатался мусор `FFFFFFFF`. **Исправлено**: LPAE-разбор
+    (`idx0=(DFAR>>30)&3`, `idx1=(DFAR>>21)&0x1FF`) и печать обоих уровней
+    как 64-битных `L0=<hi>:<lo> L1=<hi>:<lo>`; `M2` — дескриптор `.text`
+    через `L0[1]→L1[0]`;
+  - добавлен `mmu_tables_crc()` (CRC32 L0+4×L1, 20 КБ, AF маскируется) и
+    guard-маркеры `0xA5C3E10F` вплотную к таблицам (`mmu_guard_arm/broken`);
+    host печатает `mmu-crc pre/post` + `guard=N` до/после первого кадра.
+- **r1244 (2026-11-11): UAE4All — фикс запуска Amiga (диск + Prefetch Abort
+  P:00000000:0E).** Стенд r1243 (лог владельца): `Amiga: UAE4All init ('wb13.adf')`
+  → `Parsing 1 parameters.` → `Disk 0=` (пусто) → `fs: * miss './df0.adf'` →
+  `P:00000000:0E LR 00000004 ... BL 406ABED8` (падение в `cia_wait`).
+  - Адреса после правок: `.text` 0x40000000..0x40B2FF64, `.data`
+    0x4106A760..0x415A51FC, `.bss` 0x415A6000..0x44B41850;
+    `puae_kick13_rom=0x413AC784`, `puae_wb13_adf=0x413EC784`.
+  - Сборка r1245, `h3_bare.bin` ≈22.7 МБ, linkcheck OK. **Ждём стенд-лог**
+    с `M1`, `SP/LR` и `mmu-crc pre/post`.
+- **r1244 (2026-11-11): UAE4All — фикс запуска Amiga (диск + Prefetch Abort
+  P:00000000:0E).** Стенд r1243 (лог владельца): `Amiga: UAE4All init ('wb13.adf')`
+  → `Parsing 1 parameters.` → `Disk 0=` (пусто) → `fs: * miss './df0.adf'` →
+  `P:00000000:0E LR 00000004 ... BL 406ABED8` (падение в `cia_wait`).
+  Диагноз (дизассемблер + символы nm): **хост звал `u4a_pre_main_c(path)`
+  напрямую** (без `retro_load_game`), из-за чего:
+  1. **RPATH (глобал libretro-core.cpp:54) оставался пустым.** `pre_main`
+     (cmdline.cpp:28) строит линию cmdline ПО RPATH, а не по argv: пустой
+     RPATH → `Only1Arg` ветка не входит (`strlen(RPATH)>=3` false) →
+     команда = `["u4ae4all"]`, PARAMCOUNT=1, `-df0 <путь>` НЕ добавляется →
+     `parse_cmdline` (main.cpp:327) ничего не разбирает, `uae4all_image_file`
+     пуст → ядро ищет дефолтный `./df0.adf` (fs miss).
+  2. **`quit_program` не ставился в 2** (это делает `retro_load_game`,
+     libretro-core.cpp:688). В `m68k_go` (newcpu.cpp:1307) блок
+     `if (quit_program>0){ reset_all_systems(); customreset(); }` не выполнялся
+     → `init_eventtab()` (→ `eventtab[*].handler`) НЕ вызывался → все handler-ы
+     в BSS нули → при первом активном не-hsync событии `do_cycles` делает
+     `(*eventtab[i].handler)()` = NULL → **Prefetch Abort P:00000000:0E**.
+  FIX `uae4all_host.c`: вместо прямого `u4a_pre_main_c(path)` host теперь
+  зовёт **`u4a_retro_load_game(&gi)`** с `gi.path=rom_name` — это штатный путь:
+  ставит RPATH, вызывает `pre_main(RPATH)` (→ `-df0 wb13.adf`, PARAMCOUNT=3),
+  ставит `quit_program=2` (→ первый `m68k_go` делает reset_all_systems →
+  init_eventtab). Диск встаёт в DF0 как `wb13.adf`, eventtab проинициализирован.
+  Версия r1244, `h3_bare.bin` ≈22.7 МБ, linkcheck OK. Стенд: проверить загрузку
+  Kickstart + вставку диска (ожидать отсутствие `fs: df0.adf miss` и краха на
+  P:0:0E).
+- **r1243 (2026-11-11): Amiga — ПОЛНАЯ ЗАМЕНА PUAE на UAE4All.** Решение
+  владельца: PUAE (замедление 68k ~30 мс/кадр, нет JIT, рост арены → чёрный
+  экран на 4-м входе) — выбор был ошибочен; заменяем, а не добавляем.
+  - Ядро: `h3_bare/cores/uae4all/` (libretro-порт Chips, **Cyclone** — ARM
+    ассемблерное ядро m68k, быстрое на Cortex-A7). Сборка через Makefile
+    (флаги `-DCYCLONE_CORE -DUSE_CYCLONE_MEMHANDLERS`, zlib — своя копия
+    `deps/libz`, `-DNO_VKBD -DNO_MAIN_IN_MAIN_C`).
+  - Rename: `uae4all_rename.sh` (префикс `u4a_`, аналог puae_rename.sh);
+    host-слой `uae4all_host.c` (видео 320×240 RGB565 → HDMI, звук
+    44100→48000, ввод Sega-пад+USB-клава, кадры через `u4a_retro_run`);
+    C-обёртки ядра `u4a_pre_main_c/leave_program_c`.
+  - Kickstart/Workbench вшиты (тот же `kickstart_data.S`: символы
+    `puae_kick13_rom`/`puae_wb13_adf` переиспользованы, объект
+    `u4a_kickstart_data.o`).
+  - Холодный вход каждый запуск (нет тёплых статик PUAE) → **чёрный экран
+    на 4-м входе и рост арены устранены архитектурно**.
+  - Сборка: `h3_bare.bin` ≈ 22.69 МБ, `linkcheck: OK`. Стенд: скорость,
+    совместимость ADF, отсутствие «объёма» арены.
+- **r1242 (2026-11-11): Amiga — вариант B: холодный цикл каждый 2-й тёплый
+  вход.** Симптом: арена PUAE росла ~15 МБ/вход при тёплых входах r1241
+  (стенд: brk 4BF00000→4C80B300→4D70E120→4E5F8F30), на 4-м входе
+  `virtual memory exhausted (rtarea)` → PANIC. Причина: `puae_heap_reset()`
+  вызывается только в cold-ветке, free-list не сжимает хвост между сессиями
+  (ядро держит статики chipmem/bogomem/prefs между unload/load). FIX:
+  `g_warm_count` в `puae_host.c` — каждый 2-й вход принудительно делает
+  полный холодный цикл (`unload+deinit+init` + `puae_heap_reset()` +
+  прокрутка слота, как проверенный на стенде r1235). Первый вход всегда
+  тёплый (не ломает карту ROM, что чинил r1241). **История: r1243 заменил
+  PUAE целиком, этот фикс стал неактуален (файл puae_host.c удалён из
+  сборки).**
+- **r1241-docs (2026-11-11): синхронизация документации с кодом (без изменения
+  прошивки, версия не инкрементировалась).** По итогам аудита r1241 приведены к
+  факту (`nm build/h3_bare.elf`) устаревшие адреса и размеры:
+  - `docs/MEMORY.md` §8: «эталон r1241» — теперь `_bstart1=0x421D1000`,
+    `_bend1=0x49189850` (+ `_gb_heap/coherent/menu_arena/hend` как в коде;
+    указаны вшитые BIOS `puae_kick13_rom=0x41FD8140`, `puae_wb13_adf=0x42018140`);
+  - `docs/PITFALLS.md` §5/§6: `.noinit_fbn` закреплён на `0x54000000` (было
+    плавающее `0x431D3418`), `.bss` `0x421D1000..0x49189850` (было
+    `0x420B5000..0x4906D850`);
+  - `docs/ARCHITECTURE.md`: карта памяти, размеры секций и загрузочная карта
+    обновлены под r1241 (`.bss` ≈111.7 МБ, `.data` 0x41B80370..0x421D0BB4,
+    `.noinit_fbn` 0x54000000..0x5A000000, образ ≈34.6 МБ);
+  - неизменённый факт r1206: `.coherent` остаётся write-back (NC no-op).
 
 ---
 
@@ -34,7 +320,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1241**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1255**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая
@@ -585,34 +871,32 @@ portfolio | 8086 (`cores/portfolio`) | portfolio_host.c | builtin
 ms1504 | TTL (`cores/ms1504`) | ms1504_host.c | builtin
 cpc | libretro-cap32 | cpc_host.c |
 c64 | VICE (`cores/vice`) | c64_host.c | vice_bss отдельно
-**amiga** | **PUAE/libretro-uae (`cores/puae`)** | **puae_host.c** | **r1191; KS 1.3 вшит (r1227), WB 1.3 вшит (r1232), тёплый перезапуск ядра (r1231); свой аллокатор puae_\* на sbrk r1192/r1193**
+**amiga** | **UAE4All (`cores/uae4all`, ядро Cyclone)** | **uae4all_host.c** | **r1243; KS 1.3 вшит (унаследован `puae_kick13_rom` r1227), WB 1.3 вшит (`puae_wb13_adf` r1232); холодный init на каждый вход; арены PUAE/sbrk-аллокатора больше нет (r1243)**
 
-## 5. Amiga / PUAE (актуальное)
+## 5. Amiga / UAE4All (актуальное)
 
-- Ядро `h3_bare/cores/puae` (вендор libretro-uae, WinUAE 5.3.1): ядро+retrodep+
-  libretro-common+zlib, 181 объект, собрано `sources.mk`/`rules.mk` (имена
-  `pz_*_c.o`). `puae_rename.sh` — префикс `puae_` всем глобалам набора
-  (`--redefine-sym`), снимает коллизии.
-- **Аллокатор**: global `malloc/calloc/free/strdup` в проекте — это gb-пул.
-  PUAE НЕ должен в него ходить (стендовый abort F1=0x4A800000). Rename-канон
-  включает ЯВНО `malloc calloc realloc free memalign strdup strndup`
-  (эти символы в объектах набора — U-ссылки, определены вне набора, поэтому
-  в DEFS не попадают и добавляются отдельным циклом). `puae_host.c` определяет
-  bump-аллокатор `puae_malloc/calloc/realloc/free/strdup/strndup` на sbrk-зоне
-  (`SBRK_LIMIT`), `puae_heap_reset()` в `emu_run_amiga` до `emu_prepare()`.
-- **ВАЖНО**: правило `build/puae_renamed.stamp` ДОЛЖНО зависеть от
-  `puae_rename.sh` (`Makefile:780`) — иначе правки скрипта не перезапускают
-  переименование (тут ловили r1193: `calloc` в memory.o оставался глобальным).
-- Видео: `emu_scale_rgb565_src` — RGB565-кадр ядра (720×574 и др., с полями и
-  pitch) масштабируется сразу в HDMI FB, EMU_FB 320×240 не используется;
-  overscan режется вручную (640×512 по центру). Аудио 44100→48000 стерео;
-  ввод USB-клава (HID→RETROK) + Sega-пад; environ
-  `puae_kickstart="kick34005.A500"` (вшитый Kickstart 1.3 rev 34.5, `.incbin`
-  `cores/puae/bios/kick34005.A500`; AROS остаётся значением `"aros"`, с SD
-  ничего не грузится); `puae_model="auto"`, `puae_cpu_compatibility="normal"`.
+- **r1243: PUAE полностью заменён UAE4All** (решение владельца: заменить, не
+  добавлять). Ядро `h3_bare/cores/uae4all` — libretro-порт (ядро Cyclone:
+  ARM-ассемблерное m68k; также есть fame/ — не используется). Сборка —
+  Makefile (U4A_CFLAGS, `-DCYCLONE_CORE` и пр.; флаги заданы в `Makefile`),
+  rename `u4a_`-префикс через `uae4all_rename.sh` (аналог puae_rename.sh),
+  `u4a_kickstart_data.o` переиспользует `puae/kickstart_data.S` + BIOS.
+- **Холодный вход на каждый запуск**: `u4a_retro_init()` →
+  `u4a_pre_main_c()` (под `__LIBRETRO__` доходит до init без цикла) → цикл
+  `u4a_retro_run()`. Выход: `u4a_leave_program_c()` + `emu_audio_stop()` +
+  `fb_clear()` — арены PUAE и `puae_*`-аллокатора нет (не растёт brk),
+  статики core повторяются с нуля, rtarea/чёрный экран исключены архитектурно.
+- Видео: `emu_scale_rgb565_src` — кадр ядра (`gfx_mem`, 320×240 RGB565)
+  масштабируется в HDMI FB; EMU_FB 320×240 используется как промежуточный
+  буфер (`u4a_retro_get_video_ptr`/`emu_fb`). Аудио uae4all синтезирует
+  сэмплы 32000 Гц стерео; тракт 44100→48000 не используется (UAE4All выдаёт
+  32000, ресемплер — CPU2/i2s-слой, правило «звук не трогать»). Ввод —
+  Sega-пад (`pad_scan_combined`) + USB-клава (HID→RETROK); environ
+  `u4a_kickstart="kick34005.A500"` (вшитый Kickstart 1.3 rev 34.5, `.incbin`
+  `cores/puae/bios/kick34005.A500` через `u4a_kickstart_data.o`).
 - Ромы: `/roms/amiga/*.adf` (id="amiga"). ADF виден fs-слою
-  (`stat=1 size=901120`), но ядро не монтирует его в DF0 — открытый вопрос
-  (см. r1223/r1224 в дельтах).
+  (`stat=1 size=901120`), статус монтирования в DF0 — см. §6 (открытый вопрос
+  r1223/r1224, применим и к UAE4All).
 
 ## 6. Известные ограничения / TODO
 
@@ -621,8 +905,9 @@ c64 | VICE (`cores/vice`) | c64_host.c | vice_bss отдельно
 - **Amiga: диск DF0 не монтируется** (`Amiga disk retry: mount=1`, но AROS
   просит носитель). С r1224 на выходе печатается `Amiga disk reads=N bytes=N`:
   `0` — привод не читает образ (путь/currprefs), `>0` — образ читается, но не
-  признан загрузочным. Скорость заморожена владельцем (интерпретатор без JIT,
-  `core≈33 мс`, в Windows-сборке так же медленно).
+  признан загрузочным. Скорость: **UAE4All −O3 + Cyclone** (замена r1243,
+  быстрее интерпретатора PUAE; точные цифры — см. стенд-лог после приёмки).
+  Историч.: PUAE без JIT был `core≈33 мс` (в Windows-сборке так же медленно).
 - Файл с SD-образами для Amiga — только ADF (Kickstart вшит).
 - **Карта памяти и правила размещения — `docs/MEMORY.md`** (обязательно перед
   добавлением секций/буферов/ядер; там же LPAE-устройство и свободные зоны).

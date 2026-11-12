@@ -65,7 +65,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | PC Engine / TG | **Beetle PCE Fast** | C | 256×240 → EMU_FB (pce_host.c) | usb_kbd + sega_pad |
 | БК-0010/0011М | **BK-Terak-Emu (libretro)** | C | 512×256 → прямая запись в HDMI FB (bk_host.c:163-174, НЕ через EMU_FB/emu_scale) | usb_kbd (полная клава) + sega_pad |
 | Радио-86РК | **RK8266 (i8080)** | C | 78×30 знакомест 6×8 → прямая запись в HDMI FB (rk86_host.c) | usb_kbd (матрица 8×8) |
-| Commodore Amiga | **PUAE / libretro-uae (WinUAE 5.3.1)** | C | 320×200/256 безусловно → retro_bmp RGB565 → EMU_FB (puae_host.c) | usb_kbd (HID→RETROK) + sega_pad (D-Pad+A/B) |
+| Commodore Amiga | **UAE4All (Cyclone; r1243, был PUAE)** | C++/asm | 320×240 RGB565 (`u4a_gfx_mem`) безусловно → **EMU_FB** (uae4all_host.c) | usb_kbd (HID→RETROK) + sega_pad (D-Pad+A/B) |
 
 Каждый эмулятор:
 - `*_init_game(rom, size)` — загрузка, инициализация
@@ -141,41 +141,45 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Фикс Comix Zone: в `cart_hw/sram.c` отключён авто-SRAM для игр с `"COMIX ZONE"`
   в заголовке (2MB картридж без батарейки — авто-SRAM по умолчанию ломал зеркало ROM в `$200000`)
 
-### puae_host.c (Commodore Amiga, PUAE/libretro-uae)
+### uae4all_host.c (Commodore Amiga, UAE4All/Cyclone; r1243)
 
-- Вендор: `h3_bare/cores/puae/` (WinUAE 5.3.1, GPL-2.0) — вычищены платформенные
-  драйверы (gfx-*/gui-*/jd-*/md-*-gcc/od-*/sd-*/td-*/targets/test/tools/slirp/ppc/...);
-  состав из `Makefile.common` → `puae_sources.mk` + `puae_rules.mk` (181 объект,
-  имена `pz_sources_src_*_c.o`), глобалы набора переименованы в `puae_*`
-  (`puae_rename.sh` — аналог `vice_rename.sh`).
-  - Адаптации под bare-metal: `retrodep/sysconfig.h` — сняты `HAVE_DIRENT_H`
-    (newlib: `#error <dirent.h> not supported`) и `HAVE_DLOPEN` (нет dlfcn.h);
-    `threaddep/thread.{h,c}` — ветка `ALLWINNER_BARE_METAL` (uae_sem_t = счётчик,
-    потоки = последовательный запуск; поле `sem` — для вендорных проверок
-    `blkdev.c`/`scsiemul.c`); `sysdeps.h` — `uae_u32` через `uint32_t` (newlib:
-    `uint32_t == unsigned long`, апстримный `unsigned int` давал conflicting types);
-    восстановлены `md-generic/` (m68k-заголовки для retrodep/machdep), `keymap/`,
-    `ppc/ppcd.h`, заголовки `qemuvga/` (только .h, реализации не собираются);
-    `-std=gnu99` в PUAE_CFLAGS (апстрим `calccrc()` в C23 = конфликт).
-  - Сборка: Cortex-A7 softfp NEON (PUAE официально собирается под
-    `classic_armv7_a7`), JIT закомментирован (только интерпретатор 68k).
-- Host (`puae_host.c`): `emu_run_amiga()` — ADF через `a8_fs_register` (fs_layer,
-  как C64), `puae_retro_load_game`; цикл `puae_retro_run` + `emu_scale(320,240)` +
-  `fb_flush` + `emu_throttle`.
-  - Видео: `retro_bmp` RGB565 (720×574×2×2 max) → EMU_FB 320×240, nearest при superhires
-  - Звук: 44100→48000 стерео (ресемплер как fuse, шаг 60211) → `i2s_push_sample`
-  - Ввод: USB-клава (HID→RETROK) + Sega-пад (D-Pad = стрелки, A = Fire 1, B = Fire 2)
-  - Kickstart: НЕ грузится с SD (правило владельца). `puae_kickstart="aros"` →
-    `changed_prefs.romfile=""` → `load_kickstart_replacement()` (memory.c:1755)
-    распаковывает вшитый `aros.gz` из `aros.rom.c`. Системные директории
-    (GET_SYSTEM_DIRECTORY и др.) возвращают false.
-  - Стабы: dirent (`puae_retro_*` — голые `retro_*` уже заняты msx_compat и др.),
-    POSIX `ftello64/fseeko64/chmod/truncate` (newlib не реализует; файлы идут
-    через VFS).
-- Адреса: `.noinit_fbn` (пул FBNeo 96 МБ) закреплён на 0x54000000 (linker.ld,
-  r1191) — раньше плавал после .bss, а PUAE добавил ~66 МБ .bss → пул накрывал
-  когерентную зону 0x4A400000. Зона 0x54000000..0x5C000000 свободна (fs_bss
-  кончается на 0x54000000, ZIP_BUF2 аркад с 0x5C000000).
+- Вендор: `h3_bare/cores/uae4all/` (libretro-порт UAE4All, ядро **Cyclone** —
+  ARM-ассемблерный m68k; также fame/ — не используется). Эталон не изменялся —
+  копия `emulator-refs/uae4all` (dcd93aa); рабочая копия в дереве. Из неё
+  вычищены standalone-файлы (od-joy, sdlgfx, dingoo, sound*, homedir, menu/*,
+  fame.s, assets, profile); добавлены `deps/libz` (из puae/deps/libz) и
+  `uae4all_stubs.c` (glob/globfree/usleep).
+  - Адаптации под bare-metal: `sysconfig.h` — снят `HAVE_DIRENT_H` (newlib
+    `#error <dirent.h> not supported`); `sysdeps.h` — `<cstdlib>` для C++
+    и `extern "C" strcasestr`; `SDL_thread.h` — pthread/semaphore → int
+    (потоков нет, bare-metal последовательный); libretro-core.cpp — C-обёртки
+    `u4a_pre_main_c/u4a_leave_program_c/u4a_Retro_PollEvent_c`.
+  - Сборка: `-O3 -fomit-frame-pointer` (hosted newlib, БЕЗ `-ffreestanding`),
+    `-fno-exceptions -fno-rtti -fno-threadsafe-statics`, Cyclone включён
+    (`-DCYCLONE_CORE -DUSE_CYCLONE_CORE -DUSE_CYCLONE_MEMHANDLERS`),
+    `-DOS_WITHOUT_MEMORY_MANAGEMENT`, zlib `-DUSE_ZFILE=1` (вшитая копия libz),
+    rename `u4a_`-префикс (`uae4all_rename.sh`, аналог puae_rename.sh).
+    В отличие от PUAE, **malloc/calloc/free остаются глобальными** (UAE4All
+    ходит в gb-пул, собственной арены нет).
+- Host (`uae4all_host.c`): `emu_run_amiga()` — ADF через `a8_fs_register`
+  (fs_layer, как C64), `u4a_retro_init()`; холодный init на каждый вход:
+  `u4a_retro_load_game` → `u4a_pre_main_c()` (под `__LIBRETRO__` — только
+  init, без цикла) → цикл `u4a_retro_run` + `emu_scale(320,240)` +
+  `fb_flush` + `emu_throttle`; выход `u4a_leave_program_c()` +
+  `emu_audio_stop()` + `fb_clear()`.
+  - Видео: `u4a_gfx_mem` — 320×240 RGB565 (pitch 640) → EMU_FB 320×240.
+  - Звук: UAE4All синтезирует 32000 Гц стерео → ресемплер в тракте 48 кГц
+    (CPU2/i2s; правило владельца «звук не трогать»).
+  - Ввод: USB-клава (HID→RETROK) + Sega-пад (D-Pad = стрелки, A = Fire 1,
+    B = Fire 2); GUI-моды — RETROK_LMETA/RMETA.
+  - Kickstart: НЕ грузится с SD (правило владельца). Вшит через
+    `u4a_kickstart_data.o` (переиспользует `puae/kickstart_data.S`,
+    `.incbin` `puae/bios/kick34005.A500`, символ `puae_kick13_rom`) +
+    Workbench 1.3 (`puae_wb13_adf`). Системные директории — `"."`.
+  - Стабы: `glob/globfree/usleep` (uae4all_stubs.c).
+- r1243: PUAE удалён из сборки (пуае_host.o/puae_*.o не линкуются) — его
+  отсутствие подтверждено `nm build/h3_bare.elf`; собственного аллокатора на
+  sbrk и арены PUAE нет → рост brk между входами Amiga исключён.
 
 ### rk86_host.c (Радио-86РК, порт RK8266)
 
@@ -239,7 +243,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 - Ядро binjgb (облегчённая сборка: emulator.c, memory.c, joypad.c; common.c заменён stubs)
 - Менеджер памяти — bump-аллокатор `gb_heap` (24 МБ) в gameboy_stubs.c, `gb_heap_reset()`
-  находится в linker.ld (резерв _gb_heap_start/end между BSS и _hend).
+  (сброс позиции в `emu_prepare()`; резерв `_gb_heap_start/end` в linker.ld между BSS и sbrk-ареной).
 - Рендер: RGBA-буфер → RGB565 → EMU_FB (160×144)
 - Ввод: USB-клавиатура → кнопки Game Boy (Z=B, X=A, S=Select, Enter=Start, стрелки=D-Pad)
 - Звук: 48000 Гц стерео пары (binjgb u8→s16), выводится в I2S (r596)
@@ -266,7 +270,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - Ввод: USB-клавиатура + Sega-геймпад → KeyState; запуск «BASIC / Load cartridge» из main.c
 - `msx_compat.c` — стабы rf*/sscanf/time поверх вшитых BIOS и FAT SD; BIOS MSX2.ROM + MSX2EXT.ROM вшиты
 - objcopy-переименование конфликтующих символов (MSX_RENAME) — изоляция от CPU/RAM/rf* других ядер
-- _sbrk — рабочий bump-аллокатор (libc_min.c, от _hend)
+- `_sbrk` — рабочий bump-аллокатор (libc_min.c, от `SBRK_START=_gb_heap_end` 0x4BF00000 до `SBRK_LIMIT` 0x4EF00000; НЕ от `_hend`)
 
 ### snes_host.cpp (SNES / Super Famicom, Snes9x 2005)
 
@@ -484,8 +488,8 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Адресные зоны переиспользуются разными ядрами.** `ROM_BUF`
   (0x50000000..0x51800000) — буфер браузера ROM для любого эмулятора, и тот
   же адрес аркады используют как 92-МБ zip-буфер (`cps1_host.cpp`);
-  zip-зона FBNeo (0x5C000000..0x5F000000) и пул `.noinit_fbn` (96 МБ сразу
-  после BSS) свободны, когда запущен не аркадо-эмулятор.
+  zip-зона FBNeo (0x5C000000..0x5F000000) и пул `.noinit_fbn` (0x54000000..0x5A000000)
+  свободны, когда запущен не аркадо-эмулятор.
 - **BSS больших ядер вынесен в жёсткие секции с ASSERT.** `.a8_bss`
   (0x5F000000, ~1.84 МБ) и `.vice_bss` (0x52000000, ~31 МБ) — NOLOAD,
   обнуляются `startup.S`, `linker.ld` держит границы `ASSERT`. Адресно они
@@ -495,7 +499,7 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.vice_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1014, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (актуально r1244, точные адреса из `nm build/h3_bare.elf`)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
@@ -505,20 +509,19 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
-| 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → `.noinit_fbn` |
-| 0x40000000..0x409CC590 | `.text` + init_array (код ≈ 10.2 МБ); векторы `_vectors`=0x40000000 |
-| 0x409CC5C0..0x40E21DC8 | `.rodata` (≈ 4.33 МБ) |
-| 0x40E20DC8..0x40E24F10 | `.ARM.extab/.exidx` |
-| 0x40E24F10..0x411F7384 | `.data` (≈ 3.84 МБ, копируется из образа) |
-| 0x411F73C0..0x431B3418 | `.bss` (`_bstart1.._bend1`, ≈ 31.9 МБ, обнуляется в `startup.S` NEON-магазинами) |
-| 0x431D3418..0x491D3418 | `.noinit_fbn` (NOLOAD, 96 МБ) — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc` |
+| 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
+| 0x40000000..0x40B2FD04 | `.text` + init_array (≈ 11.2 МБ); векторы `_vectors`=0x40000000; r1243: PUAE удалён — текст похудел |
+| 0x40B2FD04..0x4106A4A0 | свободно (линкер перераспределил: .data сразу после .text) |
+| 0x4106A4A0..0x415A4F3C | `.data` (≈ 5.22 МБ, копируется из образа; внутри вшиты Kickstart 1.3 и Workbench 1.3 — `puae_kick13_rom` 0x413AC4C4, `puae_wb13_adf` 0x413EC4C4) |
+| 0x415A5000..0x44B40850 | `.bss` (`_bstart1.._bend1`, ≈ 55.6 МБ, обнуляется в `startup.S`; r1243: без PUAE-статиков меньше) |
+| 0x4A400000..0x4A402FC0 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
-| 0x491D3418 | `_hend` — конец образа/BSS. `_sbrk`-арена стартует от `_gb_heap_end` (0x4BF00000) до `SBRK_LIMIT=0x4EF00000` (перед `_menu_arena`) |
-| 0x4A400000..0x4A402AC0 | `.libh3_coherent` (фактически ≈ 10.9 КБ; резерв до 1 МБ, **uncached**): OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, L1-таблица страниц (0x4A40C000, startup.S r722). Помечается `mmu_mark_uncached(libh3_coherent_region)`; символ = начало области (`_coherent_start`) |
+| 0x4BF00000..0x4EF00000 | **sbrk-арена** (`_sbrk`, 48 МБ) — newlib (r1243: PUAE-аллокатора больше нет); `SBRK_LIMIT=0x4EF00000` |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер браузера ROM (24 МБ). Аркады используют этот же адрес как 92-МБ zip-буфер (`cps1_host.cpp:112`), поэтому «24 МБ» — граница только для `rom_browser.c`, не физическая |
 | 0x52000000..0x53D95460 | `.vice_bss` (≈ 29.6 МБ, NOLOAD) — BSS VICE (C64/128); обнуляется в `startup.S` |
 | 0x53E00000..0x53E002DC | `.fs_bss` (r1010, NOLOAD) — ЕДИНЫЙ файловый слой прошивки `cores/fs_layer.c` (r1014: вынесен из `atari800/a8_fs.c`; глобальные `fopen/fread/open/stat` + слоты `g_files`/`g_rom_*`/`g_fd_*`); слоты валидируются magic `0xA85A5A5A` (r1011), `setvbuf`/`setbuf` перехвачены как no-op; `atari800/a8_fs.c` — мост `a8_fs_register`→`fs_register`; обнуляется в `startup.S` |
+| **0x54000000..0x5A000000** | **`.noinit_fbn` (NOLOAD, 96 МБ, r1191)** — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc`; `_hend`=0x5A000000; ASSERT ≤0x5C000000 |
 | 0x5F000000..0x5F1D7310 | `.a8_bss` (r778, ≈ 1.84 МБ, NOLOAD) — BSS Atari 800; обнуляется в `startup.S` |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000..0x5FB58000 | HDMI framebuffer (1024×600 XRGB8888) |
@@ -531,12 +534,14 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r1014, `arm-none-eabi-readelf -SW`):** `.text` 0x9CC590 (≈10.2 МБ),
-`.rodata` 0x454808 (≈4.33 МБ), `.data` 0x3D2474 (≈3.84 МБ), `.bss` 0x1FDBD48 (≈31.9 МБ),
-`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD), `.a8_bss` 0x1D7310 (≈1.84 МБ,
-0x5F000000..0x5F1D7310), `.coherent` 0x2AC0, `.fs_bss` 0x2DC (r1010, файловый слой
-fs_layer.c; 0x53E00000..0x53E002DC), `.vice_bss` — 0x1D95460 (≈29.6 МБ),
-0x52000000..0x53D95460, NOLOAD (r974). Образ `h3_bare.bin` ≈18.84 МБ.
+**Числа-размеры (r1243, `arm-none-eabi-readelf -SW`):** `.text` ≈11.2 МБ
+(0x40000000..0x40B2FD04), `.data` ≈5.22 МБ (0x4106A4A0..0x415A4F3C),
+`.bss` ≈55.6 МБ (0x415A5000..0x44B40850),
+`.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD, 0x54000000..0x5A000000),
+`.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` 12224 Б,
+`.fs_bss` 0x2DC (r1010, файловый слой fs_layer.c; 0x53E00000..0x53E002DC),
+`.vice_bss` — 0x1D95460 (≈29.6 МБ), 0x52000000..0x53D95460, NOLOAD (r974).
+Образ `h3_bare.bin` ≈22.7 МБ (r1243; r1241 было ≈34.6 МБ — PUAE удалён).
 
 ## Загрузочная карта памяти (r502)
 
@@ -559,13 +564,13 @@ SD/MMC: U-Boot SPL -> U-Boot (SPL в SRAM, U-Boot в DRAM)
 |---|---|---|
 | U-Boot SPL | SRAM 0x0000xxxx | минимальный загрузчик из MBR SD |
 | U-Boot | DRAM (низкие адреса, вне образа) | fatload/go, потом НЕ трогаем |
-| Образ | 0x40000000..0x40D05300 | h3_bare.bin целиком: .text/.rodata/.data (BSS/.noinit_fbn — NOBITS, не в файле); bin ≈ 13.65 МБ |
+| Образ | 0x40000000..0x415A5000 | h3_bare.bin целиком: .text/.data (BSS/.noinit_fbn — NOBITS, не в файле; актуальный размер образа ≈22.7 МБ r1243, диапазон 0x40000000..0x415A5000) |
 | Векторы CPU | 0x40000000 (VBAR) | startup.S, хранится в .text |
 | SRAM A1 | 0x00000000..0x00006000 | межъядерная почта: гейт `0x18`, SMP `0x20/0x24/0x90`, пробы `0x28..0x30`, настройки `0x34..0x8C`, diff `0x70`, флаг «игра» `0x74` |
-| Куча эмуляторов | 0x48BD3760..0x4A3D3760 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
-| Пулы FBNeo/gpgx | 0x42BD3748..0x48BD3748 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом) |
-| sbrk-арена (newlib) | 0x4A400000+1МБ..0x4F000000 | растёт вверх ПОСЛЕ uncached-окна (куча не пересекает `.coherent`) |
-| coherent (uncached) | 0x4A400000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, почта аудио/флаги `g_audio_*`, L1-таблица (0x4A40C000) — недоступно кэшу. **Данные кольца звука НЕ здесь** — они в SRAM A1 (r957) |
+| Куча эмуляторов | 0x4A700000..0x4BF00000 | bump 24 МБ (`_gb_heap_start.._gb_heap_end`); маллок всех ядер |
+| Пулы FBNeo/gpgx | 0x54000000..0x5A000000 | `.noinit_fbn` 96 МБ (pool_mem, не обнуляется стартом, r1191) |
+| sbrk-арена (newlib) | 0x4BF00000..0x4EF00000 | растёт вверх от `_gb_heap_end` до `SBRK_LIMIT` (0x4EF00000, перед `_menu_arena` 0x4F000000); r1243: только newlib (PUAE-аллокатор удалён) |
+| coherent (uncached номинально) | 0x4A400000 (резерв 1 МБ) | OHCI ED/TD/HCCA, USB-отчёты, `g_cal_*`, L1-копии (0x4A40C000..0x4A420000). NC-перевод no-op (r1206), атрибут WB от U-Boot; когерентность — SRAM-кольцо/индексы + cache_clean/invalidate USB. Данные кольца звука НЕ здесь — они в SRAM A1 (r957) |
 | Меню | 0x4F000000 | `_menu_arena` |
 | SAT ROM | 0x50000000..0x51800000 | `ROM_BUF` — образы ROM с SD (24 МБ) |
 | Видео | 0x5F800000 (EMU_FB 150 КБ), 0x5F900000 (HDMI 2.4 МБ) | кадр эмулятора 320×240 RGB565 -> апскейл 1024×600 XRGB8888 |
@@ -613,7 +618,7 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   CPC (8 «готово-консольных», см. отдельно), остальные — см. `docs/ROADMAP.md`.
   C64/128 — READY (VICE, r974), Atari 8-bit — READY (r975 звук).
 
-### Звук (актуально, r1014)
+### Звук (актуально, r1244)
 
 Вывод звука **возвращён** (r895..r902, решение владельца отменяет r777):
 `i2s.c` — рабочий слой (ring в SRAM A1 → CPU2 доливает TX FIFO,

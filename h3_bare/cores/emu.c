@@ -203,6 +203,24 @@ void emu_scale_rgb565_src(const uint16_t* src, int sw, int sh, int stride_px) {
                        g_border_color ? g_border_color : 0x00000000u, 1);
 }
 
+// r1252: скейл с заданным аспектом кадра. Amiga PAL отдаёт 320x256, но это
+// 4:3 при неквадратном пикселе; пропорциональный скейл по источнику даёт 1.25
+// и текст выглядит сжатым по горизонтали. Здесь ширину задаёт аспект (num/den),
+// высота — всегда FB_H.
+void emu_scale_rgb565_src_aspect(const uint16_t* src, int sw, int sh,
+                                 int stride_px, int num, int den) {
+    if (!src || sw <= 0 || sh <= 0 || stride_px < sw || num <= 0 || den <= 0) return;
+    int dst_h = FB_H;
+    int dst_w = (int)(((int64_t)dst_h * num) / den);
+    if (dst_w > FB_W) dst_w = FB_W;
+    if (dst_w <= 0) return;
+    int dst_x = (FB_W - dst_w) / 2;
+    fb_mark_dirty(0, 0, FB_W, dst_h);
+    fb_frame_scaled();
+    scale_rgb565_to_fb(src, sw, sh, stride_px, dst_w, dst_h, dst_x,
+                       g_border_color ? g_border_color : 0x00000000u, 1);
+}
+
 // ---- integer scale (целочисленный множитель) ----
 // Портативные системы и Sega 32X (r1170): один пиксель исходника = N×N пикселей
 // экрана, поля по периметру. Множитель — максимальный целый, влезающий в 1024×600.

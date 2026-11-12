@@ -37,6 +37,12 @@ void emu_scale(int src_w, int src_h);
 // 640×256, 640×512, в т.ч. чересстрочно).
 void emu_scale_rgb565_src(const uint16_t* src, int sw, int sh, int stride_px);
 
+// r1252: то же, но с заданным аспектом кадра (num/den). Нужно для Amiga PAL:
+// кадр 320x256 — это 4:3 при НЕквадратном пикселе. Пропорциональный скейл по
+// источнику даёт 1.25 и текст выглядит сжатым по X.
+void emu_scale_rgb565_src_aspect(const uint16_t* src, int sw, int sh,
+                                 int stride_px, int num, int den);
+
 // r1236: прямой вывод кадра без масштабирования, если он влезает в HDMI
 // (Amiga 720×574 в 1024×600): пиксель в пиксель по центру, поля — border.
 void emu_show_rgb565_native(const uint16_t* src, int w, int h, int stride_px);
@@ -96,7 +102,7 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name); 
 void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name);        // r963
 void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name);        // r974
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1185
-void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1191 PUAE
+void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1243 UAE4All (было r1191 PUAE)
 void emu_run_amiga_wb(void);   // r1232: вшитый диск Workbench 1.3 (DF0)
 
 #endif

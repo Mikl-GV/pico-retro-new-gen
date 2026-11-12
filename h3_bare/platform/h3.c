@@ -71,3 +71,60 @@ void mmu_mark_uncached(uint32_t addr)
 // Теперь startup.S копирует L0+L1 в 0x4A40C000.. (см. выше), карта полная и
 // целая — дорисовывать DRAM на старте не нужно.
 
+// r1245-ДИАГ: контрольная сумма копий MMU-таблиц (L0 4 КБ + 4×L1 16 КБ =
+// 20 КБ в 0x4A40C000..0x4A420000). Нужна, чтобы отличить порчу карты от
+// ошибки ядра: Data Abort с DFSR=0x21 (External abort on translation table
+// walk) означает, что walker не смог прочитать саму таблицу. Сверяем CRC
+// до и после кадра эмулятора — изменение покажет виновника.
+// Бит AF (10) в младших словах дескрипторов маскируется: для LPAE-block
+// walker вправе выставить его сам, это не порча.
+uint32_t mmu_tables_crc(void)
+{
+    const volatile uint32_t* p = (const volatile uint32_t*)0x4A40C000u;
+    uint32_t crc = 0xFFFFFFFFu;
+
+    for (uint32_t i = 0; i < (0x5000u / 4u); i++) {
+        uint32_t w = p[i];
+        if ((i & 1u) == 0u)          // младшее слово 64-битной записи
+            w &= ~(1u << 10);        // AF не считаем
+        crc ^= w;
+        for (int b = 0; b < 32; b++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+// r1245: guard-маркеры вплотную к копиям MMU-таблиц. Таблицы занимают
+// 0x4A40C000..0x4A420000; обе прилегающие зоны свободны (0x4A402FC0..0x4A40C000
+// и 0x4A420000..0x4A700000), поэтому маркеры ничего не затирают. Если ядро
+// пишет мимо буфера рядом с таблицами — увидим число испорченных слов, даже
+// когда сам CRC таблиц ещё не изменился.
+#define MMU_TAB_LO   0x4A40C000u
+#define MMU_TAB_HI   0x4A420000u
+#define MMU_GUARD_N  32u
+#define MMU_GUARD_PAT 0xA5C3E10Fu
+
+void mmu_guard_arm(void)
+{
+    volatile uint32_t* lo = (volatile uint32_t*)(MMU_TAB_LO - MMU_GUARD_N * 4u);
+    volatile uint32_t* hi = (volatile uint32_t*)MMU_TAB_HI;
+
+    for (uint32_t i = 0; i < MMU_GUARD_N; i++) {
+        lo[i] = MMU_GUARD_PAT;
+        hi[i] = MMU_GUARD_PAT;
+    }
+}
+
+int mmu_guard_broken(void)
+{
+    const volatile uint32_t* lo = (const volatile uint32_t*)(MMU_TAB_LO - MMU_GUARD_N * 4u);
+    const volatile uint32_t* hi = (const volatile uint32_t*)MMU_TAB_HI;
+    int n = 0;
+
+    for (uint32_t i = 0; i < MMU_GUARD_N; i++) {
+        if (lo[i] != MMU_GUARD_PAT) n++;
+        if (hi[i] != MMU_GUARD_PAT) n++;
+    }
+    return n;
+}
+
