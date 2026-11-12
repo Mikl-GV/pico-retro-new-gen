@@ -442,32 +442,6 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
         u4a_retro_load_game(&gi);
     }
 
-    // ДИАГ (r1244): карта L1 для зоны стека 0x5FF..0x600 — отображена ли?
-    // Падение update_adkmasks: DFAR=0x5FFFFC24 (vld1 [sp]), DFSR=0x21,
-    // M1 05FF FFFFFFFF. Смотрим запись L1 для 0x5FF00000 и 0x5FE00000.
-    {
-        uint32_t l0, e1, l1;
-        __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(l0));
-        l0 &= ~0x3FFFu;
-        e1 = *(volatile uint32_t*)(l0 + 8);
-        l1 = e1 & 0xFFFFF000u;
-        printf("Amiga DIAG: L0[1]=%08X l1=%08X\n", (unsigned)e1, (unsigned)l1);
-        for (int i = 0; i < 4; i++) {
-            uint32_t va = 0x5FC00000u + i * 0x200000u;   // 0x5FC..0x5FE..0x600 (2МБ секции)
-            uint64_t x = *(volatile uint64_t*)(l1 + (((va >> 21) & 0x1FFu) * 8u));
-            printf("  L1[%08X]=%08X:%08X\n", (unsigned)va,
-                   (unsigned)(x >> 32), (unsigned)x);
-        }
-    }
-
-    // r1245-ДИАГ: CRC копий MMU-таблиц до первого кадра. Если после кадра
-    // сумма изменится — карту испортило ядро (Data Abort 0x21 = external
-    // abort on translation table walk). Норма: CRC не меняется.
-    uint32_t crc_pre = mmu_tables_crc();
-    mmu_guard_arm();
-    printf("Amiga DIAG: mmu-crc pre=%08X guard=%d\n",
-           (unsigned)crc_pre, mmu_guard_broken());
-
     // --- кадровый цикл: retro_run (внутри: PollEvent -> m68k_go -> video) ---
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -476,35 +450,6 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
         uint32_t t0 = h3_hs_timer_lo_us();
         u4a_retro_run();          // m68k_go + flush_audio + video_cb
         uint32_t t1 = h3_hs_timer_lo_us();
-        // r1256: диагностика ввода — раз в секунду и только при изменении,
-        // чтобы не заливать UART во время игры. pad — скан пада, kbd — стрелки
-        // и Space (клавиатура дублирует джойстик), mouse — последний dx/dy.
-        {
-            static uint32_t in_t = 0;
-            static uint32_t in_last = 0xFFFFFFFFu;
-            uint32_t now_in = h3_hs_timer_lo_us();
-            if (now_in - in_t > 1000000u) {
-                in_t = now_in;
-                uint32_t pad = pad_scan_combined();
-                uint32_t kb = (g_kbd[RETROK_UP] ? 1u : 0u) | (g_kbd[RETROK_DOWN] ? 2u : 0u)
-                            | (g_kbd[RETROK_LEFT] ? 4u : 0u) | (g_kbd[RETROK_RIGHT] ? 8u : 0u)
-                            | (g_kbd[RETROK_SPACE] ? 0x10u : 0u);
-                uint32_t mb2 = (uint32_t)(usb_pad_buttons() & 3);
-                uint32_t st = pad | (kb << 16) | (mb2 << 24);
-                if (st != in_last) {
-                    in_last = st;
-                    printf("  INPUT pad=%03X kbd=%02X mouse=%d/%d btn=%u\n",
-                           (unsigned)pad, (unsigned)kb,
-                           (int)g_mouse_dx, (int)g_mouse_dy, (unsigned)mb2);
-                }
-            }
-        }
-        if (nframes == 0) {
-            uint32_t crc_post = mmu_tables_crc();
-            printf("Amiga DIAG: mmu-crc post=%08X guard=%d %s\n",
-                   (unsigned)crc_post, mmu_guard_broken(),
-                   crc_post != crc_pre ? "CHANGED (карту испортило ядро)" : "ok");
-        }
         emu_throttle();
         fb_flush();
         uint32_t t2 = h3_hs_timer_lo_us();

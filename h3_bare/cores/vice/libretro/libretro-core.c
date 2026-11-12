@@ -8620,8 +8620,37 @@ bool retro_load_game(const struct retro_game_info *info)
       local_path = utf8_to_local_string_alloc(info->path);
       if (local_path)
       {
+         /* r1265: FileSystemDevice8 по умолчанию ATTACH_DEVICE_FS (1).
+          * Autostart сохраняет это значение и восстанавливает его после
+          * загрузки, а set_file_system_device(FS) ОТМОНТИРУЕТ образ
+          * (vdrive_detach_disk_image_and_free) и переключает привод на host-FS —
+          * первое же обращение игры к диску получает DRIVE NOT READY (74).
+          * Отключаем fsdevice до старта машины.
+          * Строка обязана начинаться с CORE_NAME: иначе process_cmdline()
+          * считает её «одиночным образом» и берёт целиком как имя файла. */
+         {
+            size_t need = strlen(local_path) + 64;
+            char *cmd = (local_path[0] != '\0') ? (char *)malloc(need) : NULL;
+            if (cmd)
+            {
+               /* r1268: настоящая эмуляция привода включается только опцией
+                * командной строки — в update_variables() ресурс ставится лишь
+                * при retro_ui_finalized, то есть на первом старте машина
+                * поднимается с vdrive и LOAD зависает на BASIC.
+                * FileSystemDevice8 НЕ трогаем: при TDE привод сам ставит на
+                * шину SERIAL_DEVICE_RAW, а set_file_system_device(NONE/FS)
+                * переключает устройство на NONE или отмонтирует образ — в обоих
+                * случаях LOAD идёт в никуда (вечный LOADING). */
+               snprintf(cmd, need, "%s -drive8truedrive %s", CORE_NAME, local_path);
+               process_cmdline(cmd);
+               free(cmd);
+            }
+            else
+               /* Без файла строку опций не передаём: иначе она сама станет
+                * «образом автозапуска» и VICE будет искать файл с таким именем. */
+               process_cmdline(local_path);
+         }
          strlcpy(info_path, local_path, sizeof(info_path));
-         process_cmdline(local_path);
          free(local_path);
          local_path = NULL;
       }
@@ -8648,6 +8677,10 @@ bool retro_load_game(const struct retro_game_info *info)
       if (vice_opt.Model == 99)
 #endif
          resources_set_defaults();
+
+      /* r1268: FileSystemDevice8 не трогаем — при TDE привод ставит на шину
+       * SERIAL_DEVICE_RAW, а любое set_file_system_device() переключает
+       * устройство на NONE/FS и отмонтирует образ. */
 
       reload_restart();
       update_geometry(0);

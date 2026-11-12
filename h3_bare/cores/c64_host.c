@@ -49,11 +49,6 @@ void vice_retro_get_system_av_info(struct retro_system_av_info*);
 // c64_fs.c: регистрация ROM-буфера под путём (для fopen->rfopen)
 void c64_fs_register(const char* path, const void* data, uint32_t size);
 
-// r1261: порог логов ядра (emu.c). На время загрузки поднимаем до INFO —
-// только так видно, почему autostart не принял образ («autodetecting image
-// type», «recognized as disk/tape», «Cannot attach ...»).
-extern int g_core_log_min;
-
 // ---- ROM: путь из rom_browser (имя файла), буфер в ROM_BUF ----
 static char     g_path[160] = "game.d64";
 static uint16_t g_joy = 0;
@@ -344,9 +339,25 @@ static bool host_environment(unsigned cmd, void* data)
         if (v && v->key) {
             if (strcmp(v->key, "vice_gfx_colors") == 0) { v->value = "16bit"; return true; }
             if (strcmp(v->key, "vice_crop") == 0)       { v->value = "disabled"; return true; }
-            if (strcmp(v->key, "vice_autostart") == 0)   { v->value = "enabled"; return true; }
+            // r1270: 'warp' гонит эмуляцию на максимум, пока autostart читает
+            // образ. На H3 реальный 1541 идёт медленнее 50 Гц (fps 20-34),
+            // и загрузка без warp растягивается на минуты.
+            if (strcmp(v->key, "vice_autostart") == 0)   { v->value = "warp"; return true; }
             if (strcmp(v->key, "vice_sound_sample_rate") == 0) { v->value = "48000"; return true; }
-            if (strcmp(v->key, "vice_drive_true_emulation") == 0) { v->value = "disabled"; return true; }
+            // r1266: настоящая эмуляция привода. vdrive (TDE=off) не обслуживает
+            // загрузчики C128/1571 и ленточный автозапуск: BASIC 7.0 выводит
+            // SEARCHING/LOADING и зависает, а T64 просит «нажать PLAY». ROM-ы
+            // 1541/1571 вшиты в ядро (include/embedded/drivedos*.h).
+            if (strcmp(v->key, "vice_drive_true_emulation") == 0) { v->value = "enabled"; return true; }
+            // r1269: без ответа на эту опцию ядро оставляет C128ColumnKey=0, то
+            // есть включает VDC (80 колонок). Кадр 80-колоночного экрана,
+            // ужатый в 320 точек, давал «высокие узкие» буквы и не был похож на
+            // C64. VICII = 40 колонок, штатный экран C128/C64.
+            if (strcmp(v->key, "vice_c128_video_output") == 0) { v->value = "VICII"; return true; }
+            // r1269: PAL-фильтры стоят в дефолте, но на H3 съедают заметную
+            // часть кадра (fps 20-34 при цели 50) — картинку не улучшают.
+            if (strcmp(v->key, "vice_vicii_filter") == 0) { v->value = "disabled"; return true; }
+            if (strcmp(v->key, "vice_vdc_filter") == 0)   { v->value = "disabled"; return true; }
             if (strcmp(v->key, "vice_sid_engine") == 0)  { v->value = "Resid"; return true; }
             if (strcmp(v->key, "vice_c64_model") == 0) {
                 v->value = g_c64_model == 1 ? "C64 NTSC" : "C64 PAL";
@@ -374,6 +385,7 @@ static bool host_environment(unsigned cmd, void* data)
 
 void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
+    extern int g_core_log_min;
     // r1012: НЕ ставим g_emu_keep_heap — VICE обязан переинициализироваться
     // с чистого пула. emu_prepare() вызывает gb_heap_reset() (возврат
     // bump-кучи к нулю); free() у gameboy_stubs LIFO-only и при повторном
@@ -459,17 +471,15 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     info.data = (void*)rom;
     info.size = size;
 
-    // r1261: ДИАГНОСТИКА (временно): INFO ядра на время загрузки и первых
-    // кадров. Иначе ошибки автозапуска теряются — по умолчанию порог WARN.
-    // После 200 кадров (~4 с) возвращаем прежний уровень, чтобы не заливать
-    // блокирующий UART.
+    // r1267: INFO ядра только на время загрузки (5-10 строк) — иначе не видно,
+    // принял ли autostart образ и как поведёт себя привод; дальше порог WARN.
     int log_save = g_core_log_min;
     g_core_log_min = 1;
-    printf("C64: INFO-логи ядра включены на время запуска\n");
+    bool loaded = vice_retro_load_game(&info);
+    g_core_log_min = log_save;
 
-    if (!vice_retro_load_game(&info)) {
+    if (!loaded) {
         printf("C64: load failed\n");
-        g_core_log_min = log_save;
         vice_retro_deinit();
         return;
     }
@@ -497,19 +507,23 @@ void emu_run_c64(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_throttle_reset();
     emu_esc_hold_reset();
 
-    // Через 200 кадров возвращаем уровень логов, поднятый перед load_game.
-    int c64_frames = 0;
+    // r1268: с настоящим приводом (TDE) скорость — ключевая: одна строка на
+    // выходе показывает, успевает ли ядро держать 50 Гц.
+    uint32_t perf_t0 = h3_hs_timer_lo_us();
+    uint32_t perf_frames = 0;
     for (;;) {
         vice_retro_run();
         emu_throttle();
         fb_flush();   // host_video уже пишет в HDMI FB (1024x600)
-        if (++c64_frames == 200) {
-            g_core_log_min = log_save;
-            printf("C64: INFO-логи ядра выключены\n");
-        }
+        perf_frames++;
         if (emu_esc_hold()) break;
     }
-    g_core_log_min = log_save;
+    {
+        uint32_t el = h3_hs_timer_lo_us() - perf_t0;
+        if (el && perf_frames)
+            printf("C64 perf: fps=%.1f frames=%u\n",
+                   (double)perf_frames * 1000000.0 / (double)el, (unsigned)perf_frames);
+    }
 
     // r993: сброс «всего, что передавали ядру». Пока ядро ещё живо, отпускаем
     // ему все клавиши, которые host держал нажатыми (по g_kbd_prev), и обнуляем

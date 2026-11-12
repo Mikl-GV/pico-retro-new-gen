@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1261)
+# HANDOVER — текущее состояние (r1270)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,6 +8,137 @@
 
 ## 0. Последние правки
 
+- **r1270 (2026-11-12): C64 — warp на автозапуск (скорость TDE).**
+  - Замер на стенде: `C64 perf: fps=19.7…34.1` при цели 50 Гц. Настоящий 1541
+    при таком темпе грузит игру в 1.5-2.5 раза дольше реального времени —
+    отсюда «10 минут LOADING» и «ни одного успешного запуска».
+  - Host отдаёт `vice_autostart = warp`: пока autostart читает образ, ядро
+    гонит эмуляцию на максимум и снимает warp по завершении.
+  - Сборка r1270: `h3_bare.bin` 22 682 676 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C9AC, `.data` 0x410671B0..0x415A1C34;
+    `puae_kick13_rom=0x413A91C0`, `puae_wb13_adf=0x413E91C0`.
+- **r1269 (2026-11-12): C64 — VICII (40 колонок) вместо VDC, фильтры выкл.**
+  - «Высокие узкие буквы» и непохожесть экрана на C64: host не отвечал на
+    `vice_c128_video_output`, ядро оставляло `C128ColumnKey=0` → VDC (80
+    колонок), кадр ужимался в 320 точек по X. Теперь отдаём `VICII`
+    (40 колонок). Это же объясняет «чёрный экран» в опытах с GO64.
+  - `vice_vicii_filter`/`vice_vdc_filter` → `disabled`: PAL-фильтры стоят в
+    дефолте и заметно бьют по fps на H3.
+  - Сборка r1269: `h3_bare.bin` 22 682 676 б, linkcheck OK. Адреса те же,
+    что в r1270 (`.text` ..0x40B2C9AC).
+- **r1268 (2026-11-12): C64 — убрано вмешательство в fsdevice; TDE работает.**
+  - r1267: TDE включился (Drive8TrueEmulation => 1, TrapDevice8 => 0),
+    autostart смонтировал образ и сбросил машину, но LOADING висел 10 минут.
+  - Причина: -devicebackend8 0/пост-установка FileSystemDevice8=0 вызывает
+    set_file_system_device() → serial_device_type_set(SERIAL_DEVICE_NONE).
+    При TDE привод сам ставит на шину SERIAL_DEVICE_RAW (c1541.c:1052),
+    и наш NONE выкидывает его с IEC — LOAD идёт в никуда.
+  - Фикс: `FileSystemDevice8` больше не трогаем ни в argv, ни после
+    `resources_set_defaults()`; в строке только `-drive8truedrive`.
+    Правка `fsdevice=0` была нужна только для vdrive (там она отмонтировала
+    образ, давая ERR=74) — с TDE она вредна.
+  - Добавлена одна строка `C64 perf: fps=… frames=…` на выходе: с настоящим
+    приводом нужно видеть, держит ли ядро 50 Гц.
+  - Сборка r1268: `h3_bare.bin` 22 682 612 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C95C, `.data` 0x41067170..0x415A1BF4;
+    `puae_kick13_rom=0x413A9180`, `puae_wb13_adf=0x413E9180`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
+
+- **r1267 (2026-11-12): C64 — TDE включается через argv (`-drive8truedrive`).**
+  - r1266 не дал эффекта: `vice_drive_true_emulation=enabled` доходит только до
+    `vice_opt.DriveTrueEmulation` — в `update_variables()` ресурс
+    `Drive8TrueEmulation` ставится под `retro_ui_finalized`, а на первом старте
+    это false. Машина поднималась с vdrive, экран оставался на BASIC.
+  - Фикс: в строку `process_cmdline()` добавлена опция `-drive8truedrive`
+    (`drive-cmdline-options.c:179`), она применяется в `main_program` до
+    `machine_init` вместе с `-devicebackend8 0`.
+  - Возвращён короткий INFO только на время `vice_retro_load_game` (порог
+    WARN сразу после) — без него не видно, принял ли autostart образ.
+  - Сборка r1267: `h3_bare.bin` 22 682 228 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C80C, `.data` 0x41066FF0..0x415A1A74;
+    `puae_kick13_rom=0x413A9000`, `puae_wb13_adf=0x413E9000`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
+- **r1266 (2026-11-12): C64 — включена настоящая эмуляция привода (TDE).**
+  - Симптом r1265: `SEARCHING`/`LOADING` и зависание (READY не появляется);
+    T64 просит «PRESS PLAY ON TAPE».
+  - ROM-ы проверены: они **вшиты в ядро** (`vice/include/embedded/*.h`):
+    `c64kernal.h`, `c64basic.h`, `c64chargen.h`, `c128kernal.h`,
+    `c128basiclo.h`/`c128basichi.h`, `c128chargen.h`, `drivedos1541.h`,
+    `drived1541II.h`, `drivedos1571.h`, `drivedos1581.h`. Внешние файлы
+    `./vice/*.bin` не нужны, эталоны не требуются.
+  - Причина: привод работал как vdrive (TDE=off) — он не обслуживает
+    загрузчики C128/1571 (burst) и ленточный автозапуск.
+  - Правка host: `vice_drive_true_emulation` → `enabled`.
+  - Сборка r1266: `h3_bare.bin` 22 682 164 б, linkcheck OK. Адреса без
+    изменений: `.text` 0x40000000..0x40B2C7EC, `.data` 0x41066FB0..0x415A1A34;
+    `puae_kick13_rom=0x413A8FC0`, `puae_wb13_adf=0x413E8FC0`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
+- **r1265 (2026-11-12): C64 — GO64 отменён, оставлен фикс fsdevice; логи свёрнуты.**
+  - Лог r1264 показал: `-go64` доходит (`Arg3: -go64`), но кадра нет вообще
+    («растра нет»), а файла в тех запусках не было (`reg ''`, `argc=4`).
+    GO64 гипотезу не подтвердил: в r1263 при C128-режиме загрузка шла и
+    упиралась только в `ERR=74`.
+  - Откат: `-go64` из argv убран, `Go64Mode`/`C128ColumnKey` после
+    `resources_set_defaults()` не трогаем (машина остаётся C128, VICII по
+    дефолту `C128ColumnKey=1` → `is_vdc()==0`).
+  - Оставлен рабочий фикс `ERR=74`: привод держится на vdrive
+    (`-devicebackend8 0` до `main_program` + тот же ресурс после
+    `resources_set_defaults()`), иначе autostart восстанавливает fsdevice и
+    отмонтирует образ.
+  - Пустой путь (запуск «C64» без образа) больше не превращается в строку
+    опций: `process_cmdline("")` как раньше — иначе строка опций становилась
+    «образом автозапуска».
+  - Диагностика свёрнута: убран `vice_c64_probe_drive` и подъём INFO-логов в
+    `c64_host.c`; в Amiga убраны `Amiga DIAG` (L0/L1, mmu-crc, guard) и поток
+    `INPUT ...` из `uae4all_host.c`. Осталась одна строка `Amiga perf:` на
+    выходе.
+  - Сборка r1265: `h3_bare.bin` 22 682 164 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2C7EC, `.data` 0x41066FB0..0x415A1A34;
+    `puae_kick13_rom=0x413A8FC0`, `puae_wb13_adf=0x413E8FC0`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
+- **r1264 (2026-11-12): C64 — GO64 через argv и отключён fsdevice (ERR=74).**
+  - По логу r1263: `go64=1` выставлен, образ смонтирован (`imgtype=1541 mode=1`),
+    но после `TPI: Starting program` → `Restoring FileSystemDevice8 to 1` →
+    `VDriveCommand: ERR = 74, DRIVE NOT READY`; экран чёрный.
+  - Причина 1 (диск): `FileSystemDevice8` по умолчанию `ATTACH_DEVICE_FS` (1).
+    Autostart сохраняет это значение и восстанавливает после загрузки, а
+    `set_file_system_device(FS)` в `attach.c` **отмонтирует образ**
+    (`vdrive_detach_disk_image_and_free`) и переключает serial hooks на host-FS —
+    первое же обращение игры к диску получает 74.
+  - Причина 2 (чёрный экран): `initcmdline_restart()` в LIBRETRO-сборке машину не
+    пересоздаёт, поэтому `Go64Mode`, выставленный после `pre_main()`, до
+    `machine_init` не доходит; кадр берётся из неактивного VDC.
+  - Фикс (`libretro-core.c`): строка для `process_cmdline()` теперь
+    `x128 -devicebackend8 0 -go64 <файл>` — опции приходят в argv ДО
+    `main_program`. Строка обязана начинаться с `CORE_NAME`, иначе
+    `process_cmdline()` трактует её как single_image и берёт целиком как имя
+    файла. После `resources_set_defaults()` ресурсы возвращаются в согласованное
+    состояние: `Go64Mode=1`, `C128ColumnKey=1` (→ `is_vdc()==0`, VICII),
+    `FileSystemDevice8=0` (привод остаётся на vdrive).
+  - Сборка r1264: `h3_bare.bin` 22 683 900 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2CCA4, `.data` 0x41067670..0x415A20FC;
+    `puae_kick13_rom=0x413A9684`, `puae_wb13_adf=0x413E9684`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
+- **r1263 (2026-11-12): C64 — GO64 реально применяется, проба привода.**
+  - Разбор лога r1261 (D64): образ распознан (`mounted image is type: 1541`),
+    автозапуск идёт, но `VDriveCommand: ERR = 74, DRIVE NOT READY` — BASIC 7.0
+    читает каталог блочной командой U1, а vdrive её не обслуживает.
+  - Причина: ядро собрано как x128, машина поднимается в режиме C128 даже при
+    выбранном «C64». Опция `vice_c128_go64` в host (`c64_host.c`) доходит только
+    до `vice_opt.Go64Mode`: `update_variables()` на первом старте идёт при
+    `retro_ui_finalized=false`, ресурс `Go64Mode` не выставляется, а
+    `resources_set_defaults()` затем возвращает дефолт.
+  - Фикс (`vice/libretro/libretro-core.c`, метка r1263): после
+    `resources_set_defaults()` и **до** `reload_restart()` ставим
+    `Go64Mode`/`C128ColumnKey` из `vice_opt.Go64Mode` под `__X128__`.
+  - Диагностика: `vice_c64_probe_drive(tag)` (экспорт из ядра, символы набора
+    VICE получают префикс `vice_`) печатает `PROBE[...]: name=…, type, go64,
+    tde, trap, img, imgtype, mode`. Host зовёт её сразу после `load_game` и на
+    кадрах 50/150 — по логу видно, смонтирован ли образ и в каком режиме машина.
+  - Сборка r1263: `h3_bare.bin` 22 683 644 б, linkcheck OK. Адреса:
+    `.text` 0x40000000..0x40B2CBF4, `.data` 0x41067570..0x415A1FFC;
+    `puae_kick13_rom=0x413A9584`, `puae_wb13_adf=0x413E9584`.
+  - Точка восстановления прежняя: тег `restore-r1260`.
 - **r1261 (2026-11-12): C64/128 — диагностика автозапуска, разбор лога T64.**
   - По логу стенда: `AKILL.T64` — это **лента** (T64), не диск. VICE сначала
     пробует образ как флоппи (`autostart_disk` → `Filesystem Image Probe:
@@ -408,7 +539,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1261**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1270**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая

@@ -1,8 +1,8 @@
-# MEMORY — карта памяти и правила размещения (актуально r1261)
+# MEMORY — карта памяти и правила размещения (актуально r1270)
 
 > Источник истины по адресам: `linker.ld` + `nm/readelf build/h3_bare.elf`.
-> Значения ниже сняты с рабочей сборки **r1261** (linkcheck OK,
-> `h3_bare.bin` ≈21.63 МБ; с r1225 в `.data` вшит Kickstart 1.3, 256 КБ).
+> Значения ниже сняты с рабочей сборки **r1270** (linkcheck OK,
+> `h3_bare.bin` ≈21.64 МБ; с r1225 в `.data` вшит Kickstart 1.3, 256 КБ).
 > При изменении состава секций — обновлять этот файл.
 > Правила безопасной работы с MMU — `docs/PITFALLS.md`; модель памяти —
 > `docs/ARCHITECTURE.md`.
@@ -26,12 +26,12 @@
 
 ---
 
-## 2. DRAM: разделы образа (linker.ld, `nm/readelf` r1261)
+## 2. DRAM: разделы образа (linker.ld, `nm/readelf` r1270)
 
 | Диапазон | Размер | Секция | Что это |
 |---|---|---|---|
-| `0x40000000..0x40B2C9F4` | ≈11.2 МБ | `.text` | код, векторы `_vectors`=0x40000000 (r1243: PUAE удалён, текст похудел) |
-| `0x410672F0..0x415A1D7C` | ≈5.22 МБ | `.data` | инициализированные данные; внутри вшиты Kickstart 1.3 (`puae_kick13_rom`, `0x40000`, r1261 = 0x413A9304) и диск Workbench 1.3 (`puae_wb13_adf`, `0xDC000`, r1261 = 0x413E9304); адреса плавают с порядком объектов — сверять `nm` |
+| `0x40000000..0x40B2C9AC` | ≈11.2 МБ | `.text` | код, векторы `_vectors`=0x40000000 (r1243: PUAE удалён, текст похудел) |
+| `0x410671B0..0x415A1C34` | ≈5.22 МБ | `.data` | инициализированные данные; внутри вшиты Kickstart 1.3 (`puae_kick13_rom`, `0x40000`, r1270 = 0x413A91C0) и диск Workbench 1.3 (`puae_wb13_adf`, `0xDC000`, r1270 = 0x413E91C0); адреса плавают с порядком объектов — сверять `nm` |
 | `0x415A2000..0x44B3D850` | ≈55.6 МБ | `.bss` | `_bstart1`=`0x415A2000`, `_bend1`=`0x44B3D850` (BSS ядер, r1243: без PUAE-статиков меньше) |
 | `0x44B3D850..0x4A400000` | ≈84.7 МБ | **свободно** | после BSS до `.coherent` |
 | `0x4A400000..0x4A402FC0` | 12224 Б | `.libh3_coherent` | `_coherent_start`=`0x4A400000`, `_coherent_end`=`0x4A402FC0` |
@@ -210,12 +210,12 @@ arm-none-eabi-readelf -SW build/h3_bare.elf    # размеры/адреса с�
 arm-none-eabi-nm build/h3_bare.elf | grep -E "_bstart1|_bend1|_gb_heap|_coherent|_menu_arena|_hend"
 ```
 
-Эталонные значения r1261 (снято с `arm-none-eabi-nm build/h3_bare.elf`):
+Эталонные значения r1270 (снято с `arm-none-eabi-nm build/h3_bare.elf`):
 `_bstart1=0x415A2000`, `_bend1=0x44B3D850`, `_gb_heap_start=0x4A700000`,
 `_gb_heap_end=0x4BF00000`, `_coherent_start=0x4A400000`,
 `_coherent_end=0x4A402FC0`, `_menu_arena=0x4F000000`, `_hend=0x5A000000`.
-Вшитые BIOS (`.data`): `puae_kick13_rom=0x413A9304` (0x40000),
-`puae_wb13_adf=0x413E9304` (0xDC000, конец `0x414C9304`).
+Вшитые BIOS (`.data`): `puae_kick13_rom=0x413A91C0` (0x40000),
+`puae_wb13_adf=0x413E91C0` (0xDC000, конец `0x414C8FC0`).
 Имена сохранены от PUAE (r1243: сборка UAE4All переиспользует
 `puae/kickstart_data.S`; собственной арены/статиков PUAE больше нет).
 
