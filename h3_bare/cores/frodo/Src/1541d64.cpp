@@ -1014,10 +1014,10 @@ bool ImageDrive::find_file(const uint8 *pattern, int pattern_len, int &dir_track
 		}
 
 		// Does entry match pattern?
-		// r1288: младшие 4 бита типа — код файла; 0 = удалённая/scratch
-		// запись (0x80). LOAD"*" не должен брать её (D64 с удалённым первым
-		// файлом давал мусор в памяти и RETURN в READY).
-		if (!((de[DE_TYPE] & 0x0f) && match(pattern, pattern_len, de + DE_NAME)))
+		// r1291: младшие 3 бита типа — код файла (1..4 = SEQ/PRG/USR/REL),
+		// 0 — удалённая/scratch запись (0x80/0x0F). LOAD"*" не должен брать её.
+		int ftype = de[DE_TYPE] & 7;
+		if (!(ftype >= 1 && ftype <= 4 && match(pattern, pattern_len, de + DE_NAME)))
 			continue;
 
 		if (!wildcard)
@@ -1036,6 +1036,11 @@ bool ImageDrive::find_file(const uint8 *pattern, int pattern_len, int &dir_track
 		entry = best_entry;
 		dir_track = best_track;
 		dir_sector = best_sector;
+		// r1291: dir[] содержит ПОСЛЕДНИЙ прочитанный блок, а open_file берёт
+		// de из dir по найденным entry/track/sector. Без перечитывания
+		// отдавалась запись из чужого сектора (мусорное имя, type=0F).
+		if (!read_sector(dir_track, dir_sector, dir))
+			return false;
 		return true;
 	}
 	return false;
