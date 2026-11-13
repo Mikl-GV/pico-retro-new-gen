@@ -257,7 +257,7 @@ COL := $(TOP)h3_bare/cores/gearcoleco
 COL_SRC := $(COL)/src
 COL_INC := -I$(COL_SRC)
 COL_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS)
-COL_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
+COL_CXXFLAGS += -Wall -Wextra -O3 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 # Дизассемблер/трейс-логирование Gearcoleco ОТКЛЮЧЕНО: LogInstructionEvent()
 # вызывается на КАЖДУЮ инструкцию и выделяет record из bump-кучи
 # (GetOrCreateDisassemblerRecord) — пул 24 МБ за секунды исчерпывается и

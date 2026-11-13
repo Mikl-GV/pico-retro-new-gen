@@ -182,11 +182,15 @@ extern "C" void coleco_run_frame(void) {
     int col_snd_count = 0;
     g_core->RunToVBlank((u8*)g_col_fb, col_snd, &col_snd_count, NULL, true);
 
+    // r1296: Stereo_Buffer::read_samples отдаёт ИНТЕРЛИВ стерео (L,R,L,R) и
+    // всегда чётное число. Раньше каждый элемент пушился как моно-пара (i,i):
+    // объём вдвое больше темпа 48 кГц, кольцо переполнялось и i2s_push_sample
+    // ждал слота ~13 мкс → 21 мс на кадр (отсюда 30 fps).
     if (col_snd_count > 0) {
         int n = col_snd_count;
         if (n > GC_AUDIO_BUFFER_SIZE) n = GC_AUDIO_BUFFER_SIZE;
-        for (int i = 0; i < n; i++)
-            i2s_push_sample(col_snd[i], col_snd[i]);   // моно → стерео
+        for (int i = 0; i + 1 < n; i += 2)
+            i2s_push_sample(col_snd[i], col_snd[i + 1]);
     }
 
     // r0.194: перенос 256×192 в EMU_FB с pitch 320 построчно — иначе картинка

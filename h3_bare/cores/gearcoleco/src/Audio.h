@@ -72,6 +72,10 @@ private:
     VgmRecorder m_VgmRecorder;
     bool m_bVgmRecordingEnabled;
     u8 m_AY8910Register;
+    // r1293: AY8910 (SGM) синхронизируется только после первой записи в SGM.
+    // Без флага Sync() прогоняет ВСЕ такты кадра (~60K) на каждый кадр даже в
+    // обычных играх без SGM: 24 мс на кадр по логу Coleco perf (30 fps).
+    bool m_bAY8910Active;
     blip_sample_t* m_pDebugChannelBuffer[4];
     long m_iDebugChannelSamples[4];
 };
@@ -79,7 +83,8 @@ private:
 inline void Audio::Tick(unsigned int clockCycles)
 {
     m_ElapsedCycles += clockCycles;
-    m_pAY8910->Tick(clockCycles);
+    if (m_bAY8910Active)
+        m_pAY8910->Tick(clockCycles);
 #ifndef GEARCOLECO_DISABLE_VGMRECORDER
     if (m_bVgmRecordingEnabled)
         m_VgmRecorder.UpdateTiming(clockCycles);
@@ -97,6 +102,7 @@ inline void Audio::WriteAudioRegister(u8 value)
 
 inline void Audio::SGMWrite(u8 value)
 {
+    m_bAY8910Active = true;
     m_pAY8910->WriteRegister(value);
 #ifndef GEARCOLECO_DISABLE_VGMRECORDER
     if (m_bVgmRecordingEnabled)
@@ -111,6 +117,7 @@ inline u8 Audio::SGMRead()
 
 inline void Audio::SGMRegister(u8 reg)
 {
+    m_bAY8910Active = true;
     m_pAY8910->SelectRegister(reg);
     m_AY8910Register = reg;
 }

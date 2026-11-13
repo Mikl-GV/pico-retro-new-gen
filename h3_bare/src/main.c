@@ -456,7 +456,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1291";
+const char g_fw_version[] = "r1296";
 
 // r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
 // TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
@@ -523,7 +523,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1291\n");
+    uart_puts("build: r1296\n");
 
     // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
     // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.

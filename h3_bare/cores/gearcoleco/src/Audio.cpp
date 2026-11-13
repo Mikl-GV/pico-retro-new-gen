@@ -33,6 +33,7 @@ Audio::Audio()
     m_master_volume = 1.0f;
     m_bVgmRecordingEnabled = false;
     m_AY8910Register = 0;
+    m_bAY8910Active = false;
     for (int i = 0; i < 4; i++)
     {
         InitPointer(m_pDebugChannelBuffer[i]);
@@ -82,6 +83,7 @@ void Audio::Reset(bool bPAL)
 
     m_ElapsedCycles = 0;
     m_AY8910Register = 0;
+    m_bAY8910Active = false;
 
     m_pApu->reset();
     m_pApu->volume(0.6);
@@ -125,7 +127,11 @@ void Audio::EndFrame(s16* pSampleBuffer, int* pSampleCount)
             m_pApu->read_debug_samples(m_pDebugChannelBuffer[i], i, GC_AUDIO_BUFFER_SIZE, &m_iDebugChannelSamples[i]);
     }
 
-    m_pAY8910->EndFrame(m_pSGMBuffer);
+    // r1293: без SGM AY8910 не тикал — Sync() не нужен, буфер SGM тишина.
+    if (m_bAY8910Active)
+        m_pAY8910->EndFrame(m_pSGMBuffer);
+    else if (count > 0)
+        memset(m_pSGMBuffer, 0, (size_t)count * sizeof(s16));
 
     if (IsValidPointer(pSampleBuffer) && IsValidPointer(pSampleCount))
     {
