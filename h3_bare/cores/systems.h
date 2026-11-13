@@ -95,6 +95,10 @@ static const system_entry_t systems[] = {
     // (/roms/amiga — папка по id); Kickstart 1.3 вшит через .incbin
     // (правило владельца: BIOS с SD не грузится). Дир по id = "amiga".
     SYS("amiga",      "Commodore Amiga",         COMPUTER, READY),
+    // r1297: Агат-9 — ядро Agat Emulator (h3_bare/cores/agat), 6502 1 МГц,
+    // кадр 640x400, палитра 16 цветов. ROM-монитор и знакогенератор вшиты
+    // (.incbin в agat_roms.S), с SD не грузятся. Папка по id — /roms/agat.
+    SYS("agat",       "Agat-9",                  COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };
 

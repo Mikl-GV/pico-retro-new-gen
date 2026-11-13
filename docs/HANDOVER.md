@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1296)
+# HANDOVER — текущее состояние (r1298)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,6 +8,43 @@
 
 ## 0. Последние правки
 
+
+- **r1298 (2026-11-13): Агат-9 — исправлен init на стенде, MFM (6-and-2) и монтаж образа.**
+  - Стенд: `xram9_init` → `Agat: init failed`. Причина: конфиг Агат-9 по умолчанию
+    ставит в слоты карты расширения, а заглушки возвращали -1 и срывали
+    `init_system_state`. Теперь заглушки возвращают 0 (слот пустой) — init проходит.
+  - `systems.h`: имя системы латиницей — `Agat-9` (меню не рисует кириллицу).
+  - `fdd/fdd1.c`: x86-asm кодек 6-and-2 переведён на C — `fdd_code_mfm`
+    (256 байт → 0x157: 0x56 «младших» + 0x100 «старших» + XOR-чексумма через
+    `CodeTabl`) и `fdd_decode_mfm` (обратно, с проверкой чексуммы).
+  - `agat_hal.c`: потоки получили режим «память поверх буфера»; `agat_set_disk_image()`
+    отдаёт образ, выбранный в ROM-браузере, через `isfopen()` (ФС на bare-metal нет).
+    `iosfopen()` для такого имени возвращает NULL → `open_fdd1` переходит в ro.
+  - `agat_host.c`: образ монтируется в первый дисковод (`CFG_STR_DRV_IMAGE1`).
+  - Сборка r1298: 20 242 316 б, `linkcheck: OK`.
+  - Осталось: клавиатура/пад, звук в I2S, проверка кадра и загрузки DOS на стенде.
+
+- **r1297 (2026-11-13): Агат-9 — ядро Agat Emulator встроено в прошивку (собирается и линкуется).**
+  - Ядро в `h3_bare/cores/agat/src` (cpu, video, fdd, sound, baseram/baserom/memory/
+    apple2/firmware/runmgr/list/sysconf); `shim/windows.h` + `shim/tchar.h` заменяют Win32.
+  - CPU переведён на синхронный `cpu_run_cycles(cs, cycles)` (потоки Windows убраны,
+    `cpu_exec_async` исполняет колбэк сразу) — иначе на bare-metal не запустить.
+  - `agat_hal.c` — HAL: потоки поверх stdio, локализация, логи, `tsq_*` без мьютекса,
+    run-state, 22 заглушки слотов, `init_system_1/2e/aa` → -1, пустые `SOUNDPROC`,
+    видеобуфер 4bpp 640×400 и `agat_video_expand()` в RGB565 (палитра Apple II).
+  - `agat_roms.S` — ВШИТЫ `MONITOR9.ROM` (ресурс 12) и `AGATHE9.FNT` (ресурс 2);
+    `load_buf_res()` отдаёт их по номеру ресурса, с SD ROM не грузится.
+  - Исключены из сборки: `fdd1extr.c` (x86 asm), `mockingboard.c` (dsound),
+    `sound_beep.c` (x86 `in` + SEH), `apple1.c`/`apple2e.c` (дубли `memsizes_b`,
+    `conf_present` с `apple2.c`). MFM-кодер в `fdd/fdd1.c` — заглушка, FDD пока нет.
+  - `agat_rename.sh` (префикс `agat_`) снимает коллизии с другими ядрами; host
+    `agat_host.c` зовёт `agat_*`, внешнее имя — `emu_run_agat`. `conf_present` и
+    `paint_addr` в заголовках стали `extern` (common-символы давали дубли в linkcheck).
+  - Регистрация: `systems.h` (`SYS("agat", "Агат-9 (Agat)", COMPUTER, READY)`),
+    `rom_browser.c` → `emu_run_agat`, папка `/roms/agat`.
+  - Сборка r1297: 20 239 564 б, `linkcheck: OK`, в образе `build: r1297`.
+  - НЕ проверено на стенде: кадр/скорость/ввод. Клавиатура, пад и звук к ядру
+    ещё не подключены — сейчас только запуск, прогон 20000 тактов и вывод кадра.
 
 - **r1296 (2026-11-13): ColecoVision — причина 30 fps: стерео-интерлив пушился как моно (двойной объём → backpressure).**
   - Замер r1295: `in_us`≈160, `push_us`≈20 860, `blit_us`≈126, `snd`=1602 при

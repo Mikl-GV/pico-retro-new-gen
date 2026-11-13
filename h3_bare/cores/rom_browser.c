@@ -177,6 +177,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_frodo(rom, size, sel_name);     // Commodore 64 — /roms/c64 (r1284: ядро Frodo)
     else if (strcmp(sys_id, "amiga") == 0)
         emu_run_amiga(rom, size, sel_name);     // Commodore Amiga — /roms/amiga (r1191, PUAE)
+    else if (strcmp(sys_id, "agat") == 0)
+        emu_run_agat(rom, size, sel_name);      // Агат-9 — /roms/agat (r1297)
     else if (strcmp(sys_id, "radio86rk") == 0)
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
     else {
