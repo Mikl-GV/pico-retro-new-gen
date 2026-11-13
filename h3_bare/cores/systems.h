@@ -84,7 +84,12 @@ static const system_entry_t systems[] = {
     SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
     SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
-    SYS("c64",        "Commodore 64/128",         COMPUTER, READY),
+    // r1284: Commodore 64 — ядро Frodo (h3_bare/cores/frodo, PAL-only: VIC-II
+    // 312 строк/50 Гц зашиты const в VIC.h, runtime-выбора региона нет).
+    // Вшитый синий BASIC V2 (KERNAL/Basic/Char вшлиты через .incbin). Диски
+    // 1541 (.d64/.t64) через ImageDrive, файлы -> fs_layer. Папка по id —
+    // /roms/c64. Правило владельца: BIOS/ROM вшиты, с SD не грузятся.
+    SYS("c64",        "Commodore 64",            COMPUTER, READY),
     // r1243: Commodore Amiga — ядро UAE4All (h3_bare/cores/uae4all,
     // uae4all_host.c); PUAE из сборки выведен. Запускает ADF-образы с SD
     // (/roms/amiga — папка по id); Kickstart 1.3 вшит через .incbin

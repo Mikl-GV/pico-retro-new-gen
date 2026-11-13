@@ -675,10 +675,11 @@ _start:
     b 7b
 8:
 
-    /* r974: Zero-init .vice_bss (NOLOAD, ядро VICE C64/C128; linker.ld —
-     * 0x52000000). BSS-цикл её не покрывает (отдельная секция). */
-    ldr r0, =_vice_bss_start
-    ldr r1, =_vice_bss_end
+    /* r974..r1284: Zero-init .frodo_bss (NOLOAD, ядро C64 Frodo; linker.ld —
+     * 0x52000000; r1284: бывшая зона .vice_bss, ядро заменено). BSS-цикл её
+     * не покрывает (отдельная секция). */
+    ldr r0, =_frodo_bss_start
+    ldr r1, =_frodo_bss_end
     cmp r0, r1
     beq 9f
 8:  cmp r0, r1

@@ -1,0 +1,3 @@
+# Bash-скрипты должны попадать в репозиторий с LF: CRLF ломает shebang
+# (bad interpreter) и renaming-скрипты ядер не запускаются при сборке на Linux.
+*.sh text eol=lf

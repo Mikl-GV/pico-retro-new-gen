@@ -3,9 +3,9 @@
 // r1013: вынесен из atari800/a8_fs.c (рефакторинг по требованию владельца:
 // встройка C64 не должна «лезть» в файлы Atari 8-bit). Этот модуль предоставляет
 // глобальные fopen/fread/stat/open/read/... — их через --allow-multiple-definition
-// видят ВСЕ ядра (Atari 800, C64/VICE, и др.), которым нужен stdio поверх
+// видят ВСЕ ядра (Atari 800, C64/Frodo, и др.), которым нужен stdio поверх
 // зарегистрированного буфера (ROM_BUF). a8_fs.c остаётся только тонким мостом
-// (a8_fs_register → fs_register), чтобы не менять все вызовы в a8_host/c64_fs.
+// (a8_fs_register → fs_register), чтобы не менять все вызовы в a8_host.
 //
 //   - fopen() отдаёт «файл» из зарегистрированного host-слоем буфера в памяти
 //     (ROM_BUF), путь задаёт host при регистрации (fs_register/a8_fs_register);
@@ -73,7 +73,7 @@ static char     g_rom_path[FS_ROM_PATH_MAX] FS_BSS;
 static const uint8_t* g_rom_data FS_BSS = 0;
 static uint32_t g_rom_size FS_BSS = 0;
 
-// Регистрация ROM-буфера под путём (вызывают a8_host, c64_host, ...).
+// Регистрация ROM-буфера под путём (вызывают a8_host, frodo_host, ...).
 // register_path — путь, который ядро будет открывать через fopen/open.
 void fs_register(const char* path, const void* data, uint32_t size) {
     if (!path || !data) { g_rom_data = 0; g_rom_size = 0; g_rom_path[0] = 0; return; }

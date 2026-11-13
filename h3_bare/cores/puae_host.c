@@ -46,7 +46,7 @@ void puae_retro_deinit(void);
 void puae_retro_get_system_av_info(struct retro_system_av_info*);
 void puae_retro_reset(void);
 
-// ---- путь образа (как c64_host: имя файла с SD) ----
+// ---- путь образа (имя файла с SD, тот же подход, что в frodo_host) ----
 static char g_path[160] = "game.adf";
 
 // ---- кнопки Amiga-джойстика ----
@@ -125,7 +125,7 @@ static uint16_t g_kbd_prev[RETROK_LAST];
 // опроса RETRO_DEVICE_KEYBOARD ядру недостаточно (этим оно читает хоткеи).
 static retro_keyboard_event_t g_kbd_event = 0;
 
-// HID-сканкод -> RETROK (тот же маппинг, что в c64_host)
+// HID-сканкод -> RETROK (тот же маппинг, что в frodo_host)
 static uint16_t hid_to_retrok(uint8_t sc)
 {
     switch (sc) {

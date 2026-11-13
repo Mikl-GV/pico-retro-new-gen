@@ -174,7 +174,7 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
     else if (strcmp(sys_id, "cpc") == 0)
         emu_run_cpc(rom, size, sel_name);       // Amstrad CPC — /roms/cpc (r963)
     else if (strcmp(sys_id, "c64") == 0)
-        emu_run_c64(rom, size, sel_name);       // Commodore 64/128 — /roms/c64 (r974)
+        emu_run_frodo(rom, size, sel_name);     // Commodore 64 — /roms/c64 (r1284: ядро Frodo)
     else if (strcmp(sys_id, "amiga") == 0)
         emu_run_amiga(rom, size, sel_name);     // Commodore Amiga — /roms/amiga (r1191, PUAE)
     else if (strcmp(sys_id, "radio86rk") == 0)

@@ -87,7 +87,6 @@ extern void fuse_set_model(const char* m);
 extern void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void bk_set_model(const char* m);
 extern void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
-extern void c64_set_model(int m);
 
 static int zx_model_dialog(void) {
     int sel = 0, scroll = 0, dirty = 1;
@@ -272,46 +271,15 @@ static int cpc_source_dialog(void) {
     }
 }
 
-// r974: выбор машины Commodore 64/128 (как A8/ZX/BK). Значения строк совпадают
-// с vice_c64_model/vice_c128_model в libretro-core.c (strcmp).
-// 0 = C64 PAL, 1 = C64 NTSC, 2 = C128 PAL, 3 = C128 NTSC. -1 (ESC).
-static int c64_model_dialog(void) {
-    int sel = 0, dirty = 1;
-    const char* const models[] = {
-        "C64 PAL", "C64 NTSC", "C128 PAL", "C128 NTSC",
-    };
-    const int count = (int)(sizeof(models) / sizeof(models[0]));
-    for (;;) {
-        if (dirty) {
-            fb_clear(); fb_draw_stars();
-            fb_puts_s(60, 60, "Commodore 64/128: model", 2, 0x00FFAA00);
-            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
-            for (int i = 0; i < count; i++) {
-                int y = 140 + i * 40;
-                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
-                if (i == sel) fb_fill_rect(50, y - 4, 460, 30, 0x00222222);
-                fb_puts_s(70, y, models[i], 1, clr);
-            }
-            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
-            fb_flush(); dirty = 0;
-        }
-        int k = usb_input_poll();
-        if (!k) { udelay(16000); continue; }
-        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
-        else if (k == 81) { if (sel < count - 1) sel++; dirty = 1; }
-        else if (k == 40) return sel;
-        else if (k == 41 || k == 27) return -1;
-        udelay(50000);
-    }
-}
-
-// r974: 2 = BASIC (вшитый KERNAL+Basic), 1 = ROM/диск (браузер /roms/c64), 0 = назад.
+// r974/r1284: выбор источника Commodore 64 (как A8/ZX/BK). Frodo — строго PAL
+// (VIC-II 312 строк/50 Гц зашиты в VIC.h), поэтому выбора модели нет.
+// 2 = BASIC (вшитый KERNAL+Basic), 1 = ROM/диск (браузер /roms/c64), 0 = назад.
 static int c64_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
         if (dirty) {
             fb_clear(); fb_draw_stars();
-            fb_puts_s(60, 90, "Commodore 64/128: load", 2, 0x00FFAA00);
+            fb_puts_s(60, 90, "Commodore 64: load", 2, 0x00FFAA00);
             const char* opts[2] = {
                 "1. BASIC (built-in BIOS)",
                 "2. ROM / disk (.d64/.t64/.tap/.prg)"
@@ -488,7 +456,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1278";
+const char g_fw_version[] = "r1287";
 
 // r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
 // TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
@@ -555,7 +523,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1278\n");
+    uart_puts("build: r1287\n");
 
     // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
     // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.
@@ -919,22 +887,19 @@ void main(void) {
             continue;
         }
 
-        // Commodore 64/128: выбор машины -> вшитый BASIC или ROM/диск с SD
+        // Commodore 64: выбор источника -> вшитый BASIC или ROM/диск с SD
+        // (r1284: ядро Frodo, строго PAL — выбора машины нет).
         if (strcmp(id, "c64") == 0) {
-            extern void emu_run_c64(const uint8_t*, uint32_t, const char*);
-            // r974: как A8: после выхода возвращаемся к выбору этой же системы
+            extern void emu_run_frodo(const uint8_t*, uint32_t, const char*);
             for (;;) {
-                int m = c64_model_dialog();   // 0=C64 PAL, 1=C64 NTSC, 2=C128 PAL, 3=C128 NTSC
-                if (m < 0) break;             // ESC — назад в главное меню
-                c64_set_model(m);
                 int src = c64_source_dialog();// 2=BASIC, 1=ROM/диск
                 if (src == 0) break;          // ESC — назад в главное меню
                 sega_pad_init();
                 tft_help_show("c64");
-                if (src == 2) {               // BASIC (вшитый BIOS)
+                if (src == 2) {               // BASIC (вшитый KERNAL+Basic)
                     *(volatile uint32_t*)0x74u = 1;
                     __asm volatile("dsb st" ::: "memory");
-                    emu_run_c64(NULL, 0, "basic");
+                    emu_run_frodo(NULL, 0, "basic");
                     usb_wait_release_all();
                     usb_kbd_restart_intr();
                     *(volatile uint32_t*)0x74u = 0;

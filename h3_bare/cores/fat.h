@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define FAT_MAX_ENTRIES 256
+#define FAT_MAX_ENTRIES 512
 #define FAT_NAME_LEN    128
 
 /* r1271 (D-13): 1 = последний read_dir оборвался (упёрлись в FAT_MAX_ENTRIES

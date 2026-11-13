@@ -687,68 +687,73 @@ $(BUILD)/cpc_renamed.stamp: $(CPC_OBJS) $(BUILD)/cpc_fs.o
 	$(TOP)h3_bare/cores/cpc_rename.sh $(CPC_OBJS) $(BUILD)/cpc_fs.o
 	touch $@
 
-# ---- Commodore 64/128 (VICE / vice-libretro), ядро в h3_bare/cores/vice ----
-# r974: vendored libretro/vice-libretro (VICE 3.10). EMUTYPE=x128 — один бинарь
-# покрывает C64 и C128 (VICII+VDC, resid); BIOS вшиты через USE_EMBEDDED
-# (include/embedded/*.h: c64 basic/kernal/chargen, c128 basiclo/hi/kernal/chargen).
-# retrodep/ — готовый libretro-архслой (видео/звук/ввод/архитектура); sdl/gtk3
-# из arch удалены. freestanding-newlib ошибался на <dirent.h> — shim/dirent.h
-# (как fuse/atari800). Префиксы объектов vz_ — избегаем дублей имён
-# (main, log, lib, crc32, file_path, filestream_*, retro_* с другими ядрами).
-VICE_ROOT := $(TOP)h3_bare/cores/vice
-VICE_INC  := -I$(VICE_ROOT)/shim -I$(VICE_ROOT)/vice/src -I$(VICE_ROOT) \
-	-I$(VICE_ROOT)/libretro -I$(VICE_ROOT)/include -I$(VICE_ROOT)/include/embedded \
-	-I$(VICE_ROOT)/vice/src/core/rtc -I$(VICE_ROOT)/vice/src/lib \
-	-I$(VICE_ROOT)/vice/src/printerdrv -I$(VICE_ROOT)/retrodep \
-	-I$(VICE_ROOT)/libretro-common/include -I$(VICE_ROOT)/deps/libz \
-	-I$(VICE_ROOT)/vice/src/sid -I$(VICE_ROOT)/vice/src/arch/shared \
-	-I$(VICE_ROOT)/vice/src/c64 -I$(VICE_ROOT)/vice/src/c64/cart \
-	-I$(VICE_ROOT)/vice/src/c64dtv -I$(VICE_ROOT)/vice/src/c128 -I$(VICE_ROOT)/vice/src/core \
-	-I$(VICE_ROOT)/vice/src/datasette -I$(VICE_ROOT)/vice/src/diag \
-	-I$(VICE_ROOT)/vice/src/drive -I$(VICE_ROOT)/vice/src/drive/iec \
-	-I$(VICE_ROOT)/vice/src/drive/iec/c64exp -I$(VICE_ROOT)/vice/src/drive/ieee \
-	-I$(VICE_ROOT)/vice/src/drive/tcbm -I$(VICE_ROOT)/vice/src/fsdevice \
-	-I$(VICE_ROOT)/vice/src/imagecontents -I$(VICE_ROOT)/vice/src/joyport \
-	-I$(VICE_ROOT)/vice/src/lib/p64 -I$(VICE_ROOT)/vice/src/monitor \
-	-I$(VICE_ROOT)/vice/src/raster -I$(VICE_ROOT)/vice/src/resid \
-	-I$(VICE_ROOT)/vice/src/residfp \
-	-I$(VICE_ROOT)/vice/src/residfp/builders/residfp-builder/residfp \
-	-I$(VICE_ROOT)/vice/src/rs232drv -I$(VICE_ROOT)/vice/src/rtc \
-	-I$(VICE_ROOT)/vice/src/samplerdrv -I$(VICE_ROOT)/vice/src/tape \
-	-I$(VICE_ROOT)/vice/src/tapeport -I$(VICE_ROOT)/vice/src/userport \
-	-I$(VICE_ROOT)/vice/src/vdc -I$(VICE_ROOT)/vice/src/vdrive \
-	-I$(VICE_ROOT)/vice/src/vicii -I$(VICE_ROOT)/vice/src/video
-VICEFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -Wall -Wextra \
-	-O2 -fno-strict-aliasing -fwrapv -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
-	-DHAVE_CONFIG_H -D__LIBRETRO__ -DUSE_LIBRETRO_VFS -DCORE_NAME=\"x128\" -D__X128__ \
-	-D__STDC_FORMAT_MACROS -DHAVE_7ZIP -D_7ZIP_ST \
-	-Wno-format -Wno-format-security -Wno-unused -Wno-unused-parameter \
-	-Wno-parentheses -Wno-sign-compare -Wno-array-bounds \
-	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion
-# Состав — из Makefile.common/Makefile.x128 вендора (полный список в
-# vice_sources.mk, генерируется из dry-run make EMUTYPE=x128; цели в
-# vice_rules.mk строятся по тому же правилу имён).
-include $(VICE_ROOT)/vice_sources.mk
-include $(VICE_ROOT)/vice_rules.mk
-VICE_OBJS := $(foreach f,$(VICE_REL),$(BUILD)/vz_$(subst /,_,$(subst .,_,$(f))).o)
-OBJ += $(VICE_OBJS) $(BUILD)/c64_host.o $(BUILD)/c64_fs.o $(BUILD)/c64_stubs.o
+# ---- Commodore 64 (Frodo / r-type/frodo-libretro, V4_2), ядро в h3_bare/cores/frodo ----
+# r1284 (замена VICE): x64sc мёртвый на H3 (тёмный/пустой кадр — рендер
+# VIC-II, владелец подтвердил на стенде). Путь закрыт, VICE удалён.
+# Frodo — честный C64 (BASIC V2, PAL/NTSC), BIOS вшиты (Src/Basic_ROM.h,
+# Kernal_ROM.h, Char_ROM.h, 1541_ROM.h). libco НЕ используем: NO_LIBCO —
+# синхронный retro_run() без переключения контекста (как v: C64_retro.i).
+# GUI-слой (libretro/gui/SDL) НЕ собирается — enter_gui/gui_poll_events
+# заглушены в core-mapper.cpp; минимальный набор Src на GUI не ссылается.
+# Host-слой frodo_host.o держит внешние имена (emu_run_frodo, fs_register)
+# и зовёт frodo_retro_*; глобалы набора переименовываются в frodo_*.
+# Сборка C++ БЕЗ -ffreestanding (как Gearcoleco/CPS1/UAE4All): newlib
+# freestanding не даёт hosted-заголовков, ломаются std::vector/STDIN.
+FRODO_ROOT := $(TOP)h3_bare/cores/frodo
+FRODO_INC  := -I$(FRODO_ROOT) -I$(FRODO_ROOT)/Src \
+	-I$(FRODO_ROOT)/shim \
+	-I$(FRODO_ROOT)/libretro/core -I$(FRODO_ROOT)/libretro/include \
+	-I$(FRODO_ROOT)/libretro/emu -I$(FRODO_ROOT)/libretro
+FRODO_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
+	-Wall -O2 -fno-strict-aliasing -fwrapv \
+	-fno-exceptions -fno-rtti -fno-threadsafe-statics -fpermissive \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG -D__LIBRETRO__ \
+	-DNO_LIBCO -DHAVE_CONFIG_H -DPRECISE_CPU_CYCLES=1 -DPRECISE_CIA_CYCLES=1 \
+	-DPC_IS_POINTER=0 -DKBD_LANG=0 -DFRODO_HPUX_REV=0 \
+	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
+	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
+	-Wno-format -Wno-misleading-indentation
+# Состав: Src C++ (ядро) + libretro-обвязка (libretro-core + core-mapper + graph).
+# main.cpp включает main_retro.i; Display.cpp — Display_retro.i; C64.cpp —
+# C64_retro.i; SID.cpp — SID_retro.i; Prefs.cpp — Prefs_retro.i.
+FRODO_REL_CXX := \
+	Src/main Src/Display Src/Prefs Src/SID Src/REU Src/IEC Src/1541fs \
+	Src/1541d64 Src/1541t64 Src/1541job Src/SAM \
+	Src/C64 Src/CPUC64 Src/VIC Src/CIA Src/CPU1541 \
+	libretro/core/libretro-core libretro/core/core-mapper libretro/core/graph
+FRODO_OBJS := $(foreach f,$(FRODO_REL_CXX),$(BUILD)/fro_$(subst /,_,$(f)).o)
+# Ядро без host-слоя: ренеймим СИМВОЛЫ только ядра (host держит внешние имена).
+FRODO_CORE_OBJS := $(filter-out $(BUILD)/frodo_host.o,$(FRODO_OBJS))
+FRODO_OBJS += $(BUILD)/frodo_host.o
+OBJ += $(FRODO_OBJS)
 
-$(BUILD)/c64_host.o: $(TOP)h3_bare/cores/c64_host.c | $(BUILD)
-	$(CC) $(VICEFLAGS) $(VICE_INC) $(INCLUDES) -c -o $@ $<
-$(BUILD)/c64_fs.o: $(TOP)h3_bare/cores/c64_fs.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -I$(VICE_ROOT)/libretro-common/include -c -o $@ $<
-$(BUILD)/c64_stubs.o: $(TOP)h3_bare/cores/c64_stubs.c | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
-# Батч-ренейм глобалов набора в vice_* (как a8/cpc): после сборки, перед линком.
-# r974: BSS ядра VICE (~31 МБ, из них 21 МБ — таблица ReSID filter8580new) вынесен
-# в .vice_bss (NOLOAD, 0x52000000) — иначе он переполняет общую .bss и плавающий
-# пул .noinit_fbn наезжает на uncached-зону 0x4A400000 (ASSERT-ошибка линковки).
-# Переименование секции — на КАЖДОМ объекте ДО батч-ренейма символов (как a8).
-# Host-слой (c64_host.o/c64_fs.o/c64_stubs.o) НЕ входит — держит внешние имена
-# (emu_run_c64, c64_fs_register, fopen/fread) и зовёт vice_retro_*.
-$(BUILD)/vice_renamed.stamp: $(VICE_OBJS)
-	for o in $(VICE_OBJS); do arm-none-eabi-objcopy --rename-section .bss=.vice_bss "$$o" "$$o" || exit 1; done
-	$(TOP)h3_bare/cores/vice_rename.sh $(VICE_OBJS)
+# Правила: явные имена объектов -> путь в дереве (как u4a; паттерн fro_%.o
+# не восстановил бы путь из имени с подчёркиваниями).
+define FRODO_RULE_cpp
+$(BUILD)/fro_$(subst /,_,$(1)).o: $(FRODO_ROOT)/$(1).cpp | $(BUILD)
+	$(CXX) $(FRODO_CFLAGS) $(FRODO_INC) $(INCLUDES) $(DEPFLAGS) -c -o $$@ $$<
+endef
+$(foreach f,$(FRODO_REL_CXX),$(eval $(call FRODO_RULE_cpp,$(f))))
+# r1284: libretro-core.cpp подключает cmdline.c через #include — без явной
+# зависимости правка cmdline.c не пересобирает объект (тот же класс, что
+# pico_sh2_compiler.o/emit_arm.c, uae4all/libretro-core.cpp).
+$(BUILD)/fro_libretro_core_libretro-core.o: $(FRODO_ROOT)/libretro/core/cmdline.c
+$(BUILD)/frodo_host.o: $(TOP)h3_bare/cores/frodo_host.c | $(BUILD)
+	$(CC) $(FRODO_CFLAGS) $(FRODO_INC) $(INCLUDES) $(DEPFLAGS) -c -o $@ $<
+# Стабы POSIX для Frodo (chdir/sigaction — нет в bare-metal fs_layer)
+$(BUILD)/frodo_stubs.o: $(TOP)h3_bare/cores/frodo_stubs.c | $(BUILD)
+	$(CC) $(FRODO_CFLAGS) $(FRODO_INC) $(INCLUDES) $(DEPFLAGS) -c -o $@ $<
+OBJ += $(BUILD)/frodo_stubs.o
+# Батч-ренейм глобалов набора в frodo_* (как a8/cpc/u4a): после сборки, перед
+# линком. BSS ядра (Retro_Screen 4 МБ и др.) выносим в .frodo_bss (NOLOAD,
+# зона бывшего .vice_bss 0x52000000..0x53E00000) — иначе переполнит общий
+# .bss (его лимит 0x44C00000, свободно <1 МБ). Переименование секции — на
+# КАЖДОМ объекте ДО батч-ренейма символов (как a8/vice). Host-слой
+# (frodo_host.o) НЕ входит — держит внешние имена (emu_run_frodo) и зовёт
+# frodo_retro_*. Стабы usleep/gettimeofday — uae4all_stubs.c/fs_layer.c.
+$(BUILD)/frodo_renamed.stamp: $(FRODO_OBJS) $(TOP)h3_bare/cores/frodo_rename.sh
+	for o in $(FRODO_CORE_OBJS); do arm-none-eabi-objcopy --rename-section .bss=.frodo_bss "$$o" "$$o" || exit 1; done
+	$(TOP)h3_bare/cores/frodo_rename.sh $(FRODO_CORE_OBJS)
 	touch $@
 
 # ---- Amiga (UAE4All / libretro-порт Chips, замена PUAE r1243) ----
@@ -1598,7 +1603,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/vice_renamed.stamp $(BUILD)/u4a_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)

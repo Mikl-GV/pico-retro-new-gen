@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1278)
+# HANDOVER — текущее состояние (r1287)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -9,6 +9,99 @@
 ## 0. Последние правки
 
 
+- **r1287 (2026-11-13): C64/Frodo — отложенный автозапуск, PRG в RAM, чистый старт ROM.**
+  - Автозапуск подавался сразу после `C64::Run()` — KERNAL ещё инициализировался,
+    команда терялась: `.d64/.t64` монтировались, но C64 оставался в BASIC. Теперь
+    `kbd_autoboot_schedule()`/`kbd_prg_schedule()` откладывают подачу на
+    `AUTBOOT_DELAY=120` кадров (~2.4 с при 50 Гц) в `C64Display::PollKeyboard`;
+    в логе `autoboot: '…' in 120 frames` → `autoboot: feed`.
+  - `.prg` диском не является: `kbd_prg_schedule()` в момент срабатывания кладёт
+    файл в `TheC64->RAM` по адресу из двухбайтного заголовка; для `$0801`
+    выставляет VARTAB и даёт `RUN`, иначе — `SYS <addr>`. Логи:
+    `prg: N bytes at XXXX (end …)`, `prg: exec '…'`.
+  - `Src/main.cpp::load_rom`: при пустом имени файла сразу берётся вшитый ROM,
+    без `fopen` (в логе были два `fopen miss ''` и лишние `stat miss ''`).
+  - Сборка r1287.
+- **r1286 (2026-11-13): C64/Frodo — автозапуск образа из меню, лимит списка 512, чистка слоя.**
+  - «ROM не грузится, просто BASIC»: образ монтировался (в `Prefs` `Emul1541Proc=false`,
+    `DrivePath[0]` задан host-слоем до `new C64`), но KERNAL не получал команду —
+    `kbd_feedbuf` пуст, `autoboot` гас на первом же `kbd_buf_update`. Добавлен
+    `kbd_buf_autoboot()` (`Display_retro.i`) и вызов в `Frodo::ReadyToRun()`
+    (`main_retro.i`) при непустом `device_path`: `LOAD"*",8,1` + `RUN` через буфер
+    клавиатуры (работает на первом VBlank → `PollKeyboard`).
+  - `cores/frodo_host.c`: убран диагностический `FRODO alive: loop=500` (остаток
+    VICE-хостинга); значимые строки остаются — `FRODO: load_game begin/end`,
+    `FRODO: started`, `FRODO exit`, `FRODO perf`.
+  - `cores/fat.h`: `FAT_MAX_ENTRIES` 256 → 512 (лог `rom_browser: list truncated at 256`);
+    буфер каталога `g_scratch_dir` +35 КБ BSS (`fat_entry_t` 140 Б).
+  - Ревизия слоя Frodo: заголовки `Display_retro.i`/`main_retro.i`/`C64_retro.i`
+    ссылались на SDL/X-версии — исправлены на фактическое поведение; удалены
+    неиспользуемые `Retro_BlitSurface`, `Retro_ClearSurface`, `C64Display::pulse_handler`
+    (LED-таймер вырезан ещё в r1283), комментарий `//fautoboot`.
+  - Сборка r1286 (после правки `fat.h` — `make clean && make`).
+- **r1285 (2026-11-13): C64/Frodo — исправлено встраивание (чёрный экран, лавина UART, зависание).**
+  - Симптом стенда: чёрный экран, UART в спаме `040/041 skelsdl/game.d64`, выйти нельзя;
+    `FRODO: started` в логе нет — `frodo_retro_load_game` не возвращался.
+  - `libretro/core/cmdline.c` — причина лавины: `ARGUC` не сбрасывался никогда, а
+    `PARAMCOUNT` обнулялся только при первом `Add_Option` за всю работу образа
+    (`static int first`). Каждый вход добавлял 2 опции (список рос), на 64-й
+    `sprintf(XARGV[64], …)` писал за границу массива — порча BSS и зависание.
+    Теперь `pre_main` сбрасывает `ARGUC`/`PARAMCOUNT` на каждый вход,
+    `Add_Option`/`parse_cmdline` проверяют границы и терминируют строки,
+    `pre_main_busy` исключает повторный вход.
+  - `libretro/emu/Display_retro.i` — `init_graphics()`: `malloc(sizeof(retro_Surface*))`
+    выделял 4 байта под 12-байтную структуру (`pixels` 4 + `w/h/pitch` по 2),
+    `pitch` писался в заголовок следующего блока bump-пула (`gameboy_stubs.c`,
+    payload 8 байт). Теперь `sizeof(retro_Surface)`, проверки NULL,
+    идемпотентность, обнуление `screen` в деструкторе.
+  - `libretro/core/libretro-core.cpp` — `retro_load_game` возвращает
+    `TheC64 != NULL` (иначе фронтенд крутил `retro_run` по NULL), `retro_run`
+    не эмулирует без ядра, `retro_unload_game` освобождает ядро
+    (`quit_frodo_emu`), `RPATH` копируется с границей; `memset` по `sizeof`.
+  - `cores/frodo_host.c` — для BASIC `info.path` пуст (убраны промахи
+    `fs: stat miss 'game.d64'`), добавлены логи `FRODO: load_game begin/end` и
+    `FRODO exit: esc/pad hold at frame=N` — видно, возвращается ли инициализация
+    и по какой причине выход.
+- **r1284 (2026-11-13): C64 — ядро VICE x64sc заменено на Frodo (стенд).**
+  - Стенд: кадр VICE x64sc пустой/тёмный (`nz=0`, `L=C=R=0x0380`) — рендер
+    VIC-II мёртв на H3; диагностика вывода/BIOS исправна. Путь закрыт
+    (владелец), VICE удалён из дерева и Makefile, встроен Frodo
+    (`h3_bare/cores/frodo`, r-type/frodo-libretro, V4_2, честный BASIC V2).
+  - `h3_bare/cores/frodo`: вендорный порт; правки только в `libretro/*`
+    (NO_LIBCO — синхронный `retro_run` без libco; `libretro-core.cpp`,
+    `core-mapper.cpp`, `libretro/emu/*.i`, `shim/dirent.h`, `libretro/emu/
+    sysconfig.h` — отключены statfs/vfs/mount, нет в bare-metal; `Prefs_retro.
+    i` — стаб `ShowEditor`). Вшитые BIOS: `Src/*_ROM.h` (Basic/Kernal/Char/1541).
+  - `h3_bare/cores/frodo_host.c` — новый host-слой (вызовы `frodo_retro_*`,
+    `fs_register` для образа, XRGB8888 384×288 → FB 1024×600, звук 44100→48000
+    в I2S, ввод USB-клавиатура/геймпад). `frodo_rename.sh` — префикс `frodo_*`;
+    `frodo_stubs.c` — стабы chdir/sigaction (SAM/1541fs), нет в fs_layer.
+  - Frodo — строго PAL (`TOTAL_RASTERS=0x138`, `SCREEN_FREQ=50` const в VIC.h),
+    runtime-выбора региона нет → из меню убран выбор модели PAL/NTSC,
+    остался выбор источника (BASIC / ROM·диск).
+  - Сборка r1284: `h3_bare.bin` 20 046 684 б (было 22 378 212 — минус ~2.3 МБ),
+    linkcheck OK.
+- **r1281 (2026-11-12): C64 — честное ядро x64sc вместо «C64/128» (x128).**
+  - Шаги плана владельца: 1) эталон VICE 3.10 актуален; 2) порт
+    libretro/vice-libretro живой (обновления 2026); 3) честный C64 в VICE есть
+    — это отдельное ядро x64sc (цикл-точный C64, синий BASIC V2), порт не
+    удалялся; 4) единственная цель VICE переключена с `x128` на `x64sc` —
+    генерирован `vice_sources.mk` (565 файлов из `make EMUTYPE=x64sc`),
+    дописаны не хватающие правила в `vice_rules.mk`, из `Makefile`
+    `__X128__`→`__X64SC__` (+`-I.../viciisc`, убраны c128/vdc/vicii);
+    5) x128 (C128/VDC) из сборки и меню удалён.
+  - `c64_host.c`: заголовок/модель/GET_VARIABLE приведены к честному C64 —
+    только `vice_c64_model` (PAL/NTSC), ресурсы C128 убраны.
+  - `systems.h`: запись `SYS("c64", "Commodore 64")` (было «Commodore 64/128»).
+  - Сборка r1281: `h3_bare.bin` 22 378 212 б (было 22 684 468 — минус ~306 КБ),
+    linkcheck OK.
+- **r1280 (2026-11-12): C64 — аспект читается до первого кадра.**
+  - `c64_host.c`: `vice_retro_get_system_av_info` и заполнение `g_aspect`
+    перенесены из блока после `vice_retro_load_game` в отрезок ПЕРЕД ним.
+    Первый кадр при автозапуске рисуется с `g_aspect==0` → `dw=1`, весь экран
+    заливался `C64_BG` (тёмно-синий/«чёрный») с вертикальной полосой 1×600.
+    Дефолт 4/3 как страховка, если ядро не отдаёт геометрию.
+  - Сборка r1280: `h3_bare.bin` 22 684 468 б, linkcheck OK.
 - **r1278 (2026-11-12): аудит r1273 — этапы 5-6, звук на выходе и мёртвый код.**
   - E-03: `emu_audio_stop()` вызывается на ВСЕХ выходах host-слоёв fuse, bk,
     c64, a8, cpc, msx, pce, cps, включая ранние отказы после `emu_prepare()`
@@ -656,7 +749,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1278**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1284**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая
@@ -806,12 +899,12 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
 - **r1208 (документация памяти):** создан `docs/MEMORY.md` — полная карта DRAM
   (разделы, адреса, размеры сверены с `readelf/nm`), SRAM A1, периферия,
   устройство LPAE-карты (TTBR0/L0/L1, MAIR, AttrIndx), владельцы пулов и
-  перекрытия (ZIP_BUF1 92 МБ накрывает `.vice_bss`/`.fs_bss` — допустимо, т.к.
+  перекрытия (ZIP_BUF1 92 МБ накрывает `.frodo_bss`/`.fs_bss` — допустимо, т.к.
   аркады не используют `fs_layer`, одновременного запуска нет), чек-лист для
   новых ядер. Исправлены устаревшие комментарии: `linker.ld` (`.coherent` —
   WB, не uncached; sbrk start 0x4BF00000 вместо 0x4B700000) и шапка MMU в
   `h3.c` (описывала удалённую NC-логику). Код не менялся.
-- `.noinit_fbn` 0x54000000 (zlib/fbn, ASSERT ≤0x5C000000); `.vice_bss`
+- `.noinit_fbn` 0x54000000 (zlib/fbn, ASSERT ≤0x5C000000); `.frodo_bss`
   0x52000000; `.fs_bss` 0x53E00000; `.a8_bss` 0x5F000000; `EMU_FB` 0x5F800000;
   FB back 0x5F400000; ZIP_BUF2 0x5C000000.
 - **r1209 (трассировка старта PUAE, ВРЕМЕННО):** стенд r1208 — тот же висяк:
@@ -1206,7 +1299,7 @@ radio86rk | RK8266 (`cores/rk86`) | rk86_host.c | меню/вшит монито
 portfolio | 8086 (`cores/portfolio`) | portfolio_host.c | builtin
 ms1504 | TTL (`cores/ms1504`) | ms1504_host.c | builtin
 cpc | libretro-cap32 | cpc_host.c |
-c64 | VICE (`cores/vice`) | c64_host.c | vice_bss отдельно
+c64 | Frodo (`cores/frodo`, r1284) | frodo_host.c | frodo_bss отдельно
 **amiga** | **UAE4All (`cores/uae4all`, ядро Cyclone)** | **uae4all_host.c** | **r1243; KS 1.3 вшит (унаследован `puae_kick13_rom` r1227), WB 1.3 вшит (`puae_wb13_adf` r1232); холодный init на каждый вход; арены PUAE/sbrk-аллокатора больше нет (r1243)**
 
 ## 5. Amiga / UAE4All (актуальное)
