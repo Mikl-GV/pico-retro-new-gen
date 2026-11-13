@@ -65,8 +65,11 @@ static bool parse_p00_file(FILE *f, vector<c64_dir_entry> &vec, char *dir_title)
 
 ArchDrive::ArchDrive(IEC *iec, const char *filepath) : Drive(iec), the_file(NULL)
 {
-	for (int i=0; i<16; i++)
-		file[i] = NULL;
+	for (int i=0; i<16; i++) {
+		mem[i] = NULL;
+		mem_size[i] = 0;
+		mem_pos[i] = 0;
+	}
 	Reset();
 
 	// Open archive file
@@ -128,6 +131,10 @@ bool ArchDrive::change_arch(const char *path)
 			return false;
 		}
 
+		// r1290: в логе видно, сколько записей реально разобрано в архиве —
+		// по нему отличаем «не тот файл выбран» от «архив не распознан».
+		printf("arch: %s, %d entries\n", path, (int)file_info.size());
+
 		// Close old archive if open, and set new file
 		if (the_file) {
 			close_all_channels();
@@ -158,9 +165,10 @@ uint8 ArchDrive::Open(int channel, const uint8 *name, int name_len)
 	}
 
 	// Close previous file if still open
-	if (file[channel]) {
-		fclose(file[channel]);
-		file[channel] = NULL;
+	if (mem[channel]) {
+		delete[] mem[channel];
+		mem[channel] = NULL;
+		mem_size[channel] = mem_pos[channel] = 0;
 	}
 
 	if (name[0] == '#') {
@@ -223,35 +231,34 @@ uint8 ArchDrive::open_file(int channel, const uint8 *name, int name_len)
 	// Find file
 	int num;
 	if (find_first_file(plain_name, plain_name_len, num)) {
+		// r1290: видно, какую именно запись выбрал LOAD"*" (имя, размер, offset).
+		printf("arch: open '%s' size=%u off=%u\n", file_info[num].name,
+		       (unsigned)file_info[num].size, (unsigned)file_info[num].offset);
 
-#if defined(__LIBRETRO__)  
-#if defined(ANDROID) || defined(__ANDROID__)
-		if ((file[channel] = tmpfile2()) != NULL) {
-#else
-		// Open temporary file
-		if ((file[channel] = tmpfile()) != NULL) {
-#endif
-#else
-		// Open temporary file
-		if ((file[channel] = tmpfile()) != NULL) {
-#endif
-			// Write load address (.t64 only)
-			if (archive_type == TYPE_T64) {
-				fwrite(&file_info[num].sa_lo, 1, 1, file[channel]);
-				fwrite(&file_info[num].sa_hi, 1, 1, file[channel]);
+		// r1289: файл копируем в RAM (tmpfile() в bare-metal недоступен).
+		// Для .t64 первыми идут два байта адреса загрузки — их ждёт KERNAL.
+		size_t hdr = (archive_type == TYPE_T64) ? 2 : 0;
+		size_t total = hdr + file_info[num].size;
+		uint8 *buf = new uint8[total];
+
+		if (buf) {
+			if (hdr) {
+				buf[0] = file_info[num].sa_lo;
+				buf[1] = file_info[num].sa_hi;
 			}
-
-			// Copy file contents from archive file to temp file
-			uint8 *buf = new uint8[file_info[num].size];
 			fseek(the_file, file_info[num].offset, SEEK_SET);
-			fread(buf, file_info[num].size, 1, the_file);
-			fwrite(buf, file_info[num].size, 1, file[channel]);
-			rewind(file[channel]);
-			delete[] buf;
-
-			if (mode == FMODE_READ)	// Read and buffer first byte
-				read_char[channel] = getc(file[channel]);
-		}
+			if (fread(buf + hdr, 1, file_info[num].size, the_file) == file_info[num].size) {
+				mem[channel] = buf;
+				mem_size[channel] = total;
+				mem_pos[channel] = 0;
+				if (mode == FMODE_READ)	// Read and buffer first byte
+					read_char[channel] = mem[channel][mem_pos[channel]++];
+			} else {
+				delete[] buf;
+				set_error(ERR_FILENOTFOUND);
+			}
+		} else
+			set_error(ERR_FILENOTFOUND);
 	} else
 		set_error(ERR_FILENOTFOUND);
 
@@ -279,10 +286,31 @@ static bool match(const uint8 *p, int p_len, const uint8 *n)
 
 bool ArchDrive::find_first_file(const uint8 *pattern, int pattern_len, int &num)
 {
+	// r1290: LOAD"*" брал первую запись архива, а ею часто оказывается
+	// заставка или загрузчик. Для wildcard выбираем самый крупный файл —
+	// это обычно сама игра.
+	bool wildcard = (pattern_len == 1 && pattern[0] == '*');
+	int best = -1;
+	size_t best_size = 0;
+
 	vector<c64_dir_entry>::const_iterator i, end = file_info.end();
-	for (i = file_info.begin(), num = 0; i != end; i++, num++) {
-		if (match(pattern, pattern_len, (uint8 *)i->name))
+	int idx = 0;
+	for (i = file_info.begin(); i != end; i++, idx++) {
+		if (!match(pattern, pattern_len, (uint8 *)i->name))
+			continue;
+		if (!wildcard) {
+			num = idx;
 			return true;
+		}
+		if (i->size > best_size) {
+			best_size = i->size;
+			best = idx;
+		}
+	}
+
+	if (wildcard && best >= 0) {
+		num = best;
+		return true;
 	}
 	return false;
 }
@@ -308,105 +336,77 @@ uint8 ArchDrive::open_directory(int channel, const uint8 *pattern, int pattern_l
 		pattern = t;
 	}
 
-#if defined(__LIBRETRO__)  
-#if defined(ANDROID) || defined(__ANDROID__)
-	// Create temporary file
-	if ((file[channel] = tmpfile2()) == NULL)
+	// r1289: каталог собираем в RAM (tmpfile() в bare-metal недоступен).
+	// 32 байта заголовка + по 32 на совпавшую запись + финальная строка.
+	int matches = 0;
+	for (vector<c64_dir_entry>::const_iterator it = file_info.begin(); it != file_info.end(); it++)
+		if (pattern_len == 0 || match(pattern, pattern_len, (uint8 *)it->name))
+			matches++;
+
+	uint8 *out = new uint8[(matches + 2) * 32];
+	if (!out)
 		return ST_OK;
-#else
-	// Create temporary file
-	if ((file[channel] = tmpfile()) == NULL)
-		return ST_OK;
-#endif
-#else
-	// Create temporary file
-	if ((file[channel] = tmpfile()) == NULL)
-		return ST_OK;
-#endif
+
+	uint8 *w = out;
+	uint8 buf[32];
 
 	// Create directory title
-	uint8 buf[] = "\001\004\001\001\0\0\022\042                \042 00 2A";
+	memcpy(buf, "\001\004\001\001\0\0\022\042                \042 00 2A", 32);
 	for (int i=0; i<16 && dir_title[i]; i++)
 		buf[i + 8] = dir_title[i];
-	fwrite(buf, 1, 32, file[channel]);
+	memcpy(w, buf, 32); w += 32;
 
-	// Create and write one line for every directory entry
-	vector<c64_dir_entry>::const_iterator i, end = file_info.end();
-	for (i = file_info.begin(); i != end; i++) {
+	// Create one line for every directory entry
+	for (vector<c64_dir_entry>::const_iterator i = file_info.begin(); i != file_info.end(); i++) {
 
 		// Include only files matching the pattern
-		if (pattern_len == 0 || match(pattern, pattern_len, (uint8 *)i->name)) {
+		if (!(pattern_len == 0 || match(pattern, pattern_len, (uint8 *)i->name)))
+			continue;
 
-			// Clear line with spaces and terminate with null byte
-			memset(buf, ' ', 31);
-			buf[31] = 0;
+		// Clear line with spaces and terminate with null byte
+		memset(buf, ' ', 31);
+		buf[31] = 0;
 
-			uint8 *p = (uint8 *)buf;
-			*p++ = 0x01;	// Dummy line link
-			*p++ = 0x01;
+		uint8 *p = buf;
+		*p++ = 0x01;	// Dummy line link
+		*p++ = 0x01;
 
-			// Calculate size in blocks (254 bytes each)
-			int n = (i->size + 254) / 254;
-			*p++ = n & 0xff;
-			*p++ = (n >> 8) & 0xff;
+		// Calculate size in blocks (254 bytes each)
+		int n = (i->size + 254) / 254;
+		*p++ = n & 0xff;
+		*p++ = (n >> 8) & 0xff;
 
-			p++;
-			if (n < 10) p++;	// Less than 10: add one space
-			if (n < 100) p++;	// Less than 100: add another space
+		p++;
+		if (n < 10) p++;	// Less than 10: add one space
+		if (n < 100) p++;	// Less than 100: add another space
 
-			// Convert and insert file name
-			*p++ = '\"';
-			uint8 *q = p;
-			for (int j=0; j<16 && i->name[j]; j++)
-				*q++ = i->name[j];
-			*q++ = '\"';
-			p += 18;
+		// Convert and insert file name
+		*p++ = '\"';
+		for (int j=0; j<16 && i->name[j]; j++)
+			*p++ = i->name[j];
+		*p++ = '\"';
+		p += 18;
 
-			// File type
-			switch (i->type) {
-				case FTYPE_DEL:
-					*p++ = 'D';
-					*p++ = 'E';
-					*p++ = 'L';
-					break;
-				case FTYPE_SEQ:
-					*p++ = 'S';
-					*p++ = 'E';
-					*p++ = 'Q';
-					break;
-				case FTYPE_PRG:
-					*p++ = 'P';
-					*p++ = 'R';
-					*p++ = 'G';
-					break;
-				case FTYPE_USR:
-					*p++ = 'U';
-					*p++ = 'S';
-					*p++ = 'R';
-					break;
-				case FTYPE_REL:
-					*p++ = 'R';
-					*p++ = 'E';
-					*p++ = 'L';
-					break;
-				default:
-					*p++ = '?';
-					*p++ = '?';
-					*p++ = '?';
-					break;
-			}
-
-			// Write line
-			fwrite(buf, 1, 32, file[channel]);
+		// File type
+		switch (i->type) {
+			case FTYPE_DEL: *p++ = 'D'; *p++ = 'E'; *p++ = 'L'; break;
+			case FTYPE_SEQ: *p++ = 'S'; *p++ = 'E'; *p++ = 'Q'; break;
+			case FTYPE_PRG: *p++ = 'P'; *p++ = 'R'; *p++ = 'G'; break;
+			case FTYPE_USR: *p++ = 'U'; *p++ = 'S'; *p++ = 'R'; break;
+			case FTYPE_REL: *p++ = 'R'; *p++ = 'E'; *p++ = 'L'; break;
+			default:        *p++ = '?'; *p++ = '?'; *p++ = '?'; break;
 		}
+
+		memcpy(w, buf, 32); w += 32;
 	}
 
 	// Final line
-	fwrite("\001\001\0\0BLOCKS FREE.             \0\0", 1, 32, file[channel]);
+	memcpy(w, "\001\001\0\0BLOCKS FREE.             \0\0", 32); w += 32;
 
-	// Rewind file for reading and read first byte
-	rewind(file[channel]);
-	read_char[channel] = getc(file[channel]);
+	mem[channel] = out;
+	mem_size[channel] = (size_t)(w - out);
+	mem_pos[channel] = 0;
+	read_char[channel] = mem[channel][mem_pos[channel]++];
 
 	return ST_OK;
 }
@@ -425,9 +425,10 @@ uint8 ArchDrive::Close(int channel)
 		return ST_OK;
 	}
 
-	if (file[channel]) {
-		fclose(file[channel]);
-		file[channel] = NULL;
+	if (mem[channel]) {
+		delete[] mem[channel];
+		mem[channel] = NULL;
+		mem_size[channel] = mem_pos[channel] = 0;
 	}
 
 	return ST_OK;
@@ -467,17 +468,14 @@ uint8 ArchDrive::Read(int channel, uint8 &byte)
 		}
 	}
 
-	if (!file[channel]) return ST_READ_TIMEOUT;
+	if (!mem[channel]) return ST_READ_TIMEOUT;
 
 	// Get char from buffer and read next
 	byte = read_char[channel];
-	int c = getc(file[channel]);
-	if (c == EOF)
+	if (mem_pos[channel] >= mem_size[channel])
 		return ST_EOF;
-	else {
-		read_char[channel] = c;
-		return ST_OK;
-	}
+	read_char[channel] = mem[channel][mem_pos[channel]++];
+	return ST_OK;
 }
 
 
@@ -505,7 +503,7 @@ uint8 ArchDrive::Write(int channel, uint8 byte, bool eoi)
 		return ST_OK;
 	}
 
-	if (!file[channel])
+	if (!mem[channel])
 		set_error(ERR_FILENOTOPEN);
 	else
 		set_error(ERR_WRITEPROTECT);
@@ -601,56 +599,58 @@ bool IsArchFile(const char *path, const uint8 *header, long size)
 
 static bool parse_t64_file(FILE *f, vector<c64_dir_entry> &vec, char *dir_title)
 {
-	// Read header and get maximum number of files contained
-	fseek(f, 32, SEEK_SET);
-	uint8 buf[32];
-	fread(&buf, 32, 1, f);
-	int max = (buf[3] << 8) | buf[2];
-	if (max == 0)
-		max = 1;
-
-	memcpy(dir_title, buf+8, 16);
-
-	// Allocate buffer for file records and read them
-	uint8 *buf2 = new uint8[max * 32];
-	fread(buf2, 32, max, f);
-
-	// Determine number of files contained
-	int num_files = 0;
-	for (int i=0; i<max; i++)
-		if (buf2[i*32] == 1)
-			num_files++;
-
-	if (!num_files) {
-		delete[] buf2;
+	// r1288: размер нужен для проверки записей (offset/размер вне файла).
+	fseek(f, 0, SEEK_END);
+	long fsize = ftell(f);
+	if (fsize < 96)
 		return false;
-	}
 
-	// Construct file information array
-	vec.reserve(num_files);
-	uint8 *b = buf2;
-	for (int i=0; i<max; i++, b+=32) {
-		if (b[0] == 1) {
+	// Заголовок: max/title лежат в блоке на offset 32 (T64 v1).
+	fseek(f, 32, SEEK_SET);
+	uint8 hdr[32];
+	if (fread(hdr, 32, 1, f) != 1)
+		return false;
+	memcpy(dir_title, hdr + 8, 16);
+
+	// r1288: таблица записей начинается с 64 (стандартный заголовок 32+32),
+	// но у T64 с текстовым заголовком ("C64 tape image file") блок на 2 байта
+	// короче — записи с 62. Пробуем обе базы и берём ту, что даёт валидные
+	// записи. Поле max из заголовка у таких файлов равно 0 (старый код читал
+	// ровно одну запись и промахивался).
+	for (int base = 64; base >= 62; base -= 2) {
+		fseek(f, base, SEEK_SET);
+		uint8 rec[32];
+		int added = 0;
+
+		while (fread(rec, 32, 1, f) == 1) {
+			if (rec[0] != 1)
+				continue;
+
+			size_t size = ((size_t)((rec[5] << 8) | rec[4]))
+			            - ((size_t)((rec[3] << 8) | rec[2]));
+			off_t offset = (off_t)((rec[11] << 24) | (rec[10] << 16) | (rec[9] << 8) | rec[8]);
+
+			// Служебные записи (start=end) и данные вне файла не нужны.
+			if (size == 0 || offset <= 0 || offset >= fsize || (off_t)size > fsize - offset)
+				continue;
 
 			// Convert file name (strip trailing spaces)
 			uint8 name_buf[17];
-			memcpy(name_buf, b + 16, 16);
+			memcpy(name_buf, rec + 16, 16);
 			name_buf[16] = 0x20;
 			uint8 *p = name_buf + 16;
 			while (*p-- == 0x20) ;
 			p[2] = 0;
 
-			// Find file size and offset
-			size_t size = ((b[5] << 8) | b[4]) - ((b[3] << 8) | b[2]);
-			off_t offset = (b[11] << 24) | (b[10] << 16) | (b[9] << 8) | b[8];
-
-			// Add entry
-			vec.push_back(c64_dir_entry(name_buf, FTYPE_PRG, false, false, size, offset, b[2], b[3]));
+			vec.push_back(c64_dir_entry(name_buf, FTYPE_PRG, false, false, size, offset, rec[2], rec[3]));
+			added++;
 		}
+
+		if (added)
+			return true;
 	}
 
-	delete[] buf2;
-	return true;
+	return false;
 }
 
 static bool parse_lynx_file(FILE *f, vector<c64_dir_entry> &vec, char *dir_title)

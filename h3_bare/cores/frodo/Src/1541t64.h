@@ -64,7 +64,12 @@ private:
 	vector<c64_dir_entry> file_info;	// Vector of file information structs for all files in the archive
 
 	char dir_title[16];		// Directory title
-	FILE *file[16];			// File pointers for each of the 16 channels (all temporary files)
+	// r1289: содержимое открытого файла держим в RAM. tmpfile() в bare-metal
+	// (newlib без ФС) возвращает NULL — архивный привод не отдавал данные,
+	// KERNAL отвечал FILE NOT FOUND на любой .t64.
+	uint8 *mem[16];			// Данные файла канала (NULL — канал закрыт)
+	size_t mem_size[16];	// Размер данных канала
+	size_t mem_pos[16];		// Текущая позиция чтения
 
 	uint8 read_char[16];	// Buffers for one-byte read-ahead
 };

@@ -2,7 +2,7 @@
  *  1541d64.cpp - 1541 emulation in disk image files (.d64/.x64/zipcode)
  *
  *  Frodo Copyright (C) Christian Bauer
- *  zipcode decoding routines (C) 1993-1997 Marko M�kel�, Paul David Doherty
+ *  zipcode decoding routines (C) 1993-1997 Marko M�kel�, Paul David Doherty
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -290,6 +290,19 @@ uint8 ImageDrive::open_file(int channel, const uint8 *name, int name_len)
 		ch[channel].entry = entry;
 		uint8 *de = dir + DIR_ENTRIES + entry * SIZEOF_DE;
 
+		// r1290: в логе видно, какой файл выбран для LOAD"*" (имя, тип, блоки).
+		{
+			char nm[17];
+			int k = 0;
+			while (k < 16 && de[DE_NAME + k] != 0xa0 && de[DE_NAME + k] != 0) {
+				nm[k] = (char)(de[DE_NAME + k] & 0x7f);
+				k++;
+			}
+			nm[k] = 0;
+			printf("d64: open '%s' type=%02x blocks=%d\n", nm, de[DE_TYPE],
+			       de[DE_NUM_BLOCKS_L] | (de[DE_NUM_BLOCKS_H] << 8));
+		}
+
 		// Get file type from existing file if not specified in file name
 		if (type == FTYPE_DEL)
 			type = de[DE_TYPE] & 7;
@@ -515,7 +528,7 @@ uint8 ImageDrive::open_directory(const uint8 *pattern, int pattern_len)
 		// Scan all 8 entries of a block
 		uint8 *de = dir + DIR_ENTRIES;
 		for (int j=0; j<8; j++, de+=SIZEOF_DE) {
-			if (de[DE_TYPE] && (pattern_len == 0 || match(pattern, pattern_len, de + DE_NAME))) {
+			if ((de[DE_TYPE] & 0x0f) && (pattern_len == 0 || match(pattern, pattern_len, de + DE_NAME))) {
 
 				// Dummy line link
 				*p++ = 0x01;
@@ -977,6 +990,13 @@ bool ImageDrive::find_file(const uint8 *pattern, int pattern_len, int &dir_track
 		entry = 8;
 	}
 
+	// r1290: LOAD"*" брал первую запись каталога — на дисках с заставкой
+	// (Army Moves: PIC 41 блок, игра 117) грузилась картинка, CPU уходил в
+	// данные и Frodo сбрасывался по illegal opcode. Для wildcard выбираем
+	// PRG с максимальным числом блоков — это обычно сама игра.
+	bool wildcard = (!cont && pattern_len == 1 && pattern[0] == '*');
+	int best_entry = -1, best_track = 0, best_sector = 0, best_blocks = -1;
+
 	while (num_dir_blocks < num_sectors[DIR_TRACK]) {
 
 		// Goto next entry
@@ -985,17 +1005,38 @@ bool ImageDrive::find_file(const uint8 *pattern, int pattern_len, int &dir_track
 
 			// Read next directory block
 			if (dir[DIR_NEXT_TRACK] == 0)
-				return false;
+				break;
 			if (!read_sector(dir_track = dir[DIR_NEXT_TRACK], dir_sector = dir[DIR_NEXT_SECTOR], dir))
-				return false;
+				break;
 			num_dir_blocks++;
 			entry = 0;
 			de = dir + DIR_ENTRIES;
 		}
 
 		// Does entry match pattern?
-		if (de[DE_TYPE] && match(pattern, pattern_len, de + DE_NAME))
+		// r1288: младшие 4 бита типа — код файла; 0 = удалённая/scratch
+		// запись (0x80). LOAD"*" не должен брать её (D64 с удалённым первым
+		// файлом давал мусор в памяти и RETURN в READY).
+		if (!((de[DE_TYPE] & 0x0f) && match(pattern, pattern_len, de + DE_NAME)))
+			continue;
+
+		if (!wildcard)
 			return true;
+
+		int blocks = de[DE_NUM_BLOCKS_L] | (de[DE_NUM_BLOCKS_H] << 8);
+		if (blocks > best_blocks) {
+			best_blocks = blocks;
+			best_entry = entry;
+			best_track = dir_track;
+			best_sector = dir_sector;
+		}
+	}
+
+	if (wildcard && best_entry >= 0) {
+		entry = best_entry;
+		dir_track = best_track;
+		dir_sector = best_sector;
+		return true;
 	}
 	return false;
 }

@@ -171,20 +171,29 @@ static void prg_inject(void)
 		return;
 	}
 	int addr = hdr[0] | (hdr[1] << 8);
-	if (addr < 0x0200 || addr >= 0x10000) {
+	// r1290: PRG с $0801 может заходить в $A000-$BFFF — там RAM под BASIC
+	// ROM, и игры с отключением ROM так и грузятся. Пишем до $FFFF; прежняя
+	// обрезка на $A000 ломала программу (Illegal opcode/Reset).
+	if (addr < 0x0200) {
 		fclose(f);
-		LOGI("prg: bad load address %04X\n", addr);
+		LOGI("prg: load address %04X too low, skipped\n", addr);
 		return;
 	}
-	int n = fread(TheC64->RAM + addr, 1, 0x10000 - addr, f);
+	int maxn = 0x10000 - addr;
+	int n = fread(TheC64->RAM + addr, 1, maxn, f);
 	fclose(f);
 	int end = addr + n;
 	LOGI("prg: %d bytes at %04X (end %04X)\n", n, addr, end);
 
 	if (addr == 0x0801) {
-		// BASIC: VARTAB = конец программы, иначе RUN скажет «нет программы».
-		TheC64->RAM[0x2D] = end & 0xff;
-		TheC64->RAM[0x2E] = (end >> 8) & 0xff;
+		// BASIC: VARTAB = конец программы, но не выше BASIC RAM ($A000):
+		// данные для $A000+ лежат в RAM под ROM, а BASIC-указатель туда
+		// ставить нельзя — RUN уйдёт за HIMEM и сломается.
+		int vartab = (end > 0xA000) ? 0xA000 : end;
+		if (end > 0xA000)
+			LOGI("prg: %d bytes above $9FFF (ROM area)\n", end - 0xA000);
+		TheC64->RAM[0x2D] = vartab & 0xff;
+		TheC64->RAM[0x2E] = (vartab >> 8) & 0xff;
 		strcpy(autoboot_cmd, "\rRUN\r");
 	} else {
 		char tmp[24];

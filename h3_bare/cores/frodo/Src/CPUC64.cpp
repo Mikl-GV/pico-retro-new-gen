@@ -682,12 +682,11 @@ void MOS6510::Reset(void)
 
 void MOS6510::illegal_op(uint8 op, uint16 at)
 {
-	char illop_msg[80];
-
-	sprintf(illop_msg, "Illegal opcode %02x at %04x.", op, at);
-	ShowRequester(illop_msg, "Reset");
-	the_c64->Reset();
-	Reset();
+	// r1290: раньше Frodo сбрасывал C64 на нелегальном опкоде, а реальный
+	// 6510 такие опкоды выполняет (в основном как NOP). Из-за сброса игры и
+	// заставки не запускались. PC уже указывает на следующий байт — опкод
+	// просто пропускаем и пишем в лог.
+	printf("cpu: illegal opcode %02x at %04x (skipped)\n", op, at);
 }
 
 
