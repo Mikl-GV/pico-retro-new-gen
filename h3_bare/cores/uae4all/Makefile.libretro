@@ -1,2 +1,0 @@
-LIBRETRO ?= 1
-include Makefile

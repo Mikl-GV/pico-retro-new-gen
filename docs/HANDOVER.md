@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1351)
+# HANDOVER — текущее состояние (r1352)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,6 +8,23 @@
 
 ## 0. Последние правки
 
+- **r1352 (2026-11-14): чистка репозитория (код прошивки не менялся).**
+  - **PUAE:** из 1780 файлов (76,1 МБ в git) оставлены только используемые
+    сборкой — `puae/kickstart_data.S`, `puae/bios/kick34005.A500`,
+    `puae/bios/wb13.adf` (Makefile:876–877). Остальные исходники
+    (`sources/`, `deps/`, `libretro-common/`, `retrodep/`, `libretro/`) удалены
+    как мёртвые после перехода на UAE4All (r1243).
+  - **Вендорные хвосты:** удалены `DOC/`, `debian/`, `lib/tests/`, `*.ico`,
+    `*.preformatted`, `meson.build`, `Makefile.libretro`, `ChangeLog`,
+    `CHANGES.OLD`, `README.android`, `MakefileRO` (86 файлов) — сборкой не
+    используются.
+  - `AUDIT_PROMPT.md` убран из репозитория (локальная инструкция аудита) и
+    добавлен в `.gitignore` — как `AGENTS.md`.
+  - `.gitignore` и `.gitattributes` ОСТАВЛЕНЫ намеренно: первый держит
+    артефакты сборки (`build/`, `*.bin/*.o/*.elf/*.map`), второй задаёт
+    `*.sh text eol=lf` (иначе rename-скрипты ядер ломаются на Linux по shebang).
+  - Проверка: `make clean && make -j20` после чистки — linkcheck: OK, размер
+    образа тот же (20 261 548 Б), т.е. удалены только неиспользуемые файлы.
 - **r1351 (2026-11-14): ресурсы эмуляторов — кто не снимал своё при выходе.**
   - **GPGX (корень падения GG):** `gpgx_stop()` вызывался ТОЛЬКО в MD-раннере;
     для SMS/GG/SG-1000 blip-буферы (`snd.blips[]`, bump-пул) переживали выход,
@@ -1681,7 +1698,7 @@ make clean && make -j$(nproc)     # build/h3_bare.bin + копия в корен
   через `C:\msys64\tmp\mkrk4.sh` — там `-j8` и теряется параллелизм на 20 ядрах):
   `$env:PATH="C:\msys64\usr\bin;C:\ARM\gcc-arm-none-eabi-15.2.1\bin;"+$env:PATH; make clean; make -j20`.
 - После правки любого `.h` — `make clean` (страховка, deps r1155 отслеживаются).
-- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1351**.
+- Версия: `g_fw_version` и `build:` в `h3_bare/src/main.c`. Текущая — **r1352**.
   Синхронизировать: main.c, README.md, AGENTS.md, этот файл.
 - make: в репозитории только `Makefile` (проверено r1228). Правило «править
   `Makefile` и `makefile`» устарело: Windows-ФС регистронезависима, вторая
