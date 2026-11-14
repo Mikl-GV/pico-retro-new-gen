@@ -302,7 +302,7 @@ AGAT := $(TOP)h3_bare/cores/agat
 AGAT_INC := -I$(AGAT)/src -I$(AGAT)/src/shim -I$(AGAT)/src/video
 AGAT_CFLAGS := $(CFLAGS) $(AGAT_INC) -O2 -w
 AGAT_CFLAGS += -D_stricmp=strcasecmp -DDOUBLE_X -DDOUBLE_Y -DKEY_SCANCODES
-AGAT_BONES := agat_hal sysconf baseram xram9 baserom memory apple2 firmware runmgr list
+AGAT_BONES := agat_hal sysconf baseram xram9 baserom memory apple2 firmware runmgr list joystick
 AGAT_VIDEO := chargen videoflash videoinit videoinvalidate videomono videopages videopaint videopal videoprocs videosel videosel7 videosel9 videosela videoselaa videosetmode videoterm
 AGAT_FDD   := fdd fdd1 fddaa fddliberty genimage
 AGAT_SOUND := sound sound_none

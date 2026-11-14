@@ -563,7 +563,8 @@ AGAT_SLOT_STUB(thunderclock_init)
 AGAT_SLOT_STUB(xram7_init)
 /* r1318: xram9_init больше не заглушка — карта Saturn RAM 128K
    реализована в src/xram9.c и входит в AGAT_BONES. */
-AGAT_SLOT_STUB(joystick_init)
+/* r1344: joystick_init больше не заглушка — порт эталонного модуля
+   педалей/кнопок в src/joystick.c (вход — pad_scan_combined). */
 
 /*=== Звуковые драйверы Windows (ACM/DirectSound/Beep) не поддерживаются ==*/
 /* r1298: функции-пустышки вместо NULL. Конфиг ставит DEV_MMSYSTEM, sound.c
