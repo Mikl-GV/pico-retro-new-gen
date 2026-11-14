@@ -35,6 +35,7 @@
 #include "btn_pad.h"
 #include "remap.h"
 #include "i2s.h"
+#include "resampler44.h"   // r1326 (П.9): общий 44.1→48 ресемплер
 
 // ---- враппер ядра переименован в u4a_* (uae4all_rename.sh) ----
 // ВАЖНО: uae4all — C++ (libretro-обвязка Chips), имена mangled. Определения
@@ -150,30 +151,14 @@ static bool u4a_environment(unsigned cmd, void* data) {
     }
 }
 
-// ---- звук: стерео 44100 -> 48000 (шаг 60211, ресемплер как puae_host) ----
+// ---- звук: стерео 44100 -> 48000 (общий полифазный ресемплер r1326 П.9) ----
 static size_t u4a_audio_sample_batch(const int16_t* d, size_t f) {
     if (!d || f == 0) return f;
     static uint32_t rs_phase = 0;
-    static int16_t out[2048 * 2];
-    const size_t in_n = f;
-    size_t o = 0;
-    while (o < 2048) {
-        uint32_t i = rs_phase >> 16;
-        if (i + 1 >= (uint32_t)in_n) break;
-        uint32_t fr = rs_phase & 0xFFFFu;
-        int32_t l0 = d[2 * i],     l1 = d[2 * (i + 1)];
-        int32_t r0 = d[2 * i + 1], r1 = d[2 * (i + 1) + 1];
-        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)fr) >> 16));
-        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)fr) >> 16));
-        o++;
-        rs_phase += 60211u;
-    }
-    if (rs_phase >= ((uint64_t)in_n << 16))
-        rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
-    else
-        rs_phase &= 0xFFFFu;
-    for (size_t i = 0; i < o; i++)
-        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    static int16_t  rs_tail[2] = { 0, 0 };
+    static int16_t  out[2048 * 2];
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, d, (uint32_t)f, out, 2048);
+    if (o) i2s_push_block(out, o);
     return f;
 }
 

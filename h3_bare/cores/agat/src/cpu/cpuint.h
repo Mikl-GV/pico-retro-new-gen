@@ -46,6 +46,10 @@ struct CPU_STATE
 	unsigned long long freq_6502;//=800; // 1MHz
 	int undoc; // enable undocumented commands
 	unsigned long long tsc_6502;
+	/* r1303: PC последней исполненной инструкции — диагностика стенда. */
+	word dbg_pc;
+	/* r1305: сколько инструкций реально исполнено (не начислено вхолостую). */
+	unsigned long instr_total;
 	int min_msleep; //=10;
 	int lim_fetches; // =5000
 	int need_cpusleep;

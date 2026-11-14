@@ -100,6 +100,9 @@ static struct BASERAM_STATE*ram_init(struct SYS_RUN_STATE*sr, struct SLOT_RUN_ST
 		return NULL;
 	}
 	clear_block(st->ram, st->ram_size);
+	printf("baseram: slot=%d dev=%d memidx=%d ram_size=%d ram=%p\n",
+		(int)sc->slot_no, (int)sc->dev_type,
+		(int)sc->cfgint[CFG_INT_MEM_SIZE], (int)st->ram_size, (void*)st->ram);
 	return st;
 }
 

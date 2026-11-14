@@ -18,6 +18,8 @@ void video_repaint_block(struct VIDEO_STATE*vs, int rbi)
 	dword addr, n;
 	int j;
 	if (!vs->sr->bmp_bits) return;
+	/* r1332: защита от выхода за массив rb[] (портит следующий rb_cur). */
+	if (rbi < 0 || rbi >= MAX_RASTER_BLOCKS) return;
 //	printf("video_repaint_screen: type = %i, base = %x, size = %x\n", vs->vid_type, vs->video_base_addr, vs->video_mem_size);
 	for (j = vs->rb[rbi].n_ranges-1; j>=0; --j) {
 		for (addr=vs->rb[rbi].base_addr[j],n=vs->rb[rbi].mem_size[j];n;

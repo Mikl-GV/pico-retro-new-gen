@@ -45,6 +45,19 @@ void video_update_rb(struct VIDEO_STATE*vs, int rbi)
 	struct RASTER_BLOCK*crb = &vs->rb_cur;
 	int lt;
 
+	/* r1332: qrb_cur лежит сразу за массивом rb[MAX_RASTER_BLOCKS]; запись
+	   с rbi вне массива затирает rb_cur (на стенде появлялись
+	   vmode=0x4A и base=0x61000 вместо 0x0A/0x1000). */
+	if (rbi < 0 || rbi >= MAX_RASTER_BLOCKS) {
+		static int logged;
+		if (!logged) {
+			logged = 1;
+			printf("video_update_rb: rbi=%d вне 0..%d (n_rb=%d) — пропуск\n",
+			       rbi, MAX_RASTER_BLOCKS - 1, vs->n_rb);
+		}
+		return;
+	}
+
 	if (rb->vmode == crb->vmode) {
 		if (rb->dirty) {
 //			puts("video_repaint_block");

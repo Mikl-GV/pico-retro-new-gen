@@ -30,6 +30,7 @@ extern "C" {
 #include "neopop_blip.h"
 #include "sound.h"
 #include "i2s.h"
+#include "resampler44.h"   // r1326 (П.9): общий 44.1→48 ресемплер
 
 // BIOS ROM data (koyote.bin) — defines the koyote_bin symbol
 #include "koyote_bin.h"
@@ -143,28 +144,20 @@ void soundOutput() {
     dac_update(sampleBuffer, in_n * (int)sizeof(sampleBuffer[0]));
 
     static uint32_t rs_phase = 0;
-    int o = 0;
+    static int16_t  rs_tail = 0;
     static int16_t out[900];
-    while (o < 900) {
-        uint32_t i = rs_phase >> 16;
-        if (i + 1 >= (uint32_t)in_n) break;
-        uint32_t f = rs_phase & 0xFFFFu;
-        int32_t m0 = (int32_t)(int16_t)sampleBuffer[i];
-        int32_t m1 = (int32_t)(int16_t)sampleBuffer[i + 1];
-        int32_t s = m0 + (int32_t)(((int64_t)(m1 - m0) * (int32_t)f) >> 16);
-        if (s > 32767) s = 32767;
-        if (s < -32768) s = -32768;
-        out[o++] = (int16_t)s;
-        rs_phase += 60211u;   // (44100<<16)/48000
-    }
-    /* r1009: сохраняем ТОЛЬКО дробную часть фазы — целая (сколько входных
-     * сэмплов реально съедено за кадр) отбрасывается, и следующий кадр
-     * стартует с той же дробной позиции в своём бафере. Раньше ветка
-     * `else rs_phase = 0` зануляла дробную часть на каждом кадре → микро-
-     * скачок фазы на стыке (периодический щелчок/дребезг в высоких частотах). */
-    rs_phase &= 0xFFFFu;
-    for (int k = 0; k < o; k++)
-        i2s_push_sample(out[k], out[k]);   // моно → стерео
+    /* r1326 (П.9): общий полифазный 44100→48000 (вместо локального линейного),
+       непрерывная фаза между кадрами (см. r1009 ниже). */
+    uint32_t o = rs44fs_mono(&rs_phase, &rs_tail,
+                             (const int16_t*)sampleBuffer, (uint32_t)in_n,
+                             out, 900);
+    /* r1009: rs44fs_mono сам переносит ТОЛЬКО дробную часть фазы — целая
+     * (сколько входных сэмплов реально съедено за кадр) отбрасывается, и
+     * следующий кадр стартует с той же дробной позиции в своём бафере. Это
+     * убирает микро-скачок фазы на стыке (периодический щелчок/дребезг). */
+    /* r1326 (A1): моно → стерео уже сделано внутри rs44fs_mono (пары L,R);
+       push — ОДНИМ i2s_push_block вместо цикла push_sample (dsb на пару). */
+    if (o) i2s_push_block(out, o);
 }
 BOOL system_sound_init(void) { return TRUE; }
 void system_VBL(void) {}

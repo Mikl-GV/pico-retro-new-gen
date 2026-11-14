@@ -244,12 +244,16 @@ extern "C" void gb_run_frame(void) {
     // синтезировало, но в I2S не уходил.
     AudioBuffer* ab = emulator_get_audio_buffer(g_emu);
     u32 nframes = audio_buffer_get_frames(ab);
-    for (u32 i = 0; i < nframes; i++) {
-        // u8 (0..255) → s16: (-128..+127) << 8
-        int16_t l = (int16_t)((int32_t)ab->data[2 * i] - 128) << 8;
-        int16_t r = (int16_t)((int32_t)ab->data[2 * i + 1] - 128) << 8;
-        i2s_push_sample(l, r);
+    // r1326 (A1): разворачиваем u8-пары в s16 и подаём ОДНИМ i2s_push_block
+    // вместо цикла push_sample (dsb на пару).
+    static int16_t gb_snd[1024 * 2];
+    u32 np = nframes;
+    if (np > 1024) np = 1024;
+    for (u32 i = 0; i < np; i++) {
+        gb_snd[2 * i]     = (int16_t)((int32_t)ab->data[2 * i] - 128) << 8;
+        gb_snd[2 * i + 1] = (int16_t)((int32_t)ab->data[2 * i + 1] - 128) << 8;
     }
+    if (np) i2s_push_block(gb_snd, np);
     ab->position = ab->data;   // буфер перезапишется ядром («съели»)
 }
 

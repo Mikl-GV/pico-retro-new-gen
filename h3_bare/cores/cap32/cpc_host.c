@@ -30,6 +30,7 @@
 #include "fat.h"
 #include "i2s.h"
 #include "h3_hs_timer.h"
+#include "resampler44.h"   // r1326 (П.9): общий 44.1→48 ресемплер
 
 // ---- враппер ядра переименован в cpc_* (cpc_rename.sh) ----
 void cpc_retro_set_environment(retro_environment_t);
@@ -179,33 +180,15 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
     return 0;
 }
 
-// ---- звук: стерео 44100 Гц -> 48000 (паттерн pce_host.c) ----
+// ---- звук: стерео 44100 Гц -> 48000 (общий полифазный ресемплер r1326 П.9) ----
 static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
 {
     if (!data || frames == 0) return frames;
     static uint32_t rs_phase = 0;
-    static int16_t  cpc_tail[2] = { 0, 0 };
-    static int16_t out[2048 * 2];
-    const size_t in_n = frames;
-    size_t o = 0;
-    while (o < 2048) {
-        uint32_t i = rs_phase >> 16;
-        if (i >= (uint32_t)in_n) break;
-        uint32_t fr = rs_phase & 0xFFFFu;
-        int32_t l0, r0, l1, r1;
-        if (i == 0)      { l0 = cpc_tail[0]; r0 = cpc_tail[1]; }
-        else             { l0 = data[2 * (i - 1)];     r0 = data[2 * (i - 1) + 1]; }
-        if (i + 1 <= in_n) { l1 = data[2 * (i + 1 - 1)];     r1 = data[2 * (i + 1 - 1) + 1]; }
-        else break;
-        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(l1 - l0) * (int32_t)fr) >> 16));
-        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(r1 - r0) * (int32_t)fr) >> 16));
-        o++;
-        rs_phase += 60211u;
-    }
-    if (in_n > 0) { cpc_tail[0] = data[2 * (in_n - 1)]; cpc_tail[1] = data[2 * (in_n - 1) + 1]; }
-    rs_phase &= 0xFFFFu;
-    for (size_t i = 0; i < o; i++)
-        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    static int16_t  rs_tail[2] = { 0, 0 };
+    static int16_t  out[2048 * 2];
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, data, (uint32_t)frames, out, 2048);
+    if (o) i2s_push_block(out, o);
     return frames;
 }
 static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }

@@ -300,7 +300,6 @@ int  video_init(struct SYS_RUN_STATE*sr)
 	vs = calloc(1, sizeof(*vs));
 	if (!vs) return -1;
 
-
 	vs->sr = sr;
 	vs->st = st;
 	vs->video_mode = VIDEO_MODE_INVALID;

@@ -407,7 +407,16 @@ static void op_bcc(struct STATE_6502 *st)
 	if (st->f&FLAG_C) {
 		st->pc++;
 	} else {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	}
 }
@@ -415,7 +424,16 @@ static void op_bcc(struct STATE_6502 *st)
 static void op_bcs(struct STATE_6502 *st)
 {
 	if (st->f&FLAG_C) {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	} else {
 		st->pc++;
@@ -425,7 +443,16 @@ static void op_bcs(struct STATE_6502 *st)
 static void op_beq(struct STATE_6502 *st)
 {
 	if (st->f&FLAG_Z) {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	} else {
 		st->pc++;
@@ -443,7 +470,16 @@ static void op_bit(struct STATE_6502 *st)
 static void op_bmi(struct STATE_6502 *st)
 {
 	if (st->f&FLAG_N) {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	} else {
 		st->pc++;
@@ -455,7 +491,16 @@ static void op_bne(struct STATE_6502 *st)
 	if (st->f&FLAG_Z) {
 		st->pc++;
 	} else {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	}
 }
@@ -466,7 +511,16 @@ static void op_bpl(struct STATE_6502 *st)
 	if (st->f&FLAG_N) {
 		st->pc++;
 	} else {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	}
 }
@@ -484,7 +538,16 @@ static void op_bvc(struct STATE_6502 *st)
 	if (st->f&FLAG_V) {
 		st->pc++;
 	} else {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	}
 }
@@ -492,7 +555,16 @@ static void op_bvc(struct STATE_6502 *st)
 static void op_bvs(struct STATE_6502 *st)
 {
 	if (st->f&FLAG_V) {
-		st->pc= add_timing_page(st, st->pc, (signed char)fetch_cmd_byte(st));
+		{
+			/* r1322: порядок вычисления аргументов в C не определён.
+			   В сборке GCC читал st->pc ДО fetch_cmd_byte(), из-за чего
+			   цель ветвления уезжала на байт назад (BNE FCA9 вместо FCAA):
+			   задержка FCA8 текла стеком и рвала возврат. Сначала операнд,
+			   потом прибавление — порядок больше не зависит от компилятора. */
+			signed char rel = (signed char)fetch_cmd_byte(st);
+
+			st->pc = add_timing_page(st, st->pc, rel);
+		}
 		++st->addt;
 	} else {
 		st->pc++;
@@ -833,10 +905,10 @@ XAA?	 	$8B	 	  	 	 	 	 	  	 	 	 	A:=X&#{imm} 	*	 	 	 	 	*
 LAX?	 	$AB	 	  	 	 	 	 	  	 	 	 	A,X:=#{imm} 	*	 	 	 	 	*	 
 AXS	 	$CB	 	  	 	 	 	 	  	 	 	 	X:=A&X-#{imm} 	*	 	 	 	 	*	*
 SBC	 	$EB	 	  	 	 	 	 	  	 	 	 	A:=A-#{imm} 	*	*	 	 	 	*	*
-AHX�	 	 	 	  	 	 	$93	 	  	$9F	 	 	{adr}:=A&X&H 	 	 	 	 	 	 	 
-SHY�	 	 	 	  	 	 	 	 	$9C 	 	 	 	{adr}:=Y&H 	 	 	 	 	 	 	 
-SHX�	 	 	 	  	 	 	 	 	  	$9E	 	 	{adr}:=X&H 	 	 	 	 	 	 	 
-TAS�	 	 	 	  	 	 	 	 	  	$9B	 	 	S:=A&X {adr}:=S&H 	 	 	 	 	 	 	 
+AHX�	 	 	 	  	 	 	$93	 	  	$9F	 	 	{adr}:=A&X&H 	 	 	 	 	 	 	 
+SHY�	 	 	 	  	 	 	 	 	$9C 	 	 	 	{adr}:=Y&H 	 	 	 	 	 	 	 
+SHX�	 	 	 	  	 	 	 	 	  	$9E	 	 	{adr}:=X&H 	 	 	 	 	 	 	 
+TAS�	 	 	 	  	 	 	 	 	  	$9B	 	 	S:=A&X {adr}:=S&H 	 	 	 	 	 	 	 
 LAS	 	 	 	  	 	 	 	 	  	$BB	 	 	A,X,S:={adr}&S 	*	 	 	 	 	*	 
 */
 
@@ -1255,6 +1327,52 @@ static void op_disassemble(struct STATE_6502*st, struct CMD_6502*c)
 	fprintf(stdout, "\n");
 }
 
+/* r1317: ВРЕМЕННАЯ стендовая трассировка Агат-9 (после отладки удалить).
+   Кольцо последних PC показывает путь до падения; метки фиксируют первый
+   вход в видео-RAM ($4000-$7FFF), в I/O-страницу $C0xx (цель JMP ($03F0))
+   и первый BRK. Значения печатаются собственной hex-функцией: кастомный
+   printf врёт на %02X/%04X (лишние нули), по нему нельзя читать векторы. */
+unsigned g_agat_pc = 0xFFFF;
+
+static word tr_pc[32];
+static unsigned char tr_op[32];
+static unsigned tr_pos;
+static int tr_vid, tr_io, tr_brk;
+
+static void tr_hx(char *d, unsigned v, int nib)
+{
+	static const char hx[] = "0123456789ABCDEF";
+	int i;
+
+	for (i = nib - 1; i >= 0; i--) {
+		d[i] = hx[v & 15u];
+		v >>= 4;
+	}
+	d[nib] = 0;
+}
+
+static void tr_dump(struct SYS_RUN_STATE *sr)
+{
+	char a[5], b[3], c[5], d[5], e[5];
+	int i;
+
+	tr_hx(a, (unsigned)(tr_pc[(tr_pos + 31) & 31u]), 4);
+	printf("TR: last-pc");
+	for (i = 0; i < 32; i++) {
+		unsigned k = (tr_pos + (unsigned)i) & 31u;
+
+		tr_hx(a, tr_pc[k], 4);
+		tr_hx(b, tr_op[k], 2);
+		printf(" %s:%s", a, b);
+	}
+	printf("\n");
+	tr_hx(c, (unsigned)mem_read(0x0036, sr) | ((unsigned)mem_read(0x0037, sr) << 8), 4);
+	tr_hx(d, (unsigned)mem_read(0x03F0, sr) | ((unsigned)mem_read(0x03F1, sr) << 8), 4);
+	tr_hx(e, (unsigned)mem_read(0x03F2, sr) | ((unsigned)mem_read(0x03F3, sr) << 8), 4);
+	tr_hx(a, (unsigned)mem_read(0x03F4, sr) | ((unsigned)mem_read(0x03F5, sr) << 8), 4);
+	printf("TR: CSW=%s BRK=%s RES=%s IRQ=%s\n", c, d, e, a);
+}
+
 static int exec_6502(struct CPU_STATE*cs)
 {
 	struct STATE_6502*st = cs->state;
@@ -1265,6 +1383,9 @@ static int exec_6502(struct CPU_STATE*cs)
 
 //	if (st->pc == 0x6A18) cpu_debug = 1;
 	if (cpu_debug) dumpregs(cs);
+	/* r1303: PC для телеметрии стенда (host печатает раз в 100 кадров). */
+	cs->dbg_pc = st->pc;
+	cs->instr_total++;
 
 	if (st->ints_req&INT_NMI) {
 		push_stack_w(st, (word)(st->pc));
@@ -1292,6 +1413,13 @@ static int exec_6502(struct CPU_STATE*cs)
 
 	b=fetch_cmd_byte(st);
 	c=cmds+b;
+	{
+		word pv = (word)(st->pc - 1);
+
+		g_agat_pc = pv;
+		/* r1328: трасса старта монитора Агат-9 снята — причина «F800=00»
+		   найдена и исправлена (memsizes_b без extern → ram_size=0). */
+	}
 	if (!c->cmd) {
 		return -1;
 	}

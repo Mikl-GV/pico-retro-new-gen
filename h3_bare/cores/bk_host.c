@@ -160,29 +160,41 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
 
 // r735: звук BK (PSG emu2149 + covox) на I2S. Ядро зовёт audio_cb(val, val)
 // из sound_write_sample (моно 44100 Гц). Ресемплим 44100→48000 (линейный,
-// фаза 16.16, шаг 60211), push в I2S.
+// фаза 16.16, шаг 71332 = (48000<<16)/44100, «долг» выходных сэмплов).
+// r1326 (A1): вывод — БЛОКОМ (i2s_push_block) вместо push_sample на пару.
 static void host_audio_sample(int16_t l, int16_t r)
 {
     (void)r;
-    // r923: ядро БК зовёт audio_cb(val,val) ПО-СЭМПЛОВО (bk/libretro.c sound_write_sample),
+    // r923: ядро БК зовёт audio_cb(val,val) ПО-СЭМПЛОВ (bk/libretro.c sound_write_sample),
     // поэтому только host_audio_sample_batch (ниже) не покрывает звук. Старый код
     // выдавал РОВНО один выходной на один входной → 44100 ложился в 48к-кольцо,
     // дрейф ~8%, недолив, подмес тишины CPU2. Теперь — корректный ап-семплер
     // с накоплением целой части: каждый входной сэмпл = 48000/44100 ≈ 1.088
     // выходных. Фаза (rs_acc) статическая — дрейфа/разрывов между кадрами нет.
+    // ПРИМЕЧАНИЕ: по-сэмпловый поток НЕ переведён на общий rs44fs_mono (тот
+    // рассчитан на пакет с фазой во входных сэмплах, шаг 60211); здесь своя
+    // шкала «долга» — оставляем проверенную локальную схему (r923).
     static uint32_t rs_acc = 0;             // 16.16: накопленный «долг» выходных
     static int16_t prev = 0, cur = 0;
     static int have = 0;
     if (!have) { prev = l; cur = l; have = 1; return; }
     prev = cur; cur = l;
     rs_acc += 71332u;                       // (48000<<16)/44100 = 71331.70 → 71332
+    static int16_t bbuf[256 * 2];
+    static unsigned bn = 0;
     while (rs_acc >= 0x10000u) {
         uint32_t fr = rs_acc & 0xFFFFu;     // дробная часть для интерполяции
         int32_t s = (int32_t)prev + (int32_t)(((int64_t)(cur - prev) * (int32_t)fr) >> 16);
         if (s > 32767) s = 32767;
         if (s < -32768) s = -32768;
-        i2s_push_sample((int16_t)s, (int16_t)s);
-        rs_acc -= 0x10000u;
+        bbuf[2 * bn] = (int16_t)s;
+        bbuf[2 * bn + 1] = (int16_t)s;
+        bn++;
+        if (bn >= 256) {
+            i2s_push_block(bbuf, bn);
+            bn = 0;
+        }
+rs_acc -= 0x10000u;
     }
 }
 static size_t host_audio_sample_batch(const int16_t* d, size_t f)
@@ -211,8 +223,8 @@ static size_t host_audio_sample_batch(const int16_t* d, size_t f)
         rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
     else
         rs_phase &= 0xFFFFu;
-    for (size_t i = 0; i < o; i++)
-        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    // r1326 (A1): блоком вместо цикла push_sample (dsb на пару).
+    if (o) i2s_push_block(out, (uint32_t)o);
     return f;
 }
 

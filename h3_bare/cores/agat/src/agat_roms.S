@@ -18,3 +18,13 @@ agat_rom_monitor9:
 	.global agat_rom_agathe9
 agat_rom_agathe9:
 	.incbin "h3_bare/cores/agat/rom/agathe9.fnt"
+
+	.balign 4
+	.global agat_rom_shugart9
+agat_rom_shugart9:
+	.incbin "h3_bare/cores/agat/rom/shugart9.rom"
+
+	.balign 4
+	.global agat_rom_teac
+agat_rom_teac:
+	.incbin "h3_bare/cores/agat/rom/teac.rom"

@@ -214,8 +214,15 @@ void vecx_snd_push(unsigned samps) {
         rs_phase = (uint32_t)(rs_phase - ((uint64_t)in_n << 16));
     else
         rs_phase &= 0xFFFFu;
-    for (unsigned k = 0; k < o; k++)
-        i2s_push_sample(out[k], out[k]);   // моно → стерео
+    // r1326 (A1): блоком вместо цикла push_sample (dsb на пару); моно → стерео.
+    if (o) {
+        static int16_t st[2048 * 2];
+        for (unsigned k = 0; k < o; k++) {
+            st[2 * k]     = out[k];
+            st[2 * k + 1] = out[k];
+        }
+        i2s_push_block(st, o);
+    }
 }
 
 // ---- Ввод ----

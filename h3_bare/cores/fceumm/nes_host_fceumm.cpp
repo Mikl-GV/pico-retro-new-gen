@@ -259,12 +259,17 @@ extern "C" void fceumm_run_frame(void) {
     if (snd && ssize > 0) {
         n = ssize;                // число сэмплов (моно)
         if (n > 4096) n = 4096;   // страховка от переполнения
+        // r1326 (A1): моно → стерео в локальном буфере, подача ОДНИМ
+        // i2s_push_block вместо цикла push_sample (dsb на пару).
+        static int16_t nes_st[4096 * 2];
         for (int32_t i = 0; i < n; i++) {
             int32_t s = snd[i];
             if (s > 32767) s = 32767;
             if (s < -32768) s = -32768;
-            i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
+            nes_st[2 * i]     = (int16_t)s;
+            nes_st[2 * i + 1] = (int16_t)s;
         }
+        if (n) i2s_push_block(nes_st, (uint32_t)n);
     }
 
     // r958: накопление статистики звука БЕЗ печати — UART в кадре блокирует

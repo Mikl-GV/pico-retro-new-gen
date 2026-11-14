@@ -98,6 +98,8 @@ static const system_entry_t systems[] = {
     // r1297: Агат-9 — ядро Agat Emulator (h3_bare/cores/agat), 6502 1 МГц,
     // кадр 640x400, палитра 16 цветов. ROM-монитор и знакогенератор вшиты
     // (.incbin в agat_roms.S), с SD не грузятся. Папка по id — /roms/agat.
+    // r1299: один пункт — встроенного BASIC у Агат-9 нет (только монитор
+    // в ПЗУ), подменю выбора прошивки не нужно.
     SYS("agat",       "Agat-9",                  COMPUTER, READY),
     SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
 };

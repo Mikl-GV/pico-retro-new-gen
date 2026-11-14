@@ -5,6 +5,16 @@
  * Framebuffer (0x5F900000), ROM-буфер (0x50000000), EMU_FB (0x5F800000)
  * и стек (0x60000000) живут вне образа — в конце DRAM, не пересекаются.
  */
+/* r1326 (П.5): явные PHDRS — раздельные LOAD-сегменты без RWX.
+ * .text/.rodata — R-X, .data — RW (флаги 7=RX, 5=R, 6=RW).
+ * Секции идут подряд (.), LMA=VMA; линкер сам группирует секции
+ * по PHDR-именам и выдаёт отдельные PT_LOAD с нужными атрибутами. */
+PHDRS
+{
+  text   PT_LOAD FLAGS(5);   /* R   + X */
+  rodata PT_LOAD FLAGS(5);   /* R   + X */
+  data   PT_LOAD FLAGS(6);   /* R/W     */
+}
 SECTIONS
 {
   . = 0x40000000;
@@ -23,23 +33,23 @@ SECTIONS
     KEEP (*(SORT(.init_array.*)))
     KEEP (*(.init_array))
     __init_array_end = .;
-  }
+  } :text
 
   . = ALIGN(4);
   .rodata : {
     *(.rodata*)
-  }
+  } :rodata
 
   . = ALIGN(4);
-  .ARM.extab   : { *(.ARM.extab* .gnu.linkonce.armextab.*) }
+  .ARM.extab   : { *(.ARM.extab* .gnu.linkonce.armextab.*) } :rodata
   PROVIDE_HIDDEN (__exidx_start = .);
-  .ARM.exidx   : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) }
+  .ARM.exidx   : { *(.ARM.exidx* .gnu.linkonce.armexidx.*) } :rodata
   PROVIDE_HIDDEN (__exidx_end = .);
 
   . = ALIGN(4);
   .data :  {
     *(.data*)
-  }
+  } :data
 
   . = ALIGN(4);
   .bss : {

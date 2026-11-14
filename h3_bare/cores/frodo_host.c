@@ -185,8 +185,9 @@ static void host_audio_sample(int16_t l, int16_t r)
             out[pos++] = (int16_t)v;
             out[pos++] = (int16_t)v;
         }
-        for (int j = 0; j < FR_OUT; j++)
-            i2s_push_sample(out[2 * j], out[2 * j + 1]);
+        // r1326 (A1): пакетная подача ОДНИМ i2s_push_block вместо цикла
+        // push_sample (dsb на пару, ~960 барьеров/кадр) — как gba_mgba/32x/gpgx.
+        i2s_push_block(out, FR_OUT);
         g_ain_n = 0;
     }
 }

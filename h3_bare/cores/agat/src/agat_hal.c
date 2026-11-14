@@ -363,43 +363,31 @@ unsigned and_run_state_flags(LPCTSTR name, unsigned flags)
 
 /*=== Видеовыход: кадр рисуется ядром в свой буфер, окно Windows не нужно =*/
 
-/* Ядро пишет 4bpp-индекс: 1 байт = 2 пикселя по 4 бита, палитра 16 цветов
-   (индексы Apple II/Агат). Размер кадра DOUBLE_X/DOUBLE_Y: 40*16 x 25*16. */
+/* Ядро пишет 4bpp-индекс: 1 байт = 2 пикселя по 4 бита, палитра 16 цветов.
+   Размер буфера — КАК В ЭТАЛОНЕ (videow.c): MAX_VIDEO_W = 40*CHAR_W = 640,
+   MAX_VIDEO_H = 32*CHAR_H = 512, pitch = MAX_VIDEO_W>>1 = 320. Видимая часть
+   меньше (v_size = 32*CHAR_W x 32*CHAR_H = 512x512) — буфер под неё
+   перевыделять нельзя, иначе видео пишет с чужим шагом строки. */
 #define AGAT_FB_W 640
-#define AGAT_FB_H 400
-#define AGAT_FB_PITCH (AGAT_FB_W / 2)
+#define AGAT_FB_H 512
 
-/* Палитра Apple II (16 цветов) в RGB565 — базовая для Агат-9. */
-static const unsigned short agat_pal565[16] = {
-	0x0000, /*  0 black      */
-	0x7908, /*  1 magenta    */
-	0x21AF, /*  2 dark blue  */
-	0xF1DF, /*  3 purple     */
-	0x0AC8, /*  4 dark green */
-	0x8410, /*  5 grey       */
-	0x1D5F, /*  6 medium blue*/
-	0x5FFF, /*  7 light blue */
-	0x5A00, /*  8 brown      */
-	0xFB63, /*  9 orange     */
-	0xA514, /* 10 light grey */
-	0xF9FF, /* 11 pink       */
-	0x0680, /* 12 green      */
-	0xFFE0, /* 13 yellow     */
-	0x7E9F, /* 14 aqua       */
-	0xFFFF, /* 15 white      */
-};
+static int ag_fb_w = AGAT_FB_W;
+static int ag_fb_h = AGAT_FB_H;
 
 int init_video_window(struct SYS_RUN_STATE*sr)
 {
+	int pitch = AGAT_FB_W >> 1;
+	unsigned char*p;
+
 	if (!sr) return -1;
-	if (!sr->bmp_bits) {
-		sr->bmp_bits = malloc((size_t)AGAT_FB_PITCH * AGAT_FB_H);
-		if (!sr->bmp_bits) return -1;
-		memset(sr->bmp_bits, 0, (size_t)AGAT_FB_PITCH * AGAT_FB_H);
-	}
-	sr->bmp_pitch = AGAT_FB_PITCH;
-	sr->v_size.width = AGAT_FB_W;
-	sr->v_size.height = AGAT_FB_H;
+	p = (unsigned char*)malloc((size_t)pitch * AGAT_FB_H);
+	if (!p) return -1;
+	if (sr->bmp_bits) free(sr->bmp_bits);
+	memset(p, 0, (size_t)pitch * AGAT_FB_H);
+	sr->bmp_bits = p;
+	sr->bmp_pitch = pitch;
+	ag_fb_w = AGAT_FB_W;
+	ag_fb_h = AGAT_FB_H;
 	return 0;
 }
 
@@ -409,6 +397,29 @@ void set_video_size(struct SYS_RUN_STATE*sr, int w, int h)
 	sr->v_size.width = (uint32_t)w;
 	sr->v_size.height = (uint32_t)h;
 }
+
+/* r1328: палитра из эталонного PALETTE\DEFAULT.PAL (её эталонный конфиг
+   Агат-9 подключает по умолчанию; 8 цветов, повторённых на 8..15).
+   Было: приблизительный apple2-набор — индексы 3/5/10/12 давали чужие
+   цвета («мозаика» на экране). */
+static const unsigned short agat_pal565[16] = {
+	0x0000, /*  0 black   */
+	0xF800, /*  1 red     */
+	0x07E0, /*  2 green   */
+	0xFFE0, /*  3 yellow  */
+	0x001F, /*  4 blue    */
+	0xF81F, /*  5 magenta */
+	0x07FF, /*  6 cyan    */
+	0xFFFF, /*  7 white   */
+	0x0000, /*  8 black   */
+	0xF800, /*  9 red     */
+	0x07E0, /* 10 green   */
+	0xFFE0, /* 11 yellow  */
+	0x001F, /* 12 blue    */
+	0xF81F, /* 13 magenta */
+	0x07FF, /* 14 cyan    */
+	0xFFFF, /* 15 white   */
+};
 
 int term_video_window(struct SYS_RUN_STATE*sr)
 {
@@ -428,6 +439,21 @@ int invalidate_video_window(struct SYS_RUN_STATE*sr, RECT *r)
 	return 0;
 }
 
+/* Фактический размер ВИДИМОЙ области кадра (Агат-9: 512x512 внутри буфера
+   640x512). Host берёт размер отсюда, иначе expand читает лишние столбцы. */
+void agat_video_size(int *w, int *h)
+{
+	struct SYS_RUN_STATE*sr = agat_get_state();
+	int vw = ag_fb_w, vh = ag_fb_h;
+
+	if (sr && sr->v_size.width && sr->v_size.height) {
+		vw = (int)sr->v_size.width;
+		vh = (int)sr->v_size.height;
+	}
+	if (w) *w = vw;
+	if (h) *h = vh;
+}
+
 /* Развернуть 4bpp-индекс кадра в RGB565-буфер заданной ширины/высоты.
    Вызывается host-слоем на каждом кадре; масштаб — целочисленный кратный. */
 int agat_video_expand(unsigned short*fb, int fb_w, int fb_h, int scale)
@@ -439,10 +465,10 @@ int agat_video_expand(unsigned short*fb, int fb_w, int fb_h, int scale)
 	if (!sr || !sr->bmp_bits || !fb || scale < 1) return -1;
 	src = (const unsigned char*)sr->bmp_bits;
 
-	for (y = 0; y < AGAT_FB_H; y++) {
+	for (y = 0; y < ag_fb_h && y < fb_h; y++) {
 		const unsigned char*line = src + y * sr->bmp_pitch;
 
-		for (x = 0; x < AGAT_FB_W; x += 2) {
+		for (x = 0; x < ag_fb_w && x < fb_w; x += 2) {
 			unsigned short c0 = agat_pal565[line[x >> 1] & 0x0F];
 			unsigned short c1 = agat_pal565[(line[x >> 1] >> 4) & 0x0F];
 
@@ -472,10 +498,14 @@ void disable_ints(struct SYS_RUN_STATE*sr)
 	if (sr) sr->ints_enabled = 0;
 }
 
+/* r1338: раскладка машины — ЛАТ. В эталоне это выбор системной раскладки
+   Windows (videow.c), по умолчанию английская: при 0 (РУС) runmgr.c ставит
+   служебный регистр $C063 = $7F, и ОС/монитор перекодирует латинский ввод
+   в кириллицу («набираю латиницу — выходят русские буквы»). */
 int is_keyb_english(struct SYS_RUN_STATE*sr)
 {
 	(void)sr;
-	return 0;
+	return 1;
 }
 
 /* Apple-1 не входит в сборку прошивки (только Агат-9/Apple II). */
@@ -531,14 +561,36 @@ AGAT_SLOT_STUB(softcard_init)
 AGAT_SLOT_STUB(tape_init)
 AGAT_SLOT_STUB(thunderclock_init)
 AGAT_SLOT_STUB(xram7_init)
-AGAT_SLOT_STUB(xram9_init)
+/* r1318: xram9_init больше не заглушка — карта Saturn RAM 128K
+   реализована в src/xram9.c и входит в AGAT_BONES. */
 AGAT_SLOT_STUB(joystick_init)
 
 /*=== Звуковые драйверы Windows (ACM/DirectSound/Beep) не поддерживаются ==*/
+/* r1298: функции-пустышки вместо NULL. Конфиг ставит DEV_MMSYSTEM, sound.c
+   вызывает p->sound_term() без проверки на NULL — с NULL-таблицей ядро
+   уходило на адрес 0 (стенд: P:00000000:0E). Теперь вызов безопасен. */
 
-struct SOUNDPROC soundacm = { NULL, NULL, NULL, NULL };
-struct SOUNDPROC soundbeep = { NULL, NULL, NULL, NULL };
-struct SOUNDPROC soundds = { NULL, NULL, NULL, NULL };
+static void* ag_snd_init(struct SOUNDPARAMS*par) { (void)par; return NULL; }
+static void ag_snd_term(void*p) { (void)p; }
+static int ag_snd_data(void*p, int d, long t, long f)
+{
+	(void)p;
+	(void)d;
+	(void)t;
+	(void)f;
+	return 0;
+}
+static int ag_snd_event(void*p, void*d, void*par)
+{
+	(void)p;
+	(void)d;
+	(void)par;
+	return 0;
+}
+
+struct SOUNDPROC soundacm = { ag_snd_init, ag_snd_term, ag_snd_data, ag_snd_event };
+struct SOUNDPROC soundbeep = { ag_snd_init, ag_snd_term, ag_snd_data, NULL };
+struct SOUNDPROC soundds = { ag_snd_init, ag_snd_term, ag_snd_data, NULL };
 
 /*=== Прочее ==============================================================*/
 
@@ -546,10 +598,14 @@ struct SOUNDPROC soundds = { NULL, NULL, NULL, NULL };
    заменены таблицей по номеру ресурса из sysconf.c. */
 extern const unsigned char agat_rom_monitor9[2048];
 extern const unsigned char agat_rom_agathe9[2048];
+extern const unsigned char agat_rom_shugart9[256];
+extern const unsigned char agat_rom_teac[256];
 
 enum {
 	AGAT_RES_AGATHE9 = 2,	/* FNTS\AGATHE9.FNT */
 	AGAT_RES_MONITOR9 = 12,	/* ROMS\MONITOR9.ROM */
+	AGAT_RES_TEAC = 21,	/* ROMS\TEAC.ROM (дисковод 140/840 КБ) */
+	AGAT_RES_SHUGART9 = 23,	/* ROMS\SHUGART9.ROM */
 };
 
 int load_buf_res(int no, void*buf, int len)
@@ -565,6 +621,14 @@ int load_buf_res(int no, void*buf, int len)
 	case AGAT_RES_AGATHE9:
 		src = agat_rom_agathe9;
 		sz = 2048;
+		break;
+	case AGAT_RES_SHUGART9:
+		src = agat_rom_shugart9;
+		sz = 256;
+		break;
+	case AGAT_RES_TEAC:
+		src = agat_rom_teac;
+		sz = 256;
 		break;
 	default:
 		break;

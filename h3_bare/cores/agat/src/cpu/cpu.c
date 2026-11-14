@@ -337,6 +337,10 @@ int cpu_run_cycles(struct CPU_STATE*cs, long long cycles)
 		if (r > 0) {
 			cs->tsc_6502 += r;
 			decrement_timers(cs, r);
+		} else {
+			/* r1299: без прогресса цикл кадра не завершится никогда —
+			   стенд зависал на чёрном экране без выхода по ESC. */
+			cs->tsc_6502++;
 		}
 	}
 	return 0;

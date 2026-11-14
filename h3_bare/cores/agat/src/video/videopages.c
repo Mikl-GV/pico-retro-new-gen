@@ -7,6 +7,8 @@ void video_switch_block_pages(struct VIDEO_STATE*vs, int rbi)
 	byte*mem = ramptr(vs->sr);
 	int upd=0;
 	int j;
+	/* r1332: защита от выхода за массив rb[]. */
+	if (rbi < 0 || rbi >= MAX_RASTER_BLOCKS) return;
 //	printf("video_switch_block_pages[%i]: type = %i, base = %x, prev_base = %x, size = %x\n", 
 //		rbi, vs->rb[rbi].vtype, vs->rb[rbi].base_addr[0], vs->rb[rbi].prev_base[0], vs->rb[rbi].mem_size[0]);
 	switch (vs->rb[rbi].el_size) {

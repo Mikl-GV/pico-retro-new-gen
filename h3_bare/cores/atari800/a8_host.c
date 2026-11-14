@@ -30,6 +30,7 @@
 #include "fb_text.h"
 #include "fat.h"
 #include "i2s.h"          // no-op стабы (oбязателен: враппер зовёт audio_cb)
+#include "resampler44.h"  // r1326 (П.9): общий 44.1→48 ресемплер
 
 // ---- a8_rename.sh переименовывает всё в a8_*; прототипы враппера ----
 void a8_retro_set_environment(retro_environment_t);
@@ -165,36 +166,15 @@ static int16_t host_input_state(unsigned port, unsigned device, unsigned index, 
     return 0;
 }
 
-// ---- звук: стерео 44100 Гц -> 48000 (паттерн pce_host/cpc_host r966) ----
-// r975: звук подключён к I2S. Раньше (r777) колбэки были no-op: глобальный
-// возврат звука r895+ не тронул a8_host. Ядро отдаёт кадровый batch 44100
-// стерео (core-mapper.c retro_sound_update; PAL ~885 пар/кадр, NTSC ~736).
+// ---- звук: стерео 44100 Гц -> 48000 (общий полифазный ресемплер r1326 П.9) ----
 static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
 {
     if (!data || frames == 0) return frames;
     static uint32_t rs_phase = 0;
-    static int16_t  a8_tail[2] = { 0, 0 };
-    static int16_t out[2048 * 2];
-    const size_t in_n = frames;
-    size_t o = 0;
-    while (o < 2048) {
-        uint32_t i = rs_phase >> 16;
-        if (i >= (uint32_t)in_n) break;
-        uint32_t fr = rs_phase & 0xFFFFu;
-        int32_t l0, r0, lf, rf;
-        if (i == 0)      { l0 = a8_tail[0]; r0 = a8_tail[1]; }
-        else             { l0 = data[2 * (i - 1)];     r0 = data[2 * (i - 1) + 1]; }
-        if (i + 1 <= in_n) { lf = data[2 * (i + 1 - 1)];    rf = data[2 * (i + 1 - 1) + 1]; }
-        else break;
-        out[2 * o]     = (int16_t)(l0 + (int32_t)(((int64_t)(lf - l0) * (int32_t)fr) >> 16));
-        out[2 * o + 1] = (int16_t)(r0 + (int32_t)(((int64_t)(rf - r0) * (int32_t)fr) >> 16));
-        o++;
-        rs_phase += 60211u;   // 48000/44100 * 65536
-    }
-    if (in_n > 0) { a8_tail[0] = data[2 * (in_n - 1)]; a8_tail[1] = data[2 * (in_n - 1) + 1]; }
-    rs_phase &= 0xFFFFu;
-    for (size_t i = 0; i < o; i++)
-        i2s_push_sample(out[2 * i], out[2 * i + 1]);
+    static int16_t  rs_tail[2] = { 0, 0 };
+    static int16_t  out[2048 * 2];
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, data, (uint32_t)frames, out, 2048);
+    if (o) i2s_push_block(out, o);
     return frames;
 }
 static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }

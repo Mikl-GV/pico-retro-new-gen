@@ -178,7 +178,11 @@ int cheats_load(const char* system_folder, const char* rom_name) {
 
     // Читаем .cht целиком (до 32 КБ — базы содержат десятки читов);
     // прежние 8 КБ обрезали хвост, и часть кодов не отображалась.
-    uint8_t buf[32768];
+    // r1326 (A3): 32 КБ убраны со СТЕКА (bare-metal, core0 SVC): при глубокой
+    // цепочке вызовов меню переполнение стека маловероятно, но 32 КБ — это
+    // ~5% стека core0 (1 МБ). static-буфер модуля (BSS, однократно читается
+    // в cheats_load, не reentrant) — без переполнения и без фрагментации.
+    static uint8_t buf[32768];
     int r = fat_read_file(&found_entry, 0, buf, sizeof(buf) - 1);
     if (r <= 0) { printf("cheats: read fail %s\n", found_path); return 0; }
     buf[r] = 0;

@@ -28,6 +28,7 @@
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
+#include "resampler44.h"   // r1326 (П.9): общий 44.1→48 ресемплер
 
 extern int printf(const char* fmt, ...);
 
@@ -446,16 +447,14 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
         /* s8 → s16 */
         for (int i = 0; i < n; i++)
             out[i] = (int16_t)((int)m15_audbuf[i] << 8);
-        /* линейный upsampler 44100→48000 */
-        for (uint32_t i = 0; (long)i < (long)n - 1;) {
-            uint32_t f = rs_phase & 0xFFFFu;
-            int32_t s = (int32_t)out[i] + (int32_t)(((int64_t)(out[i+1] - out[i]) * (int32_t)f) >> 16);
-            if (s > 32767) s = 32767;
-            if (s < -32768) s = -32768;
-            i2s_push_sample((int16_t)s, (int16_t)s);
-            rs_phase += 60211u;
-            uint32_t adv = rs_phase >> 16;
-            if (adv) { i += adv; rs_phase &= 0xFFFF; }
+        /* r1326 (П.9): линейный upsampler 44100→48000 — общий полифазный
+           rs44fs_mono (непрерывная фаза между кадрами) */
+        {
+            static uint32_t rs_phase = 0;
+            static int16_t  rs_tail = 0;
+            static int16_t  st[2048 * 2];
+            uint32_t o = rs44fs_mono(&rs_phase, &rs_tail, out, (uint32_t)n, st, 2048);
+            if (o) i2s_push_block(st, o);
         }
         m15_audbufptr = 0;
     }

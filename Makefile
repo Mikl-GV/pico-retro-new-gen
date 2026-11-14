@@ -69,6 +69,7 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
+OBJ  += $(BUILD)/resampler44.o
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
 OBJ  += $(BUILD)/gba_mgba_host.o
@@ -301,7 +302,7 @@ AGAT := $(TOP)h3_bare/cores/agat
 AGAT_INC := -I$(AGAT)/src -I$(AGAT)/src/shim -I$(AGAT)/src/video
 AGAT_CFLAGS := $(CFLAGS) $(AGAT_INC) -O2 -w
 AGAT_CFLAGS += -D_stricmp=strcasecmp -DDOUBLE_X -DDOUBLE_Y -DKEY_SCANCODES
-AGAT_BONES := agat_hal sysconf baseram baserom memory apple2 firmware runmgr list
+AGAT_BONES := agat_hal sysconf baseram xram9 baserom memory apple2 firmware runmgr list
 AGAT_VIDEO := chargen videoflash videoinit videoinvalidate videomono videopages videopaint videopal videoprocs videosel videosel7 videosel9 videosela videoselaa videosetmode videoterm
 AGAT_FDD   := fdd fdd1 fddaa fddliberty genimage
 AGAT_SOUND := sound sound_none
@@ -326,7 +327,7 @@ $(BUILD)/agat_c_%.o: $(AGAT)/src/cpu/%.c | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/agat_host.o: $(TOP)h3_bare/cores/agat_host.c | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) -I$(TOP)h3_bare/cores $(INCLUDES) -c -o $@ $<
-$(BUILD)/agat_roms.o: $(AGAT)/src/agat_roms.S $(AGAT)/rom/monitor9.rom $(AGAT)/rom/agathe9.fnt | $(BUILD)
+$(BUILD)/agat_roms.o: $(AGAT)/src/agat_roms.S $(AGAT)/rom/monitor9.rom $(AGAT)/rom/agathe9.fnt $(AGAT)/rom/shugart9.rom $(AGAT)/rom/teac.rom | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) -I$(TOP) -c -o $@ $<
 $(BUILD)/agat_renamed.stamp: $(AGAT_OBJS) $(TOP)h3_bare/cores/agat_rename.sh
 	$(TOP)h3_bare/cores/agat_rename.sh $(AGAT_OBJS)
@@ -602,6 +603,10 @@ $(BUILD)/a8_fs.o: $(A8)/a8_fs.c | $(BUILD)
 $(BUILD)/fs_layer.o: $(TOP)h3_bare/cores/fs_layer.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -I$(A8)/libretro/libretro-common/include -c -o $@ $<
 
+# r1326 (П.9): общий полифазный ресемплер 44100→48000 (resampler44.c/h).
+$(BUILD)/resampler44.o: $(TOP)h3_bare/cores/resampler44.c $(TOP)h3_bare/cores/resampler44.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
 # ---- Amstrad CPC: libretro-cap32 (Caprice32), ядро в h3_bare/cores/cap32 ----
 # r963: вшитый BIOS всех моделей (rom/464.h 6128.h 664.h 6128p.h); host cpc_host.c +
 # файловый слой cpc_fs.c (rfopen поверх ROM_BUF). Состав — из Makefile.common вендора.
@@ -841,8 +846,6 @@ U4A_CFLAGS := -mcpu=cortex-a7 -mfpu=vfpv3-d16 -mfloat-abi=softfp -marm \
 	-DNO_MAIN_IN_MAIN_C -DNO_VKBD -DEMULATED_JOYSTICK -DUSE_ZFILE=1 -DCYCLONE_CORE=1 \
 	-DUSE_CYCLONE_CORE -DUSE_CYCLONE_MEMHANDLERS -DUSE_FAME_CORE -DUSE_UNDERSCORE \
 	-DOS_WITHOUT_MEMORY_MANAGEMENT -DROM_PATH_PREFIX=\"./\" -DDATA_PREFIX=\"./data/\" -DSAVE_PREFIX=\"./\" \
-	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
-	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
 	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-parentheses \
 	-Wno-incompatible-pointer-types -Wno-implicit-function-declaration
 # Правила: явные имена объектов -> путь в дереве
@@ -1174,9 +1177,6 @@ $(BUILD)/pico_carthw_svp_ssp16.o: $(PICO)/pico/carthw/svp/ssp16.c | $(BUILD)
 	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/pico_sound_%.o: $(PICO)/pico/sound/%.c | $(BUILD)
-	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
-	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
-$(BUILD)/pico_zlib_%.o: $(PICO)/zlib/%.c | $(BUILD)
 	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/picodrive_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/pico_unzip.o: $(PICO)/unzip/unzip.c | $(BUILD)

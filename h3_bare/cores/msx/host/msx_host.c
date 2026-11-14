@@ -127,8 +127,14 @@ void PlayAllSound(int uSec) {
 unsigned int WriteAudio(int16_t *Data, unsigned int Length) {
     if (!Data || Length == 0) return Length;
     if (Length > 2048) Length = 2048;
-    for (unsigned int i = 0; i < Length; i++)
-        i2s_push_sample(Data[i], Data[i]);   // моно → стерео
+    // r1326 (A1): fMSX даёт МОНО int16 (PSG+YM2413, 48000 Гц). Разворачиваем
+    // в стерео-пары и подаём ОДНИМ i2s_push_block вместо цикла push_sample.
+    static int16_t st[2048 * 2];
+    for (unsigned int i = 0; i < Length; i++) {
+        st[2 * i]     = Data[i];
+        st[2 * i + 1] = Data[i];
+    }
+    i2s_push_block(st, Length);
     return Length;   // «всё записано»
 }
 

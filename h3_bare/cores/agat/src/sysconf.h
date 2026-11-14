@@ -166,7 +166,13 @@ struct SYSCONFIG
 
 #define NMEMSIZES 21
 LPCTSTR get_memsizes_s(int n);
-const unsigned memsizes_b[];
+/* r1327: было `const unsigned memsizes_b[];` — это ОПРЕДЕЛЕНИЕ, а не
+   объявление: каждый .c, включающий sysconf.h, создавал свой пустой
+   массив (tentative definition), и при линковке с
+   --allow-multiple-definition побеждала 4-байтовая копия из baseram.o.
+   Итог: memsizes_b[7] читал мусор → ram_size=0 у Агат-9 → запись
+   «в RAM» затирала соседний буфер ПЗУ. Нужен extern. */
+extern const unsigned memsizes_b[];
 
 LPCTSTR get_devnames(int n);
 LPCTSTR get_confnames(int n);

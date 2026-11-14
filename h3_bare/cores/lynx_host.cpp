@@ -215,8 +215,8 @@ extern "C" void lynx_run_frame(void) {
         if (np > (HANDY_AUDIO_BUFFER_SIZE / 2) / 2) np = (HANDY_AUDIO_BUFFER_SIZE / 2) / 2;
         g_lynx_pairs = np;   // r511: для синхронизации периода кадра
         const int16_t* p = (const int16_t*)gAudioBuffer;
-        for (ULONG i = 0; i < np; i++)
-            i2s_push_sample(p[2 * i], p[2 * i + 1]);
+        // r1326 (A1): блоком вместо цикла push_sample (dsb на пару).
+        if (np) i2s_push_block(p, (uint32_t)np);
 
         // r956: только накопление (без UART в кадре). Печать — в
         // lynx_audio_report() на выходе из игры, когда поток уже остановлен.

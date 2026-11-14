@@ -26,11 +26,12 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
    - `roms/` (файлы ROM, испортируется)
    - `emulator-refs/` (эталонные исходники)
    - содержимое `M гигантских вендорных томов`: `h3_bare/cores/fuse/`,
-     `h3_bare/cores/vice/`, `h3_bare/cores/gpgx/`, `h3_bare/cores/mgba/` и прочих
+     `h3_bare/cores/gpgx/`, `h3_bare/cores/mgba/`, `h3_bare/cores/picodrive/`,
+     `h3_bare/cores/uae4all/`, `h3_bare/cores/agat/`, `h3_bare/cores/frodo/` и прочих
      целых ядер-ов vendored — **аудиту подлежат ТОЛЬКО «наши» host-слои, обвязки и
      инфраструктура** (см. «Зоны ответственности»). Внюхиваться внутрь чужого ядра
-     ради точечной проверки конкретного интеграционного бага — можно, но не ради
-     сплошной вычитки. Указывай в отчёте, что относится к вендорному коду.
+     ради точечной проверки конкретного интеграционного бага (особенно — звука SEGA)
+     — можно, но не ради сплошной вычитки. Указывай в отчёте, что относится к вендорному коду.
 5. **Для сверки** активно используй интернет и PDF-документацию в дереве проекта
    (`docs/`, `*.pdf` — даташиты H3, SDK). Расхождения код ↔ даташит — отдельная
    категория находок.
@@ -43,7 +44,8 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
    `arm-none-eabi-readelf -SW build/h3_bare.elf` и `-lW`,
    `arm-none-eabi-nm -n build/h3_bare.elf` под интересующие символы
    (`_bstart1/_bend1/_hend`, `_coherent_start/end`, `_gb_heap_start/end`,
-   `_menu_arena`, `_a8_bss_*`, `_vice_bss_*`, `_fs_bss_*`, `_ring`/почт SRAM и т.д.).
+   `_menu_arena`, `_a8_bss_*`, `_frodo_bss_*` (был `_vice_bss_*`, r1284), `_fs_bss_*`,
+   `_ring`/почт SRAM и т.д.).
    Работай с этими РЕАЛЬНЫМИ адресами/размерами, а не с идеальными из доков/промпта.
    Если ELF или одна из секций отсутствует / собралась не так — это уже находка.
    Сверку карты (память) обязательно проводи против этого факта. Сборка также нужна,
@@ -93,11 +95,14 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
     отчёта: непроверенное должно быть перечислено, а не замолчано. Никогда не договаривай, что
     код «проверен», если проверка была неполной — честно пиши границу проверки.
 
-## Контекст проекта (факты, ПРОВЕРЕНЫ ПО КОДУ, актуально на g_fw_version="r1243")
+## Контекст проекта (факты, ПРОВЕРЕНЫ ПО КОДУ, актуально на g_fw_version="r1329")
 
 - Bare-metal: никакой ОС. Прошивка грузится в `0x40000000` (U-Boot `go` или FEL).
-  Текущая версия прошивки в коде — `g_fw_version = "r1243"` и баннер `build: r1243`
-  (`h3_bare/src/main.c:491,558`). Любое расхождение версии в доке/коде — находка.
+  Текущая версия прошивки в коде — `g_fw_version = "r1329"` и баннер `build: r1329`
+  (`h3_bare/src/main.c`). Любое расхождение версии в доке/коде — находка.
+  (r1327 — фикс `memsizes_b` (Агат-9, ram_size=0); r1328 — палитра
+  DEFAULT.PAL; r1329 — откат форсированных прерываний, их включает монитор
+  через $C040-$C05F.)
 - **LPAE/MMU (КРИТИЧНО, r1202–r1207).** U-Boot 2025.01 работает в long-descriptor
   (TTBCR.EAE=1): MMU-таблицы 64-битные (L0 → L1, 2-МБ блоки) и лежали в
   `0x5FFF1000..0x5FFF4FFF` — прямо под SVC-стеком core0 (0x60000000 вниз); глубокие
@@ -123,16 +128,19 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
   - uncached `.coherent` `0x4A400000` (резерв 1 МБ; OHCI ED/TD/HCCA, `g_cal_*`, почты
     `g_audio_*`); L0-копия MMU `0x4A40C000` и L1-копии `0x4A410000+` (`startup.S` r1202).
     Проверь, что `.coherent` реально uncached и что L1-копии не пересекаются с `.coherent`/sbrk;
-  - `ROM_BUF` `0x50000000..0x51800000`; `.vice_bss` ~30 МБ `0x52000000`;
-    `.fs_bss` `0x53E00000` (файловый слой, слоты с magic `0xA85A5A5A`);
-    `.a8_bss` ~1.8 МБ `0x5F000000` — проверь, что зоны не пересекаются и что при
-    единичном запуске неактивная зона безопасно переиспользуется;
+  - `ROM_BUF` `0x50000000..0x51800000`; `.frodo_bss` (C64, **замена `.vice_bss`**) ~4 МБ
+    `0x52000000` (был `.vice_bss` ~31 МБ, r1284 — VICE удалён, ядро C64 теперь Frodo;
+    граница `_frodo_bss_end <= 0x53E00000`);`.fs_bss` `0x53E00000` (файловый слой, слоты
+    с magic `0xA85A5A5A`); `.a8_bss` ~1.8 МБ `0x5F000000` — проверь, что зоны не
+    пересекаются и что при единичном запуске неактивная зона безопасно переиспользуется;
+    свободна зона `0x54000000..0x5C000000`;
   - `EMU_FB` `0x5F800000` (320×240 RGB565), HDMI FB `0x5F900000` (1024×600 XRGB8888),
     **back-FB direct-писателей `0x5F400000`** (emu.c FB_ADDR_BACK, ниже EMU_FB) — проверь
     отсутствие пересечений и перерасход границ;
   - `_sbrk`-зона не должна наезжать на `.menu_arena 0x4F000000` (резерв 1 МБ).
   Проверяй выход за границы зон, пересечения, перерасход; проверяй, что обнуление BSS
-  в `startup.S` покрывает ВСЕ NOLOAD-секции (`.a8_bss`, `.vice_bss`, `.fs_bss`, `.coherent`),
+  в `startup.S` покрывает ВСЕ NOLOAD-секции (`.a8_bss`, `.frodo_bss`, `.fs_bss`,
+   `.coherent`),
   и не осталось секций, обнуляемых в C либо вообще не обнуляемых. Правило проекта:
   «кто запущен — тот и владелец кучи», ровно один активный эмулятор.
 - **Стеки трёх ядер** (по `startup.S`, растут вниз):
@@ -157,12 +165,40 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
   индексы/FIFO-почта `0x94..0xC0`. CPU2 доливает при `TXE_CNT` свободных словах. Темп =
   аппаратный FIFO 48 кГц. `emu_throttle()` — адаптивный тайминг кадра по заполнению
   кольца (фиксы r940/r944 — не сломай регрессией, но проверь логику на скрытые ошибки).
-- **Новые системы (main.c, r1000–r1243):** Amiga (**UAE4All** ядро, r1243 — замена PUAE;
-  вшитый Workbench 1.3/KS 1.3 или ADF с SD, `emu_run_amiga_wb()`), Radio-86RK (монитор вшит),
-  МС1504 (PK300 вшит),
-  Amstrad CPC (BIOS 6128 вшит), Commodore 64/128 (VICE r974, BIOS вшиты, выбор C64/C128
-  ×PAL/NTSC), Atari 8-bit (ядро atari800, вшитые OS-ROM). У многих — диалоги выбора
-  модели/источника в `main.c`; проверь их индексы и соответствие ядру.
+- **Новые системы (основной приоритет — SEGA-звук):**
+  - **SEGA / Mega Drive / SMS / GG** — звук синтезируется ВНУТРИ ЯДЕР, и по заявлению владельца
+    качество там УЖАСНОЕ. Это приоритет №1 аудита звука:
+    - **Genesis Plus GX** (`cores/gpgx/`, host `cores/gpgx/system_gpgx_h3.c`): PSG+FM синтез
+      ядра, ресемплер `blip`, вывод `i2s_push_block((int16_t*)abuf, n)` (см. комментарии
+      r1139/r645 — пакетная подача, `config.hq_psg`, `config.ym2612=YM2612_DISCRETE`,
+      `config.psg_preamp`, `config.ym2413`). Звуковые файлы ядра: `gpgx/core/sound/`
+      (`blip_buf.c`, `psg.c`, `ym2612.c`, `ym3438.c`, `ym2413.c`, `opll.c`, `eq.c`, `sound.c`).
+    - **PicoDrive** (`cores/picodrive/`, host `cores/picodrive/32x_host.c`): MD/SMS/GG/32X/CD;
+      префикс `pd_`. Звук `pico/sound/` (`mix.c`, `sn76496.c`, `ym2612.c`, `ym2413.c`,
+      `sound.c`, `resampler.c`, и АСМ `mix_arm.S`, `ym2612_arm.S`). **32X и CD-звук** —
+      проверь особо: `pico/32x/`, `pico/cd/`; Sh2-аудио (`pico_sh2_compiler.o`, `emit_arm.c`,
+      DrZ80/CZ80 softcpu). Вывод — через host `32x_host.c`.
+    **Для обеих систем проверь:** сам синтез (качество/артефакты/клиппинг/шум —
+      не только «работает», но и «звучит правильно»), темп/частоты (48 кГц, ресемплер
+      44.1→48 для FM, региона PAL/NTSC 50/60 Гц), переполнение/обрезку буферов ядра
+      (`abuf`, blip-буферы), когерентность с I2S-ring (`i2s_push_block`/`i2s_push_sample`),
+      расхождение кадр↔звук (under/overrun), `config.hq_psg`/`config.ym2612` против железа,
+      и любые дефекты, делающие звук «ужасным» (тишина, треск, постоянный гул, искажённый
+      тон FM/PSG, задержки, конфликт с 1:1 48 кГц). Оптимизация ASM-ядер (`ym2612_arm.S`,
+      `mix_arm.S`) — предлагай только при доказанной пользе, не трогая рабочий синтез.
+  - **Agat (Агат-7/9)** (`cores/agat/`, host `cores/agat_host.c`, префикс `agat_`): Apple II-клон,
+    звук `src/sound/` (`AGAT_SOUND`), вшитые ROM `agat_roms.S`, MFM-кодер `fdd1.c`. Проверь звук
+    и дисковые тайминги.
+  - **Frodo (C64/128)** (`cores/frodo/`, host `cores/frodo_host.c`, префикс `frodo_`): замена
+    VICE d′C64; BSS ядра `.frodo_bss` (NOLOAD, `Retro_Screen` 4 МБ). Звук Frodo выводится
+    `i2s_push_sample(out[2j], out[2j+1])` (`frodo_host.c:189`) — проверь, нет ли поштучной подачи
+    с `dsb` на каждую пару (как было исправлено в GPGX r1139).
+  - **Amiga** — **UAE4All** (cores/uae4all, host `uae4all_host.c`, префикс `u4a_`; активное ядро),
+    замена `puae_host.c`; звук `i2s_push_sample` (`uae4all_host.c:176`, стерео 44100→48000,
+    ресемплер как puae). `puae_host.c` — исторический, НЕ линкуется.
+  - **Radio-86RK** (`rk86_host.c`), **МС1504** (`ms1504/ms1504_host.c`), **Amstrad CPC**
+    (`cap32/cpc_host.c`), **Atari 8-bit** (`atari800/a8_host.c`), **Frodo C64**.
+  У многих — диалоги выбора модели/источника в `main.c`; проверь их индексы и соответствие ядру.
 - **Горячие пути** (выполняются 50–75 раз/сек на каждый кадр, часто ×600 строк/кадр):
   - `emu.c`: `emu_scale()` / `emu_scale_int()` (блит RG565→XRGB8888, 1024×600),
     `emu_throttle()`, `emu_esc_hold()`;
@@ -174,10 +210,11 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
     `tft_drv.c` (SPI-рендер на CPU1), `sega_pad.c` (bit-bang I2C),
     `gp_cheats.c`/`cheatdb.c`;
   - host-слои ядер: `system_*`, `snes_host.cpp`, `fceumm` host, `gba_mgba_host.c`,
-    `gpgx` host, `cps1_host.cpp` (аркады), `vecx_host.c`, `bk_host.c`, `c64_host.c`,
+    `gpgx` host, `cps1_host.cpp` (аркады), `vecx_host.c`, `bk_host.c`, `frodo_host.c`,
     ресемплеры звука (44.1→48 кГц и т.п.).
-- **файловый слой:** `fs_layer.c` (+ `.fs_bss`), `c64_fs.c`, `cpc_fs.c`, `a8_fs.c` —
-  глобальные `fopen/fread/...` поверх памяти. Проверь переопределения, магик-валидацию
+- **файловый слой:** `fs_layer.c` (+ `.fs_bss`) — единый файловый слой прошивки;
+   `cpc_fs.c`, `a8_fs.c` —
+   глобальные `fopen/fread/...` поверх памяти. Проверь переопределения, магик-валидацию
   слотов `0xA85A5A5A`, когерентность с ядрами, которые мусорят глобальный `.bss`.
 
 ## Зоны ответственности (что аудировать по слоям) — число слоёв выбери сам, но не менее 5–7
@@ -197,27 +234,37 @@ bare-metal ARM (Cortex-A7, Allwinner H3), языкам C/C++ и низкоуро
 4. **Диспетчер эмуляторов**: `emu.c`, `emu.h`, `systems.h`, `i2s.h`.
 5. **Host-слои ядер** (наша обвязка, НЕ вендор): все `system_*.cpp` (`system_atari_h3.cpp`,
    `system_a5200_h3.cpp`, `system_a7800_h3.cpp`), `*_host.c/.cpp`, `*_stubs.c`, `*_compat.c`,
-   `gp_cheats.c`, ресемплеры звука. Точные пути ключевых: `cores/uae4all_host.c` (Amiga,
-   UAE4All **с r1243**, замена PUAE; `emu_run_amiga()` здесь; вендор в `cores/uae4all/`,
-   префикс `u4a_`), `cores/rk86_host.c` (Radio-86RK), `cores/ms1504/ms1504_host.c` (МС1504),
-   `cores/c64_host.c`, `cores/gba_mgba_host.c`, `cores/atari800/a8_host.c`,
-   `cores/cap32/cpc_host.c`, `cores/nes_host_fceumm.cpp`, `cores/snes_host.cpp`,
-   `cores/msx_host.c` (+`msx_compat.c`), `cores/coleco_host.cpp`, `cores/fuse_host.c`,
-   `cores/gameboy_host.cpp`, `cores/lynx_host.cpp`, `cores/ngp_host.cpp`,
-   `cores/vecx_host.c`, `cores/bk_host.c`, `cores/pce_host.c`.
+   `gp_cheats.c`, ресемплеры звука. Точные пути ключевых:
+   `cores/gpgx/system_gpgx_h3.c` (SEGA MD/SMS/GG — host для Genesis Plus GX),
+   `cores/picodrive/32x_host.c` (SEGA 32X/CD host для PicoDrive),
+   `cores/uae4all_host.c` (Amiga, UAE4All с r1243; `emu_run_amiga()` здесь; вендор
+   `cores/uae4all/`, префикс `u4a_`), `cores/agat_host.c` (Агат-7/9), `cores/frodo_host.c`
+   (C64/128, замена VICE), `cores/rk86_host.c` (Radio-86RK), `cores/ms1504/ms1504_host.c`
+   (МС1504), `cores/c64_host.c`/`cores/c64_fs.c`/`cores/c64_stubs.c` (если ещё остались от
+   VICE), `cores/gba_mgba_host.c`, `cores/atari800/a8_host.c`, `cores/cap32/cpc_host.c`,
+   `cores/nes_host_fceumm.cpp`, `cores/snes_host.cpp`, `cores/msx_host.c` (+`msx_compat.c`),
+   `cores/coleco_host.cpp`, `cores/fuse_host.c`, `cores/gameboy_host.cpp`, `cores/lynx_host.cpp`,
+   `cores/ngp_host.cpp`, `cores/vecx_host.c`, `cores/bk_host.c`, `cores/pce_host.c`.
    Проверь диалоги выбора модели/источника в `main.c` на соответствие этим host-слоям.
+   **Особый фокус — звук SEGA** (см. «Новые системы»): качество синтеза внутри ядер
+   Genesis Plus GX и PicoDrive, вывод через `i2s_push_block`/`i2s_push_sample`, ресемплеры,
+   FM/PSG-артефакты, ASM-звуковые циклы (`pico/sound/mix_arm.S`, `ym2612_arm.S`).
    ВНИМАНИЕ: `cores/puae_host.c` и `cores/uae4all_host.c` оба существуют, но активное
    ядро Amiga — UAE4All (замена PUAE с r1243, `emu_run_amiga()` в `uae4all_host.c`,
    вендор `cores/uae4all/`, префикс `u4a_`); `puae_host.c` — исторический. Проверь, что
    сборка линкует именно UAE4All (`u4a_host.o`) и что kickstart'ы
    (`puae/kickstart_data.S`, `puae/bios/kick34005.A500`, `puae/bios/wb13.adf`) корректно
    переиспользуются host-слоем UAE4All.
-6. **Файловый слой**: `fs_layer.c`, `c64_fs.c`, `cpc_fs.c`, `a8_fs.c`, `c64_stubs.c`,
-   `pce_stubs.c`, `fuse_stubs.c`. (пути: `c64_fs.c`/`c64_stubs.c` — в `cores/`;
-   `cpc_fs.c` — в `cores/cap32/`; `a8_fs.c` — в `cores/atari800/`.)
+6. **Файловый слой**: `fs_layer.c` (`cores/fs_layer.c`, единый FS прошивки, слоты с
+   magic `0xA85A5A5A`), `cpc_fs.c` или `fuse_stubs.c`, `pce_stubs.c`.
+   (Фактические пути: `fs_layer.c` — в `cores/`; `cpc_fs.c` — в `cores/cap32/`;
+   `a8_fs.c` — в `cores/atari800/`; `frodo_stubs.c` — в `cores/`.
+   `c64_fs.c`/`c64_stubs.c` НЕ существуют — VICE заменён на Frodo r1284.)
 7. **Сборка/линковка**: `Makefile` + подключаемые `cores/fuse/fuse_rules.mk`,
-   `cores/vice/vice_sources.mk`, `cores/vice/vice_rules.mk`, `cores/bk/bk_rules.mk`,
-   `build.sh`, `build.ps1`, `flash.cmd`, rename-скрипты `*.sh` (a8/cpc/vice/ms1504/gc/…),
+   `cores/bk/bk_rules.mk` (VICE и его `vice_rules.mk`/`vice_sources.mk` УДАЛЕНЫ r1284 —
+   ядро C64 теперь Frodo); включает агрегатных rename-скриптов     `*.sh`
+   (`.renamed.stamp`, objcopy-переименование `pd_/u4a_/agat_/frodo_/a8_/cpc_/ms1504_/ngp_/
+   mgba_/gc_/bk_/fuse_/cps1_/picodrive_`), `build.sh`, `build.ps1`, `flash.cmd`,
    `tools/` (ftp_client). Проверь, что каждая цель/файл в Makefile существует и не дублируется.
 8. **Аркады (FinalBurn Neo)** (наши host-слои): `cores/cps1_host.cpp` (+`cps1_stubs.cpp`
    сега), проверь рендер `g_frame`→HDMI FB, ввод `toa_input_cache`, переиспользование
@@ -257,6 +304,40 @@ G. **Мёртвый код, мёртвые/лгующие комментарии
 H. **Жизненный цикл: сброс/перезаход между слоями** (см. п.10 правил) — для каждого слоя.
 I. **Оптимизация на скорость каждого тёплого/горячего пути** вплоть до переписывания на асм
    (см. п.12 правил) — не «могу», а конкретный план.
+J. **Надёжность bare-metal сверх обычного:** 
+   - защита/проверка переполнения **стека** (SVC/IRQ/банков) и переполнения **кучи** — оба без
+     паники; наличие/отсутствие canary на границе стека, проверка при `sbrk`/`malloc`;
+   - вечные циклы `while(1)` и `wfi` — не засыпают ли они в контексте, где обязан работать
+     CPU2 (звук), не блокируют ли периферию, не зациклены ли без выхода;
+   - зависания/watchdog — есть ли он, как восстанавливается система после падения CPU2/CPU1
+     (dead CPU2 = тишина/клиппинг навсегда; dead CPU1 = TFT-замерзание);
+   - безопасный восстановимый сброс при любом исключении (Data Abort/Prefetch/Undef) — не
+     вешается ли всё навсегда, есть ли путь к перезапуску;
+   - гонки данных по C11/C++11: ВСЕ переменные, разделяемые между core0/CPU1/CPU2 (флаги,
+     индексы ring, `g_audio_*`, почты), должны быть `volatile`/атомарными — проверь каждую
+     на отсутствие `volatile`/`atomic` (формальный UB, даже если «на железе работает»);
+   - двойная буферизация кадра и кэш-когерентность: после записи в EMU_FB/HDMI FB (core0)
+     и чтения CPU2/TFT/DMA — не осталось ли dirty-строк в D-cache, нужен ли clean/invalidate
+     перед DMA; 
+   - неинициализированные регистры/данные ядер: читается ли что-то до инициализации
+     (AHB-периферия, FIFO, буферы, таблицы L1), не задействованы ли «мусорные» значения;
+   - дедлоки: блокирующий printf/UART в ISR, spinlock в области, где прерывание выключено и
+     его ждёт другой CPU, удержание блокировки поверх long-running кода;
+   - порядок записи регистров H3 без `dsb` между ними (CCU-гейты → периферия, PLL → делители,
+     TFT-инициализация) — ошибки порядка дают шаткое «иногда работает»;
+   - `const_cast`/`(void*)` снятие константности с ROM-буферов, переиндексация страниц ROM,
+     магические числа вместо именованных констант.
+K. **FAT/SD/файловая система:** переполнение `fat_scratch` (буфер каталога), длинные
+   (VFAT) имена, длиной в 8.3, кластерные границы (чтение за конец кластера/файла),
+   повреждение FAT при записи (журнал? no-op?), LBA/СНS-переполнение, кэш-блоки. Проверь
+   `fat.c`/`sd.c` на предмет надёжности при битой/мусорной флешке (не падать, а возвращать ошибку).
+L. **Звуковой тракт в целом (не только SEGA):** подводный камень — поштучный `i2s_push_sample`
+   в цикле на каждую пару у host-слоёв (GPGX переведён на `push_block` r1139; **с r1326 (П.1)
+   все host-слои используют `i2s_push_block`** — frodo/uae4all/pce/msx/cpc/a8/bk/fuse/vecx/
+   ms1504/gameboy/lynx/nes/ngp/cps1). Проверь переполнение кольца (`i2s_ring_fill` vs размер),
+   поды (клиппинг/переполнение s16), моно→стерео дупликацию, ресемплеры 44.1→48 — качество и
+   битную точность (с r1326 (П.9) — общий полифазный `resampler44.c`; bk — локальный
+   по-сэмпловый, r923).
 
 ## Формат результата
 

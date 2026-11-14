@@ -1,3 +1,13 @@
+// puae_host.c — ИСТОРИЧЕСКИЙ файл (r1326, П.4 аудита): НЕ ЛИНКУЕТСЯ.
+//
+// Активное ядро Amiga в прошивке — UAE4All (с r1243; host — uae4all_host.c,
+// префикс u4a_, вендор h3_bare/cores/uae4all/). Этот файл (host-слой PUAE,
+// WinUAE 5.3.1) оставлен в дереве только как историческая справка и для
+// переиспользования вшитых BIOS (kickstart_data.S: puae_kick13_rom/wb13_adf —
+// их собирает u4a_kickstart_data.o). Тело обёрнуто в #if 0: если кто-то
+// вернёт puae_host.o в Makefile, сборка даст пустой объект и сразу
+// undefined-символы (явный сигнал), а не молчаливую двойную реализацию.
+#if 0
 // puae_host.c — host-слой Sega... нет: Commodore Amiga (PUAE / libretro-uae).
 // Подключает PUAE (WinUAE 5.3.1) к bare-metal H3: ADF-дискеты с SD через
 // fs_layer (a8_fs_register), видео RGB565 из retro_bmp -> EMU_FB 320x240,
@@ -834,3 +844,4 @@ exit:
     fb_clear();
     fb_flush();
 }
+#endif /* !HISTORICAL puae_host.c (r1326, П.4 аудита: ядро Amiga — UAE4All) */

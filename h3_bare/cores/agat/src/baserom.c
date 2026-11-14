@@ -15,6 +15,20 @@
 #define STDROM_SIZE 0x800
 #define APPLEROM_SIZE 0x3000
 
+/* r1333: адрес канарейки за образом ПЗУ (см. rom_install). */
+static unsigned char *g_rom_canary = NULL;
+
+int rom_canary_bad(void)
+{
+	int i;
+
+	if (!g_rom_canary) return -1;
+	for (i = 0; i < 16; i++) {
+		if (g_rom_canary[i] != 0x5A) return i + 1;
+	}
+	return 0;
+}
+
 struct BASEROM_STATE
 {
 	word rom_size, rom_mask, rom_ofs;
@@ -79,6 +93,7 @@ int rom_install(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*ss, struct SLOTCO
 {
 	struct BASEROM_STATE*st;
 	ISTREAM*in;
+	int orig_size;
 
 	st = malloc(sizeof(*st));
 	if (!st) return -1;
@@ -86,13 +101,21 @@ int rom_install(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*ss, struct SLOTCO
 	st->rom_size = sc->cfgint[CFG_INT_ROM_SIZE];
 	st->rom_mask = sc->cfgint[CFG_INT_ROM_MASK];
 	st->rom_ofs = sc->cfgint[CFG_INT_ROM_OFS];
-	st->rom = malloc(st->rom_size);
+	orig_size = st->rom_size;
+	/* r1333: канарейка сразу за образом ПЗУ. VIDEO_STATE лежит в куче
+	   следующим блоком, и запись за буфер ПЗУ сразу её затирает
+	   (симптом: vmode=0x4A, base=0x61000 вместо 0x0A/0x1000). */
+	st->rom = malloc(st->rom_size + 16);
 	if (!st->rom) {
 		free(st);
 		return -1;
 	}
+	memset((unsigned char*)st->rom + orig_size, 0x5A, 16);
+	g_rom_canary = (unsigned char*)st->rom + orig_size;
+	printf("rom canary: buf=%p size=%X canary@%X\n", (void*)st->rom,
+		(unsigned)orig_size, (unsigned)(unsigned char*)&((unsigned char*)st->rom)[orig_size]);
 
-	printf("rom size: %X (%i bytes), rom file: %s\n", st->rom_size, st->rom_size, sc->cfgstr[CFG_STR_ROM]);
+	printf("rom size: %X (%i bytes), rom file: %s, buf=%p\n", st->rom_size, st->rom_size, sc->cfgstr[CFG_STR_ROM], (void*)st->rom);
 	in=isfopen(sc->cfgstr[CFG_STR_ROM]);
 	if (!in) {
 		int r;
@@ -128,7 +151,6 @@ int rom_install(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*ss, struct SLOTCO
 
 static byte rom_read(word adr,struct BASEROM_STATE*st)
 {
-//	printf("rom_read from addr %x(%x): %x\n", adr, (adr & st->rom_mask) - st->rom_ofs, st->rom[(adr & st->rom_mask) - st->rom_ofs]);
 	return st->rom[(adr & st->rom_mask) - st->rom_ofs];
 }
 

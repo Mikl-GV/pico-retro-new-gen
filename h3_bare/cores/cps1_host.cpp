@@ -1031,14 +1031,12 @@ for (;;) {
 
         // r607: звук FBNeo → I2S. Драйвер заполнил pBurnSoundOut (стерео
         // пары int16, nBurnSoundLen сэмплов/кадр @48к). Выводим напрямую.
-        {
+        {   // r1326 (A1): блоком вместо цикла push_sample (dsb на пару).
             extern INT32 nBurnSoundLen;
             int n = nBurnSoundLen;
             if (n > 2048) n = 2048;   // страховка от переполнения буфера
-            if (n > 0 && pBurnSoundOut) {
-                for (int i = 0; i < n; i++)
-                    i2s_push_sample(pBurnSoundOut[2 * i], pBurnSoundOut[2 * i + 1]);
-            }
+            if (n > 0 && pBurnSoundOut)
+                i2s_push_block(pBurnSoundOut, (uint32_t)n);
         }
         host_render_frame();
         fb_flush();
