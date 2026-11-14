@@ -1,4 +1,5 @@
 build/
+AGENTS.md
 *.bin
 *.elf
 *.o
