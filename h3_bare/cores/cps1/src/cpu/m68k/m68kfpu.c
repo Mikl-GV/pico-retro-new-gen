@@ -440,7 +440,7 @@ static void fpgen_rm_reg(UINT16 w2)
 	int src = (w2 >> 10) & 0x7;
 	int dst = (w2 >>  7) & 0x7;
 	int opmode = w2 & 0x7f;
-	double source;
+	double source = 0.0;
 
 	if (rm)
 	{

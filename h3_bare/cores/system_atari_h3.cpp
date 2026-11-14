@@ -227,12 +227,16 @@ extern "C" void atari2600_run_frame(void) {
     // (Tia_sound_init ресемплит TIA-клок → 48000). 48000/60 = 800 сэмплов/кадр.
     {
         static uint16_t a26buf[1024];
+        static int16_t  a26st[800 * 2];    // r1346 (Ш2.2): моно→стерео парой, один блок
         Tia_process_2(a26buf, 800);
         for (int i = 0; i < 800; i++) {
             int32_t s = ((int32_t)a26buf[i] << 2);   // 0..7680 → 0..30720 (≈полная шкала)
             if (s > 32767) s = 32767;
-            i2s_push_sample((int16_t)s, (int16_t)s);   // моно → стерео
+            a26st[2 * i] = (int16_t)s;
+            a26st[2 * i + 1] = (int16_t)s;
         }
+        // Один барьер на кадр вместо dsb на каждую из 800 пар.
+        i2s_push_block(a26st, 800);
     }
 }
 

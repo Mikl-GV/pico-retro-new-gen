@@ -434,12 +434,34 @@ void snd_manifest(const char* sys, const char* cores) {
 static uint32_t emu_ts0 = 0;
 static uint32_t emu_last_pairs = 0;   // r1271 (CORE-03): дельта пар прошлой сессии      // следующая «распланированная» граница кадра
 static int32_t  emu_debt = 0;     // переработка [мкс], вычтем из следующего wait
+static uint32_t emu_period_frac = 0;    // r1350: дробная часть периода (1/65536 мкс)
+static uint32_t emu_period_phase = 0;   // r1350: накопитель дробной части
 
 // r989: setter периода кадра — системы с PAL-частотой (C64/C128 50 Гц) ставят
 // свой период до цикла кадров, чтобы throttle не «догонял» 60 Гц и не копил
 // переработку (emu_debt рос, кадры гнались без пауз → CPU под 100%).
+// r1346 (Ш2.4): допуск до 100000 не помещался в uint16_t (обрезался молча,
+// например 100000 → 34464). Значение теперь целиком в uint16_t-поле только
+// если влезает; иначе клампим к 65535, чтобы период не «прыгал».
 void emu_set_period_us(uint32_t us) {
-    if (us >= 1000u && us <= 100000u) emu_period_us = (uint16_t)us;
+    if (us < 1000u || us > 100000u) return;
+    if (us > 65535u) us = 65535u;
+    emu_period_us = (uint16_t)us;
+    emu_period_frac = 0;   // r1350: целый период — дробной части нет
+}
+
+// r1350: период в 16.16 мкс (мкс<<16). Дробная часть копится в throttle
+// (emu_period_phase) и раз в несколько кадров добавляет 1 мкс, поэтому СРЕДНИЙ
+// период совпадает с реальной частотой кадра (MD/SMS: 16688.44/20120.13 мкс).
+// Иначе округление до 16688 даёт ~1.15 пары/с утечки в кольцо I2S — «со
+// временем звук тянется» даже после правки целого периода.
+void emu_set_period_us_ex(uint32_t us_q16) {
+    uint32_t us = us_q16 >> 16;
+    if (us < 1000u || us > 100000u) return;
+    if (us > 65535u) { us = 65535u; us_q16 = us << 16; }
+    emu_period_us = (uint16_t)us;
+    emu_period_frac = us_q16 & 0xFFFFu;
+    emu_period_phase = 0;
 }
 
 // r703 (C4): liveness CPU2. g_audio_beat инкрементится CPU2 в цикле — если он
@@ -459,6 +481,14 @@ void emu_throttle(void) {
     // цели — ждём больше (не переполняем). Кольцо всегда накоплено → микросбои
     // загрузки/сцены подмелёт буфер, подмелёт подклики.
     uint32_t period = emu_period_us;
+    // r1350: компенсация дробной части периода. Для MD/SMS реальный период
+    // 16688.44 (NTSC) / 20120.13 (PAL) мкс: каждый кадр добавляем к целому
+    // периоду перенос накопителя — средний период точный, дрейф не копится.
+    if (emu_period_frac) {
+        emu_period_phase += emu_period_frac;
+        period += emu_period_phase >> 16;
+        emu_period_phase &= 0xFFFFu;
+    }
     {
         uint32_t fill = i2s_ring_fill();
         // r944: цель кольца адаптивная — из фактического темпа потока
@@ -520,6 +550,7 @@ void emu_throttle_reset(void) {
     emu_ts0 = 0;
     emu_debt = 0;
     emu_last_pairs = 0;   // r1271 (CORE-03): дельта прошлой сессии не должна гасить EMA
+    emu_period_phase = 0; // r1350: дробный остаток периода — с чистого листа
 }
 
 // ---- единый выход из эмулятора: удержание ~0.9 с ----
@@ -710,7 +741,7 @@ exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    extern int gpgx_pal(void);   // r1180: регион из заголовка (gpgx vdp_pal)
+    extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
     if (sms_init_game(rom, size) != 1) {
         printf("SMS: init failed\n"); return;
@@ -718,7 +749,9 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
     // r1180: PAL-версии SMS идут 50 Гц (иначе ~20% быстрее и звук уплывает).
-    emu_set_period_us(gpgx_pal() ? 20000u : 16667u);
+    // r1350: период — из реального mclk ядра (16688/20120 мкс), иначе звук
+    // копится в кольце I2S: ровные 16667/20000 не совпадают с 59.9229/49.7015 Гц.
+    emu_set_period_us_ex(gpgx_frame_us_q16());
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -728,16 +761,29 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit:
+    // r1351: gpgx_stop() НЕ вызывался для SMS/GG/SG — blip-буферы ядра
+    // переживали выход, следующий emu_prepare сбрасывал bump-пул, и
+    // audio_init() новой сессии делал blip_delete/memset по переиспользованной
+    // памяти (порча чужих данных — вход в GG после Sega-системы падал).
+    {
+        extern void gpgx_stop(void);
+        gpgx_stop();
+    }
+    emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
     if (gg_init_game(rom, size) != 1) {
         printf("GG: init failed\n"); return;
     }
     printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00082030);   // тёмно-синий (GG)
+    // r1350: период НЕ выставлялся вовсе — наследовался от предыдущей системы
+    // (60/50 Гц от NTSC/PAL-игры или 20 мс от Amiga) → звук GG уезжал по темпу.
+    emu_set_period_us_ex(gpgx_frame_us_q16());
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -747,19 +793,24 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit:
+    {
+        extern void gpgx_stop(void);   // r1351: снять blip-буферы до сброса пула
+        gpgx_stop();
+    }
+    emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // r1190: SG-1000 — отдельный слой на ядре gpgx (TMS99xx VDP, 2 кнопки).
-    extern int gpgx_pal(void);   // регион из заголовка (как у SMS)
+    extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
     if (sg_init_game(rom, size) != 1) {
         printf("SG1000: init failed\n"); return;
     }
     printf("SG1000: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00141830);   // тёмно-синий (SG-1000)
-    emu_set_period_us(gpgx_pal() ? 20000u : 16667u);
+    emu_set_period_us_ex(gpgx_frame_us_q16());
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -769,7 +820,12 @@ void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit:
+    {
+        extern void gpgx_stop(void);   // r1351: снять blip-буферы до сброса пула
+        gpgx_stop();
+    }
+    emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -830,6 +886,10 @@ exit: emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
+    // r1351: указатель ядра не должен переживать сессию — пул сбрасывается
+    // следующим emu_prepare(), и deinit по затёртой памяти ронял вход в GBA
+    // после любой другой игры. Снимаем на ВЫХОДЕ (память ещё валидна), а
+    // страховка в gba_init_game лишь обнуляет непредвиденный остаток.
     emu_prepare();
     if (gba_init_game(rom, size) != 1) {
         printf("GBA: init failed\n"); return;
@@ -855,7 +915,14 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_period_us = saved_period; emu_audio_stop(); fb_clear(); fb_flush();
+exit:
+    // r1351: снять ядро mGBA, пока память bump-пула ещё валидна (следующий
+    // emu_prepare сбросит пул, и deinit по затёртой памяти уронил бы вход).
+    {
+        extern void gba_release_core(void);
+        gba_release_core();
+    }
+    emu_period_us = saved_period; emu_audio_stop(); fb_clear(); fb_flush();
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {

@@ -215,10 +215,11 @@ static int g_muted = 1;                    /* усилитель выключе�
 static int g_emulators_audio = 0;
 void i2s_emulators_audio(int on) { g_emulators_audio = on ? 1 : 0; }
 // Аудио-диагностика (разовые печати AUDIO-END/DBG-RST/TONE*/NES-AUD/LYNX-AUD и
-// GBA-строка в кадре). Выключена по умолчанию — в обычном образе UART не спамит.
-// r1084-СТЕНД: включено для снятия лога GBA-VID (RnRR белый экран при живом
-// звуке). После замера вернуть в 0 и пересобрать.
-static int g_audio_diag = 1;
+// GBA-строка в кадре). r1346 (Ш2.1): снова 0 — по правилу владельца в релизе
+// UART выводит только ошибки. Стендовые замеры r1084 закончены: блокирующий
+// UART (строка GBA каждый кадр) сам создавал провалы кольца, которые «показывал».
+// Для отладки включается i2s_audio_diag_set(1).
+static int g_audio_diag = 0;
 int  i2s_audio_diag(void)      { return g_audio_diag; }
 void i2s_audio_diag_set(int on){ g_audio_diag = on ? 1 : 0; }
 // r943: целевая высота кольца (пар) — уровень, до которого держит кольцо
@@ -274,6 +275,10 @@ static int pll_audio_enable(void) {
 // и при mute — не жжёт класс-D без полезного сигнала.
 // g_volume_pct читает только core0 (i2s_volume_pct/i2s_push_sample); CPU2 его
 // не использует — поэтому обычный BSS, не .coherent.
+// r1346 (Ш2.3): множитель громкости в формате 16.16 — в горячем цикле остаётся
+// одно умножение и сдвиг вместо деления на 100 (на A7 деление ~12-20 тактов,
+// а это по паре операций на КАЖДЫЙ сэмпл всех систем).
+static uint32_t g_vol_fp = (10u << 16) / 100u;   // 10% (дефолт g_volume_pct)
 static void i2s_apply_amp(void) {
     // Усилитель включён, только если громкость >0 И не замьючено.
     pa_dat_set(SD_PIN, (g_volume_pct > 0 && !g_muted) ? 1 : 0);
@@ -282,6 +287,7 @@ void i2s_volume(int p) {
     if (p < 0) p = 0;
     if (p > 100) p = 100;
     g_volume_pct = p;
+    g_vol_fp = ((uint32_t)p << 16) / 100u;
     i2s_apply_amp();
     printf("audio: volume=%d%%\n", p);
 }
@@ -320,10 +326,14 @@ void i2s_dc_bypass(int on) {
 #define I2S_RING_MAX_FILL 3200
 #define I2S_BACKPRESSURE_TIMEOUT_US 50000u
 static int i2s_ring_has_space(uint32_t need) {
+    // r1349: защита от unsigned underflow. При need > I2S_RING_MAX_FILL
+    // выражение (I2S_RING_MAX_FILL - need) в uint32 оборачивается, и функция
+    // ложно сообщала «место есть» для любого fill. Правка V3 аудита.
+    uint32_t allowed = (need <= I2S_RING_MAX_FILL) ? (I2S_RING_MAX_FILL - need) : 0;
     uint32_t wr = SRAM_RING_WR;
     uint32_t rd = SRAM_RING_RD;
     uint32_t fill = (wr - rd) & (AUDIO_RING_SIZE - 1);
-    return fill <= (I2S_RING_MAX_FILL - need);
+    return fill <= allowed;
 }
 // Ожидает, что в кольцо влезет `need` пар (не более MAX_FILL). Возвращает 1,
 // если место есть (или освободилось в таймаут), 0 — если таймаут (дроп).
@@ -372,10 +382,11 @@ void i2s_push_sample(int16_t left, int16_t right) {
     }
     // r914: реальная громкость — масштабируем сэмплы (прежде громкость только
     // включала/выключала PA10, поэтому «10%» звучало как максимум).
+    // r1346 (Ш2.3): множитель 16.16, без деления в горячем пути.
     // g_volume_pct читает core0 (продюсер), CPU2 не участвует.
     if (g_volume_pct != 100) {
-        left  = (int16_t)((int32_t)left  * g_volume_pct / 100);
-        right = (int16_t)((int32_t)right * g_volume_pct / 100);
+        left  = (int16_t)(((int32_t)left  * (int32_t)g_vol_fp) >> 16);
+        right = (int16_t)(((int32_t)right * (int32_t)g_vol_fp) >> 16);
     }
     ring_l()[wr] = left;
     ring_r()[wr] = right;
@@ -418,8 +429,9 @@ static uint32_t i2s_push_block_raw(const int16_t* pairs, uint32_t n) {
         if (next == SRAM_RING_RD) { g_drop_cnt += (n - written); break; }
         int16_t l = pairs[2 * written], r = pairs[2 * written + 1];
         if (g_volume_pct != 100) {
-            l = (int16_t)((int32_t)l * g_volume_pct / 100);
-            r = (int16_t)((int32_t)r * g_volume_pct / 100);
+            // r1346 (Ш2.3): 16.16-множитель, без деления на 100 в цикле.
+            l = (int16_t)(((int32_t)l * (int32_t)g_vol_fp) >> 16);
+            r = (int16_t)(((int32_t)r * (int32_t)g_vol_fp) >> 16);
         }
         ring_l()[wr] = l;
         ring_r()[wr] = r;
@@ -650,8 +662,13 @@ int i2s_poll_fill(void) {
             // 32-бит → каждый сэмпл в отдельном FIFO-слоте: сдвига бит нет.
             int32_t l = (int32_t)(int16_t)ring_l()[idx];
             int32_t r = (int32_t)(int16_t)ring_r()[idx];
+            // r1349: симметрия DC-блокера. Раньше правый канал обновлял оценку DC
+// (s_dc_lp_r) даже в bypass, а левый (s_dc_lp_l) — нет: после сброса паузы/
+// блокировки оценки расходились и на выходе появлялся разовый выброс.
+// В bypass НЕ обновляем оценку ни для одного канала — при возврате к ФВЧ
+// оба канала продолжают с согласованного состояния.
             s_dc_lp_l += bypass ? 0 : ((l - s_dc_lp_l) >> dcsh);   // оценка DC/низов (low-pass)
-            s_dc_lp_r += ((r - s_dc_lp_r) >> dcsh);
+            s_dc_lp_r += bypass ? 0 : ((r - s_dc_lp_r) >> dcsh);
             int32_t out_l = bypass ? l : (l - s_dc_lp_l);            // high-pass: in − lp
             int32_t out_r = bypass ? r : (r - s_dc_lp_r);
             I2S_FIFO_TX = (uint32_t)(uint16_t)(int16_t)out_l << 16;

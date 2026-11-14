@@ -71,7 +71,7 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 OBJ  := $(BUILD)/startup.o
 OBJ  += $(BUILD)/resampler44.o
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_mathx gpgx_missing gp_cheats))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_missing gp_cheats))
 OBJ  += $(BUILD)/gba_mgba_host.o
 OBJ  += $(BUILD)/gba_bios_data.o
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,mgba_gba_audio mgba_gba_bios mgba_gba_cheats mgba_gba_core mgba_gba_dma mgba_gba_gba mgba_gba_hle-bios mgba_gba_input mgba_gba_io mgba_gba_memory mgba_gba_overrides mgba_gba_savedata mgba_gba_serialize mgba_gba_sharkport mgba_gba_sio mgba_gba_timer mgba_gba_video mgba_gba_cart_ereader mgba_gba_cart_gpio mgba_gba_cart_matrix mgba_gba_cart_unlicensed mgba_gba_cart_vfame mgba_gba_cheats_codebreaker mgba_gba_cheats_gameshark mgba_gba_cheats_parv3 mgba_gba_renderers_cache-set mgba_gba_renderers_common mgba_gba_renderers_gl mgba_gba_renderers_software-bg mgba_gba_renderers_software-mode0 mgba_gba_renderers_software-obj mgba_gba_renderers_video-software mgba_gba_sio_gbp mgba_arm_arm mgba_arm_decoder-arm mgba_arm_decoder-thumb mgba_arm_decoder mgba_arm_isa-arm mgba_arm_isa-thumb mgba_core_bitmap-cache mgba_core_cache-set mgba_core_cheats mgba_core_config mgba_core_core mgba_core_directories mgba_core_input mgba_core_interface mgba_core_library mgba_core_lockstep mgba_core_log mgba_core_map-cache mgba_core_mem-search mgba_core_rewind mgba_core_serialize mgba_core_sync mgba_core_thread mgba_core_tile-cache mgba_core_timing mgba_util_audio-buffer mgba_util_audio-resampler mgba_util_circle-buffer mgba_util_configuration mgba_util_convolve mgba_util_crc32 mgba_util_elf-read mgba_util_formatting mgba_util_gbk-table mgba_util_geometry mgba_util_gui mgba_util_hash mgba_util_image mgba_util_interpolator mgba_util_md5 mgba_util_memory mgba_util_patch-fast mgba_util_patch-ips mgba_util_patch-ups mgba_util_patch mgba_util_ring-fifo mgba_util_sfo mgba_util_sha1 mgba_util_string mgba_util_table mgba_util_text-codec mgba_util_vector mgba_util_vfs mgba_util_vfs_vfs-fifo mgba_util_vfs_vfs-lzma mgba_util_vfs_vfs-mem mgba_gb_audio mgba_third-party_inih_ini))
@@ -1311,8 +1311,6 @@ $(BUILD)/snes_compat.o: $(TOP)h3_bare/cores/snes_compat.c | $(BUILD)
 $(BUILD)/fceumm_host.o: $(TOP)h3_bare/cores/fceumm/nes_host_fceumm.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/gpgx_host.o: $(TOP)h3_bare/cores/gpgx/system_gpgx_h3.c | $(BUILD)
-	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
-$(BUILD)/gpgx_mathx.o: $(TOP)h3_bare/cores/gpgx/gpgx_math.c | $(BUILD)
 	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/gpgx_missing.o: $(TOP)h3_bare/cores/gpgx/gpgx_missing.c | $(BUILD)
 	$(CC) $(GPGX_CFLAGS) $(INCLUDES) -c -o $@ $<

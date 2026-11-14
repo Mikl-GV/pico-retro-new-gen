@@ -284,8 +284,10 @@ extern "C" void snes_run_frame(void) {
 
         if (frames > 2048) frames = 2048;
         S9xMixSamples(sndbuf, frames << 1);   // отсчёты стерео
-        for (int i = 0; i < frames; i++)
-            i2s_push_sample(sndbuf[2 * i], sndbuf[2 * i + 1]);   // стерео → I2S
+        // r1346 (Ш2.2): одна пакетная подача вместо цикла push_sample.
+        // push_sample делает dsb на КАЖДУЮ пару (~800/кадр на NTSC), push_block —
+        // один барьер на блок. Формат идентичен: интерлив L,R парами.
+        i2s_push_block(sndbuf, (uint32_t)frames);
     }
 
     // Рендер: GFX.Screen → EMU_FB

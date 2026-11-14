@@ -282,9 +282,17 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     system_init();
     system_reset();
 
-    // Звук: PSG+FM синтез ядра. Вывод НЕ выполняется (i2s не подключён) —
-    // сэмплы дренятся в gpgx_audio_out, чтобы blip-буферы не переполнялись.
-    audio_init(48000, 60.0);
+    // Звук: PSG+FM синтез ядра, вывод — gpgx_audio_out() → i2s_push_block().
+    // r1346 (Ш1.1): framerate=0 — ядро (core/system.c: audio_set_rate) берёт
+    // mclk от system_clock (реальная частота региона: 59.92 NTSC / 49.70 PAL).
+    // Прежнее 60.0 жёстко фиксировало темп: PAL получал 800 пар/кадр вместо
+    // ~960, FM/PSG-ресемплер настраивался на неверный mclk → «ужасный» звук SEGA.
+    // r1351: без проверки результата при отказе blip_new (NULL) первый же
+    // blip_end_frame падал по NULL — теперь честный отказ вместо краха.
+    if (audio_init(48000, 0) != 0) {
+        printf("GPGX: audio init failed (blip alloc)\n");
+        return 0;
+    }
 
     g_loaded = 1;
     // применение читов, отмеченных в меню (загружены в rom_browser через cheats_load)
@@ -304,6 +312,11 @@ int gpgx_init_game(const uint8_t* rom, uint32_t size) {
 static void gpgx_audio_out(void) {
     static int16_t abuf[4096];
     int n = audio_update(abuf);
+    // r1349: защитный кламп (S6 аудита). abuf = 2048 стерео-пар; штатно за кадр
+    // набирается ~800..950 пар (48000/59.92 NTSC … 48000/49.70 PAL), но blip
+    // (blip_new(4800)) не знает про лимит буфера хоста — при гипотетическом
+    // перекосе сэмплов/кадр blip_read_samples записала бы за край abuf.
+    if (n > 2048) n = 2048;
     // r1139: пакетная подача одним push_block вместо цикла push_sample.
     // push_sample делает dsb (системный барьер) на КАЖДУЮ пару (~800/кадр на MD);
     // push_block — 1 ожидание места + 1 dsb на блок ~800 пар. Backpressure внутри
@@ -339,6 +352,12 @@ void gpgx_run_frame(void) {
 
 void gpgx_stop(void) {
     gp_cheats_clear();
+    // r1351: снимаем blip-буферы ядра ДО следующего gb_heap_reset(). Раньше
+    // указатели snd.blips[] переживали выход, пул перезапускался, и
+    // audio_init() следующей сессии делал blip_delete (memset/free) по
+    // переиспользованной памяти — порча чужих данных при смене системы.
+    extern void audio_shutdown(void);
+    audio_shutdown();
     g_loaded = 0;
     printf("GPGX: stopped\n");
 }
@@ -346,6 +365,27 @@ void gpgx_stop(void) {
 // r1180: регион для раннера SMS (emu.c) — vdp_pal выставляется gpgx по
 // заголовку картриджа (core/loadrom.c:1161), снаружи поля не видно.
 int gpgx_pal(void) { return vdp_pal ? 1 : 0; }
+
+// r1350: точный период кадра для throttle. С r1346 звук синтезируется по
+// реальному региональному mclk (audio_init(48000, 0) → system_clock), поэтому
+// throttle ОБЯЗАН идти с той же частотой кадра. Ровные 16667/20000 мкс
+// (60.00/50.00 Гц) не совпадают с реальными 59.9229/49.7015 Гц:
+//   NTSC: ядро даёт 801.0 пары/кадр, throttle забирает 800.0 → +1 пара/кадр
+//         копится в кольце I2S (~60 пар/с) → через минуту задержка/эхо, «тянется»;
+//   PAL:  ядро 965.8 пары/кадр против 960.0 → +6 пар/кадр → порог за ~11 с.
+// Период = M-циклы кадра / system_clock = MCYCLES_PER_LINE * строк / clock.
+uint32_t gpgx_frame_us(void) {
+    uint32_t lines = vdp_pal ? 313u : 262u;
+    return (uint32_t)((1000000ull * MCYCLES_PER_LINE * lines) / system_clock);
+}
+
+// r1350: тот же период в 16.16 мкс — дробная часть (16688.44 NTSC,
+// 20120.13 PAL) компенсируется накопителем в emu_throttle (emu_set_period_us_ex).
+uint32_t gpgx_frame_us_q16(void) {
+    uint32_t lines = vdp_pal ? 313u : 262u;
+    uint64_t num = (uint64_t)1000000u * MCYCLES_PER_LINE * lines;
+    return (uint32_t)((num << 16) / system_clock);
+}
 
 // ---- точка входа emu.c для Sega Mega Drive ----
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -360,7 +400,8 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
     // r1179: регион — из заголовка ROM. gpgx сам выставляет vdp_pal
     // (core/loadrom.c:1161, бит PAL в регионе), но throttle раньше всегда
     // держал 60 Гц, и PAL-версии шли ~на 20% быстрее и с уплывающим звуком.
-    emu_set_period_us(vdp_pal ? 20000u : 16667u);
+    extern uint32_t gpgx_frame_us_q16(void);
+    emu_set_period_us_ex(gpgx_frame_us_q16());
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -436,8 +477,6 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     config.left_border = 0;
     config.render = 0;
     config.no_sprite_limit = 0;
-    config.hq_fm = 0;
-    config.hq_psg = 0;
     config.filter = 0;   // r1141: «вывод как у эмулятора» — без low-pass/EQ ядра (llp/rrp не подмешивают DC)
     config.mono = 0;
     // r595: звуковые поля конфига (как в gpgx_init_game и первоисточнике
@@ -468,10 +507,15 @@ int gg_init_game(const uint8_t* rom, uint32_t size) {
     system_init();
     system_reset();
 
-    // Звук: PSG+FM синтез ядра; вывод НЕ выполняется (i2s не подключён).
+    // Звук: PSG+FM синтез ядра; вывод — gpgx_audio_out() (i2s_push_block).
     // audio_init обязателен: без него blips[0]==NULL и gg_run_frame падает
     // в blip_end_frame.
-    audio_init(48000, 60.0);
+    // r1351: поэтому результат ПРОВЕРЯЕМ — при отказе аллокации не запускаем
+    // игру с NULL-буфером (раньше падало в первом же кадре).
+    if (audio_init(48000, 0) != 0) {
+        printf("GPGX: audio init failed (blip alloc)\n");
+        return 0;
+    }
 
     g_loaded = 1;
 

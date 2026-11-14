@@ -189,8 +189,10 @@ extern "C" void coleco_run_frame(void) {
     if (col_snd_count > 0) {
         int n = col_snd_count;
         if (n > GC_AUDIO_BUFFER_SIZE) n = GC_AUDIO_BUFFER_SIZE;
-        for (int i = 0; i + 1 < n; i += 2)
-            i2s_push_sample(col_snd[i], col_snd[i + 1]);
+        // r1346 (Ш2.2): пакетная подача — буфер уже интерлив L,R, значит это
+        // ровно формат i2s_push_block (пара = два int16 подряд). Один барьер
+        // на кадр вместо dsb на каждую пару (~800/кадр).
+        i2s_push_block(col_snd, (uint32_t)(n >> 1));
     }
 
     // r0.194: перенос 256×192 в EMU_FB с pitch 320 построчно — иначе картинка
@@ -228,5 +230,9 @@ extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* ro
     }
 exit:
     coleco_stop();
+    // r1351: Coleco выходил БЕЗ emu_audio_stop() — кольцо I2S не сбрасывалось,
+    // статистика/флаг «идёт игра» оставались включёнными, fb_flip_set(0) не
+    // вызывался (в следующей системе/меню DE2 мог остаться на back-буфере).
+    emu_audio_stop();
     fb_clear(); fb_flush();
 }

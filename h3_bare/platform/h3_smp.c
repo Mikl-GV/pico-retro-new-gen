@@ -56,18 +56,28 @@ static uint32_t h3_psci_cpu_on(uint32_t cpu, uint32_t entry) {
 }
 
 // Трамплин в SRAM A1 (0x00000000). Ядро после сброса стартует отсюда:
-//   ldr sp, [pc, #4]   ; SP = 0x5FE01000
-//   ldr r0, [pc, #4]   ; r0 = entry (cpu1_entry в DRAM)
+//   ldr sp, [pc, #4]   ; SP = stack_top (свой для каждого вторичного ядра)
+//   ldr r0, [pc, #4]   ; r0 = entry (cpuN_entry в DRAM)
 //   bx  r0
-// После release опрашиваем SRAM-почту (0x20: magic). CPU1 ставит magic
+// После release опрашиваем SRAM-почту (0x20: magic). CPU ставит magic
 // первой инструкцией — SRAM вне кэшей, видимость гарантирована.
 // Если ядро не ожило — повторяем hold/release (до 5 попыток).
+//
+// r1347 (Ш3.3): SP раньше был жёстко 0x5FE01000 — SVC-стек CPU1 — для ОБОИХ
+// ядер. CPU2 после bx cpu2_entry сразу переставлял SP на 0x5FC01000, но до
+// первой инструкции C-пролога исключение (UND/ABT) ушло бы в обработчик
+// startup.S с чужим банком SP и затерло бы стек CPU1. Теперь у каждого ядра
+// свой стек, совпадающий с тем, что ставит его собственный пролог.
+#define CPU1_SVC_STACK 0x5FE01000u
+#define CPU2_SVC_STACK 0x5FC01000u
+
 static int h3_secondary_start(int cpu, uint32_t entry) {
+    const uint32_t stack_top = (cpu == 2) ? CPU2_SVC_STACK : CPU1_SVC_STACK;
     const uint32_t tramp[5] = {
         0xE59FD004u,
         0xE59F0004u,
         0xE12FFF10u,
-        0x5FE01000u,
+        stack_top,
         entry,
     };
     volatile uint32_t* s = (volatile uint32_t*)SUNXI_SRAM_A1_BASE;

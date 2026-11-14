@@ -263,10 +263,6 @@ uint16_t remap_get(int plat, int btn) {
     return g_map[plat][btn];
 }
 
-uint8_t remap_get_sc(int plat, int btn) {
-    return (uint8_t)(remap_get(plat, btn) & 0xFF);
-}
-
 void remap_set(int plat, int btn, uint16_t val) {
     if (plat < 0 || plat >= REMAP_PLAT_COUNT) return;
     if (btn < 0 || btn >= BTN_MAX) return;
@@ -385,26 +381,35 @@ static void write_uint(char* d, int* pos, int v) {
 }
 
 void remap_save(void) {
-    char buf[CFG_MAX];
+    // r1347 (Ш3.1): буфер cfg-файла — в BSS, не на стеке. Прежние 16 КБ
+    // char buf[CFG_MAX] ложились на SVC-стек core0 (0x60000000, растёт вниз);
+    // вызов из меню ремапа при глубоком стеке — риск наезда на банки исключений.
+    // Статический буфер безопасен: remap_save() вызывается только core0 и
+    // не реентерабелен (меню настроек).
+    static char sbuf[CFG_MAX];
+    char* buf = sbuf;
     int pl = 0;
     for (int p = 0; p < REMAP_PLAT_COUNT; p++) {
         for (int b = 0; b < BTN_MAX; b++) {
             uint16_t v = g_map[p][b];
             if (v == plat_specs[p].def[b]) continue;
             if (!v && !plat_specs[p].def[b]) continue;   // оба пустые — не пишем
-            if (pl > CFG_MAX - 64) break;   // страховка от переполнения (недостижима при 16 КБ)
-            const char* k = plat_specs[p].key; while (*k && pl < CFG_MAX - 2) buf[pl++] = *k++;
+            // r1347: общий guard записи — каждая строка ≤ ~40 байт; при
+            // остатке меньше 48 не начинаем новую (иначе buf[pl++] без проверки
+            // мог выйти за край на последней строке).
+            if (pl > CFG_MAX - 48) break;
+            const char* k = plat_specs[p].key; while (*k && pl < CFG_MAX - 48) buf[pl++] = *k++;
             buf[pl++] = '.';
-            k = btn_keys[b]; while (*k && pl < CFG_MAX - 2) buf[pl++] = *k++;
+            k = btn_keys[b]; while (*k && pl < CFG_MAX - 48) buf[pl++] = *k++;
             buf[pl++] = '=';
             int mod = v >> 8;
             if (mod & REMAP_MOD_SHIFT) {
-                const char* s = "SHIFT+"; while (*s && pl < CFG_MAX - 2) buf[pl++] = *s++;
+                const char* s = "SHIFT+"; while (*s && pl < CFG_MAX - 48) buf[pl++] = *s++;
             }
             // значение: имя клавиши (A, ENTER, UP...) вместо числа — понятнее
             const char* nm = key_sc_to_name((uint8_t)(v & 0xFF));
             if (nm) {
-                const char* s = nm; while (*s && pl < CFG_MAX - 2) buf[pl++] = *s++;
+                const char* s = nm; while (*s && pl < CFG_MAX - 48) buf[pl++] = *s++;
             } else {
                 write_uint(buf, &pl, (int)(v & 0xFF));
             }

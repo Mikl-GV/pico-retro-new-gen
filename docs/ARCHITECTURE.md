@@ -86,9 +86,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - `emu_scale_int(w, h)` — целочисленный множитель `min(1024/w, 600/h)`: пиксель
   исходника = N×N, поля по периметру. Бордюры заливаются только при смене
   геометрии/цвета полей (`emu_scale_int_invalidate()` из `emu_prepare`), в
-  остальные кадры `fb_flush` чистит лишь прямоугольник картинки. Сейчас не
-  используется ни одной системой (32X переведён на `emu_scale`, r1177) — оставлен
-  как откат для портативок
+  остальные кадры `fb_flush` чистит лишь прямоугольник картинки. Используется
+  Game Gear, Game Boy/GBC, GBA и Lynx (r1347; у 32X — `emu_scale`, r1177)
 - Период кадра консолей берётся из региона ядра (r1179..r1182): MD — `vdp_pal`,
   SMS — `gpgx_pal()`, SNES — `Settings.PAL`, NES — `FSettings.PAL`; 50 Гц —
   20000 мкс, 60 Гц — 16667 мкс (`emu_set_period_us`). 32X/5200/7800 — по выбору
@@ -137,8 +136,11 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
   `SYSTEM_SG` (`g_force_sg`), VDP встаёт в TMS99xx (`vdp_z80_data_w_sg`/`vdp_tms_ctrl_w`),
   порты — `z80_sg_port_*` (PSG+RAM+VDP), ввод — 2 кнопки (`io_reg[0x0F]=0xF5`),
   звук — PSG `PSG_DISCRETE`. Вход через `sg_init_game`/`sg_run_frame` → `emu_run_sg1000`.
-- Вспомогательные: `gpgx_math.c` (sin/cos/pow/log — инициализация таблиц звука),
-  `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки)
+- Вспомогательные: `gpgx_missing.c` (rf*/crc32/BIOS-пути/load_archive заглушки).
+  Математика (`sin/cos/pow/log/exp/sqrt/floor/ceil/fabs`) — настоящая newlib `-lm`
+  (самодельная `gpgx_math.c` удалена: её приближения переопределяли libm в ОБЪЕКТЕ
+  и через `--allow-multiple-definition` побеждали настоящую math во всей прошивке,
+  ломая FM-таблицы YM2612/YM2413 и звук PUAE — см. r1351).
 - Фикс Comix Zone: в `cart_hw/sram.c` отключён авто-SRAM для игр с `"COMIX ZONE"`
   в заголовке (2MB картридж без батарейки — авто-SRAM по умолчанию ломал зеркало ROM в `$200000`)
 
@@ -500,7 +502,7 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.frodo_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1244, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (актуально r1351, точные адреса из `nm build/h3_bare.elf`)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
@@ -511,16 +513,16 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40B2FD04 | `.text` + init_array (≈ 11.2 МБ); векторы `_vectors`=0x40000000; r1243: PUAE удалён — текст похудел |
+| 0x40000000..0x40BBFFF8 | `.text` + init_array (≈ 14.7 МБ, r1351); векторы `_vectors`=0x40000000 |
 | 0x40B2FD04..0x4106A4A0 | свободно (линкер перераспределил: .data сразу после .text) |
 | 0x4106A4A0..0x415A4F3C | `.data` (≈ 5.22 МБ, копируется из образа; внутри вшиты Kickstart 1.3 и Workbench 1.3 — `puae_kick13_rom` 0x413AC4C4, `puae_wb13_adf` 0x413EC4C4) |
-| 0x415A5000..0x44B40850 | `.bss` (`_bstart1.._bend1`, ≈ 55.6 МБ, обнуляется в `startup.S`; r1243: без PUAE-статиков меньше) |
+| 0x41353000..0x449BD5A0 | `.bss` (`_bstart1.._bend1`, ≈ 54.3 МБ, обнуляется в `startup.S`; r1351) |
 | 0x4A400000..0x4A402FC0 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
 | 0x4BF00000..0x4EF00000 | **sbrk-арена** (`_sbrk`, 48 МБ) — newlib (r1243: PUAE-аллокатора больше нет); `SBRK_LIMIT=0x4EF00000` |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер браузера ROM (24 МБ). Аркады используют этот же адрес как 92-МБ zip-буфер (`cps1_host.cpp:112`), поэтому «24 МБ» — граница только для `rom_browser.c`, не физическая |
-| 0x52000000..0x524A77B8 | `.frodo_bss` (≈ 4.65 МБ, NOLOAD, r1284) — BSS C64 (Frodo, `Retro_Screen` 4 МБ); обнуляется в `startup.S` (до r1284 — `.vice_bss`, VICE, ~31 МБ) |
+| 0x52000000..0x524A78A0 | `.frodo_bss` (≈ 4.65 МБ, NOLOAD, r1284/r1347) — BSS C64 (Frodo, `Retro_Screen` 4 МБ); обнуляется в `startup.S` (до r1284 — `.vice_bss`, VICE, ~31 МБ) |
 | 0x53E00000..0x53E002DC | `.fs_bss` (r1010, NOLOAD) — ЕДИНЫЙ файловый слой прошивки `cores/fs_layer.c` (r1014: вынесен из `atari800/a8_fs.c`; глобальные `fopen/fread/open/stat` + слоты `g_files`/`g_rom_*`/`g_fd_*`); слоты валидируются magic `0xA85A5A5A` (r1011), `setvbuf`/`setbuf` перехвачены как no-op; `atari800/a8_fs.c` — мост `a8_fs_register`→`fs_register`; обнуляется в `startup.S` |
 | **0x54000000..0x5A000000** | **`.noinit_fbn` (NOLOAD, 96 МБ, r1191)** — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc`; `_hend`=0x5A000000; ASSERT ≤0x5C000000 |
 | 0x5F000000..0x5F1D7310 | `.a8_bss` (r778, ≈ 1.84 МБ, NOLOAD) — BSS Atari 800; обнуляется в `startup.S` |
@@ -543,7 +545,7 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 `.fs_bss` 0x2DC (r1010, файловый слой fs_layer.c; 0x53E00000..0x53E002DC),
 `.frodo_bss` — 0x4A77B8 (≈4.65 МБ), 0x52000000..0x524A77B8, NOLOAD (r1284;
 до r1284 — `.vice_bss`, ≈29.6 МБ, r974).
-Образ `h3_bare.bin` ≈20.0 МБ (r1284; r1241 было ≈34.6 МБ — PUAE удалён).
+Образ `h3_bare.bin` = 20 261 548 Б (r1351; r1241 было ≈34.6 МБ — PUAE удалён).
 
 ## Загрузочная карта памяти (r502)
 
@@ -620,7 +622,7 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   CPC (8 «готово-консольных», см. отдельно), остальные — см. `docs/ROADMAP.md`.
   C64 — READY (Frodo, r1284), Atari 8-bit — READY (r975 звук).
 
-### Звук (актуально, r1244)
+### Звук (актуально, r1351)
 
 Вывод звука **возвращён** (r895..r902, решение владельца отменяет r777):
 `i2s.c` — рабочий слой (ring в SRAM A1 → CPU2 доливает TX FIFO,

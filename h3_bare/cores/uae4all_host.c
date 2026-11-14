@@ -208,12 +208,12 @@ static uint16_t hid_to_retrok(uint8_t sc) {
     case 0x35: return RETROK_BACKQUOTE;  case 0x36: return RETROK_COMMA;
     case 0x37: return RETROK_PERIOD;     case 0x38: return RETROK_SLASH;
     case 0x39: return RETROK_CAPSLOCK;
-    case 0x4a: return RETROK_HOME; case 0x4b: return RETROK_UP;
-    case 0x4c: return RETROK_PAGEUP; case 0x4d: return RETROK_LEFT;
-    case 0x4e: return RETROK_RIGHT;  case 0x4f: return RETROK_END;
-    case 0x50: return RETROK_DOWN;   case 0x51: return RETROK_PAGEDOWN;
-    case 0x52: return RETROK_INSERT; case 0x53: return RETROK_DELETE;
-    case 0x54: return RETROK_SYSREQ;
+    case 0x49: return RETROK_INSERT;    case 0x4a: return RETROK_HOME;
+    case 0x4b: return RETROK_PAGEUP;    case 0x4c: return RETROK_DELETE;
+    case 0x4d: return RETROK_END;       case 0x4e: return RETROK_PAGEDOWN;
+    case 0x4f: return RETROK_RIGHT;     case 0x50: return RETROK_LEFT;
+    case 0x51: return RETROK_DOWN;      case 0x52: return RETROK_UP;
+    case 0x53: return RETROK_SYSREQ;
     // r1251: функциональные клавиши (Amiga F1..F10 и расширенные F11/F12).
     case 0x3a: return RETROK_F1;   case 0x3b: return RETROK_F2;
     case 0x3c: return RETROK_F3;   case 0x3d: return RETROK_F4;

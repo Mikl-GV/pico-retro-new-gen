@@ -181,9 +181,13 @@ extern "C" void a5200_run_frame(void) {
     {
         extern void (*POKEYSND_Process_ptr)(void *sndbuffer, int sndn);
         static int16_t a5buf[1024];
+        static int16_t a5st[800 * 2];   // r1346 (Ш2.2): моно→стерео, одна подача блоком
         if (POKEYSND_Process_ptr)
             POKEYSND_Process_ptr(a5buf, 800);
-        for (int i = 0; i < 800; i++)
-            i2s_push_sample(a5buf[i], a5buf[i]);   // моно → стерео
+        for (int i = 0; i < 800; i++) {
+            a5st[2 * i] = a5buf[i];
+            a5st[2 * i + 1] = a5buf[i];
+        }
+        i2s_push_block(a5st, 800);     // один dsb на кадр вместо 800
     }
 }

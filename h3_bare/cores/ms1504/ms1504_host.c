@@ -480,6 +480,10 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 
     running = 0;
+    // r1351: не вызывался emu_audio_stop() — кольцо I2S не сбрасывалось после
+    // выхода (хвост «доезжал» в меню/следующую игру), статистика и флаг
+    // «идёт игра» оставались включёнными, DE2 не возвращался на штатный буфер.
+    emu_audio_stop();
     fb_clear(); fb_flush();
     printf("MS1504: exit\n");
 }

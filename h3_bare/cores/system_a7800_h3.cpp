@@ -207,6 +207,12 @@ extern "C" void a7800_run_frame(void) {
         rs_phase += 42926u;
     }
     rs_phase &= 0xFFFFu;                       // сохранить дробную часть на след. кадр
-    for (int i = 0; i < o; i++)
-        i2s_push_sample(out[i], out[i]);       // моно → стерео
+    // r1346 (Ш2.2): моно→стерео в отдельный буфер и одна подача блоком
+    // (один dsb на кадр вместо ~800). Формат пар L,R идентичен push_sample.
+    static int16_t out_st[880 * 2];
+    for (int i = 0; i < o; i++) {
+        out_st[2 * i] = out[i];
+        out_st[2 * i + 1] = out[i];
+    }
+    if (o > 0) i2s_push_block(out_st, (uint32_t)o);
 }

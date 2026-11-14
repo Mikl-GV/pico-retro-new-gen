@@ -169,6 +169,18 @@ static int g_loaded = 0;
 static uint32_t g_keys = 0;
 static u32 g_gba_pairs = 0;
 
+// r1351: снять ядро ДО сброса bump-пула. emu_prepare() (gb_heap_reset) идёт
+// раньше gba_init_game, поэтому g_core к этому моменту уже указывал на
+// затёртую память — прежний g_core->deinit(g_core) вызывал vtable по мусору
+// и ронял вход в GBA после любой другой игры (как r904 для GL/GB/Lynx).
+void gba_release_core(void) {
+    if (g_core) {
+        g_core->deinit(g_core);
+        g_core = NULL;
+    }
+    g_loaded = 0;
+}
+
 // Тихий логгер для вендорного mGBA-ядра. Пока не зарегистрирован дефолтный
 // логгер, mLog() (core/log.c:114) при `_defaultLogger == NULL` падает в ветку
 // `printf("%s: ", ...)` и спамит UART ("GBA BIOS: SWI ...", "GBA DMA: Starting").
@@ -229,8 +241,11 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     // логгер (см. core/log.c:114). Гасим его тихой функцией — UART не спамим.
     mLogSetDefaultLogger(&gba_mgba_logger);
 
+    // r1351: указатель мог остаться от прошлой сессии, но память пула уже
+    // сброшена emu_prepare() — deinit по ней запрещён. Освободил
+    // gba_release_core() ДО emu_prepare (emu.c), здесь только страховка.
     if (g_core) {
-        g_core->deinit(g_core);
+        printf("GBA: stale core pointer without release\n");
         g_core = NULL;
     }
 
