@@ -48,6 +48,24 @@ void a8_retro_deinit(void);
 // a8_fs.c: регистрация ROM-буфера под путём (для retro_vfs_fopen->fopen)
 void a8_fs_register(const char* path, const void* data, uint32_t size);
 
+// r1363: hot-swap дискеты ATR в D1: без сброса машины. SIO_Mount сам
+// размонтирует предыдущий образ и возвращает TRUE при успехе.
+extern int  a8_SIO_Mount(int diskno, const char* filename, int b_open_readonly);
+extern void a8_SIO_Dismount(int diskno);
+
+static int a8_disk_insert(int drive, const char* path, const uint8_t* data,
+                          uint32_t size, const char* name)
+{
+    (void)path; (void)drive;
+    if (!data || size == 0 || !name) return -1;
+    a8_fs_register(name, data, size);
+    return a8_SIO_Mount(1, name, 0) ? 0 : -1;
+}
+
+static const emu_disk_ops_t g_ops_a8 = {
+    1, "atr;xfd;dcm;atx", 1, a8_disk_insert
+};
+
 // Эмуляция Atari 8-bit: карта кнопок — как в ядре (descriptors_a800)
 #define EMU_FB_ADDR 0x5F800000u
 #define EMU_FB_W    320
@@ -140,8 +158,8 @@ static void host_update_input(void)
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
     if (sp & 0x0008) j |= (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-    if (sp & 0x0010) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);      // Fire 1
-    if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_B);      // Fire 2
+    if (sp & 0x0010) j |= (1u << RETRO_DEVICE_ID_JOYPAD_B);      // Fire 1 (ядро: B)
+    if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);      // Fire 2 (ядро: A)
     if (sp & 0x0040) j |= (1u << RETRO_DEVICE_ID_JOYPAD_Y);      // Space/Fire 3
     if (sp & 0x0100) j |= (1u << RETRO_DEVICE_ID_JOYPAD_X);      // Return
     if (sp & 0x0800) j |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT); // Console Select
@@ -344,8 +362,10 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_set_border_color(0x00061428);   // тёмно-синий (A8)
     emu_throttle_reset();
     emu_esc_hold_reset();
+    emu_disk_register(&g_ops_a8);
 
     for (;;) {
+        emu_disk_poll();   /* r1363: F12 — до a8_retro_run, иначе уйдёт в машину */
         a8_retro_run();
         emu_throttle();
         emu_scale(320, 240);

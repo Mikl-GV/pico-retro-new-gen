@@ -306,6 +306,19 @@ bool retro_load_game(const struct retro_game_info *info)
    return true;
 }
 
+// r1363: hot-swap диска в приводе 8..11 без сброса C64 (F12 на host-слое).
+// Образ уже зарегистрирован в fs_layer под путём name, поэтому привод
+// открывает его как обычный файл. Тип IEC здесь неполный — саму замену
+// делает frodo_iec_swap_drive() из IEC.cpp.
+extern "C" int frodo_iec_swap_drive(void *iec, int unit, const char *path);
+
+extern "C" int frodo_swap_drive(int unit, const char *path)
+{
+   if (!TheC64 || !TheC64->TheIEC || !path)
+      return -1;
+   return frodo_iec_swap_drive((void*)TheC64->TheIEC, unit, path);
+}
+
 void retro_unload_game(void){
 
    pauseg=0;

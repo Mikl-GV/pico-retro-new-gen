@@ -518,6 +518,7 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x4106A4A0..0x415A4F3C | `.data` (≈ 5.22 МБ, копируется из образа; внутри вшиты Kickstart 1.3 и Workbench 1.3 — `puae_kick13_rom` 0x413AC4C4, `puae_wb13_adf` 0x413EC4C4) |
 | 0x41353000..0x449BD5A0 | `.bss` (`_bstart1.._bend1`, ≈ 54.3 МБ, обнуляется в `startup.S`; r1351) |
 | 0x4A400000..0x4A402FC0 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
+| 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
 | 0x4BF00000..0x4EF00000 | **sbrk-арена** (`_sbrk`, 48 МБ) — newlib (r1243: PUAE-аллокатора больше нет); `SBRK_LIMIT=0x4EF00000` |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
@@ -632,7 +633,8 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   каталога.
 - **Apple II+** (`h3_bare/cores/agat_host.c`, r1360) — то же ядро Agat
   Emulator, тип `SYSTEM_P` (в `init_system_state` сходится к `SYSTEM_A`):
-  6502 1.0205 МГц, NTSC 60 Гц, 48K, кадр видео 560×384 (PIX_W*280 ×
+  6502 1.0205 МГц, NTSC 60 Гц, 64K (48K + 16K языковая карта в слоте 0,
+  `DEV_MEMORY_XRAMA`, r1364), кадр видео 560×384 (PIX_W*280 ×
   PIX_H*192), аспект 4:3. Вшиты (`.incbin` в `agat_roms.S`): Applesoft/монитор
   12 КБ (`apple2p.rom`, байт в байт с `Apple2_Plus.rom` AppleWin), знакогенератор
   (`apple2.fnt`), ПЗУ Disk II 16 секторов (`shugarta.rom`, = `DISK2.rom`).
@@ -642,6 +644,16 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   по единичному биту, как `LDA $C0EC / BPL` в Disk II ROM); TEAC-контроллер
   Apple II не нужен и отключён. Клавиатура — ASCII (`$C000`, бит 7 — строб),
   пад — порт джойстика `$C061/$C062/$C064/$C065`.
+- **Hot-swap дискет (F12, r1363)** — `cores/disk_swap.c`. Хост регистрирует
+  `emu_disk_ops_t` (число приводов, расширения, `in_memory`, callback вставки)
+  и зовёт `emu_disk_poll()` в начале кадра до чтения клавиатуры. F12 открывает
+  оверлей: выбор привода (если >1) и списка образов каталога, откуда запущена
+  игра (`emu_disk_set_dir` из `rom_browser.c`). Файл читается в `.swap_buf`
+  (только при `in_memory`) либо ядру отдаётся путь; после закрытия клавиши
+  дожидаются отпускания. Подключены: Apple II+/Агат (Agat FDD), Fuse (disk
+  control), CPC (`cpc_dsk_load`), C64 (`IEC::SwapDrive`), UAE4All
+  (`amiga_swap_disk`), Atari 800 (`SIO_Mount`). MS1504/Enterprise/MSX/BK
+  образов дисков не используют.
 - **Плановые компьютеры** (в `systems.h`, ядер в дереве нет): CPC (8 «готово-консольных», см. отдельно), остальные — см. `docs/ROADMAP.md`.
   C64 — READY (Frodo, r1284), Atari 8-bit — READY (r975 звук).
 

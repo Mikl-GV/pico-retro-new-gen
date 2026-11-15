@@ -52,6 +52,24 @@ void frodo_retro_get_system_av_info(struct retro_system_av_info*);
 // Единый файловый слой: fs_register заставляет fopen(путь) отдавать ROM-буфер.
 void fs_register(const char* path, const void* data, uint32_t size);
 
+// r1363: hot-swap диска через привод Frodo (IEC::SwapDrive).
+int frodo_swap_drive(int unit, const char* path);
+
+static int frodo_disk_insert(int drive, const char* path, const uint8_t* data,
+                             uint32_t size, const char* name)
+{
+    (void)path;
+    if (!data || size == 0 || !name || drive < 0 || drive > 1) return -1;
+    /* Привод открывает образ обычным fopen — подкладываем буфер в fs_layer
+       под именем файла и меняем объект привода (машина не сбрасывается). */
+    fs_register(name, data, size);
+    return frodo_swap_drive(drive, name);
+}
+
+static const emu_disk_ops_t g_ops_frodo = {
+    2, "d64;t64;x64;p00;zip", 1, frodo_disk_insert
+};
+
 // ---- ROM: путь из rom_browser (имя файла), буфер в ROM_BUF ----
 static char     g_path[160] = "game.d64";
 static uint16_t g_joy = 0;
@@ -128,13 +146,10 @@ static void host_update_input(void)
     if (sp & 0x0002) j |= (1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
     if (sp & 0x0004) j |= (1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
     if (sp & 0x0008) j |= (1u << RETRO_DEVICE_ID_JOYPAD_RIGHT);
-    if (sp & 0x0010) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);      // Fire (joy)
-    if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_B);      // Fire 2
-    if (sp & 0x0040) j |= (1u << RETRO_DEVICE_ID_JOYPAD_X);      // Space
-    if (sp & 0x0080) j |= (1u << RETRO_DEVICE_ID_JOYPAD_START);  // Return
-    if (sp & 0x0800) j |= (1u << RETRO_DEVICE_ID_JOYPAD_SELECT); // VKBD toggle
-    if (sp & 0x0200) j |= (1u << RETRO_DEVICE_ID_JOYPAD_L);      // Run/Stop
-    if (sp & 0x0400) j |= (1u << RETRO_DEVICE_ID_JOYPAD_R);      // Reset
+    if (sp & 0x0010) j |= (1u << RETRO_DEVICE_ID_JOYPAD_A);      // Fire
+    if (sp & 0x0020) j |= (1u << RETRO_DEVICE_ID_JOYPAD_B);      // правая кнопка мыши
+    // Остальные кнопки пада ядро Frodo не читает (ни джойстик, ни VKBD):
+    // X/Start/Select/L/R здесь не маппим, чтобы не создавать ложных ожиданий.
     g_joy = j;
 }
 
@@ -403,10 +418,12 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_set_period_us(20000);   // 50 Гц PAL (C64)
     emu_throttle_reset();
     emu_esc_hold_reset();
+    emu_disk_register(&g_ops_frodo);
 
     uint32_t perf_t0 = h3_hs_timer_lo_us();
     uint32_t perf_frames = 0;
     for (;;) {
+        emu_disk_poll();   /* r1363: F12 — до frodo_retro_run, иначе уйдёт в машину */
         frodo_retro_run();
         emu_throttle();
         fb_flush();

@@ -86,6 +86,19 @@ SECTIONS
   }
   ASSERT(SIZEOF(.noinit_fbn) <= 0x08000000, "ERROR: .noinit_fbn > 128 МБ (0x54000000..0x5C000000)")
 
+  /* r1363: буфер hot-swap дискет (disk_swap.c, 2 МБ). В общий .bss его класть
+   * нельзя — он упирается в ZIP_BUF_BIG аркад (ASSERT ниже). Зона
+   * 0x4A420000..0x4A700000 свободна: выше L1-таблиц LPAE (до 0x4A420000),
+   * ниже .gb_heap. NOLOAD: в образ не входит, содержимое всегда заполняется
+   * из файла перед вставкой. Владелец — disk_swap.c, один на все системы. */
+  .swap_buf 0x4A420000 (NOLOAD) : {
+    _swap_buf_start = .;
+    *(.swap_buf)
+    . = ALIGN(4);
+    _swap_buf_end = .;
+  }
+  ASSERT(_swap_buf_end <= 0x4A700000, "ERROR: .swap_buf overflow (0x4A420000..0x4A700000 — до .gb_heap)")
+
   /* Когерентная область — VMA ЖЁСТКО 0x4A400000 (DMA-структуры OHCI, звуковое
    * кольцо, флаги CPU2). Атрибуты НЕ меняются: mmu_mark_uncached с r1206 —
    * намеренный no-op (non-cacheable ломает OHCI), область остаётся write-back,

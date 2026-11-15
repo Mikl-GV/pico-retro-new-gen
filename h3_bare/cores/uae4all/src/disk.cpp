@@ -818,7 +818,7 @@ void disk_insert (int num, const char *name)
     {
     	drive *drv = floppy + num;
     	if (name[0] == 0) {
-		disk_eject (num);
+	disk_eject (num);
     	} else if (!drive_empty(drv) || drv->dskchange_time > 0) {
 		drive_eject (drv);
 		/* set dskchange_time, disk_insert() will be
@@ -832,6 +832,18 @@ void disk_insert (int num, const char *name)
 		drive_insert (drv, num, name);
     	}
     }
+}
+
+/*
+ *  r1363: hot-swap образа в DF0: без задержки и с проверкой результата.
+ *  Вызывается host-слоем по F12; имя уже зарегистрировано в fs_layer.
+ */
+extern "C" int amiga_swap_disk(const char *name)
+{
+    if (!name || !name[0])
+	return -1;
+    drive_eject (&floppy[0]);
+    return drive_insert (&floppy[0], 0, name) ? 0 : -1;
 }
 
 void DISK_GUI_change (void)

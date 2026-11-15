@@ -61,6 +61,9 @@ void fuse_set_model(const char* m) { if (m && m[0]) g_model = m; }
 // статичен в ядре, валиден весь сеанс).
 static const struct retro_variable* g_core_vars = 0;
 
+// r1363: hot-swap дискет через штатный libretro disk control ядра.
+static const struct retro_disk_control_ext_callback* g_disk_cb = 0;
+
 // r0.226: вернуть ДЕФОЛТ опции (первое значение после "; ") из списка ядра.
 // Раньше отдавали "" — ядро делает atoi("")=0 для fuse_emulation_speed →
 // эмуляция на 0% → звук вне диапазона → some_audio не ставится → retro_run
@@ -288,7 +291,11 @@ static bool host_environment(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_SET_MESSAGE:              return true;
     case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:          return true;
     case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:     return true;
-    case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: return true;
+    case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE:
+        /* r1363: держим указатель на callbacks ядра — через них меняем диск
+           по F12 без сброса машины (см. fuse_disk_insert). */
+        g_disk_cb = (const struct retro_disk_control_ext_callback*)data;
+        return true;
     case RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL:    return true;
     case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: { unsigned* v = (unsigned*)data; if (v) *v = 1; return true; }
     case RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION: { unsigned* v = (unsigned*)data; if (v) *v = 1; return true; }
@@ -299,6 +306,36 @@ static bool host_environment(unsigned cmd, void* data)
     default: return false;
     }
 }
+
+// ---- r1363: hot-swap дискеты по F12 ----
+// Ядро Fuse читает образ само (utils_open_file), поэтому передаём путь и
+// пользуемся его disk control API: извлечь -> положить путь в слот 0 ->
+// выбрать слот -> вставить. Сброса машины нет (disk_control_insert_current
+// вызывает utils_open_file с autoload=0). Работает на машинах с активным
+// дисковым интерфейсом (+3, Beta128, Disciple, PlusD, Opus).
+static int fuse_disk_insert(int drive, const char* path, const uint8_t* data,
+                            uint32_t size, const char* name)
+{
+    struct retro_game_info gi;
+
+    (void)data; (void)size; (void)name;
+    if (drive != 0 || !g_disk_cb || !g_disk_cb->set_eject_state || !path) return -1;
+
+    if (!g_disk_cb->set_eject_state(true)) return -1;
+    if (g_disk_cb->get_num_images && g_disk_cb->get_num_images() == 0) {
+        if (!g_disk_cb->add_image_index || !g_disk_cb->add_image_index()) return -1;
+    }
+    memset(&gi, 0, sizeof(gi));
+    gi.path = path;
+    if (!g_disk_cb->replace_image_index || !g_disk_cb->replace_image_index(0, &gi))
+        return -1;
+    if (!g_disk_cb->set_image_index || !g_disk_cb->set_image_index(0)) return -1;
+    return g_disk_cb->set_eject_state(false) ? 0 : -1;
+}
+
+static const emu_disk_ops_t g_ops_fuse = {
+    1, "dsk;trd;scl;ipf;dck", 0, fuse_disk_insert
+};
 
 // ---- выход по ESC-удержанию (как у остальных ядер) ----
 
@@ -459,8 +496,10 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_esc_hold_reset();
     g_fuse_exit_req = 0;
     g_fuse_esc_t0 = 0;
+    emu_disk_register(&g_ops_fuse);
 
     for (;;) {
+        emu_disk_poll();   /* r1363: F12 — до fuse_retro_run, иначе уйдёт в машину */
         fuse_retro_run();
         emu_throttle();
         emu_scale(EMU_FB_W, EMU_FB_H);

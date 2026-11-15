@@ -139,6 +139,8 @@ public:
 	void Reset(void);
 	void NewPrefs(Prefs *prefs);
 	void UpdateLEDs(void);
+	// r1363: замена образа в приводе без сброса C64 (hot-swap по F12).
+	bool SwapDrive(int unit, const char *path);
 
 	uint8 Out(uint8 byte, bool eoi);
 	uint8 OutATN(uint8 byte);

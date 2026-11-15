@@ -499,7 +499,7 @@ int  fdd1_init(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*st, struct SLOTCON
 		name = sys_get_parameter(buf);
 		if (!name) name = cf->cfgstr[CFG_STR_DRV_IMAGE1];
 		strcpy(data->drives[0].disk_name, name);
-		open_fdd1(data->drives, name, cf->cfgint[CFG_INT_DRV_RO_FLAGS] & 1, 0);
+		if (name[0]) open_fdd1(data->drives, name, cf->cfgint[CFG_INT_DRV_RO_FLAGS] & 1, 0);
 	}
 	if (cf->cfgint[CFG_INT_DRV_TYPE2] == DRV_TYPE_SHUGART) {
 		data->drives[1].present = 1;
@@ -507,7 +507,8 @@ int  fdd1_init(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*st, struct SLOTCON
 		name = sys_get_parameter(buf);
 		if (!name) name = cf->cfgstr[CFG_STR_DRV_IMAGE2];
 		strcpy(data->drives[1].disk_name, name);
-		open_fdd1(data->drives+1, name, cf->cfgint[CFG_INT_DRV_RO_FLAGS] & 2, 1);
+		/* r1363: пустой IMAGE2 — привод есть, диск вставится по F12. */
+		if (name[0]) open_fdd1(data->drives+1, name, cf->cfgint[CFG_INT_DRV_RO_FLAGS] & 2, 1);
 	}
 	data->initialized = 1;
 	fill_read_proc(st->baseio_sel, 1, fdd_io_read, data);
@@ -1078,6 +1079,24 @@ static void fdd_load_track(struct FDD_DATA*data)
 	drv->TrackLen = sizeof(drv->TrackData);
 	drv->Rotated = 0;
 //	data->time = 0;
+}
+
+/* r1363: hot-swap образа в приводе без сброса машины. Вызывающий уже
+   обновил ag_disk_image/ag_disk_name (agat_set_disk_image); здесь
+   переоткрываем поток привода и загружаем текущую дорожку. */
+int fdd1_swap(struct SYS_RUN_STATE* sr, int slot, int drive, const char* name)
+{
+	struct FDD_DATA* data;
+
+	if (!sr || slot < 0 || slot >= NCONFTYPES || drive < 0 || drive > 1) return -1;
+	data = (struct FDD_DATA*)sr->slots[slot].data;
+	if (!data || !data->drives[drive].present) return -1;
+
+	data->drv = drive;
+	if (open_fdd1(&data->drives[drive], name, 1, drive) != 0) return -1;
+	data->drives[drive].dirty = 1;
+	fdd_load_track(data);
+	return 0;
 }
 
 

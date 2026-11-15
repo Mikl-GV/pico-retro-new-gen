@@ -49,6 +49,28 @@ void cpc_retro_get_system_av_info(struct retro_system_av_info*);
 // cpc_fs.c: регистрация ROM-буфера под путём (для rfopen)
 void cpc_fs_register(const char* path, const void* data, uint32_t size);
 
+// r1363: hot-swap дискеты через штатный dsk_load (slots.c) без сброса
+// машины. Символы ядра переименованы cpc_rename.sh в cpc_*; t_drive для
+// хоста — непрозрачный объект (адреса cpc_driveA/B), поэтому void*.
+int  cpc_dsk_load(char* path, void* drive, char id);
+extern char cpc_driveA[], cpc_driveB[];
+
+static int cpc_disk_insert(int drive, const char* path, const uint8_t* data,
+                           uint32_t size, const char* name)
+{
+    (void)path;
+    if (!name || !data || size == 0 || drive < 0 || drive > 1) return -1;
+    /* cpc_fs отдаёт rfopen только зарегистрированный буфер, поэтому
+       перерегистрируем образ под его именем перед dsk_load. */
+    cpc_fs_register(name, data, size);
+    return cpc_dsk_load((char*)name, drive ? (void*)cpc_driveB : (void*)cpc_driveA,
+                        drive ? 'B' : 'A');
+}
+
+static const emu_disk_ops_t g_ops_cpc = {
+    2, "dsk", 1, cpc_disk_insert
+};
+
 // ---- ROM: путь из rom_browser (имя файла), буфер в ROM_BUF ----
 static char     g_path[160] = "game.sna";
 static uint16_t g_joy = 0;
@@ -407,8 +429,10 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_set_border_color(0x00060812);
     emu_throttle_reset();
     emu_esc_hold_reset();
+    emu_disk_register(&g_ops_cpc);
 
     for (;;) {
+        emu_disk_poll();   /* r1363: F12 — до cpc_retro_run, иначе уйдёт в машину */
         cpc_retro_run();
         emu_throttle();
         fb_flush();   // host_video уже пишет в HDMI FB (1024x600)

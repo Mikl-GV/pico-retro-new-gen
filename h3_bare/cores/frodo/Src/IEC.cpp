@@ -161,6 +161,45 @@ void IEC::NewPrefs(Prefs *prefs)
 
 
 /*
+ *  r1363: hot-swap образа в приводе 8..11 без сброса C64. Старый объект
+ *  привода удаляется (закрывает файл и каналы), новый создаётся по пути;
+ *  активные listener/talker сбрасываются, чтобы не остались висеть на
+ *  освобождённом объекте. Машина продолжает работу с новым диском.
+ */
+
+bool IEC::SwapDrive(int unit, const char *path)
+{
+	if (unit < 0 || unit > 3 || path == NULL)
+		return false;
+
+	if (listener == drive[unit]) {
+		listener = NULL;
+		listener_active = false;
+	}
+	if (talker == drive[unit]) {
+		talker = NULL;
+		talker_active = false;
+	}
+
+	delete drive[unit];
+	drive[unit] = NULL;	// важно: UpdateLEDs зовётся из конструктора привода
+	drive[unit] = create_drive(path);
+	UpdateLEDs();
+	return drive[unit] != NULL;
+}
+
+
+/* r1363: C-вход для libretro-core.cpp — там тип IEC неполный (C64.h даёт
+ * только forward declaration), поэтому замена идёт через этот мост. */
+extern "C" int frodo_iec_swap_drive(void *iec, int unit, const char *path)
+{
+	if (!iec)
+		return -1;
+	return ((IEC *)iec)->SwapDrive(unit, path) ? 0 : -1;
+}
+
+
+/*
  *  Update drive LED display
  */
 

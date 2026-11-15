@@ -75,7 +75,7 @@ GPGX_CFLAGS   := $(CFLAGS) -DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -DMAXROMSIZE=1
 # ---- Авто-генерация списков объектов ----
 OBJ  := $(BUILD)/startup.o
 OBJ  += $(BUILD)/resampler44.o
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,menu rom_browser disk_swap settings sd fat usb_ohci usb_kbd usb_msd usb_hc fb_text led emu cheatdb sega_pad btn_pad remap i2s tft_drv wifi_net wifi_layer wpa_crypto net_tcp net_ftp))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,system_atari_h3 system_a7800_h3 system_a5200_h3 gameboy_host gameboy_stubs lynx_host snes_host snes_compat gpgx_host gpgx_missing gp_cheats))
 OBJ  += $(BUILD)/gba_mgba_host.o
 OBJ  += $(BUILD)/gba_bios_data.o
@@ -1300,6 +1300,8 @@ $(BUILD)/menu.o: $(TOP)h3_bare/cores/menu.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<
 $(BUILD)/rom_browser.o: $(TOP)h3_bare/cores/rom_browser.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -c -o $@ $<
+$(BUILD)/disk_swap.o: $(TOP)h3_bare/cores/disk_swap.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/cheatdb.o: $(TOP)h3_bare/cores/cheatdb.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/sega_pad.o: $(TOP)h3_bare/cores/sega_pad.c | $(BUILD)

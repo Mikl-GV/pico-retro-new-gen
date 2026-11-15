@@ -6,6 +6,24 @@
 void emu_clear_fb(void);
 void snd_manifest(const char* sys, const char* cores);   // r0.385: звуковой манифест (лог)
 
+/* r1363: единый hot-swap дискет по F12. Хост регистрирует число приводов,
+   допустимые расширения и callback вставки; emu_disk_poll() вызывается
+   раз в кадр ДО чтения клавиатуры. */
+typedef struct {
+    int drives;                 /* 1..N, для меню выбора привода */
+    const char* exts;           /* "dsk;do;po;nib;woz" (без точек) */
+    uint8_t in_memory;          /* 1 = ядру нужны байты в общем буфере (2 МБ) */
+    /* drive — 0..N-1; path — полный путь (ядра с файловым API читают сами);
+       data/size — тот же файл в общем буфере (in_memory); name — имя файла.
+       0 = успех. */
+    int (*insert)(int drive, const char* path, const uint8_t* data,
+                  uint32_t size, const char* name);
+} emu_disk_ops_t;
+
+void emu_disk_set_dir(const char* dir);
+void emu_disk_register(const emu_disk_ops_t* ops);
+int  emu_disk_poll(void);
+
 // Единая подготовка ПЕРЕД запуском любого эмулятора: сброс bump-пула ядровых
 // malloc + очистка EMU_FB и HDMI-кадра. Вызывать в начале каждого emu_run_*,
 // иначе при повторном входе на экране остаётся «загруженное до этого».

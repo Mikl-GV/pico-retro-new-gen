@@ -481,6 +481,10 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 memcpy(sel_name, list[cursor].name, (size_t)sl);
                 sel_name[sl] = 0;
 
+                /* r1363: каталог текущего списка — источник файлов для F12
+                   hot-swap; host заберёт его через emu_disk_poll(). */
+                emu_disk_set_dir(path);
+
                 int is_dir = (list[cursor].attr & 0x10) ? 1 : 0;
                 int is_arc = is_arcade_sys(sys_id);
                 int is_ep = (strcmp(sys_id, "enterprise") == 0);

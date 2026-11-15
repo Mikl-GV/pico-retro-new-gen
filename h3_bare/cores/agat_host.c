@@ -307,6 +307,29 @@ static void apple2_pad_keys(struct SYS_RUN_STATE*sr, uint16_t pad)
 #define APPLE2_CYCLES_PER_FRAME 17030
 #define APPLE2_FRAME_US 16667
 
+/* r1363: hot-swap дискеты через fdd1 без сброса машины. */
+int agat_fdd1_swap(struct SYS_RUN_STATE* sr, int slot, int drive, const char* name);
+
+static struct SYS_RUN_STATE *g_disk_sr;
+static int g_disk_apple2;
+
+static int agat_disk_insert(int drive, const char* path, const uint8_t* data,
+                            uint32_t size, const char* name)
+{
+	(void)path;
+	if (!g_disk_sr || drive < 0) return -1;
+	if (!g_disk_apple2 && drive != 0) return -1;
+	agat_set_disk_image(data, size, name);
+	return agat_fdd1_swap(g_disk_sr, CONF_SLOT6, drive, name);
+}
+
+static const emu_disk_ops_t g_ops_apple2 = {
+	2, "dsk;do;po;nib;woz", 1, agat_disk_insert
+};
+static const emu_disk_ops_t g_ops_agat = {
+	1, "dsk;nib;aim", 1, agat_disk_insert
+};
+
 /* r1360: общий прогон для Агат-9 и Apple II+. Обе машины — 6502 и
    видеоядро Agat Emulator (VIDEO_MODE_APPLE). Отличия: тип системы
    (SYSTEM_9 / SYSTEM_P), вшитый набор ПЗУ, палитра, частота кадра и
@@ -336,12 +359,20 @@ static void agat_run_common(int systype, int apple2, const char *label,
 
 	if (apple2) {
 		/* Apple II+: ПЗУ Applesoft вшито (ресурс 14), знакогенератор —
-		   ресурс 3, ПЗУ контроллера Disk II — ресурс 24. Карты слотов
-		   (Language Card, принтер) в прошивке не эмулируются, поэтому
-		   слоты 0/1 отключаем: пусть машина будет честной 48K. */
+		   ресурс 3, ПЗУ контроллера Disk II — ресурс 24. Слот 0 —
+		   языковая карта (16K, DEV_MEMORY_XRAMA): rama_install поднимает
+		   RAM до 64K, иначе ProDOS/игры «requires 64K» не стартуют.
+		   Слот 1 (принтер) в прошивке не нужен. */
 		cfg.slots[CONF_ROM].cfgint[CFG_INT_ROM_RES] = 14;
-		cfg.slots[CONF_SLOT0].dev_type = DEV_NULL;
+		cfg.slots[CONF_SLOT0].dev_type = DEV_MEMORY_XRAMA;
+		cfg.slots[CONF_SLOT0].cfgint[CFG_INT_MEM_SIZE] = 3;   /* 16K карта */
+		cfg.slots[CONF_SLOT0].cfgint[CFG_INT_MEM_MASK] = 8;
 		cfg.slots[CONF_SLOT1].dev_type = DEV_NULL;
+		/* r1363: второй дисковод нужен для hot-swap и игр с Drive 2.
+		   Пустой IMAGE2 fdd1_init пропускает (см. fdd1.c). */
+		cfg.slots[CONF_SLOT6].cfgint[CFG_INT_DRV_TYPE2] = DRV_TYPE_SHUGART;
+		cfg.slots[CONF_SLOT6].cfgint[CFG_INT_DRV_COUNT] = 2;
+		cfg.slots[CONF_SLOT6].cfgstr[CFG_STR_DRV_IMAGE2][0] = 0;
 		if (rom_name) {
 			int ok = 0;
 			size_t ln = strlen(rom_name);
@@ -497,6 +528,10 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	if (agat_rom_canary_bad() > 0) printf("%s: ROM canary BAD\n", label);
 	printf("%s: init ok\n", label);
 
+	g_disk_sr = sr;
+	g_disk_apple2 = apple2;
+	emu_disk_register(apple2 ? &g_ops_apple2 : &g_ops_agat);
+
 	emu_set_period_us(frame_us);
 	emu_throttle_reset();
 	emu_esc_hold_reset();
@@ -504,6 +539,9 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	for (;;) {
 		uint8_t keys[6];
 		int fw = AGAT_FRAME_W, fh = AGAT_FRAME_H;
+
+		/* r1363: F12 — до чтения клавиатуры, иначе F12 уйдёт в машину. */
+		emu_disk_poll();
 
 		/* Кэш последнего отчёта клавиатуры обновляется здесь: emu_esc_hold()
 		   читает только его, без этого ESC с клавиатуры не виден. */

@@ -366,6 +366,25 @@ static int16_t u4a_input_state(unsigned port, unsigned device, unsigned index, u
 extern void a8_fs_register(const char* path, const void* data, uint32_t size);
 extern void a8_fs_register_bios(const char* path, const void* data, uint32_t size);
 
+// ---- r1363: hot-swap дискеты в DF0 по F12 ----
+// amiga_swap_disk (disk.cpp) извлекает текущий образ и вставляет новый
+// сразу, без секундной задержки DISK_check_change; имя должно быть уже
+// зарегистрировано в fs_layer.
+extern int u4a_amiga_swap_disk(const char* name);
+
+static int amiga_disk_insert(int drive, const char* path, const uint8_t* data,
+                             uint32_t size, const char* name)
+{
+    (void)path;
+    if (drive != 0 || !data || size == 0 || !name) return -1;
+    a8_fs_register(name, data, size);
+    return u4a_amiga_swap_disk(name);
+}
+
+static const emu_disk_ops_t g_ops_amiga = {
+    1, "adf;adz;dms;ipf", 1, amiga_disk_insert
+};
+
 // ---- точка входа host (зовётся из emu.c; имена замены PUAE, меню не трогаем) ----
 // Модель: ХОЛОДНЫЙ init на каждый вход. UAE4All.init лёгкий и сам делает всё
 // заново в pre_main -> real_main (memory_init/disk/custom — без тёплых
@@ -430,8 +449,10 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // --- кадровый цикл: retro_run (внутри: PollEvent -> m68k_go -> video) ---
     emu_throttle_reset();
     emu_esc_hold_reset();
+    emu_disk_register(&g_ops_amiga);
     uint32_t t_core = 0, t_video = 0, nframes = 0;
     for (;;) {
+        emu_disk_poll();          /* r1363: F12 — до u4a_retro_run */
         uint32_t t0 = h3_hs_timer_lo_us();
         u4a_retro_run();          // m68k_go + flush_audio + video_cb
         uint32_t t1 = h3_hs_timer_lo_us();
