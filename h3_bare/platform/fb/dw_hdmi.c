@@ -19,7 +19,11 @@
 #include <stdbool.h>
 
 extern int uart0_printf(const char* fmt, ...);
+#if BOOT_VERBOSE
 #define debug	uart0_printf
+#else
+#define debug(...)	((void)0)   /* r1359: без dvi-строк в релизном логе */
+#endif
 #define printf	uart0_printf
 
 #include "display_timing.h"

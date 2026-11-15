@@ -462,7 +462,7 @@ static int tft_ili_init(void) {
         (unsigned)CMD_DISPON, (unsigned)SPI0_TCR, (unsigned)SPI0_FSR); spi_dump(); return -1; }
     TFT_STAT = 0x16;
     delay_ms(50);
-    printf("TFT: init done\n");
+
     return 0;
 }
 
@@ -479,7 +479,7 @@ int tft_init(void) {
     spi0_init();
     if (tft_ili_init() == 0) {
         g_tft_ready = 1;
-        printf("TFT DFR0428: ready (480x320, help)\n");
+    printf("TFT: 480x320 ready\n");
         return 0;
     }
     g_tft_ready = 0;

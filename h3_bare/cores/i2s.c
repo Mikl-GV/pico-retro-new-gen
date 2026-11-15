@@ -265,7 +265,7 @@ static int pll_audio_enable(void) {
     PLL_AUDIO_PAT = 0xc000ac02u;
     PLL_AUDIO_CTRL = 0x80035514u;   /* EN=1, N=86, M=21, P=4 → 24.571 МГц */
     udelay(3000);
-    if (pll_audio_lock_wait() == 0) { printf("I2S: PLL audio 24.571 MHz locked\n"); return 0; }
+    if (pll_audio_lock_wait() == 0) return 0;
     printf("I2S: PLL audio LOCK TIMEOUT\n");
     return -1;
 }
@@ -1153,7 +1153,7 @@ uint32_t free1 = (I2S_FIFO_STA >> 16) & 0xFFu;
     // не затрагивает: он пишет в кольцо через i2s_push_block_raw, мимо гейта.
     i2s_emulators_audio(1);
 
-    printf("I2S: ready (48k stereo, PLL 24.576M), emu audio ON\n");
+    printf("I2S: 48 kHz ready\n");
     return 0;
 }
 

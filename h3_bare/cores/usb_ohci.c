@@ -414,15 +414,6 @@ int usb_ohci_init(uint32_t base) {
         }
     }
 
-    uart0_printf("usb: base=0x%X rev=0x%X rha=0x%X\n",
-                 base, ohci->rev, ohci->rha_des);
-
-    // Диагностика D-cache: читаем SCTLR (bit 2 = D-cache enable)
-    uint32_t sctlr;
-    __asm volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
-    uart0_printf("usb: SCTLR=0x%X %s\n", sctlr,
-                 (sctlr & 4) ? "DCACHE=ON" : "DCACHE=OFF");
-
     usb_port_hw_init(base);
 
     if (ohci->rev != 0x10) { uart_puts("usb: OHCI dead\n"); return -1; }
@@ -484,9 +475,6 @@ int usb_ohci_init(uint32_t base) {
     uint32_t potpgt = (ohci->rha_des >> 24) & 0xFF;
     udelay(potpgt * 2000 + 5000);
 
-    uint32_t st = ohci->rhport[0];
-    uart0_printf("usb: ohci port=0x%X\n", st);
-    if (st & RH_PS_CCS) uart_puts("usb: DEVICE on OHCI!\n");
     return 0;
 }
 
@@ -514,7 +502,6 @@ int usb_ohci_port_reset(uint32_t base, int port) {
             ohci->rhport[port] = RH_PS_CSC | RH_PS_PRSC;  // w1c stale changes
             udelay(100000);              // USB recovery time — 100ms перед первым get_descriptor!
             st = ohci->rhport[port];
-            uart0_printf("usb: port after reset=0x%X\n", st);
             if (!(st & RH_PS_CCS)) { uart_puts("usb: device gone\n"); return -1; }
             if (!(st & RH_PS_PES)) { uart_puts("usb: PES not set\n"); return -1; }
             return 0;

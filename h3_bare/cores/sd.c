@@ -148,10 +148,6 @@ int sd_init(void) {
     }
 
     g_sdhc = sd_detect_type();
-    if (g_sdhc)
-        uart_puts("sd: ready (from U-Boot)\n");
-    else
-        uart_puts("sd: ready SDSC (byte addressing)\n");
     return 0;
 }
 

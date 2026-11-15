@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1358)
+# HANDOVER — текущее состояние (r1359)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -7,6 +7,77 @@
 ---
 
 ## 0. Последние правки
+
+- **r1359 (2026-11-15): boot-логи — релиз без шума; отладка по `BOOT_VERBOSE`;
+  дерево ROM, старт ядер и состав ввода возвращены в лог.**
+  - **Зачем.** К r1358 успешный старт печатал ~60 строк (LPAE-дампы, dvi/hdmi,
+    перечисление USB, геометрия FAT, список ROM-папок, строки smp и т.п.).
+    Ошибки в этом потоке терялись, а лог перестал быть индикатором состояния.
+    Цель r1359: на успехе — короткая сводка (кто стартовал, что подключено,
+    какой носитель), всё остальное — только при ошибке или по флагу сборки.
+  - **Механика.** `Makefile`: `BOOT_VERBOSE ?= 0`,
+    `CFLAGS += -DBOOT_VERBOSE=$(BOOT_VERBOSE)`. Отладочные трассы (дамп MMU
+    `mmu_l1_dump("early"/"boot")`, `debug` в `dw_hdmi.c`, `dotclock` в
+    `h3_hdmi.c`) компилируются только при `make BOOT_VERBOSE=1`; смена флага
+    требует `make clean && make BOOT_VERBOSE=1` (макрос в CFLAGS).
+  - **Убрано (по подсистемам).**
+    `startup.S` — DGN-буквы `1`..`6`, `A`, `C` (последняя печаталась из
+    трамплина CPU1 уже после `smp: CPU1 started`, отсюда «C» в конце лога).
+    `main.c` — «USB kbd init...», «USB kbd ready/not found», «SD init...»,
+    «SD ready/not available» (вместо пары — одна ошибка «SD/FAT not available»),
+    «USB FAT ready».
+    `usb_kbd.c` — строка порта с vid/pid/class/mps (и switch vid→dname),
+    запрос и печать строк manuf/prod, `-> MOUSE (boot mouse)`,
+    `-> KEYBOARD`/`-> TOUCH`, «no HID IN ep», `pad: touchpad ep=…`,
+    Low/Full-Speed.
+    `usb_hc.c` — «MSD pre-enumerated», INQUIRY-дамп (вместе с ним удалён
+    неиспользуемый `inq[36]`), `pre-enum block/last_lba`, `MBR sig=…flash OK`;
+    проверка READ CAPACITY сохранена, печать — только при ошибке.
+    `usb_ohci.c` — base/rev/rha, диагностика SCTLR (D-cache ON/OFF),
+    `ohci port=…`, `DEVICE on OHCI!`, `port after reset=…`.
+    `usb_msd.c` — `msd-blk: lba=… bounce=…` (первые 6 блоков).
+    `fat.c` — «GPT found, N entries usable» и полная геометрия FAT
+    (part LBA, sec/clu, reserved, fats, fat_size, root_clu, data_start,
+    total_clu). `sd.c` — ready-строки (SDHC/SDSC).
+    `i2s.c` — «PLL audio 24.571 MHz locked» (осталось «I2S: 48 kHz ready»).
+    `led.c` — «led: initialized». `tft_drv.c` — «TFT: init done»,
+    «TFT DFR0428: ready (480x320, help)» → «TFT: 480x320 ready».
+    `h3_smp.c` — `sec=/entry=`, `PSCI CPU_ON ret=`, `direct R_CPUCFG boot`,
+    `CPU2 STAT(0x90)=`, `alive after attempt`.
+  - **Возвращено по просьбе владельца (важные итоги, а не шум).**
+    `main.c` — дерево `/roms` (`ROMs:` + имена каталогов через `fat_list`) и
+    строки успеха ядер `smp: CPU2 started (audio core)`,
+    `smp: CPU1 started (TFT core)` (FAIL-строки были и остались).
+    `btn_pad.c` — `PAD: i2c scan: 0x20=… 0x27=…` и
+    `PAD: 0x20 = Sega pad, button board OFF` (какой вход найден: кнопочная
+    плата 0x27 или Sega-джойстик 0x20); `sega_pad.c` — снова
+    `sega_pad: init OK/FAIL`. Итог по вводу в логе: `usb: keyboard ready`,
+    `PAD: …`, `sega_pad: init …`, при отсутствии — `PAD: buttons NOT found`.
+  - **Починено по ходу чистки (регрессии, внесённые правками логов).**
+    `usb_kbd.c`: вместе с печатью был вырезан сам
+    `GET_DESCRIPTOR(configuration)` — `buf` оставался с дескриптором
+    устройства, интерфейсы не парсились, клавиатура не определялась; запрос
+    восстановлен, печать vid/pid-switch удалена.
+    `main.c`: `remap_load()` вызывается один раз (был добавлен второй вызов;
+    проверено поиском по дереву — единственный вызов в `main.c:663`).
+    `usb_ohci.c`: после удаления DEVICE-лога осталась незакрытая `{`.
+    `usb_hc.c`: остатки INQUIRY-блока (`last/blk`, висячий `printf("\n")`).
+    `btn_pad.c`: `if (verbose)` без тела (сломался бы разбор 0x20).
+  - **Проверка.** `make -j20` — 0 ошибок, linkcheck: OK,
+    `h3_bare.bin` = **21 170 588 Б** (−4352 Б к r1358).
+    `strings` по bin: присутствуют `ROMs:`, `smp: CPU1/CPU2 started …`,
+    `sega_pad: init `, `PAD: i2c scan`, `PAD: 0x20 = Sega pad`,
+    `PAD: buttons NOT found`, `usb: keyboard ready`, `I2S: 48 kHz ready`,
+    `TFT: 480x320 ready`, `remap: loaded`, `get_cfg fail`;
+    отсутствуют `LPAE[`, `dvi, mode`, `dotclock`, `usb: base=`, `SCTLR=`,
+    `DEVICE on OHCI`, `smp: CPU2 alive`, `led: initialized`, `TFT: init done`,
+    `I2S: PLL locked`, `FAT: part`, `msd-blk:`, `-> MOUSE`,
+    `MSD pre-enumerated`. `ROMs:` в справке HDMI/TFT (`menu.c`) — это текст
+    Help, а не boot-лог.
+  - **Не проверено на железе.** Реальный лог r1359 (дерево ROM с SD и с
+    USB-флешки), определение USB-клавиатуры после восстановления
+    config-запроса, строки `PAD/sega_pad` с подключённым и отключённым
+    джойстиком, чтение 27 страниц Help и TFT-справки (наследие r1358).
 
 - **r1358 (2026-11-15): Help/About — актуализация; исправлена неработающая
   навигация Help и обрезанный About.**

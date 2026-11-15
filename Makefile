@@ -35,6 +35,11 @@ DEPFLAGS := -MMD -MP
 CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm
 CFLAGS += -ffreestanding -Wall -Wextra -O2 -DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG
 CFLAGS += $(DEPFLAGS)
+# r1359: отладочные boot-трассы (LPAE-дампы, перечисление USB-устройств,
+# геометрия FAT и т.п.) компилируются только при make BOOT_VERBOSE=1.
+# В релизе (0) на успехе UART молчит: остаются только ошибки.
+BOOT_VERBOSE ?= 0
+CFLAGS += -DBOOT_VERBOSE=$(BOOT_VERBOSE)
 INCLUDES := -I$(TOP)h3_bare/include -I$(TOP)h3_bare/cores \
 	-I$(TOP)h3_bare/cores/gpgx/core -I$(TOP)h3_bare/cores/gpgx/libretro_inc \
 	-I$(TOP)h3_bare/cores/gpgx/core/z80 -I$(TOP)h3_bare/cores/gpgx/core/m68k \

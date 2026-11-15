@@ -104,7 +104,6 @@ static int h3_secondary_start(int cpu, uint32_t entry) {
         for (uint32_t t = 0; t < 200; t++) {
             udelay(100);
             if (*mail == CPU1_MAGIC) {
-                printf("smp: CPU%u alive after attempt %d\n", (unsigned)cpu, attempt + 1);
                 return 1;
             }
         }
@@ -118,7 +117,6 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
 
     uint32_t scr = h3_read_scr();
     uint32_t ep  = (uint32_t)entry;
-    printf("smp: CPU%u sec=0x%X entry=0x%X\n", (unsigned)cpu, (unsigned)scr, (unsigned)ep);
 
     if (scr & 1u) {
         /* Non-secure: регистры R_CPUCFG закрыты — будим через PSCI.
@@ -127,7 +125,7 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
          * молчал). ALREADY_ON/ON_PENDING считаем успехом — ядро уже работает. */
         for (int attempt = 1; attempt <= 3; attempt++) {
             uint32_t r = h3_psci_cpu_on((uint32_t)cpu, ep);
-            printf("smp: PSCI CPU_ON ret=0x%X (attempt %d)\n", (unsigned)r, attempt);
+            (void)r;
             if (r == 0) return 1;                    /* SUCCESS */
             if (r == 0xFFFFFFFCu) return 1;          /* ALREADY_ON */
             if (r == 0xFFFFFFFBu) return 1;          /* ON_PENDING */
@@ -137,13 +135,9 @@ int h3_cpu_start(int cpu, void (*entry)(void)) {
         return 0;
     }
 
-    printf("smp: direct R_CPUCFG boot (sram tramp 0x0)\n");
     int ok = h3_secondary_start(cpu, ep);
     /* r749: статус аудио-ядра — своя ячейка 0x90 (SRAM A1, uncached),
      * пишет cpu2_entry (startup.S, значение 0xA2). Не путать со статусом
      * CPU1 (0x24, TFT_STAT) — они разведены. */
-    if (cpu == 2)
-        printf("smp: CPU2 STAT(0x90)=0x%X\n",
-               *(volatile uint32_t*)0x90u);
     return ok;
 }

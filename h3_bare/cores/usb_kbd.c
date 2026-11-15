@@ -363,53 +363,6 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
                                           .wLength = (uint16_t)(mps > 18 ? mps : 18) },
                      buf, mps > 18 ? mps : 18, 1, 1000);
     if (r < 0) { uart_puts("usb: get_dev_full fail\n"); return 0; }
-    uint16_t vid = (uint16_t)(buf[8] | (buf[9] << 8));
-    uint16_t pid = (uint16_t)(buf[10] | (buf[11] << 8));
-    const char* dname = "?";
-    switch (vid) {
-    case 0x0603: dname = "Avatto/NOVATEK (i8 Pro донгл)"; break;
-    case 0x046D: dname = "Logitech"; break;
-    case 0x05AC: dname = "Apple"; break;
-    case 0x413C: dname = "Dell"; break;
-    case 0x03F0: dname = "HP"; break;
-    case 0x04F2: dname = "Chicony"; break;
-    case 0x1C4F: dname = "SiGma"; break;
-    default: break;
-    }
-    printf("usb: port=0x%X device: %s (vid=%04X pid=%04X class=%02X mps=%d)\n",
-           (unsigned)base, dname, (unsigned)vid, (unsigned)pid,
-           (unsigned)buf[5], mps);
-
-    // строковые дескрипторы iManufacturer/iProduct
-    {
-        uint8_t si[66];
-        uint16_t lang = 0x0409;
-        int rr = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
-                                .bRequest = GET_DESCRIPTOR,
-                                .wValue = (3 << 8), .wIndex = 0, .wLength = 4 },
-                              si, 4, 1, 1000);
-        if (rr >= 4 && si[0] >= 4 && si[1] == 3 && rr >= 4)
-            if (si[2] | si[3])
-                lang = (uint16_t)(si[2] | (si[3] << 8));
-        for (int sidx = 1; sidx <= 2; sidx++) {
-            rr = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
-                                    .bRequest = GET_DESCRIPTOR,
-                                    .wValue = (uint16_t)((3 << 8) | sidx),
-                                    .wIndex = lang, .wLength = 64 },
-                              si, 64, 1, 1000);
-            if (rr >= 2 && si[1] == 3 && si[0] >= 2) {
-                char lbuf[40];
-                int n = 0, lim = si[0];
-                if (lim > rr) lim = rr;
-                for (int k = 2; k + 1 < lim && n < (int)sizeof(lbuf) - 1; k += 2)
-                    lbuf[n++] = (char)si[k];
-                lbuf[n] = 0;
-                if (lbuf[0])
-                    printf("usb:   %s: \"%s\"\n", sidx == 1 ? "manuf" : "prod ", lbuf);
-            }
-        }
-    }
-
     // 4. конфигурация
     r = ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = RT_DEVICE,
                                           .bRequest = GET_DESCRIPTOR,
@@ -442,7 +395,6 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
                 mouse_out->in_maxpkt = 0;
                 mouse_out->type = 3;
                 in_mouse_intf = 1;
-                uart_puts("usb:   -> MOUSE (boot mouse)\n");
             } else if (intf->bInterfaceClass == 3 && !type) {
                 type = 2;
                 dev->in_ep = 0; dev->in_maxpkt = 0;
@@ -469,7 +421,6 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
         struct usb_msd_dev md;
         if (usb_msd_init(&md, buf, (uint32_t)r) == 0)
             usb_hc_set_preenum_msd(buf, (uint32_t)r, dev->mps0, base);
-        printf("usb: port=0x%X no HID IN ep, type=%d\n", (unsigned)base, type);
         return 0;
     }
 
@@ -486,9 +437,6 @@ static int enum_port(uint32_t base, usb_dev_t* dev, usb_dev_t* mouse_out) {
         ctrl_req_dev(dev, &(usb_setup_t){ .bmRequestType = 0x21,
                                           .bRequest = HID_SET_PROTOCOL, .wValue = 0,
                                           .wIndex = 0 }, 0, 0, 0, 1000);
-        uart_puts("usb:   -> KEYBOARD\n");
-    } else {
-        uart_puts("usb:   -> TOUCH\n");
     }
     return type;
 }
@@ -537,8 +485,6 @@ int usb_kbd_init(void) {
         ctrl_req_dev(&g_pad, &req, 0, 0, 0, 1000);
         usb_ohci_intr_in_start(g_pad.base, g_pad.addr,
                                g_pad.in_ep & 0x7F, g_pad_report, 8, 1);
-        printf("pad: touchpad ep=0x%02X maxpkt=%u -> Interrupt IN (slot 1)\n",
-               g_pad.in_ep, g_pad.in_maxpkt);
     }
 
     if (!g_kbd.found) {
@@ -549,11 +495,8 @@ int usb_kbd_init(void) {
     kbd_found = 1;
     kbd_low_speed = (g_kbd.mps0 <= 8) ? 1 : 0;
     if (kbd_low_speed) {
-        printf("kbd: Low-Speed (mps=%u) -> Interrupt IN\n", g_kbd.mps0);
         usb_ohci_intr_in_start(g_kbd.base, g_kbd.addr,
                                g_kbd.in_ep & 0x7F, g_kbd.report, 8, 0);
-    } else {
-        printf("kbd: Full-Speed (mps=%u) -> GET_REPORT\n", g_kbd.mps0);
     }
 
     uart_puts("usb: keyboard ready\n");

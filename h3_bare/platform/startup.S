@@ -479,10 +479,6 @@ _start:
     orr r0, r0, #0xD3
     msr cpsr, r0
 
-    /* DGN '1': вошли в _start */
-    mov r0, #'1'
-    bl uart_dbg
-
     /* r713: сброс one-shot гейта исключений (SRAM A1 0x18, exc_once).
      * Раньше флаг НЕ обнулялся: U-Boot оставлял в нём мусор (наненулевое),
      * из-за чего ПЕРВЫЙ же Data Abort (напр. у CPU2 при чтении I2S_FIFO_STA)
@@ -509,10 +505,6 @@ _start:
     dsb
     isb
 
-    /* DGN '2': VBAR установлен */
-    mov r0, #'2'
-    bl uart_dbg
-
     /* Включаем VFP/NEON (CP10/CP11) — иначе NEON-инструкции в C дают undefined */
     mrc p15, 0, r0, c1, c0, 2
     orr r0, r0, #(0xF << 20)      /* CP10, CP11 full access */
@@ -521,10 +513,6 @@ _start:
     mov r0, #0x40000000
     vmsr fpexc, r0                /* FPEXC.EN = 1 */
     isb
-
-    /* DGN '3': VFP/NEON включён */
-    mov r0, #'3'
-    bl uart_dbg
 
     /* Стеки исключений: каждый режим имеет СВОЙ банковский SP (r13_<mode>).
      * Устанавливаем SP в его режиме через CPSR.M; IRQ/FIQ остаются
@@ -634,10 +622,6 @@ _start:
     /* Stack SVC: в конце 512MB DRAM (0x60000000) */
     ldr sp, =0x60000000
 
-    /* DGN '4': стек готов */
-    mov r0, #'4'
-    bl uart_dbg
-
     /* Инвалидируем I-cache + DSB+ISB */
     mov r0, #0
     mcr p15, 0, r0, c7, c5, 0
@@ -727,10 +711,6 @@ _start:
     /* r1009: блок обнуления .ring_buf удалён — секция пустая, кольцо звука
      * целиком в SRAM A1 (r957, L=0x1000/R=0x3000); меток _ring_buf_* больше нет. */
 
-    /* DGN '5': BSS обнулён */
-    mov r0, #'5'
-    bl uart_dbg
-
     /* C++ static constructors (__init_array) — иначе глобалы вроде
      *   unsigned char *scanlineY = get_address(0x8009)
      * остаются NULL, и NGP-рендер пишет в SRAM вместо VRAM.
@@ -747,13 +727,6 @@ _start:
     pop {r0, r1}
     b 3b
 4:
-
-    /* DGN '6': конструкторы выполнены */
-    mov r0, #'6'
-    bl uart_dbg
-    /* DGN 'A': перед main */
-    mov r0, #'A'
-    bl uart_dbg
 
     bl main
 
@@ -822,16 +795,6 @@ cpu1_entry:
     mcr p15, 0, r0, c12, c0, 0
     dsb
     isb
-    /* DGN 'C': CPU1 вошёл в трамплин (MMU выключен, сырые адреса).
-     * Ждём, пока TX FIFO UART не заполнен — иначе байт теряется,
-     * если core0 в этот момент допечатывает свою строку. */
-    ldr r1, =0x01C2807C      /* UART0_USR */
-0:  ldr r0, [r1]
-    tst r0, #2               /* TX FIFO not full */
-    beq 0b
-    mov r0, #'C'
-    ldr r1, =0x01C28000      /* UART0_THR */
-    strb r0, [r1]
     mrs r0, cpsr
     bic r0, r0, #0x1F
     orr r0, r0, #0xD3       /* SVC, IRQ/FIQ off */

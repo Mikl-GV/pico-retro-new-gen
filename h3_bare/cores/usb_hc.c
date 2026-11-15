@@ -249,8 +249,6 @@ void usb_hc_set_preenum_msd(const uint8_t* cfg, uint32_t len, uint16_t mps,
     g_pre_mps = mps ? mps : 8;
     g_pre_base = base;
     g_pre_msd = 1;
-    printf("usb: MSD pre-enumerated (cfg=%u mps=%u base=0x%X)\n",
-           (unsigned)len, (unsigned)g_pre_mps, (unsigned)g_pre_base);
 }
 
 static int usb_ohci_activate_flash_pre(void) {
@@ -262,7 +260,6 @@ static int usb_ohci_activate_flash_pre(void) {
     extern void usb_ohci_bot_recover(uint32_t base);
     const uint32_t base = g_pre_base;   /* r903: база из HID-скана (B400/C400) */
     static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
-    static uint8_t inq[36] __attribute__((section(".coherent"), aligned(32)));
     static struct usb_msd_dev mdev;
     uint8_t setup[8];
 
@@ -288,26 +285,14 @@ static int usb_ohci_activate_flash_pre(void) {
     }
     usb_ohci_bot_recover(base);
 
-    if (usb_msd_inquiry(&mdev, inq) == 0) {
-        printf("usb: pre-enum INQUIRY: ");
-        for (int i = 8; i < 32 && inq[i]; i++) {
-            char c = (char)inq[i];
-            if (c < 0x20 || c > 0x7E) c = '.';
-            printf("%c", c);
-        }
-        printf("\n");
-    }
-    uint32_t last = 0, blk = 0;
     if (usb_msd_wait_ready(&mdev, 3) != 0) printf("usb: pre-enum TUR fail\n");
-    if (usb_msd_read_capacity(&mdev, &last, &blk) == 0)
-        printf("usb: pre-enum block=%u last_lba=%u\n", (unsigned)blk, (unsigned)last);
-    else
+    uint32_t last = 0, blk = 0;   /* только для проверки READ CAPACITY */
+    if (usb_msd_read_capacity(&mdev, &last, &blk) != 0)
         printf("usb: pre-enum READ CAPACITY fail\n");
     if (usb_msd_block_read(0, mbr) != 0) {
         printf("usb: pre-enum MBR read fail\n");
         return -1;
     }
-    printf("usb: pre-enum MBR sig=0x%04X — flash OK\n", mbr[510] | (mbr[511] << 8));
     return 0;
 }
 

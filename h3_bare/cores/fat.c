@@ -424,7 +424,7 @@ uint32_t off = (e * esize) % 512;
                 plt_start[part_count] = (uint32_t)first;
                 part_count++;
             }
-            printf("FAT: GPT found, %u entries usable\n", part_count);
+
         }
     }
     if (part_count == 0) return -1;
@@ -519,10 +519,6 @@ uint32_t off = (e * esize) % 512;
     g_fsinfo_sec = le16(g_sector + 48);
     if (g_fsinfo_sec == 0 || g_fsinfo_sec == 0xFFFF) g_fsinfo_sec = 1;
     fsinfo_load();
-
-    printf("FAT: part LBA=%u sec/clu=%u reserved=%u fats=%u fat_size=%u root_clu=%u data_start=%u total_clu=%u\n",
-           part_lba, g_sec_per_cluster, g_reserved, g_num_fats, g_fat_size,
-           g_root_cluster, g_data_start, g_total_clusters);
 
     return 0;
 }

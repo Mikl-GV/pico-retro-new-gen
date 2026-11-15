@@ -518,12 +518,11 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1358";
+const char g_fw_version[] = "r1359";
 
-// r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
-// TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
-// .coherent (0x4A400000) и sbrk-зоны (0x4BF00000) — проверка, что после
-// переноса таблиц в startup.S карта целая и атрибуты ожидаемые.
+// r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
+// BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
+#if BOOT_VERBOSE
 void mmu_l1_dump(const char* tag)
 {
     uint32_t l0, l1 = 0, mair0, mair1;
@@ -578,18 +577,22 @@ void mmu_l1_dump(const char* tag)
         printf("\n");
     }
 }
+#endif /* BOOT_VERBOSE */
 
 void main(void) {
     int sd_ok = 0;
 
     uart_init();
     uart_rx_flush();
-    uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1358\n");
+    uart_puts("\nMultiTool Retro\n");
+    uart_puts("build: ");
+    uart_puts(g_fw_version);
+    uart_puts("\n");
 
-    // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
-    // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.
+#if BOOT_VERBOSE
+    // r1207: снимок LPAE-карты до инициализации USB.
     mmu_l1_dump("early");
+#endif
 
     led_init();
     led_set(0);
@@ -610,14 +613,12 @@ void main(void) {
         uart_puts("HDMI FAILED\n");
         while (1) udelay(1000000);
     }
-    uart_puts("HDMI ok\n");
+    uart_puts("HDMI: ok\n");
 
     fb_clear();
     fb_flush();
 
-    uart_puts("USB kbd init...\n");
-    if (usb_kbd_init() == 0) uart_puts("USB kbd ready\n");
-    else uart_puts("USB kbd not found\n");
+    usb_kbd_init();
 
     // r788: USB-флешка как источник ROM (для отладки без SD). EHCI-путь
     // для HS-флешки; FS/LS — задел через OHCI-bulk. Если флешка найдена —
@@ -639,15 +640,12 @@ void main(void) {
         uart_puts("ROM source: SD (no USB flash)\n");
     }
 
-    uart_puts("SD init...\n");
     if (usb_flash_ok) {
         // FAT через blk_read → USB-флешка; SD не трогаем.
         sd_ok = (fat_init() == 0);
-        uart_puts("USB FAT ready\n");
     } else {
         sd_ok = (sd_init() == 0) && (fat_init() == 0);
-        if (sd_ok) uart_puts("SD ready\n");
-        else uart_puts("SD not available\n");
+        if (!sd_ok) uart_puts("SD/FAT not available\n");
     }
     if (sd_ok) {
         uart_puts("ROMs:\n");
@@ -700,10 +698,10 @@ void main(void) {
         __asm volatile("dsb" ::: "memory");
     }
 
-    // r1199-ДИАГ: снимок L1 сразу после настройки MMU (базовая точка для
-    // сравнения с дампом перед запуском Amiga — см. puae_host.c).
-    extern void mmu_l1_dump(const char* tag);
+#if BOOT_VERBOSE
+    // r1199: снимок L1 после настройки MMU.
     mmu_l1_dump("boot");
+#endif
 
     // Звук (этап 1, r8xx): ядра стартуем РАНО (после mmu_mark_uncached
     // .coherent) — CPU2 (аудио-ядро) поднимается ДО i2s_init(), чтобы к
