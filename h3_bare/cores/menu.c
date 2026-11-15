@@ -545,20 +545,16 @@ void menu_help(void) {
         0,
         // страница 7: структура диска и папок
         "--- SD CARD LAYOUT ---",
-        "SD: FAT32 partition(s)",
-        "  sda1 - boot (U-Boot +",
-        "         h3_bare.bin)",
-        "  sda2 - ROMs",
-        "",
-        "Must contain folder 'roms'",
-        "  /roms/<system>/game.rom",
-        "MS 1504: /roms/ms1504 (BIOS/",
-        "  programs on SD; built-in",
-        "  BIOS (PK300) in flash)",
+        "FAT32 partition with /roms",
+        "make sd: one partition holds",
+        "  boot.scr + h3_bare.bin + roms",
+        "ROMs: /roms/<system>/game.rom",
+        "MS 1504: /roms/ms1504",
+        "  (BIOS PK300 built-in)",
         "Radio-86RK: /roms/radio86rk",
-        "Folders are created manually:",
-        "  Settings -> Create folders",
-        "Auto-create is DISABLED",
+        "No 'roms' folder? Settings ->",
+        "  Create ROM system folders",
+        "ROM source: SD or USB flash",
         0,
         // страница 8: SNES
         "--- SNES / SUPER FAMICOM ---",
@@ -575,12 +571,11 @@ void menu_help(void) {
         "S = Select  Enter=Start",
         "ESC hold=exit",
         0,
-        // страница 10: Game Gear
-        "--- GAME GEAR ---",
+        // страница 10: GBA (r1358: бывший дубль Game Gear)
+        "--- GAME BOY ADVANCE ---",
         "Arrows = D-Pad",
-        "Z = Button1  X = Button2",
-        "S = Pause",
-        "Enter = Start",
+        "Z = B   X = A   Q = L   W = R",
+        "S = Select   Enter = Start",
         "ESC hold=exit",
         0,
         // страница 11: таблица клавиш (для retro.cfg)
@@ -596,7 +591,10 @@ void menu_help(void) {
         "LCTRL RCTRL LALT RALT",
         "COMMA PERIOD SLASH SEMICOLON",
         "APOSTROPHE LBRACKET RBRACKET",
-        "BACKSLASH GRAVE NUMPAD0..9",
+        "BACKSLASH GRAVE",
+        "KP0..KP9  KP_ENTER  KP_PLUS",
+        "KP_MINUS KP_MULTIPLY KP_DIVIDE",
+        "KP_PERIOD",
         "Write in /retro.cfg on SD:",
         "  snes.a=A  md.start=ENTER",
         "  snes.l=SHIFT+Q",
@@ -609,22 +607,138 @@ void menu_help(void) {
         "Arrows, F1..F4, Home",
         "ESC hold = exit",
         0,
+        // страница 13: Lynx
+        "--- ATARI LYNX ---",
+        "Arrows = D-Pad",
+        "Z = A   X = B   S = Opt1",
+        "Enter = Opt2   P = Pause",
+        "ESC hold = exit",
+        0,
+        // страница 14: PC Engine
+        "--- PC ENGINE / TURBOGRAFX ---",
+        "Arrows = D-Pad",
+        "Z = Button I   X = Button II",
+        "S = Select   Enter = Run",
+        "ESC hold = exit",
+        0,
+        // страница 15: ColecoVision
+        "--- COLECOVISION ---",
+        "Arrows = D-Pad (analog stick)",
+        "Z = Fire 1   X = Fire 2",
+        "S = Select   Enter = Start",
+        "ESC hold = exit",
+        0,
+        // страница 16: Vectrex
+        "--- GCE VECTREX ---",
+        "Arrows = D-Pad",
+        "Z/X/C/V = Buttons 1/2/3/4",
+        "ESC hold = exit",
+        0,
+        // страница 17: SG-1000 / 32X
+        "--- SG-1000 / SEGA 32X ---",
+        "SG-1000: Z=B1 X=B2 Enter=Start",
+        "32X: Z=A X=B C=C A=X S=Y D=Z",
+        "     Q=Mode   Enter=Start",
+        "ESC hold = exit",
+        0,
+        // страница 18: аркады
+        "--- ARCADE (FinalBurn Neo) ---",
+        "P1: Arrows + Z/X/C (A/B/C)",
+        "1/Enter = Start   5/S = Coin",
+        "CPS-2: Q/E/R = weak/med/strong",
+        "NeoGeo: V = D button",
+        "P2: WASD + J/K/L, 2/6 = Start/Coin",
+        "Pad: A/B/C, X = Coin",
+        "ESC x3 or hold = exit",
+        0,
+        // страница 19: ZX Spectrum
+        "--- ZX SPECTRUM ---",
+        "Keyboard emulation (48k/128k)",
+        "Enter = BASIC/ROM",
+        "ESC hold = exit",
+        0,
+        // страница 20: MSX
+        "--- MSX ---",
+        "Full keyboard emulation",
+        "Enter = Start BASIC",
+        "ESC hold = exit",
+        0,
+        // страница 21: Amstrad CPC
+        "--- AMSTRAD CPC ---",
+        "Keyboard emulation",
+        "Arrows = joystick",
+        "Z/X/C/A = fire 1..4",
+        "Enter = BIOS/BASIC",
+        "ESC hold = exit",
+        0,
+        // страница 22: Atari 8-bit
+        "--- ATARI 8-BIT ---",
+        "Keyboard emulation (400/800/XL/XE)",
+        "OS and BASIC built-in",
+        "ROMs from SD",
+        "ESC hold = exit",
+        0,
+        // страница 23: Commodore 64
+        "--- COMMODORE 64 ---",
+        "Keyboard emulation (PAL)",
+        "BASIC V2 / KERNAL built-in",
+        "Disks .d64/.t64 from SD",
+        "ESC hold = exit",
+        0,
+        // страница 24: Commodore Amiga
+        "--- COMMODORE AMIGA ---",
+        "Keyboard emulation (A500)",
+        "Kickstart 1.3 + Workbench 1.3",
+        "Disk images .adf from SD",
+        "Pad: D-Pad, A/B = fire 1/2",
+        "ESC hold = exit",
+        0,
+        // страница 25: Agat-9 / Enterprise
+        "--- AGAT-9 / ENTERPRISE ---",
+        "Both: keyboard emulation",
+        "Agat-9: monitor ROM built-in",
+        "Enterprise: model 64/128",
+        "  chosen in the system submenu",
+        "Enter = BASIC/ROM (Enterprise)",
+        "ESC hold = exit",
+        0,
+        // страница 26: BK / MS1504 / Portfolio
+        "--- BK / MS1504 / PORTFOLIO ---",
+        "BK-0010/0011M: keyboard, Enter=start",
+        "MS 1504: PC-XT keyboard, BIOS built-in",
+        "Portfolio: full keyboard emulation",
+        "ESC hold = exit",
+        0,
     };
 
+    // Таблица смещений страниц: pages[] — ПЛОСКИЙ массив строк, каждая
+    // страница завершается NULL. Номер страницы не равен смещению: r1358 —
+    // раньше pages[page] использовал номер как индекс, поэтому страницы 1..N
+    // показывали обрывки страницы 0, а реальные блоки были недостижимы.
+    static int s_off[64];
+    static int s_total = 0;
+    if (!s_total) {
+        const int n_ent = (int)(sizeof(pages) / sizeof(pages[0]));
+        int o = 0, n = 0;
+        while (o < n_ent && pages[o] &&
+               n < (int)(sizeof(s_off) / sizeof(s_off[0]))) {
+            s_off[n++] = o;
+            while (o < n_ent && pages[o]) o++;
+            o++;                       // пропустить завершающий NULL
+        }
+        s_total = n;
+    }
     int page = 0;
-    int total = 13;
+    int total = s_total;
 
     for (;;) {
         fb_clear();
         fb_puts_s(60, 20, "Help (controls)", 2, 0x00FF0000);
         fb_fill_rect(60, 50, 200, 2, 0x00FFFFFF);
 
-        int line = 0;
-        const char* p = pages[page];
-        while (p) {
-            fb_puts_s(80, 70 + line * 20, p, 1, 0x00FFFFFF);
-            line++; p = pages[page + line];
-        }
+        int off = s_off[page];
+        for (int line = 0; pages[off + line]; line++)
+            fb_puts_s(80, 70 + line * 20, pages[off + line], 1, 0x00FFFFFF);
 
         char fbuf[64];
         int fl = 0;
@@ -660,23 +774,24 @@ void menu_about(void) {
         "512 MB, HDMI 1024x600 + SPI TFT",
         "Bare-metal, no OS",
         "",
-        "Systems ready:",
+        "Systems ready (36):",
         "Atari 2600 / 5200 / 7800, Lynx,",
         "NES/Famicom, SMS, Game Gear,",
-        "Mega Drive/Genesis, Game Boy/GBC,",
-        "Game Boy Advance, SNES, Vectrex,",
+        "SG-1000, Mega Drive/Genesis, 32X,",
+        "Game Boy/GBC, GBA, SNES, Vectrex,",
         "Neo Geo Pocket/Color, MSX, Coleco,",
         "PC Engine/TurboGrafx, ZX Spectrum,",
         "BK-0010/0011M, Atari Portfolio,",
         "Atari 8-bit, MS 1504, CPC, C64,",
+        "Amiga, Agat-9, Enterprise 64/128,",
         "Radio-86RK",
         "",
         "Arcade (FinalBurn Neo):",
-        "CPS-1 / CPS-2, NEOGEO/MVS,",
+        "FB Neo, CPS-1 / CPS-2, NEOGEO/MVS,",
         "Sega System 16, Toaplan + Cave",
         "",
-        "USB keyboard + UART input",
-        "ROMs from SD (FAT32)",
+        "Input: USB kbd, Sega pad, UART",
+        "ROMs: SD (FAT32) or USB flash",
         "",
         "github.com/Mikl-GV/",
         "pico-retro-new-gen",
@@ -687,15 +802,19 @@ void menu_about(void) {
         fb_puts_s(60, 15, "About", 2, 0x00FF0000);
         fb_fill_rect(60, 45, 200, 2, 0x00FFFFFF);
 
-        int line = 0;
-        for (int i = 0; i < 24; i++) {
-            if (i == 0) fb_puts_s(80, 65 + line * 20, lines[i], 2, 0x00FFFFFF);
-            else fb_puts_s(80, 65 + line * 20, lines[i], 1, 0x00FFFFFF);
-            line++;
+        // r1358: печатаем ВЕСЬ массив (было жёстко i<24 при 25 строках —
+        // последняя строка с именем репозитория не выводилась), шаг 18 px,
+        // чтобы 26 строк + версия не наезжали на футер (570).
+        int n = (int)(sizeof(lines) / sizeof(lines[0]));
+        int y = 55;
+        for (int i = 0; i < n; i++) {
+            if (i == 0) fb_puts_s(80, y, lines[i], 2, 0x00FFFFFF);
+            else fb_puts_s(80, y, lines[i], 1, 0x00FFFFFF);
+            y += 18;
         }
         // r140: версия прошивки (g_fw_version из main.c)
         extern const char g_fw_version[];
-        fb_puts_s(80, 65 + line * 20 + 6, g_fw_version, 1, 0x0000FFFF);
+        fb_puts_s(80, y + 6, g_fw_version, 1, 0x0000FFFF);
 
         fb_puts(60, FOOTER_Y, "  ESC: back", 0x00888888);
         fb_flush();

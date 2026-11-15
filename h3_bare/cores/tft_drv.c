@@ -651,7 +651,7 @@ static const struct {
     },
     { "a5200",
       "Atari 5200",
-      {"Arrows = D-Pad","Z = Fire    X = Pause","S = Start    Enter = Key3","ESC hold = exit",NULL}
+      {"Arrows = D-Pad","Z = Fire    X = Fire2/Pause","P = Pause    S = Key 3","Enter = Start","ESC hold = exit",NULL}
     },
     { "a7800",
       "Atari 7800",
@@ -664,10 +664,6 @@ static const struct {
     { "sg1000",
       "Sega SG-1000",
       {"Arrows = D-Pad","Z = Button 1    X = Button 2","Enter = Start    ESC hold = exit",NULL}
-    },
-    { "amiga",
-      "Commodore Amiga",
-      {"USB kbd = клавиатура","Pad: D-Pad = Arrows, A = Fire 1","B = Fire 2    ESC hold = exit","BIOS: встроенный AROS (с SD не грузится)",NULL}
     },
     { "coleco",
       "ColecoVision",
@@ -711,7 +707,7 @@ static const struct {
     },
     { "toaplan",
       "Toaplan + Cave (68K)",
-      {"P1: Arrows + Z/X/C   1 = Start","5 = Coin    P2: WASD + J/K/L","Played on portrait panel (600x1024)","Cave: donpachi/esprade/guwange...","ESC x3 = exit",NULL}
+      {"P1: Arrows + Z/X/C   1 = Start","5 = Coin    P2: WASD + J/K/L","Vertical STGs: rotate the monitor","Cave: donpachi/esprade/guwange...","ESC x3 = exit",NULL}
     },
     { "pce",
       "PC Engine / TurboGrafx",
@@ -741,6 +737,41 @@ static const struct {
     { "amiga",
       "Commodore Amiga",
       {"Workbench 1.3 or .adf from SD","Keyboard emulation (A500)","Pad: D-Pad + A/B (fire 1/2)","Start = fire 2","ESC hold = exit",NULL}
+    },
+    // r1358: страницы для систем, которые уже запускаются, но справки на TFT
+    // не имели (id приходил из rom_browser -> tft_help_show, совпадения не
+    // было, и показывалось общее меню вместо управления).
+    { "ms1504",
+      "MS 1504 (PC-XT)",
+      {"Keyboard emulation","BIOS PK300 built-in","Programs/disks from SD","ESC hold = exit",NULL}
+    },
+    { "c64",
+      "Commodore 64",
+      {"Keyboard emulation (PAL)","BASIC V2 / KERNAL built-in",".d64/.t64 from SD","ESC hold = exit",NULL}
+    },
+    { "atari800",
+      "Atari 8-bit",
+      {"Keyboard emulation","OS/BASIC built-in","ROMs from SD","ESC hold = exit",NULL}
+    },
+    { "agat",
+      "Agat-9",
+      {"Keyboard emulation","Monitor ROM built-in","ESC hold = exit",NULL}
+    },
+    { "32x",
+      "Sega 32X",
+      {"Same pad as Mega Drive","Z=A X=B C=C A=X S=Y D=Z","Q=Mode    Enter = Start","ESC hold = exit",NULL}
+    },
+    { "fbneo",
+      "FB Neo (Arcade)",
+      {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
+    },
+    { "segasys",
+      "Sega System 16",
+      {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
+    },
+    { "cave",
+      "Cave (68K) STGs",
+      {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
     },
     // r122: About по тап-иконке на TFT (не трогает HDMI)
     { "about",
