@@ -805,6 +805,50 @@ $(BUILD)/frodo_renamed.stamp: $(FRODO_OBJS) $(TOP)h3_bare/cores/frodo_rename.sh
 	$(TOP)h3_bare/cores/frodo_rename.sh $(FRODO_CORE_OBJS)
 	touch $@
 
+# ---- Enterprise 64/128 (ep128emu / istvan-v/ep128emu) ----
+# Vendored в h3_bare/cores/ep128emu/ (src + z80 + roms.hpp — BIOS вшиты).
+# Обходим libretro-обвязку core/ и VMThread (pthread): host-слой ep_host.cpp
+# инстанцирует Ep128::Ep128VM напрямую и зовёт run(мкс) синхронно.
+# Модель 64/128 задаётся через ep_set_model() (resetMemoryConfiguration +
+# вшитые ROM exos20/basic20 vs exos21/basic21).
+# Сборка C++ БЕЗ -fno-exceptions: движок сплошь на throw/catch (исключения
+# обязательны). global-переменные/имена в namespace Ep128*/Ep128Emu — уникальны,
+# конфликтов с другими ядрами нет.
+EP_ROOT := $(TOP)h3_bare/cores/ep128emu
+EP_INC  := -I$(EP_ROOT) -I$(EP_ROOT)/src -I$(EP_ROOT)/z80
+EP_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm \
+	-Wall -O2 -std=gnu++11 -fno-threadsafe-statics \
+	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
+	-DEP128EMU_BARE_METAL -DEP128EMU_LIBRETRO_CORE -DEXCLUDE_SOUND_LIBS \
+	-Wno-unused -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers
+# Состав движка (Enterprise-only; emucfg/cfg_db/dotconf — не нужны, т.к.
+# конфигурируем VM напрямую). Плюс host-слой ep_host.cpp.
+EP_REL_CXX := \
+	z80/z80 z80/z80funcs2 \
+	src/ep128vm src/memory src/ioports src/wd177x src/ide src/ep_fdd \
+	src/dave src/nick src/fileio src/vm src/display src/epmemcfg \
+	src/snapshot src/bplist src/system src/compress src/comprlib \
+	src/decompm2 src/joystick src/soundio src/snd_conv src/tape \
+	src/debuglib src/videorec src/cfg_db
+# cfg_db.cpp на bare-metal: dotconf-зависимые saveState(*)/loadState(*)/колбэк
+# обёрнуты #ifndef EP128EMU_BARE_METAL, поэтому dotconf.c в состав НЕ входит.
+# videorec (VideoCapture) нужен по линковке ep128vm (virtual vsyncStateChange),
+# debuglib (listZ80Registers/parseHexNumberEx/Z80Disassembler) — ep128vm/vm.
+EP_OBJS := $(foreach f,$(EP_REL_CXX),$(BUILD)/ep_$(subst /,_,$(f)).o)
+EP_OBJS += $(BUILD)/ep_host.o
+OBJ += $(EP_OBJS)
+
+define EP_RULE_cpp
+$(BUILD)/ep_$(subst /,_,$(1)).o: $(EP_ROOT)/$(1).cpp | $(BUILD)
+	$(CXX) $(EP_CFLAGS) $(EP_INC) $(INCLUDES) $(DEPFLAGS) -c -o $$@ $$<
+endef
+$(foreach f,$(EP_REL_CXX),$(eval $(call EP_RULE_cpp,$(f))))
+# Пустой ROM-сегмент сбрасывается, но директория roms/ только для заголовков —
+# файла epfileio.rom в файле не грузим (вшит в roms.hpp).
+$(BUILD)/ep_src_epmemcfg.o: $(EP_ROOT)/roms/roms.hpp
+$(BUILD)/ep_host.o: $(TOP)h3_bare/cores/ep_host.cpp | $(BUILD)
+	$(CXX) $(EP_CFLAGS) $(EP_INC) $(INCLUDES) $(DEPFLAGS) -c -o $@ $<
+
 # ---- Amiga (UAE4All / libretro-порт Chips, замена PUAE r1243) ----
 # Vendored в h3_bare/cores/uae4all/ (ядро src + libretro обвязка + deps/libz).
 # Сборка libretro-режима; CPU-ядро — Cyclone (ARM ассемблерная, самый быстрый

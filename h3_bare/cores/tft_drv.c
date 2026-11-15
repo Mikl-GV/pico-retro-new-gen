@@ -733,6 +733,10 @@ static const struct {
       "Amstrad CPC",
       {"Keyboard emulation","Enter = BIOS/BASIC","Z/X/C/A = joy fire 1..4","D-Pad = joystick","ESC hold = exit",NULL}
     },
+    { "enterprise",
+      "Enterprise 64/128",
+      {"Keyboard emulation","Enter = BASIC / ROM","Model: submenu 64/128","ESC hold = exit",NULL}
+    },
     // r1232: Amiga (PUAE) — вшитый KS 1.3, системный диск в DF0.
     { "amiga",
       "Commodore Amiga",

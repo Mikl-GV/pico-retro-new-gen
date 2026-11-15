@@ -101,7 +101,10 @@ static const system_entry_t systems[] = {
     // r1299: один пункт — встроенного BASIC у Агат-9 нет (только монитор
     // в ПЗУ), подменю выбора прошивки не нужно.
     SYS("agat",       "Agat-9",                  COMPUTER, READY),
-    SYS("enterprise", "Enterprise 64/128",        COMPUTER, PLANNED),
+    // Enterprise 64/128: ядро ep128emu (h3_bare/cores/ep128emu, GPL2),
+    // host-слой ep_host.cpp. Выбор 64/128 — подменю (main.c ep_model_dialog).
+    // BIOS (EXOS/BASIC) вшиты в ядро, с SD не грузятся. Дир по id — /roms/enterprise.
+    SYS("enterprise", "Enterprise 64/128",       COMPUTER, READY),
 };
 
 #define NUM_SYSTEMS (sizeof(systems) / sizeof(systems[0]))

@@ -28,6 +28,11 @@
 #include <sys/stat.h>   // r994: struct stat/S_IFREG — stat() «существования»
 
 #define FS_MAX_OPEN 16
+// r1354: доп. файлы образа (Enterprise FILE: — игра из нескольких файлов).
+// Имена хранятся уже в нормализованном виде (как их спросит ядро): нижний
+// регистр, посторонние символы -> '_' (см. ep_make_key в ep_host.cpp).
+#define FS_MAX_EXTRA 48
+#define FS_EXTRA_NAME 40
 
 #define FS_SLOT_MAGIC 0xA85A5A5Au   // r1011: метка валидного слота (used заменён
 
@@ -73,16 +78,32 @@ static char     g_rom_path[FS_ROM_PATH_MAX] FS_BSS;
 static const uint8_t* g_rom_data FS_BSS = 0;
 static uint32_t g_rom_size FS_BSS = 0;
 
+// r1354: дополнительные файлы образа (Enterprise: .com + его .prg/.scr/...).
+// Живут в том же ROM_BUF, регистрируются host-слоем после основного образа.
+typedef struct {
+    char     name[FS_EXTRA_NAME];
+    const uint8_t* data;
+    uint32_t size;
+} fs_extra_t;
+static fs_extra_t g_extra[FS_MAX_EXTRA] FS_BSS;
+static int        g_extra_n FS_BSS = 0;
+
 // Регистрация ROM-буфера под путём (вызывают a8_host, frodo_host, ...).
 // register_path — путь, который ядро будет открывать через fopen/open.
 void fs_register(const char* path, const void* data, uint32_t size) {
-    if (!path || !data) { g_rom_data = 0; g_rom_size = 0; g_rom_path[0] = 0; return; }
+    if (!path || !data) {
+        g_rom_data = 0; g_rom_size = 0; g_rom_path[0] = 0;
+        g_extra_n = 0;   // r1354: очистка образа снимает и его доп. файлы
+        return;
+    }
     size_t n = strlen(path);
     if (n >= FS_ROM_PATH_MAX) n = FS_ROM_PATH_MAX - 1;
     memcpy(g_rom_path, path, n);
     g_rom_path[n] = 0;
     g_rom_data = (const uint8_t*)data;
     g_rom_size = size;
+    // r1354: новая сессия — доп. файлы прошлой игры не должны «протекать».
+    g_extra_n = 0;
     // r995: одна строка на запуск — видно, под каким путём зарегистрирован
     // образ и его размер (сверка с тем, что позже просит fopen ядра).
     printf("fs: reg '%s' size=%u ptr=0x%08X\n",
@@ -91,6 +112,25 @@ void fs_register(const char* path, const void* data, uint32_t size) {
     g_fs_read_ops = 0;
     g_fs_read_bytes = 0;
     g_fs_rom_opens = 0;
+}
+
+// r1354: регистрация доп. файла образа под нормализованным именем (без пути).
+// Вызывается многократно после fs_register() основного образа.
+// name — УЖЕ нормализованное имя (нижний регистр, недопустимые символы -> '_'):
+// именно в таком виде имя приходит от ядра (VirtualMachine::
+// openFileInWorkingDirectory приводит его к нижнему регистру и заменяет
+// недопустимые символы на '_' перед stat/fopen).
+int fs_register_extra(const char* name, const void* data, uint32_t size) {
+    if (!name || !name[0] || !data || g_extra_n >= FS_MAX_EXTRA) return -1;
+    size_t n = strlen(name);
+    if (n >= FS_EXTRA_NAME) n = FS_EXTRA_NAME - 1;
+    fs_extra_t* e = &g_extra[g_extra_n];
+    memcpy(e->name, name, n);
+    e->name[n] = 0;
+    e->data = (const uint8_t*)data;
+    e->size = size;
+    g_extra_n++;
+    return 0;
 }
 
 // r994: VICE собран с UNIX_COMPILE, поэтому archdep_expand_path() через
@@ -187,7 +227,8 @@ static int path_matches_bios(const char* path) {
     return 1;
 }
 
-// Какой буфер отдаём по запрошенному пути: 1 — образ (ROM/диск), 2 — Kickstart.
+// Какой буфер отдаём по запрошенному пути: 1 — образ (ROM/диск), 2 — Kickstart,
+// 3 — доп. файл образа (r1354, Enterprise FILE:).
 static int fs_source(const char* path, const uint8_t** data, uint32_t* size) {
     if (path_matches(path)) {
         if (data) *data = g_rom_data;
@@ -198,6 +239,26 @@ static int fs_source(const char* path, const uint8_t** data, uint32_t* size) {
         if (data) *data = g_bios_data;
         if (size) *size = g_bios_size;
         return 2;
+    }
+    if (path && g_extra_n) {
+        const char* a = skip_path_prefix(path);
+        for (int i = 0; i < g_extra_n; i++) {
+            const char* b = g_extra[i].name;
+            int same = 1;
+            while (*a && *b) {
+                char ca = *a, cb = *b;
+                if (ca >= 'A' && ca <= 'Z') ca += 32;
+                if (cb >= 'A' && cb <= 'Z') cb += 32;
+                if (ca != cb) { same = 0; break; }
+                a++; b++;
+            }
+            if (same && *a == *b) {
+                if (data) *data = g_extra[i].data;
+                if (size) *size = g_extra[i].size;
+                return 3;
+            }
+            a = skip_path_prefix(path);   // следующий файл — сравнение с начала
+        }
     }
     return 0;
 }

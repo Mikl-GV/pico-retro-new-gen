@@ -181,6 +181,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_agat(rom, size, sel_name);      // Агат-9 — /roms/agat (r1297)
     else if (strcmp(sys_id, "radio86rk") == 0)
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
+    else if (strcmp(sys_id, "enterprise") == 0)
+        emu_run_ep(rom, size, sel_name);        // Enterprise 64/128 — /roms/enterprise (r135x)
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
@@ -205,12 +207,20 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
     __asm volatile("dsb st" ::: "memory");   // r0.198
 }
 
+// r1354: каталоги всегда выше файлов, внутри группы — по имени. Раньше всё
+// сортировалось вперемешку, и в /roms/enterprise (939 каталогов + 592 файла)
+// файлы «размазывались» между играми.
 static void sort_entries(fat_entry_t *list, int n) {
     for (int i = 0; i < n - 1; i++)
-        for (int j = i + 1; j < n; j++)
-            if (strcmp(list[i].name, list[j].name) > 0) {
+        for (int j = i + 1; j < n; j++) {
+            int di = (list[i].attr & 0x10) ? 0 : 1;
+            int dj = (list[j].attr & 0x10) ? 0 : 1;
+            int swap = (di != dj) ? (di > dj)
+                                  : (strcmp(list[i].name, list[j].name) > 0);
+            if (swap) {
                 fat_entry_t t = list[i]; list[i] = list[j]; list[j] = t;
             }
+        }
 }
 
 static int input_wait(void) {
@@ -221,6 +231,37 @@ static int input_wait(void) {
         // busy-loop давал RMW-гонку PA_DAT с TFT-ядром (срыв I2C-пада/джоёв).
         udelay(16000);
     }
+}
+
+
+// r1356: в каталоге игры показываем только то, что реально запускается.
+// Для Enterprise это .com/.bas (EXOS-программы); .prg/.scr/.1/.2/.dat — данные
+// игры, их host-слой подхватывает сам по каталогу (ep_load_dir_files), а в
+// списке они только мешают выбрать нужный файл. Каталоги видны всегда.
+static int ep_file_visible(const char* name) {
+    const char* dot = 0;
+    for (const char* p = name; *p; p++)
+        if (*p == '.') dot = p;
+    if (!dot) return 0;
+    char e[4] = { 0 };
+    for (int i = 0; i < 3 && dot[1 + i]; i++) {
+        char c = dot[1 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        e[i] = c;
+    }
+    return (strcmp(e, "com") == 0 || strcmp(e, "bas") == 0);
+}
+
+// Единая точка листинга: fat_list + фильтр по системе (r1356).
+static int list_dir_filtered(const char* path, const char* sys_id, fat_entry_t* list) {
+    int n = fat_list(path, list, FAT_MAX_ENTRIES);
+    if (strcmp(sys_id, "enterprise") != 0) return n;
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        if ((list[i].attr & 0x10) || ep_file_visible(list[i].name))
+            list[w++] = list[i];
+    }
+    return w;
 }
 
 
@@ -249,7 +290,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
     path[pl] = 0;
 
     fat_entry_t* list = fat_scratch();
-    int n = fat_list(path, list, FAT_MAX_ENTRIES);
+    int n = list_dir_filtered(path, sys_id, list);
     sort_entries(list, n);
     if (g_fat_dir_truncated)
         printf("rom_browser: WARN %s list truncated at %d (files beyond limit hidden)\n",
@@ -259,6 +300,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
 
     int cursor = 0;
     int scroll = 0;
+    int depth = 0;     // r1354: глубина вложенности подпапок (для ESC-выхода)
     int max_rows = (FOOTER_Y - 100) / ROW_H;
     int dirty = 1;   // перерисовать сразу при входе
 
@@ -286,8 +328,11 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                         fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
                     char buf[64];
                     int len = strlen(list[i].name);
-                    if (len > 54) len = 54;
+                    // r1354: каталог помечаем суффиксом '/'
+                    int is_dir = (list[i].attr & 0x10) ? 1 : 0;
+                    if (len > (54 - (is_dir ? 1 : 0))) len = 54 - (is_dir ? 1 : 0);
                     memcpy(buf, list[i].name, len);
+                    if (is_dir) buf[len++] = '/';
                     buf[len] = 0;
                     fb_puts_s(80, y, buf, 1, clr);
                     y += ROW_H;
@@ -336,6 +381,24 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             dirty = 1;
         } else if (k == 40) {
             if (n > 0) {
+                // r1354: Enter на каталоге — входим в него (обновляем path)
+                if (list[cursor].attr & 0x10) {
+                    const char* sub = list[cursor].name;
+                    int sl = (int)strlen(sub);
+                    int plen = (int)strlen(path);
+                    if (sl > 0 && sl < 96 && plen + 1 + sl + 1 < (int)sizeof(path)) {
+                        path[plen] = '/';
+                        memcpy(path + plen + 1, sub, (size_t)sl);
+                        path[plen + 1 + sl] = 0;
+                        depth++;
+                        n = list_dir_filtered(path, sys_id, list);
+                        sort_entries(list, n);
+                        cursor = 0; scroll = 0;
+                        if (n <= 0) cursor = 0;
+                        dirty = 1;
+                        continue;
+                    }
+                }
                 // Объявляем до goto (r625): C++ запрещает goto через
                 // инициализацию переменной ("jump bypasses initialization").
                 uint8_t* rom = 0;
@@ -363,6 +426,10 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
 
                 if (load_rom(path, sel_name, &rom, &size) == 0) {
                     emu_clear_fb();
+                    // r1354: Enterprise грузит и остальные файлы каталога игры
+                    // (.com + .prg/.scr/...) — host-слою нужен путь каталога.
+                    if (strcmp(sys_id, "enterprise") == 0)
+                        ep_set_rom_dir(path);
                     run_emulator(sys_id, rom, size, sel_name);
                     // r625: после игры возвращаемся в браузер (не в главное меню).
                     goto reload_list;
@@ -376,6 +443,19 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 goto reload_list;
             }
         } else if (k == 41) {
+            // r1354: ESC в подпапке — выходим на уровень выше
+            if (depth > 0) {
+                char* slash = path + strlen(path);
+                while (slash > path && *slash != '/') slash--;
+                if (slash > path) *slash = 0;   // отрезать "/имя"
+                depth--;
+                n = list_dir_filtered(path, sys_id, list);
+                sort_entries(list, n);
+                cursor = 0; scroll = 0;
+                if (n <= 0) cursor = 0;
+                dirty = 1;
+                continue;
+            }
             return;
         } else if (k == 42 || k == 76) {
             // Backspace (42) / Delete (76) — удалить ROM (двойное подтверждение)
@@ -420,7 +500,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 int r = fat_delete_file(path, del_name);
                 if (r == 0) {
                     // перечитываем список
-                    n = fat_list(path, list, FAT_MAX_ENTRIES);
+                    n = list_dir_filtered(path, sys_id, list);
                     sort_entries(list, n);
                     // r547: после удаления последнего файла n=0 давал
                     // cursor = n-1 = -1 (исправлялось следующей строкой,
@@ -440,7 +520,7 @@ reload_list:
         // измениться/удалиться) и остаёмся в браузере текущей системы.
         dirty = 1;
         if (n > 0) { cursor = (cursor >= n) ? n - 1 : cursor; }
-        n = fat_list(path, list, FAT_MAX_ENTRIES);
+        n = list_dir_filtered(path, sys_id, list);
         sort_entries(list, n);
         if (n <= 0) cursor = 0;
         else if (cursor >= n) cursor = n - 1;

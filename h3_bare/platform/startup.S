@@ -700,6 +700,18 @@ _start:
     b 9b
 10:
 
+    /* Zero-init .ep_bss (NOLOAD, буфер кадра Enterprise 64/128; linker.ld —
+     * 0x52700000). BSS-цикл её не покрывает (отдельная секция). */
+    ldr r0, =_ep_bss_start
+    ldr r1, =_ep_bss_end
+    cmp r0, r1
+    beq 12f
+11: cmp r0, r1
+    bhs 12f
+    str r2, [r0], #4
+    b 11b
+12:
+
     /* Zero-init когерентной области (.coherent, NOLOAD — BSS-цикл её
      * не покрывает). Идёт ПОСЛЕ кучи, но до main. */
     ldr r0, =_coherent_start

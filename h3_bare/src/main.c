@@ -87,6 +87,8 @@ extern void fuse_set_model(const char* m);
 extern void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void bk_set_model(const char* m);
 extern void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
+extern void ep_set_model(int model64);
+extern void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_name);
 
 static int zx_model_dialog(void) {
     int sel = 0, scroll = 0, dirty = 1;
@@ -225,6 +227,66 @@ static int bk_source_dialog(void) {
                 int y = 160 + i * 40;
                 uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
                 if (i == sel) fb_fill_rect(50, y - 6, 600, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 2 : 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
+// ---- Enterprise 64/128: выбор модели (0=64, 1=128), 0=64 по умолчанию ----
+static int ep_model_dialog(void) {
+    int sel = 0, dirty = 1;
+    const char* models[2] = { "Enterprise 64", "Enterprise 128" };
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 60, "Enterprise", 2, 0x00FFAA00);
+            fb_fill_rect(60, 100, 340, 2, 0x00FFFFFF);
+            for (int i = 0; i < 2; i++) {
+                int y = 140 + i * 32;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 3, 500, 26, 0x00222222);
+                fb_puts(70, y, models[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: model   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return sel;
+        else if (k == 41 || k == 27) return -1;
+        udelay(50000);
+    }
+}
+
+// r1354: 2 = BASIC (вшитый EXOS/BASIC), 1 = файл с SD (браузер /roms/enterprise),
+// 0 = назад. Раньше Enterprise показывал диалог BK («BK: load», .bin/.img) —
+// у EP свои форматы.
+static int ep_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Enterprise: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. BASIC (built-in EXOS)",
+                "2. Program from SD (.com/.bas, folder = game)"
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 900, 30, 0x00222222);
                 fb_puts(70, y, opts[i], clr);
             }
             fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
@@ -456,7 +518,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1352";
+const char g_fw_version[] = "r1356";
 
 // r1203-ДИАГ: состояние LPAE-карты (U-Boot работает в long-descriptor:
 // TTBCR.EAE=1). Печатает TTBR0, записи L0 (0..3), MAIR и L1-блоки для
@@ -523,7 +585,7 @@ void main(void) {
     uart_init();
     uart_rx_flush();
     uart_puts("\nMultiTool Retro boot\n");
-    uart_puts("build: r1352\n");
+    uart_puts("build: r1356\n");
 
     // r1207-ДИАГ: снимок LPAE-карты ДО инициализации USB — здесь видно
     // MAIR0/MAIR1 и реальные AttrIndx периферии/DRAM, пока их никто не менял.
@@ -838,6 +900,30 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM/диск через браузер (0x74 ставит run_emulator)
                 rom_browser_run("cpc", name, "cpc");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // Enterprise 64/128: выбор модели -> ROM/image или BASIC (вшитый)
+        if (strcmp(id, "enterprise") == 0) {
+            int m = ep_model_dialog();
+            if (m < 0) continue;
+            ep_set_model(m);                 // 0=64, 1=128
+            int src = ep_source_dialog();    // 2=BASIC, 1=ROM/файл (браузер)
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("enterprise");
+            if (src == 2) {                  // BASIC (BIOS/BASIC вшиты в ядро)
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_ep(NULL, 0, "basic");
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                         // ROM/образ через браузер (0x74 ставит run_emulator)
+                rom_browser_run("enterprise", name, "enterprise");
             }
             sega_pad_init();
             continue;

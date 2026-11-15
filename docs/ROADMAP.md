@@ -11,15 +11,16 @@
 | Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (mGBA-core, r1133), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
 | Консоли | Atari 2600 (MCUME), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), Sega 32X (PicoDrive, r1147), GCE Vectrex (vecx) |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
-| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE, звук r975), Amstrad CPC (Caprice32), Commodore 64 (Frodo, r1284), БК-0010/0011М (libretro-bk), **Радио-86РК (порт RK8266, r1185)**, Atari Portfolio (Fake86), МС 1504 (Fake86) |
+| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE, звук r975), Amstrad CPC (Caprice32), Commodore 64 (Frodo, r1284), БК-0010/0011М (libretro-bk), **Радио-86РК (порт RK8266, r1185)**, Atari Portfolio (Fake86), МС 1504 (Fake86), **Enterprise 64/128 (ep128emu, r1354: автозагрузка, мультифайловые игры)** |
 
-Планируются (PLANNED в systems.h): Enterprise 64/128.
+Планируются (PLANNED в systems.h): —
 
 Легенда: ✅ READY · 🔲 PLANNED
 
 ## Очередь работ
 
-1. **Enterprise** — порт ядра (кандидат: ep128emu).
+1. _(Enterprise 64/128 реализован: ep128emu, BIOS вшиты, автозагрузка и игры из
+   нескольких файлов — r1354.)_
    Радио-86РК (порт RK8266, r1185), Amstrad CPC (cap32, r970) и Commodore 64
    (frodo-libretro, r1284) — готовы.
 2. **Vectrex** — реализован (host `vecx_host.c`, systems.h READY, звук на I2S

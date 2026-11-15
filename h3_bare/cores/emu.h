@@ -110,5 +110,8 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name);     
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1185
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1243 UAE4All (было r1191 PUAE)
 void emu_run_amiga_wb(void);   // r1232: вшитый диск Workbench 1.3 (DF0)
+void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_name);         // Enterprise 64/128 (ep128emu)
+void ep_set_model(int model64);                                                    // 0=64, 1=128
+void ep_set_rom_dir(const char* dir);   // r1354: каталог выбранного файла (игра из нескольких файлов)
 
 #endif
