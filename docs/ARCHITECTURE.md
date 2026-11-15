@@ -613,7 +613,9 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
 
 - **Аркады (FinalBurn Neo, ядро `cps1/`, host `cps1_host.cpp`)**: CPS-1/CPS-2,
   NeoGeo/MVS, Toaplan, Cave 68K, Sega System 16, общий fbneo — рендер через
-  `g_frame` (384×320) → HDMI FB; ввод через `toa_input_cache`.
+  `g_frame` (384×320) → HDMI FB; ввод через `toa_input_cache`. Элемент
+  браузера — папка игры или `.zip`; Enter на папке сразу запускает набор
+  (r1362; внутрь каталога браузер не входит).
 - **БК-0010/0011М** — см. таблицу (прямая запись в HDMI FB).
 - **МС 1504** (8088, `ms1504/ms1504_host.c`, BIOS PK300 вшит) — рендер, ввод.
 - **Радио-86РК** (i8080, `rk86/` + `rk86_host.c`, монитор и знакогенератор вшиты,
@@ -624,7 +626,22 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   (BASIC/EXOS вшиты), автозагрузка «имя файла + F1 START»; игры из нескольких
   файлов — `fs_register_extra()` (файлы каталога игры в ROM_BUF, ключи
   нормализованы как в ядре). C++ с RTTI+exceptions, `.ep_bss` отдельно
-  (резерв, кадр пишется напрямую).
+  (резерв, кадр пишется напрямую). Папка игры в браузере — элемент запуска
+  (r1362): host выбирает main-файл (`start.com`/`start`, имя каталога,
+  первый `.com`/`.bas`), вызывает `ep_set_rom_dir()` и грузит остальные файлы
+  каталога.
+- **Apple II+** (`h3_bare/cores/agat_host.c`, r1360) — то же ядро Agat
+  Emulator, тип `SYSTEM_P` (в `init_system_state` сходится к `SYSTEM_A`):
+  6502 1.0205 МГц, NTSC 60 Гц, 48K, кадр видео 560×384 (PIX_W*280 ×
+  PIX_H*192), аспект 4:3. Вшиты (`.incbin` в `agat_roms.S`): Applesoft/монитор
+  12 КБ (`apple2p.rom`, байт в байт с `Apple2_Plus.rom` AppleWin), знакогенератор
+  (`apple2.fnt`), ПЗУ Disk II 16 секторов (`shugarta.rom`, = `DISK2.rom`).
+  Палитра — 16 цветов эталонного `PALETTE\APPLE2.PAL` (`agat_set_apple2_palette`).
+  Диск: Shugart/Disk II, образы `.dsk/.do/.po` (143360), `.nib` (6656×N) и
+  `.woz` (1.0/2.0, r1361: сырой битпоток → nibble-поток с ресинхронизацией
+  по единичному биту, как `LDA $C0EC / BPL` в Disk II ROM); TEAC-контроллер
+  Apple II не нужен и отключён. Клавиатура — ASCII (`$C000`, бит 7 — строб),
+  пад — порт джойстика `$C061/$C062/$C064/$C065`.
 - **Плановые компьютеры** (в `systems.h`, ядер в дереве нет): CPC (8 «готово-консольных», см. отдельно), остальные — см. `docs/ROADMAP.md`.
   C64 — READY (Frodo, r1284), Atari 8-bit — READY (r975 звук).
 

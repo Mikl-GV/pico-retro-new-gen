@@ -757,6 +757,11 @@ static const struct {
       "Agat-9",
       {"Keyboard emulation","Monitor ROM built-in","ESC hold = exit",NULL}
     },
+    // r1360: Apple II+ — то же ядро Agat Emulator, вшитые Applesoft/Disk II.
+    { "apple2",
+      "Apple II+",
+      {"Keyboard emulation (ASCII)","Applesoft ROM built-in","Disks .dsk/.do/.po/.nib/.woz","Pad: joystick ($C061/$C070)","Start = Enter","ESC hold = exit",NULL}
+    },
     { "32x",
       "Sega 32X",
       {"Same pad as Mega Drive","Z=A X=B C=C A=X S=Y D=Z","Q=Mode    Enter = Start","ESC hold = exit",NULL}

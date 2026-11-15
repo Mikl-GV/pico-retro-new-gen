@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1359)
+# HANDOVER — текущее состояние (r1360)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -8,6 +8,94 @@
 
 ## 0. Последние правки
 
+- **r1362 (2026-11-15): ROM-браузер — аркады и Enterprise: папка = игра.**
+  - **Симптом.** После r1354 Enter на каталоге ВСЕГДА входил внутрь. Для
+    аркад (cps1/cps2/neogeo/toaplan/fbneo/cave/segasys) это ломало запуск:
+    папка игры — это и есть ROM-сет, host читает её целиком; браузер же
+    показывал содержимое папки. Enterprise вёл себя так же.
+  - **Аркады.** `rom_browser.c`: `is_arcade_sys()`; Enter на каталоге до
+    ветки входа вызывает `run_emulator(sys_id, NULL, 0, sel_name)` — host
+    (`run_cps`/`cps1_host.cpp`) сам берёт `/roms/<sys>/<имя>` (папку или
+    `<имя>.zip`). ZIP-файлы работают прежним путём.
+  - **Enterprise.** Enter на каталоге: `ep_find_main()` выбирает главный файл
+    (`start.com`/`start`, файл с именем каталога, первый `.com`, первый
+    `.bas`, иначе любой), затем `load_rom()` + `ep_set_rom_dir(dirpath)` +
+    `run_emulator("enterprise", rom, size, main_name)`. Остальные файлы
+    каталога подхватывает `ep_load_dir_files()` (r1354), автозагрузка START
+    работает как для одиночного файла. Если главного файла нет — прежний
+    вход в каталог (коллекции не теряются).
+  - **Отображение.** У аркад и Enterprise каталог показывается как файл без
+    расширения (без суффикса `/`); у остальных систем `/` остался.
+  - **Проверка.** `make -j20` — `linkcheck: OK`, версия r1362.
+    На живом стенде не проверялось.
+- **r1361 (2026-11-15): Apple II+ — образы .woz и длинные имена дисков.**
+  - **Симптом.** В `/roms/apple2` основная масса игр — `.woz`, но host их
+    отвергал (поддержаны были только 143360-байтные `.dsk/.do/.po` и `.nib`),
+    дисковод отключался, и Apple II+ штатно уходил в Applesoft BASIC («DOS
+    или BASIC, не знаю что за система»). Вторая причина — `ag_disk_name[64]`
+    в `agat_hal.c`: имена большинства образов длиннее 63 символов, поэтому
+    `ag_is_disk_name()` не находил поток в памяти, и диск не монтировался
+    даже при правильном расширении.
+  - **WOZ в fdd1.c.** Добавлены поля `woz/woz_tmap/woz_trks/woz_tracks`.
+    `woz_parse()` разбирает чанки INFO/TMAP/TRKS (WOZ1 и WOZ2). Загрузка
+    дорожки (`fdd_load_woz_track`) берёт индекс из TMAP (`track*4`), читает
+    битпоток (WOZ1: 6656-байтный блок + `bytesUsed/bitCount` в конце; WOZ2:
+    `TRKv2` + `startBlock*512`) и превращает его в nibble-поток
+    (`woz_to_nibbles`). Ресинхронизация — по ближайшему единичному биту,
+    как `LDA $C0EC / BPL` в Disk II ROM: это переносит межсекторные сдвиги
+    защищённых дорожек (у Archon/2400 A.D. D5 AA 96 идёт с разными mod 8).
+    Перед потоком 8 байт 0xFF — `fdd_rot()` сдвигает индекс до чтения.
+    WOZ только для чтения, `fdd_save_track` его не пишет.
+  - **Host.** Apple II принимает `.woz` (size > 12); `ag_disk_name` увеличен
+    до 256 байт. `rom_browser.c`: для `apple2` список фильтруется по
+    `.dsk/.do/.po/.nib/.woz` (ПЗУ и прочие файлы больше не выбираются).
+  - **Проверка.** `make -j20` — `linkcheck: OK`, образ 21189340 Б.
+    На реальных файлах из `roms/apple2` проверен разбор: WOZ1 (Donkey Kong,
+    Archon, Apple Cider Spider) и WOZ2 (2400 A.D., A View to a Kill):
+    после ресинхронизации 32–36 маркеров D5 AA 96 на дорожку.
+  - **Ограничения.** WOZ read-only; FLUX/WRIT (WOZ3) не поддержаны;
+    дорожки без единичных битов/нестандартный GCR могут не прочитаться;
+    `.dsk/.do/.po/.nib` работают прежним путём. На живом стенде не проверено.
+- **r1360 (2026-11-15): Apple II+ — новая система на уже портированном
+  ядре Agat Emulator.**
+  - **Эталон.** В `emulator-refs/applewin` сохранены AppleWin v1.32.1.0
+    (релиз `AppleWin1.32.1.0.zip` + распакованный каталог) и исходники
+    (`AppleWin-master-src.zip`, `src/AppleWin-master`). Сверка ресурсов:
+    `resource/Apple2_Plus.rom` (12288) совпадает по SHA256 с `APPLE2.ROM`
+    Agat Emulator; `resource/DISK2.rom` (256) совпадает с `SHUGARTA.ROM`.
+    Знакогенератор взят из Agat Emulator (`FNTS/APPLE2.FNT`, 2048) — это
+    раскладка, которую ядро реально ждёт в `font[256][8]`.
+  - **Почему на Agat-ядре.** Оно уже портировано в bare-metal (r1297) и
+    содержит Apple II целиком: `apple2.c` (клавиатура `$C000`, soft switches
+    `$C050..$C05F`), `videosela.c` (text40/low-res/HGR), `fdd1.c` (Shugart =
+    Disk II), `joystick.c` (порты `$C061/$C062/$C064/$C065`), 6502
+    (`cpu6502.c`). Отдельный порт AppleWin/LinApple не требуется.
+  - **Ядро.** `agat_roms.S` — новые `.incbin`: `apple2p.rom`,
+    `apple2.fnt`, `shugarta.rom`. `agat_hal.c`: ресурсы 14 (ПЗУ Applesoft),
+    3 (знакогенератор), 24 (Disk II ROM); палитра Apple II из 16 цветов
+    эталонного `PALETTE/APPLE2.PAL` и переключатель
+    `agat_set_apple2_palette()` (0 — Агат, 1 — Apple II). Расширение
+    `agat_video_expand` берёт палитру по этому флагу.
+  - **Host.** `agat_host.c`: общий `agat_run_common(systype, apple2, …)`;
+    `emu_run_agat` — `SYSTEM_9`, `emu_run_apple2` — `SYSTEM_P` (в
+    `init_system_state` сходится к `SYSTEM_A`). Apple II: 48K, слоты 0/1
+    (Language Card/принтер) отключены, `CONF_ROM` → ресурс 14, NTSC 60 Гц
+    (17030 тактов/кадр, 16667 мкс), клавиатура ASCII (`apple2_hid_to_code`:
+    буквы всегда заглавные, Enter=CR, Esc=$1B, стрелки = Ctrl-H/U/J/K),
+    пад — джойстик, Start = Enter. Диск: `.dsk/.do/.po` (143360) и `.nib`
+    (кратно 6656); иное — дисковод отключается с логом.
+  - **Регистрация.** `systems.h` — `SYS("apple2", "Apple II+", COMPUTER,
+    READY)` (папка `/roms/apple2`); `emu.h` — `emu_run_apple2`;
+    `rom_browser.c` — диспетчер; `Makefile` — зависимость `agat_roms.o` от
+    новых файлов; `tft_drv.c` — справка; `menu.c` — About (37 систем) и
+    Help; `README.md`, `docs/ARCHITECTURE.md` — описание.
+  - **Проверка.** `make clean && make -j20` — `linkcheck: OK`, образ
+    21187484 Б; в ELF есть `agat_rom_apple2p` (12288), `agat_rom_apple2_fnt`,
+    `agat_rom_shugarta`, `emu_run_apple2`, `agat_set_apple2_palette`.
+  - **Ограничения (осознанно).** 48K без Language Card (карта не
+    эмулируется); TEAC-контроллер Apple II не нужен; `.woz` не поддержан;
+    beeper Apple II, как и у Агата, пока не выводится (host ставит
+    `DEV_NOSOUND`); на живом стенде не проверялось.
 - **r1359 (2026-11-15): boot-логи — релиз без шума; отладка по `BOOT_VERBOSE`;
   дерево ROM, старт ядер и состав ввода возвращены в лог.**
   - **Зачем.** К r1358 успешный старт печатал ~60 строк (LPAE-дампы, dvi/hdmi,

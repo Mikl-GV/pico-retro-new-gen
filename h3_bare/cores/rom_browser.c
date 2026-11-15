@@ -179,6 +179,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_amiga(rom, size, sel_name);     // Commodore Amiga — /roms/amiga (r1191, PUAE)
     else if (strcmp(sys_id, "agat") == 0)
         emu_run_agat(rom, size, sel_name);      // Агат-9 — /roms/agat (r1297)
+    else if (strcmp(sys_id, "apple2") == 0)
+        emu_run_apple2(rom, size, sel_name);    // Apple II+ — /roms/apple2 (r1360)
     else if (strcmp(sys_id, "radio86rk") == 0)
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
     else if (strcmp(sys_id, "enterprise") == 0)
@@ -252,16 +254,104 @@ static int ep_file_visible(const char* name) {
     return (strcmp(e, "com") == 0 || strcmp(e, "bas") == 0);
 }
 
+// r1360: Apple II+ — в папке показываем только образы дисков. В /roms/apple2
+// лежат сотни .woz и .do; файлы ПЗУ (.rom) и прочий мусор выбирать нельзя —
+// host их не монтирует, и машина молча уходит в BASIC.
+static int apple2_file_visible(const char* name) {
+    const char* dot = 0;
+    for (const char* p = name; *p; p++)
+        if (*p == '.') dot = p;
+    if (!dot) return 0;
+    char e[4] = { 0 };
+    for (int i = 0; i < 3 && dot[1 + i]; i++) {
+        char c = dot[1 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        e[i] = c;
+    }
+    return (strcmp(e, "dsk") == 0 || strcmp(e, "do") == 0 ||
+            strcmp(e, "po") == 0 || strcmp(e, "nib") == 0 ||
+            strcmp(e, "woz") == 0);
+}
+
 // Единая точка листинга: fat_list + фильтр по системе (r1356).
 static int list_dir_filtered(const char* path, const char* sys_id, fat_entry_t* list) {
     int n = fat_list(path, list, FAT_MAX_ENTRIES);
-    if (strcmp(sys_id, "enterprise") != 0) return n;
+    int is_ep = (strcmp(sys_id, "enterprise") == 0);
+    int is_a2 = (strcmp(sys_id, "apple2") == 0);
+    if (!is_ep && !is_a2) return n;
     int w = 0;
     for (int i = 0; i < n; i++) {
-        if ((list[i].attr & 0x10) || ep_file_visible(list[i].name))
+        if ((list[i].attr & 0x10) ||
+            (is_ep ? ep_file_visible(list[i].name)
+                   : apple2_file_visible(list[i].name)))
             list[w++] = list[i];
     }
     return w;
+}
+
+// r1362: аркады (CPS/NeoGeo/Toaplan/Cave/Sega System 16/FBNeo) и Enterprise
+// в браузере показывают папку как файл без расширения, а Enter на папке
+// ЗАПУСКАЕТ игру (host сам читает папку целиком или zip), а не входит внутрь.
+static int is_arcade_sys(const char* sys_id) {
+    return strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 ||
+           strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 ||
+           strcmp(sys_id, "fbneo") == 0 || strcmp(sys_id, "cave") == 0 ||
+           strcmp(sys_id, "segasys") == 0;
+}
+
+static char rom_lc(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static int rom_ci_eq(const char* a, const char* b) {
+    while (*a && *b) {
+        if (rom_lc(*a) != rom_lc(*b)) return 0;
+        a++; b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static int rom_ci_prefix(const char* a, const char* b, int n) {
+    for (int i = 0; i < n; i++) {
+        if (!a[i] || !b[i] || rom_lc(a[i]) != rom_lc(b[i])) return 0;
+    }
+    return 1;
+}
+
+// r1362: главный файл EP-игры в каталоге. Приоритет: start.com/start,
+// файл с именем каталога, первый .com, первый .bas, любой файл.
+// Результат копируется в out ДО load_rom (fat_scratch перезатрётся).
+static int ep_find_main(const char* dir, const char* dirname,
+                        char* out, int outsz) {
+    fat_entry_t* list = fat_scratch();
+    int n = fat_list(dir, list, FAT_MAX_ENTRIES);
+    int start = -1, same = -1, com = -1, bas = -1, any = -1;
+    if (n <= 0) return -1;
+    int dl = (int)strlen(dirname);
+    for (int i = 0; i < n; i++) {
+        if (list[i].attr & 0x10) continue;
+        if (list[i].size == 0) continue;
+        const char* nm = list[i].name;
+        if (rom_ci_eq(nm, "start.com") || rom_ci_eq(nm, "start")) {
+            if (start < 0) start = i;
+        }
+        const char* dot = strrchr(nm, '.');
+        int bl = dot ? (int)(dot - nm) : (int)strlen(nm);
+        if (bl == dl && rom_ci_prefix(nm, dirname, dl)) {
+            if (same < 0) same = i;
+        }
+        if (dot && rom_ci_eq(dot, ".com")) { if (com < 0) com = i; }
+        if (dot && rom_ci_eq(dot, ".bas")) { if (bas < 0) bas = i; }
+        if (any < 0) any = i;
+    }
+    int pick = (start >= 0) ? start : (same >= 0) ? same :
+               (com >= 0) ? com : (bas >= 0) ? bas : any;
+    if (pick < 0) return -1;
+    int l = (int)strlen(list[pick].name);
+    if (l >= outsz) l = outsz - 1;
+    memcpy(out, list[pick].name, (size_t)l);
+    out[l] = 0;
+    return 0;
 }
 
 
@@ -328,11 +418,14 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                         fb_fill_rect(50, y - 2, PHYS_W - 100, ROW_H, 0x00181818);
                     char buf[64];
                     int len = strlen(list[i].name);
-                    // r1354: каталог помечаем суффиксом '/'
+                    // r1354: каталог помечаем суффиксом '/'. r1362: у аркад и
+                    // Enterprise папка — это игра, показываем её как файл без '/'.
                     int is_dir = (list[i].attr & 0x10) ? 1 : 0;
-                    if (len > (54 - (is_dir ? 1 : 0))) len = 54 - (is_dir ? 1 : 0);
+                    int slash = is_dir && !is_arcade_sys(sys_id) &&
+                                strcmp(sys_id, "enterprise") != 0;
+                    if (len > (54 - (slash ? 1 : 0))) len = 54 - (slash ? 1 : 0);
                     memcpy(buf, list[i].name, len);
-                    if (is_dir) buf[len++] = '/';
+                    if (slash) buf[len++] = '/';
                     buf[len] = 0;
                     fb_puts_s(80, y, buf, 1, clr);
                     y += ROW_H;
@@ -381,14 +474,51 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
             dirty = 1;
         } else if (k == 40) {
             if (n > 0) {
-                // r1354: Enter на каталоге — входим в него (обновляем path)
-                if (list[cursor].attr & 0x10) {
-                    const char* sub = list[cursor].name;
-                    int sl = (int)strlen(sub);
+                // r1362: имя копируем ДО fat_list/load_rom — scratch перезатрётся.
+                char sel_name[FAT_NAME_LEN];
+                int sl = (int)strlen(list[cursor].name);
+                if (sl >= FAT_NAME_LEN) sl = FAT_NAME_LEN - 1;
+                memcpy(sel_name, list[cursor].name, (size_t)sl);
+                sel_name[sl] = 0;
+
+                int is_dir = (list[cursor].attr & 0x10) ? 1 : 0;
+                int is_arc = is_arcade_sys(sys_id);
+                int is_ep = (strcmp(sys_id, "enterprise") == 0);
+
+                // Аркада: Enter на папке = запуск игры (host читает папку/zip).
+                if (is_dir && is_arc) {
+                    cheats_reset();
+                    emu_clear_fb();
+                    run_emulator(sys_id, NULL, 0, sel_name);
+                    goto reload_list;
+                }
+
+                // Enterprise: Enter на папке = запуск игры из этой папки.
+                if (is_dir && is_ep) {
+                    char dirpath[256];
+                    char main_name[FAT_NAME_LEN];
+                    uint8_t* rom = 0;
+                    uint32_t size = 0;
+                    snprintf(dirpath, sizeof(dirpath), "%s/%s", path, sel_name);
+                    if (ep_find_main(dirpath, sel_name, main_name,
+                                     (int)sizeof(main_name)) == 0 &&
+                        load_rom(dirpath, main_name, &rom, &size) == 0) {
+                        cheats_reset();
+                        ep_set_rom_dir(dirpath);
+                        emu_clear_fb();
+                        run_emulator(sys_id, rom, size, main_name);
+                        goto reload_list;
+                    }
+                    // Нет главного файла — ниже войдём в каталог как раньше
+                    // (доступ к коллекциям не теряем); sel_name уже скопирован.
+                }
+
+                // Enter на каталоге — входим в него (обновляем path)
+                if (is_dir) {
                     int plen = (int)strlen(path);
                     if (sl > 0 && sl < 96 && plen + 1 + sl + 1 < (int)sizeof(path)) {
                         path[plen] = '/';
-                        memcpy(path + plen + 1, sub, (size_t)sl);
+                        memcpy(path + plen + 1, sel_name, (size_t)sl);
                         path[plen + 1 + sl] = 0;
                         depth++;
                         n = list_dir_filtered(path, sys_id, list);
@@ -399,23 +529,17 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                         continue;
                     }
                 }
+
                 // Объявляем до goto (r625): C++ запрещает goto через
                 // инициализацию переменной ("jump bypasses initialization").
                 uint8_t* rom = 0;
                 uint32_t size = 0;
 
-                // Копируем имя ДО load_rom — fat_find внутри перезатрёт g_scratch_dir
-                char sel_name[FAT_NAME_LEN];
-                int sl = strlen(list[cursor].name);
-                if (sl >= FAT_NAME_LEN) sl = FAT_NAME_LEN - 1;
-                memcpy(sel_name, list[cursor].name, sl);
-                sel_name[sl] = 0;
-
                 // Сброс чит-отметок прошлой сессии (raw-коды не
                 // должны протекать в чужую игру).
                 cheats_reset();
 
-                if (strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 || strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 || strcmp(sys_id, "fbneo") == 0 || strcmp(sys_id, "cave") == 0 || strcmp(sys_id, "segasys") == 0) {
+                if (is_arc) {
                     // Аркада (multi-file): элемент = папка игры или zip-файл;
                     // ROM-сет читает сам host по имени. Единый ROM не грузим.
                     emu_clear_fb();
@@ -428,7 +552,7 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     emu_clear_fb();
                     // r1354: Enterprise грузит и остальные файлы каталога игры
                     // (.com + .prg/.scr/...) — host-слою нужен путь каталога.
-                    if (strcmp(sys_id, "enterprise") == 0)
+                    if (is_ep)
                         ep_set_rom_dir(path);
                     run_emulator(sys_id, rom, size, sel_name);
                     // r625: после игры возвращаемся в браузер (не в главное меню).

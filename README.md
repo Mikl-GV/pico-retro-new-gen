@@ -16,7 +16,7 @@ Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Зву�
 | Портативные | Game Boy / GBC, Game Gear, GBA (mGBA), Atari Lynx, Neo Geo Pocket / Color |
 | Консоли | Atari 2600, Atari 5200, Atari 7800, Master System, NES / Famicom (Dendy), ColecoVision, PC Engine / TurboGrafx (HuCard), SNES, Mega Drive / Genesis, Sega 32X, GCE Vectrex |
 | Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
-| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64 (Frodo, BIOS вшиты), Commodore Amiga (UAE4All/Cyclone, Kickstart 1.3 вшит), БК-0010/0011М (ROM вшиты), Радио-86РК (монитор вшит), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит), Enterprise 64/128 (ep128emu, BIOS вшиты, автозагрузка START, r1356) |
+| Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64 (Frodo, BIOS вшиты), Commodore Amiga (UAE4All/Cyclone, Kickstart 1.3 вшит), БК-0010/0011М (ROM вшиты), Радио-86РК (монитор вшит), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит), Enterprise 64/128 (ep128emu, BIOS вшиты, автозагрузка START, r1356), Apple II+ (Agat Emulator, Applesoft/Disk II ROM вшиты, .dsk/.do/.po/.nib/.woz, r1361) |
 
 ## Сборка и запись
 

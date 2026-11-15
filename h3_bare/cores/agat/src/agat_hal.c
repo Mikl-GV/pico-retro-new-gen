@@ -44,7 +44,10 @@ struct _STREAM
 /* Образ диска, переданный host-слоем (emu_run_agat). */
 static const unsigned char*ag_disk_image = NULL;
 static unsigned ag_disk_size = 0;
-static char ag_disk_name[64] = { 0 };
+/* r1360: имена образов Apple II (.woz/.dsk) длиннее 63 символов — в 64-байтный
+   буфер они не влезали, и ag_is_disk_name() не находил поток в памяти
+   (диск «не монтировался», машина уходила в BASIC). */
+static char ag_disk_name[256] = { 0 };
 
 void agat_set_disk_image(const void*data, unsigned size, const char*name)
 {
@@ -421,6 +424,38 @@ static const unsigned short agat_pal565[16] = {
 	0xFFFF, /* 15 white   */
 };
 
+/* r1360: палитра Apple II из эталонного PALETTE\APPLE2.PAL (файл
+   Agat Emulator, 16 RGB-троек). Индексы совпадают с видеопроцессором
+   Apple II: 5/10 — фиолетовый/зелёный, 6/9 — синий/оранжевый HGR,
+   0/1/2/4 — четыре цвета low-res. */
+static const unsigned short apple2_pal565[16] = {
+	0x0000, /*  0 black       0   0   0 */
+	0x7128, /*  1 dark red  114  38  64 */
+	0x0AC8, /*  2 dark green 14  89  64 */
+	0x8410, /*  3 grey      128 128 128 */
+	0x418F, /*  4 violet     64  51 127 */
+	0xE1BF, /*  5 magenta   228  52 254 */
+	0x1CDF, /*  6 blue       27 154 254 */
+	0xBD9F, /*  7 light blue 191 179 255 */
+	0x4260, /*  8 olive      64  76   0 */
+	0xE320, /*  9 orange    228 101   1 */
+	0x1E40, /* 10 green      27 203   1 */
+	0xBE70, /* 11 light green191 204 128 */
+	0x7BEF, /* 12 grey       127 127 127 */
+	0xF537, /* 13 pink      241 166 191 */
+	0x8ED7, /* 14 light green141 217 191 */
+	0xFFFF, /* 15 white     255 255 255 */
+};
+
+static int ag_apple2_palette = 0;
+
+/* Переключение набора RGB565 перед запуском системы: 0 — Агат-9,
+   1 — Apple II. */
+void agat_set_apple2_palette(int on)
+{
+	ag_apple2_palette = on ? 1 : 0;
+}
+
 int term_video_window(struct SYS_RUN_STATE*sr)
 {
 	if (!sr) return 0;
@@ -467,10 +502,11 @@ int agat_video_expand(unsigned short*fb, int fb_w, int fb_h, int scale)
 
 	for (y = 0; y < ag_fb_h && y < fb_h; y++) {
 		const unsigned char*line = src + y * sr->bmp_pitch;
+		const unsigned short*pal = ag_apple2_palette ? apple2_pal565 : agat_pal565;
 
 		for (x = 0; x < ag_fb_w && x < fb_w; x += 2) {
-			unsigned short c0 = agat_pal565[line[x >> 1] & 0x0F];
-			unsigned short c1 = agat_pal565[(line[x >> 1] >> 4) & 0x0F];
+			unsigned short c0 = pal[line[x >> 1] & 0x0F];
+			unsigned short c1 = pal[(line[x >> 1] >> 4) & 0x0F];
 
 			for (dx = 0; dx < 2 * scale; dx++) {
 				int ox = x * scale + dx;
@@ -601,12 +637,19 @@ extern const unsigned char agat_rom_monitor9[2048];
 extern const unsigned char agat_rom_agathe9[2048];
 extern const unsigned char agat_rom_shugart9[256];
 extern const unsigned char agat_rom_teac[256];
+/* r1360: Apple II+ — ПЗУ машины, знакогенератор и ПЗУ контроллера Disk II. */
+extern const unsigned char agat_rom_apple2p[12288];
+extern const unsigned char agat_rom_apple2_fnt[2048];
+extern const unsigned char agat_rom_shugarta[256];
 
 enum {
 	AGAT_RES_AGATHE9 = 2,	/* FNTS\AGATHE9.FNT */
+	AGAT_RES_APPLE2_FNT = 3,	/* FNTS\APPLE2.FNT */
 	AGAT_RES_MONITOR9 = 12,	/* ROMS\MONITOR9.ROM */
+	AGAT_RES_APPLE2P = 14,	/* ROMS\APPLE2.ROM (Apple II+) */
 	AGAT_RES_TEAC = 21,	/* ROMS\TEAC.ROM (дисковод 140/840 КБ) */
 	AGAT_RES_SHUGART9 = 23,	/* ROMS\SHUGART9.ROM */
+	AGAT_RES_SHUGARTA = 24,	/* ROMS\SHUGARTA.ROM (Disk II) */
 };
 
 int load_buf_res(int no, void*buf, int len)
@@ -623,8 +666,20 @@ int load_buf_res(int no, void*buf, int len)
 		src = agat_rom_agathe9;
 		sz = 2048;
 		break;
+	case AGAT_RES_APPLE2_FNT:
+		src = agat_rom_apple2_fnt;
+		sz = 2048;
+		break;
+	case AGAT_RES_APPLE2P:
+		src = agat_rom_apple2p;
+		sz = 12288;
+		break;
 	case AGAT_RES_SHUGART9:
 		src = agat_rom_shugart9;
+		sz = 256;
+		break;
+	case AGAT_RES_SHUGARTA:
+		src = agat_rom_shugarta;
 		sz = 256;
 		break;
 	case AGAT_RES_TEAC:

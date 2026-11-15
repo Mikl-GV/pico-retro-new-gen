@@ -39,6 +39,8 @@ unsigned char* agat_ramptr(struct SYS_RUN_STATE*sr);
 int agat_system_command(struct SYS_RUN_STATE*sr, int id, int data, long param);
 /* r1344: маска пада в модуль джойстика (src/joystick.c). */
 int agat_joystick_apply_pad(struct SYS_RUN_STATE*sr, uint16_t pad);
+/* r1360: набор RGB565 — 0 Агат-9, 1 Apple II (PALETTE\APPLE2.PAL). */
+void agat_set_apple2_palette(int on);
 
 /* r1345: hex-печать для диагностики образа. Кастомный printf добавляет
    лишние нули к %02X/%04X, поэтому числа переводим в строку сами. */
@@ -131,6 +133,48 @@ static int agat_hid_to_code(uint8_t hid, int shift)
 	}
 }
 
+/* r1360: HID usage → ASCII для Apple II+. Машина читает $C000: младшие
+   7 бит — код, бит 7 — строб. Apple II+ не имеет нижнего регистра, буквы
+   всегда заглавные; Shift меняет только цифры и символы. Enter = CR,
+   Esc = $1B, Backspace = $08, Tab = $09. Стрелки отдаём как Ctrl-H/U/J/K —
+   именно эти коды понимает монитор Apple II при редактировании строки. */
+static int apple2_hid_to_code(uint8_t hid, int shift)
+{
+	if (hid >= 0x04 && hid <= 0x1D) {            /* A..Z — только верхний */
+		return 'A' + (hid - 0x04);
+	}
+	if (hid >= 0x1E && hid <= 0x26) {            /* 1..9 */
+		static const char digits[] = "!@#$%^&*(";
+
+		return shift ? digits[hid - 0x1E] : ('1' + (hid - 0x1E));
+	}
+	if (hid == 0x27) return shift ? ')' : '0';
+	switch (hid) {
+	case 0x28: return 0x0D;                      /* Enter  */
+	case 0x29: return 0x1B;                      /* Esc    */
+	case 0x2A: return 0x08;                      /* Delete */
+	case 0x2B: return 0x09;                      /* Tab    */
+	case 0x2C: return ' ';
+	case 0x2D: return shift ? '_' : '-';
+	case 0x2E: return shift ? '+' : '=';
+	case 0x2F: return shift ? '{' : '[';
+	case 0x30: return shift ? '}' : ']';
+	case 0x31: return shift ? '|' : '\\';
+	case 0x32: return shift ? '~' : '#';
+	case 0x33: return shift ? ':' : ';';
+	case 0x34: return shift ? '"' : '\'';
+	case 0x35: return shift ? '~' : '`';
+	case 0x36: return shift ? '<' : ',';
+	case 0x37: return shift ? '>' : '.';
+	case 0x38: return shift ? '?' : '/';
+	case 0x4F: return 0x15;                      /* Right = Ctrl-U */
+	case 0x50: return 0x08;                      /* Left  = Ctrl-H */
+	case 0x51: return 0x0A;                      /* Down  = Ctrl-J */
+	case 0x52: return 0x0B;                      /* Up    = Ctrl-K */
+	default:   return 0;
+	}
+}
+
 /* Положить код в регистр клавиатуры ядра: старший бит — строб нажатия,
    keyb_clear() его снимает (SYSTEM_9 сохраняет сам код). */
 static void agat_inject(struct SYS_RUN_STATE*sr, int ch)
@@ -146,7 +190,8 @@ static void agat_inject(struct SYS_RUN_STATE*sr, int ch)
    Shift из кода первой клавиши (отсюда «вводит не то») и начинал разбор
    с индекса 2 (отсюда «не на каждое нажатие реакция»).
    Автоповтор — как WM_KEYDOWN в эталоне: удержание 0.5 с, затем ~25 Гц. */
-static void agat_keyboard(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n)
+static void agat_keyboard_map(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n,
+                              int (*map)(uint8_t, int))
 {
 	static uint8_t prev[8];
 	static uint8_t rep_code;
@@ -169,14 +214,14 @@ static void agat_keyboard(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n)
 	}
 
 	if (fresh) {
-		int ch = agat_hid_to_code((uint8_t)fresh, shift);
+		int ch = map((uint8_t)fresh, shift);
 
 		rep_code = (uint8_t)fresh;
 		rep_frames = 0;
 		agat_inject(sr, ch);
 	} else if (rep_code && held) {
 		if (++rep_frames >= 25 && (rep_frames & 1) == 0) {
-			agat_inject(sr, agat_hid_to_code(rep_code, shift));
+			agat_inject(sr, map(rep_code, shift));
 		}
 	} else if (!held) {
 		rep_code = 0;
@@ -184,6 +229,16 @@ static void agat_keyboard(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n)
 	}
 
 	for (i = 0; i < 8; i++) prev[i] = (i < n) ? keys[i] : 0;
+}
+
+static void agat_keyboard(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n)
+{
+	agat_keyboard_map(sr, keys, n, agat_hid_to_code);
+}
+
+static void apple2_keyboard(struct SYS_RUN_STATE*sr, const uint8_t *keys, int n)
+{
+	agat_keyboard_map(sr, keys, n, apple2_hid_to_code);
 }
 
 /* r1344: пад и кнопки дублируются в клавиатуру машины. Игры, читающие
@@ -232,31 +287,82 @@ static void agat_pad_keys(struct SYS_RUN_STATE*sr, uint16_t pad)
 	prev = pad;
 }
 
+/* r1360: Apple II — пад работает через порт джойстика ($C061/$C062/$C064/
+   $C065), дублировать направления в клавиатуру не нужно. В клавиатуру
+   отдаём только Start: он жмёт Enter (запуск с диска, меню BASIC). */
+static void apple2_pad_keys(struct SYS_RUN_STATE*sr, uint16_t pad)
+{
+	static uint16_t prev;
+
+	if ((pad & 0x80) && !(prev & 0x80)) agat_inject(sr, 0x0D);
+	prev = pad;
+}
+
 #define AGAT_FRAME_W 640
 #define AGAT_FRAME_H 512
 /* 1 МГц 6502, PAL 50 Гц -> 20000 тактов на кадр. */
 #define AGAT_CYCLES_PER_FRAME 20000
 #define AGAT_FRAME_US 20000
+/* Apple II: 1.0205 МГц, NTSC 60 Гц -> ~17008 тактов на кадр. */
+#define APPLE2_CYCLES_PER_FRAME 17030
+#define APPLE2_FRAME_US 16667
 
-void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
+/* r1360: общий прогон для Агат-9 и Apple II+. Обе машины — 6502 и
+   видеоядро Agat Emulator (VIDEO_MODE_APPLE). Отличия: тип системы
+   (SYSTEM_9 / SYSTEM_P), вшитый набор ПЗУ, палитра, частота кадра и
+   раскладка клавиатуры. */
+static void agat_run_common(int systype, int apple2, const char *label,
+                            const uint8_t* rom, uint32_t size, const char* rom_name)
 {
 	static uint16_t frame[AGAT_FRAME_W * AGAT_FRAME_H];
 	struct SYSCONFIG cfg;
 	struct SYS_RUN_STATE *sr;
 	struct CPU_STATE *cs;
 	struct VIDEO_STATE *vs;
+	uint32_t cycles_per_frame = apple2 ? APPLE2_CYCLES_PER_FRAME : AGAT_CYCLES_PER_FRAME;
+	uint32_t frame_us = apple2 ? APPLE2_FRAME_US : AGAT_FRAME_US;
 
 	emu_prepare();
-	snd_manifest("agat", "beeper");
+	snd_manifest(label, "beeper");
 
-	agat_reset_config(&cfg, SYSTEM_9);
+	agat_reset_config(&cfg, systype);
+	agat_set_apple2_palette(apple2);
 	/* Образ, выбранный в ROM-браузере, монтируем в первый дисковод:
 	   isfopen() отдаёт его потоком из памяти (ФС на bare-metal нет). */
 	agat_set_disk_image(rom, size, rom_name);
 	/* Звук: драйверы Windows (MMSystem/DSound) в прошивке не работают,
 	   ставим «нет звука» — иначе sound.c дёргает чужой SOUNDPROC. */
 	cfg.slots[CONF_SOUND].dev_type = DEV_NOSOUND;
-	if (rom_name) {
+
+	if (apple2) {
+		/* Apple II+: ПЗУ Applesoft вшито (ресурс 14), знакогенератор —
+		   ресурс 3, ПЗУ контроллера Disk II — ресурс 24. Карты слотов
+		   (Language Card, принтер) в прошивке не эмулируются, поэтому
+		   слоты 0/1 отключаем: пусть машина будет честной 48K. */
+		cfg.slots[CONF_ROM].cfgint[CFG_INT_ROM_RES] = 14;
+		cfg.slots[CONF_SLOT0].dev_type = DEV_NULL;
+		cfg.slots[CONF_SLOT1].dev_type = DEV_NULL;
+		if (rom_name) {
+			int ok = 0;
+			size_t ln = strlen(rom_name);
+
+			if (size == 143360u) ok = 1;                 /* .dsk/.do/.po */
+			else if (ln >= 4 && !strcasecmp(rom_name + ln - 4, ".nib") &&
+			         size && (size % 6656u) == 0) ok = 1;
+			else if (ln >= 4 && !strcasecmp(rom_name + ln - 4, ".woz") &&
+			         size > 12) ok = 1;
+			if (ok) {
+				strncpy(cfg.slots[CONF_SLOT6].cfgstr[CFG_STR_DRV_IMAGE1],
+				        rom_name, CFGSTRLEN - 1);
+				cfg.slots[CONF_SLOT6].cfgstr[CFG_STR_DRV_IMAGE1][CFGSTRLEN - 1] = 0;
+				printf("Apple II: образ %s (%u б)\n", rom_name, size);
+			} else {
+				printf("Apple II: %s (%u б) — не .dsk/.do/.po (143360),"
+				       " не .nib и не .woz; дисковод отключён\n", rom_name, size);
+				cfg.slots[CONF_SLOT6].dev_type = DEV_NULL;
+			}
+		}
+	} else if (rom_name) {
 		/* r1345: контроллер выбирается по формату образа, а не только по
 		   расширению. Геометрии разные и несовместимые:
 		     TEAC    (слот 5) — 21 сектор × 256 б на дорожку, линейно,
@@ -362,16 +468,16 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
 			       a ? "" : "  ← не GCR-дорожка");
 		}
 	}
-	sr = agat_init_system_state(&cfg, NULL, "agat");
+	sr = agat_init_system_state(&cfg, NULL, label);
 	if (!sr) {
-		printf("Agat: init failed\n");
+		printf("%s: init failed\n", label);
 		return;
 	}
 
 	cs = (struct CPU_STATE*)sr->slots[CONF_CPU].data;
 	vs = get_video_state(sr);
 	if (!cs || !vs) {
-		printf("Agat: cpu/video state missing\n");
+		printf("%s: cpu/video state missing\n", label);
 		agat_free_system_state(sr);
 		return;
 	}
@@ -388,10 +494,10 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
 	   иначе перезаписываем корректные значения. */
 	/* r1340: канарейка за образом ПЗУ — только при ошибке (переполнение
 	   буфера ПЗУ ломало загрузку молча). */
-	if (agat_rom_canary_bad() > 0) printf("Agat: ROM canary BAD\n");
-	printf("Agat: init ok\n");
+	if (agat_rom_canary_bad() > 0) printf("%s: ROM canary BAD\n", label);
+	printf("%s: init ok\n", label);
 
-	emu_set_period_us(AGAT_FRAME_US);
+	emu_set_period_us(frame_us);
 	emu_throttle_reset();
 	emu_esc_hold_reset();
 
@@ -405,17 +511,24 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
 			int nk = usb_kbd_get_raw(keys, 6);
 			uint16_t pad = pad_scan_combined();
 
-			agat_keyboard(sr, keys, nk);
-			agat_joystick_apply_pad(sr, pad);
-			agat_pad_keys(sr, pad);
+			if (apple2) {
+				apple2_keyboard(sr, keys, nk);
+				agat_joystick_apply_pad(sr, pad);
+				apple2_pad_keys(sr, pad);
+			} else {
+				agat_keyboard(sr, keys, nk);
+				agat_joystick_apply_pad(sr, pad);
+				agat_pad_keys(sr, pad);
+			}
 		}
-		agat_cpu_run_cycles(cs, AGAT_CYCLES_PER_FRAME);
+		agat_cpu_run_cycles(cs, cycles_per_frame);
 		agat_video_repaint_screen(vs);
-		/* Размер кадра задаёт видеоядро (Агат-9: 512x512) — берём его,
-		   иначе expand пишет за пределы буфера. */
+		/* Размер кадра задаёт видеоядро (Агат-9: 512x512, Apple II:
+		   560x384) — берём его, иначе expand пишет за пределы буфера. */
 		agat_video_size(&fw, &fh);
 		if (fw > AGAT_FRAME_W) fw = AGAT_FRAME_W;
 		if (fh > AGAT_FRAME_H) fh = AGAT_FRAME_H;
+		if (fw <= 0 || fh <= 0) { fw = AGAT_FRAME_W; fh = AGAT_FRAME_H; }
 		agat_video_expand(frame, fw, fh, 1);
 		emu_scale_rgb565_src_aspect(frame, fw, fh, fw, 4, 3);
 		fb_flush();
@@ -427,4 +540,14 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
 	emu_audio_stop();
 	fb_clear();
 	fb_flush();
+}
+
+void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+	agat_run_common(SYSTEM_9, 0, "Agat", rom, size, rom_name);
+}
+
+void emu_run_apple2(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+	agat_run_common(SYSTEM_P, 1, "Apple II", rom, size, rom_name);
 }

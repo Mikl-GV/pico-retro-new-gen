@@ -294,15 +294,17 @@ $(BUILD)/gc_%.o: $(TOP)h3_bare/cores/gearcoleco/src/audio/%.cpp | $(BUILD)
 $(BUILD)/gc_miniz.o: $(TOP)h3_bare/cores/gearcoleco/src/miniz.c | $(BUILD)
 	$(CC) $(CFLAGS) -DMINIZ_NO_STDIO -DMINIZ_NO_TIME $(COL_INC) -c -o $@ $<
 
-# Агат-9 (Agat Emulator, GPLv2)
+# Агат-9 + Apple II+ (Agat Emulator, GPLv2)
 # r1297: ядро C, 6502 исполняется СИНХРОННО в core0 (cpu_run_cycles вместо
 # потока Windows), кадр 640x400 (DOUBLE_X/DOUBLE_Y), палитра 16 цветов.
 # Порт: shim/windows.h (типы Win32), shim/tchar.h, agat_hal.c (HAL — потоки,
 # локализация, логи, tsq, слоты, видеобуфер 4bpp и его разворот в RGB565),
-# agat_roms.S (вшитые MONITOR9.ROM и AGATHE9.FNT). MFM-кодер fdd1.c —
-# заглушка, поэтому FDD пока не работает. Модели Apple-1/2e исключены
-# (дублируют глобалы apple2.c). Префикс agat_ снимает коллизии с другими
-# ядрами при линковке с --allow-multiple-definition.
+# agat_roms.S (вшитые ПЗУ Агат-9 и Apple II+). fdd1.c — рабочий Shugart
+# (Disk II, 140 КБ/.nib/.woz — WOZ1/WOZ2, r1361); TEAC — только для Агата.
+# Модели Apple-1/2e в
+# сборку не входят (init_system_1/2e — заглушки agat_hal.c). Префикс agat_
+# снимает коллизии с другими ядрами при линковке с
+# --allow-multiple-definition.
 AGAT := $(TOP)h3_bare/cores/agat
 AGAT_INC := -I$(AGAT)/src -I$(AGAT)/src/shim -I$(AGAT)/src/video
 AGAT_CFLAGS := $(CFLAGS) $(AGAT_INC) -O2 -w
@@ -332,7 +334,7 @@ $(BUILD)/agat_c_%.o: $(AGAT)/src/cpu/%.c | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/agat_host.o: $(TOP)h3_bare/cores/agat_host.c | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) -I$(TOP)h3_bare/cores $(INCLUDES) -c -o $@ $<
-$(BUILD)/agat_roms.o: $(AGAT)/src/agat_roms.S $(AGAT)/rom/monitor9.rom $(AGAT)/rom/agathe9.fnt $(AGAT)/rom/shugart9.rom $(AGAT)/rom/teac.rom | $(BUILD)
+$(BUILD)/agat_roms.o: $(AGAT)/src/agat_roms.S $(AGAT)/rom/monitor9.rom $(AGAT)/rom/agathe9.fnt $(AGAT)/rom/shugart9.rom $(AGAT)/rom/teac.rom $(AGAT)/rom/apple2p.rom $(AGAT)/rom/apple2.fnt $(AGAT)/rom/shugarta.rom | $(BUILD)
 	$(CC) $(AGAT_CFLAGS) -I$(TOP) -c -o $@ $<
 $(BUILD)/agat_renamed.stamp: $(AGAT_OBJS) $(TOP)h3_bare/cores/agat_rename.sh
 	$(TOP)h3_bare/cores/agat_rename.sh $(AGAT_OBJS)

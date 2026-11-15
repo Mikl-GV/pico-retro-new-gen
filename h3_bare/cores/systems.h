@@ -101,6 +101,11 @@ static const system_entry_t systems[] = {
     // r1299: один пункт — встроенного BASIC у Агат-9 нет (только монитор
     // в ПЗУ), подменю выбора прошивки не нужно.
     SYS("agat",       "Agat-9",                  COMPUTER, READY),
+    // r1360: Apple II+ — то же ядро Agat Emulator (6502 1.0205 МГц, NTSC
+    // 60 Гц), ПЗУ Applesoft/монитора, знакогенератор и ПЗУ контроллера
+    // Disk II вшиты (.incbin в agat_roms.S), с SD не грузятся. Папка по
+    // id — /roms/apple2; образы .dsk/.do/.po (143360), .nib и .woz.
+    SYS("apple2",     "Apple II+",               COMPUTER, READY),
     // Enterprise 64/128: ядро ep128emu (h3_bare/cores/ep128emu, GPL2),
     // host-слой ep_host.cpp. Выбор 64/128 — подменю (main.c ep_model_dialog).
     // BIOS (EXOS/BASIC) вшиты в ядро, с SD не грузятся. Дир по id — /roms/enterprise.

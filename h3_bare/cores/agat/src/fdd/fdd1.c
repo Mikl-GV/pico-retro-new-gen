@@ -52,6 +52,60 @@
 
 static byte std_sig[]="Agathe emulator virtual disk\x0D\x0A\x1A""AD";
 
+/* r1360: WOZ 1.0/2.0. Формат хранит не готовые nibble-байты, а сырой
+   битпоток дорожки; байтовая граница в файле произвольная (D5 AA 96 может
+   начинаться с любого бита). При загрузке дорожки поток выравнивается по
+   первому маркеру адресного поля и упаковывается в TrackData — дальше
+   работает обычный байтовый путь fdd1. */
+#define WOZ_BLOCK_SIZE 512
+#define WOZ1_TRACK_SIZE 6656
+#define WOZ1_TRK_OFFSET 6646
+#define WOZ_MAX_TRACKS 160
+
+static unsigned woz_u16(const byte *p)
+{
+	return (unsigned)p[0] | ((unsigned)p[1] << 8);
+}
+
+static unsigned woz_u32(const byte *p)
+{
+	return (unsigned)p[0] | ((unsigned)p[1] << 8) |
+	       ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
+}
+
+static int woz_bit(const byte *b, unsigned n, unsigned p)
+{
+	p %= n;
+	return (b[p >> 3] >> (7 - (p & 7))) & 1;
+}
+
+/* r1360: сырой битпоток WOZ → nibble-поток. Apple II Disk II сам
+   синхронизируется по единичному биту (LDA $C0EC / BPL), поэтому и здесь
+   каждый nibble начинается с ближайшей 1: так переносятся и межсекторные
+   сдвиги защищённых дорожек, и обычные синхробайты 0xFF. */
+static unsigned woz_to_nibbles(const byte *b, unsigned n, byte *out, unsigned maxOut)
+{
+	unsigned pos = 0, cnt = 0;
+
+	while (cnt < maxOut) {
+		unsigned scanned = 0;
+		byte v = 0;
+		int k;
+
+		while (scanned < n) {
+			if (woz_bit(b, n, pos)) break;
+			pos++;
+			scanned++;
+		}
+		if (scanned >= n) break;		/* единичных битов больше нет */
+		for (k = 0; k < 8; k++)
+			v = (byte)((v << 1) | (byte)woz_bit(b, n, pos + (unsigned)k));
+		out[cnt++] = v;
+		pos += 8;
+	}
+	return cnt;
+}
+
 #ifdef FDD1_DEBUG
 static const char*regs[16] = 
 {
@@ -100,6 +154,11 @@ struct FDD_DRIVE_DATA
 	byte	volume;
 	int	start_ofs;
 	int	dirty;
+	/* r1360: WOZ (1.0/2.0) — сырой битпоток дорожек. 0 — обычный .dsk/.nib. */
+	int	woz;		/* 1 = WOZ1, 2 = WOZ2 */
+	int	woz_tmap;	/* смещение данных TMAP в файле */
+	int	woz_trks;	/* смещение данных TRKS в файле */
+	int	woz_tracks;	/* число дорожек в TRKS (WOZ1: size/6656) */
 
 	HMENU	submenu;
 };
@@ -156,6 +215,54 @@ static void fill_fdd1(struct FDD_DATA*data)
 	data->state.ReadMode=1;
 }
 
+/* r1360: разбор контейнера WOZ. Возвращает 0, если это WOZ и структура
+   прочитана; иначе -1 (обычный .dsk/.nib). */
+static int woz_parse(struct FDD_DRIVE_DATA *drv)
+{
+	byte hdr[12];
+	unsigned off = 12;
+	unsigned trks_size = 0;
+	int found_tmap = 0, found_trks = 0;
+
+	if (iosseek(drv->disk, 0, SSEEK_SET) != 0) return -1;
+	if (iosread(drv->disk, hdr, sizeof(hdr)) != (int)sizeof(hdr)) return -1;
+	if (!memcmp(hdr, "WOZ1", 4)) drv->woz = 1;
+	else if (!memcmp(hdr, "WOZ2", 4)) drv->woz = 2;
+	else return -1;
+
+	for (;;) {
+		byte ch[8];
+		unsigned sz;
+
+		if (iosseek(drv->disk, (int)off, SSEEK_SET) != 0) break;
+		if (iosread(drv->disk, ch, sizeof(ch)) != (int)sizeof(ch)) break;
+		sz = woz_u32(ch + 4);
+		if (!memcmp(ch, "TMAP", 4)) {
+			drv->woz_tmap = (int)(off + 8);
+			found_tmap = 1;
+		} else if (!memcmp(ch, "TRKS", 4)) {
+			drv->woz_trks = (int)(off + 8);
+			trks_size = sz;
+			found_trks = 1;
+		}
+		if (sz > 0x7FFFFFF0u - off) break;
+		off += 8 + sz;
+	}
+	if (!found_tmap || !found_trks) {
+		drv->woz = 0;
+		return -1;
+	}
+	drv->woz_tracks = (drv->woz == 1) ? (int)(trks_size / WOZ1_TRACK_SIZE) : WOZ_MAX_TRACKS;
+	if (drv->woz_tracks <= 0) {
+		drv->woz = 0;
+		return -1;
+	}
+	printf("fdd1: WOZ%c, дорожек %d, tmap@%d trks@%d\n",
+	       drv->woz == 1 ? '1' : '2', drv->woz_tracks,
+	       drv->woz_tmap, drv->woz_trks);
+	return 0;
+}
+
 int open_fdd1(struct FDD_DRIVE_DATA*drv,const char_t*name,int ro, int no)
 {
 	if (drv->disk) {
@@ -163,6 +270,10 @@ int open_fdd1(struct FDD_DRIVE_DATA*drv,const char_t*name,int ro, int no)
 		drv->disk = NULL;
 	}
 	drv->dirty = 1;
+	drv->woz = 0;
+	drv->woz_tmap = 0;
+	drv->woz_trks = 0;
+	drv->woz_tracks = 0;
 	if (!name) return 1;
 //	if (access(name,W_OK)) ro=1;
 	drv->disk=ro?isfopen(name):iosfopen(name);
@@ -185,6 +296,19 @@ int open_fdd1(struct FDD_DRIVE_DATA*drv,const char_t*name,int ro, int no)
 //		iosclose(drv->disk);
 //		drv->disk=0;
 //		return -1;
+	}
+	if (!memcmp(drv->disk_header, "WOZ1", 4) ||
+	    !memcmp(drv->disk_header, "WOZ2", 4)) {
+		if (woz_parse(drv) == 0) {
+			/* WOZ — только чтение: запись битпотока не реализована. */
+			drv->readonly = 1;
+			drv->rawfmt = 1;
+			drv->prodos = 0;
+			drv->start_ofs = 0;
+			drv->error = 0;
+			return 0;
+		}
+		printf("fdd1: WOZ %s не разобран, пробую как обычный образ\n", name);
 	}
 //	printf("ro: %i\n", ro);
 	drv->readonly=ro;
@@ -691,6 +815,7 @@ static void fdd_save_track(struct FDD_DATA*data)
 	dputs("save_track");
 	if (!d->disk) return;
 	if (d->readonly) return;
+	if (d->woz) return;		/* запись WOZ не поддерживается */
 	if (d->rawfmt) {
 		fdd_save_track_nibble(data);
 		return;
@@ -764,6 +889,69 @@ static void sound_phase()
 }
 
 
+/* r1360: загрузка дорожки из WOZ. Поток выравнивается по первому D5 AA 96
+   и упаковывается в обычный GCR-байтовый TrackData, поэтому остальной
+   fdd1 (ротация, чтение $C0EC) работает без изменений. */
+static void fdd_load_woz_track(struct FDD_DRIVE_DATA *d)
+{
+	static byte bits[WOZ1_TRACK_SIZE];
+	byte tmap = 0xFF, trk[8];
+	unsigned idx, bitCount = 0, bytes = 0, outBytes;
+
+	d->TrackIndex = 0;
+	d->Rotated = 0;
+	if (!d->disk || !d->woz) goto empty;
+
+	if (d->Track >= 0 && d->Track < 40 &&
+	    iosseek(d->disk, d->woz_tmap + d->Track * 4, SSEEK_SET) == 0)
+		iosread(d->disk, &tmap, 1);
+	idx = tmap;
+	if (idx == 0xFF) goto empty;
+
+	if (d->woz == 1) {
+		if (idx >= (unsigned)d->woz_tracks) goto empty;
+		if (iosseek(d->disk, d->woz_trks + (int)idx * WOZ1_TRACK_SIZE +
+		            WOZ1_TRK_OFFSET, SSEEK_SET) != 0) goto empty;
+		if (iosread(d->disk, trk, 4) != 4) goto empty;
+		bytes = woz_u16(trk);
+		bitCount = woz_u16(trk + 2);
+		if (bytes == 0) goto empty;
+		if (bytes > WOZ1_TRACK_SIZE) bytes = WOZ1_TRACK_SIZE;
+		if (iosseek(d->disk, d->woz_trks + (int)idx * WOZ1_TRACK_SIZE,
+		            SSEEK_SET) != 0) goto empty;
+		if (iosread(d->disk, bits, (int)bytes) != (int)bytes) goto empty;
+	} else {
+		unsigned startBlock;
+
+		if (idx >= WOZ_MAX_TRACKS) goto empty;
+		if (iosseek(d->disk, d->woz_trks + (int)idx * 8, SSEEK_SET) != 0) goto empty;
+		if (iosread(d->disk, trk, 8) != 8) goto empty;
+		startBlock = woz_u16(trk);
+		bitCount = woz_u32(trk + 4);
+		if (bitCount == 0) goto empty;
+		bytes = (bitCount + 7) / 8;
+		if (bytes > WOZ1_TRACK_SIZE) bytes = WOZ1_TRACK_SIZE;
+		if (iosseek(d->disk, (int)(startBlock * WOZ_BLOCK_SIZE),
+		            SSEEK_SET) != 0) goto empty;
+		if (iosread(d->disk, bits, (int)bytes) != (int)bytes) goto empty;
+	}
+	if (bitCount == 0) goto empty;
+	if (bitCount > bytes * 8) bitCount = bytes * 8;
+
+	/* 8 байт 0xFF перед потоком: fdd_rot() сдвигает индекс ДО чтения,
+	   и первый байт после загрузки иначе терялся бы. */
+	memset(d->TrackData, 0xFF, 8);
+	outBytes = woz_to_nibbles(bits, bitCount, d->TrackData + 8,
+	                          WOZ1_TRACK_SIZE - 8);
+	if (!outBytes) goto empty;
+	d->TrackLen = outBytes + 8;
+	return;
+
+empty:
+	memset(d->TrackData, 0xFF, sizeof(d->TrackData));
+	d->TrackLen = WOZ1_TRACK_SIZE;
+}
+
 static void fdd_load_track(struct FDD_DATA*data)
 {
 	struct FDD_DRIVE_DATA *drv = data->drives+data->drv;
@@ -775,6 +963,10 @@ static void fdd_load_track(struct FDD_DATA*data)
 		drv->error=1;
 		return;
 	}	
+	if (drv->woz) {
+		fdd_load_woz_track(drv);
+		return;
+	}
 
 	if (drv->Track>MAX_TRACK_COUNT) drv->Track=MAX_TRACK_COUNT;
 	if (drv->rawfmt) {
