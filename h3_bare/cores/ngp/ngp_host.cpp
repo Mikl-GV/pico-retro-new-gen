@@ -144,11 +144,17 @@ void soundOutput() {
     dac_update(sampleBuffer, in_n * (int)sizeof(sampleBuffer[0]));
 
     static uint32_t rs_phase = 0;
-    static int16_t  rs_tail = 0;
-    static int16_t out[900];
+    static int16_t  rs_hist[RS44_HIST] = { 0, 0, 0 };
+    /* out — ПАРЫ (L,R): rs44fs_* с max_out=900 пишет до 2*900 int16.
+     * r1357: массив был 900 int16 → 715 входных сэмплов давали ~778 пар
+     * (1556 int16 = 3112 Б) и затирали 1312 Б ЗА собой. В .bss `out` стоит
+     * вплотную перед drawBuffer (nm: 0x41F6FC58+0x708 = 0x41F70360), поэтому
+     * мусор ложился в первые строки кадра (верхние 2 строки + 16 px) и
+     * портил память. */
+    static int16_t out[900 * 2];
     /* r1326 (П.9): общий полифазный 44100→48000 (вместо локального линейного),
-       непрерывная фаза между кадрами (см. r1009 ниже). */
-    uint32_t o = rs44fs_mono(&rs_phase, &rs_tail,
+       непрерывная фаза и история RS44_HIST сэмплов между кадрами. */
+    uint32_t o = rs44fs_mono(&rs_phase, rs_hist,
                              (const int16_t*)sampleBuffer, (uint32_t)in_n,
                              out, 900);
     /* r1009: rs44fs_mono сам переносит ТОЛЬКО дробную часть фазы — целая

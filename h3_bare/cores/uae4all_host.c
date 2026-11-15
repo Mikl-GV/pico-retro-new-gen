@@ -155,9 +155,9 @@ static bool u4a_environment(unsigned cmd, void* data) {
 static size_t u4a_audio_sample_batch(const int16_t* d, size_t f) {
     if (!d || f == 0) return f;
     static uint32_t rs_phase = 0;
-    static int16_t  rs_tail[2] = { 0, 0 };
+    static int16_t  rs_hist[RS44_HIST * 2] = { 0, 0, 0, 0, 0, 0 };
     static int16_t  out[2048 * 2];
-    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, d, (uint32_t)f, out, 2048);
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_hist, d, (uint32_t)f, out, 2048);
     if (o) i2s_push_block(out, o);
     return f;
 }

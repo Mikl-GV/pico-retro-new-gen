@@ -1,6 +1,7 @@
 build/
 AGENTS.md
 AUDIT_PROMPT.md
+AUDIT_PROMPT_REVIEW.md
 *.bin
 *.elf
 *.o

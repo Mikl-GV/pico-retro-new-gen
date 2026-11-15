@@ -318,12 +318,12 @@ void EpAudio::sendAudioData(const int16_t* buf, size_t nFrames)
 {
   if (!buf || nFrames == 0) return;
   static uint32_t rs_phase = 0;
-  static int16_t  rs_tail[2] = {0, 0};
+  static int16_t  rs_hist[RS44_HIST * 2] = {0, 0, 0, 0, 0, 0};
   static int16_t  out[2048 * 2];
   size_t n = nFrames;
   while (n > 0) {
     size_t chunk = (n > 2048) ? 2048 : n;
-    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, buf, (uint32_t)chunk, out, 2048);
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_hist, buf, (uint32_t)chunk, out, 2048);
     if (o) i2s_push_block(out, o);
     buf += chunk * 2;
     n -= chunk;

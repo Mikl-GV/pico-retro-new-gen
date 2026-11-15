@@ -840,7 +840,11 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     static int16_t cps_snd[4096];
     nBurnSoundRate = 48000;
     pBurnSoundOut = cps_snd;
-    i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
+    // r1357: FBNeo отдаёт уже DC-свободный поток (микшер чипов), поэтому
+    // ФВЧ 119 Гц (shift=6) только срезал бас аркадной музыки — «плохой звук».
+    // shift=9 → fc = 48000/(512·2π) ≈ 15 Гц: DC/инфразвук давится, низ
+    // остаётся. Для аркад это безопасно (в отличие от NGP/CPC, где DC есть).
+    i2s_dc_shift_set(9);
     // r944: target кольца адаптивный (emu_throttle) — не хардкодим.
 
     BurnExtLoadRom = host_ext_load_rom;

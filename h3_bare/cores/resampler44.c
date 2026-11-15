@@ -74,7 +74,46 @@ const int16_t rs44_poly_h[RS44_PHASES][RS44_TAPS] = {
   {     0,  -293, -1654,  7615, 18892,  8006,    11,     0 }
 };
 
-uint32_t rs44fs_stereo(uint32_t* phase, int16_t* tail,
+/* Сдвиг истории кадров: hist = последние RS44_HIST сэмплов (моно) или пар
+ * (стерео) из (hist || in). Нужен, чтобы первые три тапа фильтра на стыке
+ * кадров видели реальные предыдущие сэмплы, а не один tail. */
+static inline void rs44_hist_push_mono(int16_t* hist, const int16_t* in, uint32_t in_n)
+{
+    if (in_n == 0) return;
+    if (in_n >= RS44_HIST) {
+        for (uint32_t k = 0; k < RS44_HIST; k++)
+            hist[k] = in[in_n - RS44_HIST + k];
+    } else {
+        uint32_t shift = RS44_HIST - in_n;
+        for (uint32_t k = 0; k < shift; k++)
+            hist[k] = hist[k + in_n];
+        for (uint32_t k = 0; k < in_n; k++)
+            hist[shift + k] = in[k];
+    }
+}
+
+static inline void rs44_hist_push_stereo(int16_t* hist, const int16_t* in, uint32_t in_n)
+{
+    if (in_n == 0) return;
+    if (in_n >= RS44_HIST) {
+        for (uint32_t k = 0; k < RS44_HIST; k++) {
+            hist[2 * k]     = in[2 * (in_n - RS44_HIST + k)];
+            hist[2 * k + 1] = in[2 * (in_n - RS44_HIST + k) + 1];
+        }
+    } else {
+        uint32_t shift = RS44_HIST - in_n;
+        for (uint32_t k = 0; k < shift; k++) {
+            hist[2 * k]     = hist[2 * (k + in_n)];
+            hist[2 * k + 1] = hist[2 * (k + in_n) + 1];
+        }
+        for (uint32_t k = 0; k < in_n; k++) {
+            hist[2 * (shift + k)]     = in[2 * k];
+            hist[2 * (shift + k) + 1] = in[2 * k + 1];
+        }
+    }
+}
+
+uint32_t rs44fs_stereo(uint32_t* phase, int16_t* hist,
                        const int16_t* in, uint32_t in_n,
                        int16_t* out, uint32_t max_out)
 {
@@ -91,9 +130,16 @@ uint32_t rs44fs_stereo(uint32_t* phase, int16_t* tail,
         for (int k = 0; k < RS44_TAPS; k++) {
             int idx = (int)i - (RS44_TAPS / 2 - 1) + k;
             int16_t l, r;
-            if (idx < 0) { l = tail[0]; r = tail[1]; }
-            else if ((uint32_t)idx >= in_n) { l = in[2 * (in_n - 1)]; r = in[2 * (in_n - 1) + 1]; }
-            else { l = in[2 * idx]; r = in[2 * idx + 1]; }
+            if (idx < 0) {
+                l = hist[2 * (RS44_HIST + idx)];
+                r = hist[2 * (RS44_HIST + idx) + 1];
+            } else if ((uint32_t)idx >= in_n) {
+                l = in[2 * (in_n - 1)];
+                r = in[2 * (in_n - 1) + 1];
+            } else {
+                l = in[2 * idx];
+                r = in[2 * idx + 1];
+            }
             al += (int64_t)l * h[k];
             ar += (int64_t)r * h[k];
         }
@@ -106,11 +152,11 @@ uint32_t rs44fs_stereo(uint32_t* phase, int16_t* tail,
         *phase = (uint32_t)(ph - ((uint64_t)in_n << 16));
     else
         *phase = ph;
-    if (in_n > 0) { tail[0] = in[2 * (in_n - 1)]; tail[1] = in[2 * (in_n - 1) + 1]; }
+    rs44_hist_push_stereo(hist, in, in_n);
     return o;
 }
 
-uint32_t rs44fs_mono(uint32_t* phase, int16_t* tail,
+uint32_t rs44fs_mono(uint32_t* phase, int16_t* hist,
                      const int16_t* in, uint32_t in_n,
                      int16_t* out, uint32_t max_out)
 {
@@ -127,7 +173,7 @@ uint32_t rs44fs_mono(uint32_t* phase, int16_t* tail,
         for (int k = 0; k < RS44_TAPS; k++) {
             int idx = (int)i - (RS44_TAPS / 2 - 1) + k;
             int16_t s;
-            if (idx < 0) s = *tail;
+            if (idx < 0) s = hist[RS44_HIST + idx];
             else if ((uint32_t)idx >= in_n) s = in[in_n - 1];
             else s = in[idx];
             a += (int64_t)s * h[k];
@@ -142,6 +188,6 @@ uint32_t rs44fs_mono(uint32_t* phase, int16_t* tail,
         *phase = (uint32_t)(ph - ((uint64_t)in_n << 16));
     else
         *phase = ph;
-    if (in_n > 0) *tail = in[in_n - 1];
+    rs44_hist_push_mono(hist, in, in_n);
     return o;
 }
