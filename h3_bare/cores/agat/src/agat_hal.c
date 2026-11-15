@@ -41,42 +41,59 @@ struct _STREAM
 	unsigned pos;
 };
 
-/* Образ диска, переданный host-слоем (emu_run_agat). */
-static const unsigned char*ag_disk_image = NULL;
-static unsigned ag_disk_size = 0;
+/* Образы дисков, переданные host-слоем (emu_run_agat / hot-swap). Их ДВА —
+   у Shugart-контроллера (слот 6) бывает 2 привода, и каждый должен держать
+   свой буфер и своё имя: один глобальный образ заставлял второй привод
+   читать чужой диск (r1368). */
+#define AG_DISK_SLOTS 2
+static const unsigned char* ag_disk_image[AG_DISK_SLOTS] = { NULL, NULL };
+static unsigned ag_disk_size[AG_DISK_SLOTS] = { 0, 0 };
+static int      ag_disk_used[AG_DISK_SLOTS] = { 0, 0 };
 /* r1360: имена образов Apple II (.woz/.dsk) длиннее 63 символов — в 64-байтный
-   буфер они не влезали, и ag_is_disk_name() не находил поток в памяти
+   буфер они не влезали, и ag_find_disk() не находил поток в памяти
    (диск «не монтировался», машина уходила в BASIC). */
-static char ag_disk_name[256] = { 0 };
+static char ag_disk_name[AG_DISK_SLOTS][256];
 
-void agat_set_disk_image(const void*data, unsigned size, const char*name)
+/* r1368: вариант со слотом привода (0/1). Слот с name==NULL просто
+   помечается свободным (диск извлечён). */
+void agat_set_disk_image_ex(int slot, const void*data, unsigned size, const char*name)
 {
-	ag_disk_image = (const unsigned char*)data;
-	ag_disk_size = size;
-	ag_disk_name[0] = 0;
+	if (slot < 0 || slot >= AG_DISK_SLOTS) return;
+	ag_disk_image[slot] = (const unsigned char*)data;
+	ag_disk_size[slot] = size;
+	ag_disk_used[slot] = (data && size) ? 1 : 0;
+	ag_disk_name[slot][0] = 0;
 	if (name) {
 		unsigned i;
 
-		for (i = 0; i + 1 < sizeof(ag_disk_name) && name[i]; i++) {
-			ag_disk_name[i] = name[i];
+		for (i = 0; i + 1 < sizeof(ag_disk_name[slot]) && name[i]; i++) {
+			ag_disk_name[slot][i] = name[i];
 		}
-		ag_disk_name[i] = 0;
+		ag_disk_name[slot][i] = 0;
 	}
 }
 
-static int ag_is_disk_name(const char_t*name)
+static int ag_find_disk(const char_t*name)
 {
-	return ag_disk_image && name && ag_disk_name[0] && !strcmp(name, ag_disk_name);
+	int i;
+
+	if (!name || !name[0]) return -1;
+	for (i = 0; i < AG_DISK_SLOTS; i++) {
+		if (ag_disk_used[i] && ag_disk_image[i] &&
+		    ag_disk_name[i][0] && !strcmp(name, ag_disk_name[i]))
+			return i;
+	}
+	return -1;
 }
 
-static ISTREAM* ag_mem_stream(void)
+static ISTREAM* ag_mem_stream(int slot)
 {
 	ISTREAM*s = (ISTREAM*)malloc(sizeof(*s));
 
 	if (!s) return NULL;
 	s->f = NULL;
-	s->mem = ag_disk_image;
-	s->len = ag_disk_size;
+	s->mem = ag_disk_image[slot];
+	s->len = ag_disk_size[slot];
 	s->pos = 0;
 	return s;
 }
@@ -85,9 +102,11 @@ ISTREAM* isfopen(const char_t*name)
 {
 	FILE*f;
 	ISTREAM*s;
+	int slot;
 
 	if (!name) return NULL;
-	if (ag_is_disk_name(name)) return ag_mem_stream();
+	slot = ag_find_disk(name);
+	if (slot >= 0) return ag_mem_stream(slot);
 	f = fopen(name, "rb");
 	if (!f) return NULL;
 	s = (ISTREAM*)malloc(sizeof(*s));
@@ -198,7 +217,7 @@ IOSTREAM* iosfopen(const char_t*name)
 	if (!name) return NULL;
 	/* Образ из ROM-браузера только на чтение: rw-открытие не даём,
 	   open_fdd1 сам переключится на isfopen (ro). */
-	if (ag_is_disk_name(name)) return NULL;
+	if (ag_find_disk(name) >= 0) return NULL;
 	f = fopen(name, "r+b");
 	if (!f) f = fopen(name, "w+b");
 	if (!f) return NULL;

@@ -23,6 +23,18 @@ extern int printf(const char* fmt, ...);
 // У нас диски не поддерживаются — NULL.
 uint8_t* sram_disk_ptr = NULL;
 
+// r1369: образ дискеты, поданный host-слоем (F12 hot-swap). fMSX вызывает
+// LoadFDI -> rfopen("MSXDSK.DSK","rb") при ChangeDisk; здесь отдаём буфер.
+#define MSX_DISK_NAME "MSXDSK.DSK"
+static const uint8_t* g_disk = NULL;
+static uint32_t g_disk_size = 0;
+
+void msx_compat_set_disk(const uint8_t* data, uint32_t size)
+{
+  g_disk = data;
+  g_disk_size = (data && size) ? size : 0;
+}
+
 // ---- встроенные BIOS (генерятся xxd из fMSX/ROMs; 503III — дампы Yamaha) ----
 extern unsigned char fMSX_ROMs_MSX2_ROM[];     // MSX2.ROM  (32768) = YIS-503III basic-bios2
 extern unsigned int  fMSX_ROMs_MSX2_ROM_len;
@@ -43,6 +55,12 @@ extern unsigned int  fMSX_ROMs_MSX2PEXT_ROM_len;
 // маппера в GuessROM). Вшита как данные, rfopen("CARTS.SHA","rb") отдаёт её.
 extern unsigned char fMSX_ROMs_CARTS_SHA[];
 extern unsigned int  fMSX_ROMs_CARTS_SHA_len;
+// r1369: DISK.ROM (DiskROM/BDOS) и MSXDOS2.ROM (MSX2 DOS2) — вшиты
+// (сгенерированы из fMSX/ROMs/).
+extern unsigned char fMSX_ROMs_DISK_ROM[];
+extern unsigned int  fMSX_ROMs_DISK_ROM_len;
+extern unsigned char fMSX_ROMs_MSXDOS2_ROM[];
+extern unsigned int  fMSX_ROMs_MSXDOS2_ROM_len;
 
 #define MAX_OPEN_FILES 16
 typedef struct {
@@ -77,8 +95,26 @@ static const msx_bios_t g_bios[] = {
     // Размер захардкожен (33152 байт, как в fMSX/ROMs/CARTS.SHA) — g_bios[]
     // статический массив требует констант.
     { "CARTS.SHA",   fMSX_ROMs_CARTS_SHA,   33152 },
+    // r1369: DISK.ROM — DiskROM (BDOS/PHYDIO) MSX. Нужен для .dsk: LoadROM
+    // вызывается из StartMSX при MSX_PATCHBDOS; без него DiskROMLoaded=0 и
+    // диск молча не читается. Смотрим также MSXDOS2.ROM (MSX2: DOS2).
+    { "DISK.ROM",    fMSX_ROMs_DISK_ROM,    16384 },
+    { "MSXDOS2.ROM", fMSX_ROMs_MSXDOS2_ROM, 65536 },
     { 0, 0, 0 }
 };
+
+// Регистронезависимое сравнение (POSIX strcasecmp в прошивке не гарантирован).
+static int strcasecmp_alt(const char* a, const char* b)
+{
+  while (*a && *b) {
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+    if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+    if (ca != cb) return 1;
+    a++; b++;
+  }
+  return (*a == *b) ? 0 : 1;
+}
 
 static const msx_bios_t* find_bios(const char* name) {
     for (const msx_bios_t* b = g_bios; b->name; b++) {
@@ -133,6 +169,26 @@ RFILE* rfopen(const char* path, const char* mode) {
         g_files[s].wbuf = 0;
         g_files[s].writeable = 0;
         return (RFILE*)(intptr_t)(s + 1);
+    }
+
+    // 1a) Диск, поданный host-слоем (r1369, F12 hot-swap): LoadFDI зовёт
+    //     rfopen(имя) после ChangeDisk. Тот же путь, что у ядра ChangeDisk
+    //     (MSXDSK.DSK) — name сравниваем БЕЗ учёта регистра/ведущих '/'.
+    {
+        const char* a = path;
+        while (*a == '/') a++;
+        if (g_disk && g_disk_size &&
+            !strcasecmp_alt(a, MSX_DISK_NAME)) {
+            int s = alloc_slot();
+            if (s < 0) return 0;
+            g_files[s].data = g_disk;
+            g_files[s].size = (int32_t)g_disk_size;
+            g_files[s].pos  = 0;
+            g_files[s].cap  = 0;
+            g_files[s].wbuf = 0;
+            g_files[s].writeable = 0;
+            return (RFILE*)(intptr_t)(s + 1);
+        }
     }
 
     // 2) Картридж, поданный хостом (буфер в памяти)

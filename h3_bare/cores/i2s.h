@@ -8,9 +8,10 @@
 // CPU2 лишь переносит пары ring→FIFO, пока FIFO не полон. Запись в полный
 // FIFO исключена guard'ом TXE_CNT (корень старого AHB-зависания).
 //
-// Без DMA и без GIC (оба в истории не работали). Кольцо и его индексы — в
-// SRAM A1; почта и флаги — в .coherent (DRAM write-back: mmu_mark_uncached
-// с r1206 — no-op, видимость держат SRAM-дубли и явные операции кэша).
+// Без DMA и без GIC (оба в истории не работали). Кольцо, его индексы, почта
+// команд и флаги паузы/активности — в SRAM A1; в .coherent (DRAM write-back,
+// mmu_mark_uncached с r1206 — no-op) остались только g_i2s_ready и параметры
+// DC-фильтра, видимость которых держат SRAM-дубль готовности (0x94) и клампы.
 #ifndef I2S_H
 #define I2S_H
 
@@ -64,7 +65,7 @@ uint32_t i2s_audio_beat(void);
 void     i2s_audio_cmd(uint32_t cmd);   // core0 → CPU2 (пауза/резюм)
 void     i2s_audio_poll_cmd(void);      // CPU2: принять команды core0
 void     i2s_audio_set_state(int on);
-void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт. Флаг пишется в SRAM A1, но при пустом кольце CPU2 НЕ подмешивает тишину — silence-fill не реализован
+void     i2s_audio_set_active(int on); // r916: 1 = эмуляция идёт. Флаг пишется в SRAM A1, hot-path CPU2 его не читает; при пустом кольце доливаются 4 пары нулей (r1326), underrun считается в статистику
 void     i2s_audio_set_beat(uint32_t b);
 int      i2s_audio_paused(void);
 int      i2s_poll_fill(void);           // CPU2: долить ring→FIFO (пачки)
@@ -77,8 +78,10 @@ enum {
 
 // ---- Диагностика (SLT/стабы) ----
 // r948: проверка, что TX FIFO реально сливается (такт I2S0 жив, блок не заперт
-// во FLUSH). 1 = такт есть, 0 = блок не тактируется. Используется тест-тоном
-// и доступна меню для отчёта.
+// во FLUSH). 1 = такт есть, 0 = блок не тактируется. Требует ПОЛНОСТЬЮ пустой
+// FIFO (TXE_CNT == глубина), поэтому вызывать только при остановленном доливе:
+// CPU2 подмешивает тишину при пустом кольце (r1326) и держит FIFO заполненным
+// (r1367: в тест-тоне CPU2 на время проверки ставится на паузу).
 int      i2s_selftest(void);
 void     i2s_cpu2_diag(uint32_t* flush, uint32_t* written, uint32_t* skipfull, uint32_t* dummy);
 void     i2s_cpu2_pairs_written_get(uint32_t* v);

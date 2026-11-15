@@ -644,6 +644,38 @@ namespace Ep128Emu {
 // ---------------------------------------------------------------------------
 extern "C" void fs_register(const char* path, const void* data, uint32_t size);
 extern "C" int  fs_register_extra(const char* name, const void* data, uint32_t size);
+extern "C" void fs_register_bios(const char* path, const void* data, uint32_t size);
+
+/* r1369: hot-swap дискеты Enterprise по F12. Образ диска (FAT .img) кладём во
+   второй файловый слот fs_layer (как Kickstart у Amiga) под уникальным именем
+   и монтируем в флоппи-Drive A: через setDiskImageFile — ядро откроет его
+   обычным fopen, который наши fs_layer-заглушки отдадут из буфера. */
+#define EP_DISK_IMAGE "epfloppy.img"
+static Ep128::Ep128VM* g_ep_vm = 0;
+static char           g_ep_disk_name[FAT_NAME_LEN];
+
+static int ep_disk_insert(int drive, const char* path, const uint8_t* data,
+                          uint32_t size, const char* name)
+{
+  if (drive != 0 || !g_ep_vm || !data || size == 0 || !name) return -1;
+  size_t n = strlen(name);
+  if (n >= sizeof(g_ep_disk_name)) n = sizeof(g_ep_disk_name) - 1;
+  memcpy(g_ep_disk_name, name, n);
+  g_ep_disk_name[n] = 0;
+  fs_register_bios(EP_DISK_IMAGE, data, size);
+  try {
+    g_ep_vm->setDiskImageFile(0, EP_DISK_IMAGE, -1, -1, -1);
+  } catch (...) {
+    printf("EP: disk '%s' insert failed\n", g_ep_disk_name);
+    return -1;
+  }
+  printf("EP: disk inserted '%s' (%u Б)\n", g_ep_disk_name, (unsigned)size);
+  return 0;
+}
+
+static const emu_disk_ops_t g_ops_ep = {
+  1, "img;dsk", 1, ep_disk_insert
+};
 
 #define EP_ROM_BASE 0x50000000u
 #define EP_ROM_MAX  (24u * 1024u * 1024u)   // ROM_BUF (см. docs/MEMORY.md)
@@ -753,6 +785,7 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   vm.setVideoFrequency(889846);
   vm.setSoundClockFrequency(500000);
   vm.reset(true);
+  g_ep_vm = &vm;   /* r1369: F12 hot-swap; ставим ДО стартового монтирования .img */
 
   // Автозагрузка выбранного файла (r1356: команда START из BASIC, см. блок
   // ep_auto_start_build). Только для настоящих EP-файлов (заголовок
@@ -791,6 +824,28 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   }
   if (ep_auto_enabled) ep_auto_start_build(ep_alias);
 
+  // r1369: образ диска (.img/.dsk) при запуске монтируем в дисковод A
+  // (F12 работает так же). vm.reset(true) уже выполнен, диски сброшены —
+  // вставка сейчас корректна. Автозапуск START к дискам не применяем:
+  // диск загружается из EXOS по команде пользователя / через F12.
+  {
+    const char* nm = rom_name ? rom_name : ep_alias;
+    int is_img = 0;
+    const char* dot = strrchr(nm, '.');
+    if (dot && dot[1]) {
+      char e[4] = { 0 };
+      int i;
+      for (i = 0; i < 3 && dot[1 + i]; i++) {
+        char c = dot[1 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        e[i] = c;
+      }
+      is_img = (strcmp(e, "img") == 0 || strcmp(e, "dsk") == 0);
+    }
+    if (is_img && rom && size)
+      ep_disk_insert(0, 0, rom, size, rom_name ? rom_name : ep_alias);
+  }
+
   // Прямой писатель во FB_ADDR: двойная буферизация меню (опция) несовместима
   // — fb_flush() переключал бы DE2 на back-буфер, а мы пишем во фронт.
   fb_flip_set(0);
@@ -799,10 +854,12 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   emu_set_period_us(20000);   // PAL 50 Гц (20 мс на кадр)
   emu_throttle_reset();
   emu_esc_hold_reset();
+  emu_disk_register(&g_ops_ep);
 
   /* main loop: ~20ms на кадр (50 fps) */
   static uint32_t ep_dbg_last = 0;
   for (;;) {
+    emu_disk_poll();           /* r1369: F12 — до ввода/run, иначе уйдёт в EXOS */
     ep_auto_start_tick();        // r1354: последовательность START (до ввода)
     ep_update_input(vm);
     vm.run(20000);               // 20 ms эмуляции

@@ -27,7 +27,9 @@ struct SYS_RUN_STATE* agat_get_state(void);
 int agat_video_expand(unsigned short*fb, int fb_w, int fb_h, int scale);
 void agat_video_size(int *w, int *h);
 int agat_reset_config(struct SYSCONFIG*c, int systype);
-void agat_set_disk_image(const void*data, unsigned size, const char*name);
+/* r1368: вариант со слотом привода (0/1) — свап Агата и Apple не должны
+   делить один глобальный образ (второй привод читал чужой диск). */
+void agat_set_disk_image_ex(int slot, const void*data, unsigned size, const char*name);
 struct SYS_RUN_STATE* agat_init_system_state(struct SYSCONFIG*c, void*hmain, const char*name);
 int agat_free_system_state(struct SYS_RUN_STATE*sr);
 int agat_cpu_run_cycles(struct CPU_STATE*cs, long long cycles);
@@ -311,15 +313,20 @@ static void apple2_pad_keys(struct SYS_RUN_STATE*sr, uint16_t pad)
 int agat_fdd1_swap(struct SYS_RUN_STATE* sr, int slot, int drive, const char* name);
 
 static struct SYS_RUN_STATE *g_disk_sr;
-static int g_disk_apple2;
+/* r1368: число приводов ТЕКУЩЕЙ сессии (1 — Агат, 2 — Apple II). Не
+   глобальный флаг «это Apple»: он «утекал» между запусками (после Apple
+   следующий Агат получал признак 2-х приводов и свап drive0 отваливался). */
+static int g_disk_drives = 1;
 
+/* r1368: единый insert-обработчик слоя FDD: кладёт образ в ПРАВИЛЬНЫЙ слот
+   привода (0/1) и переоткрывает поток в fdd1. Агат всегда один привод
+   (drive==0), Apple — два; число приводов приходит из регистрации. */
 static int agat_disk_insert(int drive, const char* path, const uint8_t* data,
                             uint32_t size, const char* name)
 {
 	(void)path;
-	if (!g_disk_sr || drive < 0) return -1;
-	if (!g_disk_apple2 && drive != 0) return -1;
-	agat_set_disk_image(data, size, name);
+	if (!g_disk_sr || drive < 0 || drive >= g_disk_drives) return -1;
+	agat_set_disk_image_ex(drive, data, size, name);
 	return agat_fdd1_swap(g_disk_sr, CONF_SLOT6, drive, name);
 }
 
@@ -351,8 +358,11 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	agat_reset_config(&cfg, systype);
 	agat_set_apple2_palette(apple2);
 	/* Образ, выбранный в ROM-браузере, монтируем в первый дисковод:
-	   isfopen() отдаёт его потоком из памяти (ФС на bare-metal нет). */
-	agat_set_disk_image(rom, size, rom_name);
+	   isfopen() отдаёт его потоком из памяти (ФС на bare-metal нет).
+	   r1368: кладём в слот привода 0 явно — второй слот (если Apple,
+	   у него 2 привода) не должен «подхватить» чужой образ. */
+	agat_set_disk_image_ex(0, rom, size, rom_name);
+	agat_set_disk_image_ex(1, NULL, 0, NULL);
 	/* Звук: драйверы Windows (MMSystem/DSound) в прошивке не работают,
 	   ставим «нет звука» — иначе sound.c дёргает чужой SOUNDPROC. */
 	cfg.slots[CONF_SOUND].dev_type = DEV_NOSOUND;
@@ -517,6 +527,26 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	   мусор по нулевому адресу (стенд: чёрный экран без выхода по ESC).
 	   HRESET берёт вектор из FFFC вшитого ПЗУ при первой инструкции. */
 	agat_cpu_cmd(cs, SYS_COMMAND_HRESET, 0, 0);
+	/* r1367: автостарт Apple II+ из RAM $03F2..$03F4. ROM APPLE2 ($FA62
+	   autostart) при включении: если ($03F3 EOR $A5) == $03F4 — прыгает
+	   JMP ($03F2) на адрес загрузчика (как после PR#6), иначе уходит в
+	   IOSCAN ($FAA6), который ищет загрузочный ROM в $C800-банке. Нашему
+	   ядру IOSCAN бесполезен (ROM Disk II на $C800 не подключён), поэтому
+	   задаём «сохранённый boot»: $03F2=0, $03F3=$C6, $03F4=($C6 EOR $A5)=$63
+	   → autostart делает JMP ($03F2) = JMP $C600 — загрузчик Disk II. Без
+	   этого диск не грузится никогда: машина остаётся на «APPLE ][».
+	   Писать вектор ТОЛЬКО ПОСЛЕ HRESET: rama_command(SYS_COMMAND_HRESET)
+	   делает clear_block(st->ram) и затирал бы $03F2..$03F4 (r1368). */
+	if (apple2 && rom && size) {
+		unsigned char *mem = agat_ramptr(sr);
+
+		if (mem) {
+			mem[0x03F2] = 0x00;
+			mem[0x03F3] = 0xC6;
+			mem[0x03F4] = 0x63;
+			printf("Apple II: boot addr set (RAM $03F2..$03F4 = 00 C6 63)\n");
+		}
+	}
 	/* Растровый таймер видео: в оригинале его ставит GUI при старте системы.
 	   Без него raster-блоки не переключаются — на экране мусор из цветных
 	   пикселей, а не кадр. Два таймера (чёт/нечет) с периодом N_RBINT_DELAY_9. */
@@ -529,7 +559,7 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	printf("%s: init ok\n", label);
 
 	g_disk_sr = sr;
-	g_disk_apple2 = apple2;
+	g_disk_drives = apple2 ? 2 : 1;
 	emu_disk_register(apple2 ? &g_ops_apple2 : &g_ops_agat);
 
 	emu_set_period_us(frame_us);

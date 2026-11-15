@@ -709,7 +709,7 @@ void i2s_audio_poll_cmd(void) {
     SRAM_AUDIO_ACK = cmd;
 }
 void i2s_audio_set_state(int on) { g_audio_state = on ? 1 : 0; }
-void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; }  /* r916: флаг «в игре». Ставится core0 в emu_prepare, снимается в emu_audio_stop. ТЕКУЩАЯ РЕАЛИЗАЦИЯ: флаг пишется в SRAM A1, но в hot-path CPU2 (i2s_poll_fill) при пустом кольце выполняется break без подмеса тишины и без чтения этого флага — silence-fill не реализован; underrun не маскируется (виден в статистике). Первичная диагностика и для будущих слоёв. */
+void i2s_audio_set_active(int on) { SRAM_AUDIO_ACTIVE = on ? 1 : 0; }  /* r916: флаг «в игре». Ставится core0 в emu_prepare, снимается в emu_audio_stop. ТЕКУЩАЯ РЕАЛИЗАЦИЯ: флаг пишется в SRAM A1, но hot-path CPU2 (i2s_poll_fill) его не читает; при пустом кольце доливаются 4 пары нулей (r1326), underrun при этом считается в статистику (g_stat_underrun) и не маскируется. Первичная диагностика и для будущих слоёв. */
 void i2s_audio_set_beat(uint32_t b) { SRAM_AUDIO_BEAT = b; }
 int  i2s_audio_core_active(void) { return (int)g_audio_state; }
 uint32_t i2s_audio_beat(void) { return SRAM_AUDIO_BEAT; }
@@ -871,16 +871,27 @@ int i2s_test_tone_freq(int hz, int ms) {
 int i2s_test_tone_cpu2(int hz, int ms) {
     if (!g_i2s_ready) return -1;
     if (hz <= 0 || ms <= 0) return -1;
-    if (!i2s_selftest()) return -2;      // нет такта — и через CPU2 не заиграет
+
+    // r1367 (корень «CPU2/ring not draining» в меню): i2s_selftest ждёт
+    // ПОЛНОСТЬЮ пустой TX FIFO (TXE_CNT == глубине 128). С r1326 i2s_poll_fill
+    // при пустом кольце подмешивает по 4 пары тишины, поэтому в меню живой CPU2
+    // держит FIFO заполненным, проверка не дожидалась пустоты за 50 мс и тест
+    // выходил с -2 ДО подачи тона. Проверяем такт при остановленном доливе (как
+    // прямой тон), затем снова его запускаем.
+    SRAM_AUDIO_PAUSED = 1;
+    __asm volatile("dsb" ::: "memory");
+    udelay(2000);                        // FIFO (≤32 пары) сливается за 0.7 мс
+    int clock_ok = i2s_selftest();
+    SRAM_AUDIO_PAUSED = 0;
+    __asm volatile("dsb" ::: "memory");
+    i2s_audio_cmd(AUDIO_CMD_RESUME);
+    if (!clock_ok) return -2;            // нет такта — и через CPU2 не заиграет
 
     // r952: DC-фильтр CPU2 — на дефолт (119 Гц). Без этого в тесте до первого
     // входа в игру s_dc_shift = 0 (.coherent обнуляется) → в FIFO уходят нули.
     i2s_dc_shift_set(6);
 
-    // 1) Снять паузу: FIFO доливает CPU2.
-    SRAM_AUDIO_PAUSED = 0;
-    __asm volatile("dsb" ::: "memory");
-    i2s_audio_cmd(AUDIO_CMD_RESUME);
+    // 1) Пауза снята выше — FIFO снова доливает CPU2.
     udelay(2000);
 
     // 2) Опустошить кольцо. RD принадлежит CPU2, поэтому на миг ставим паузу,

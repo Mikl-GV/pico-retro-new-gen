@@ -188,10 +188,36 @@ void PutImage(void) {
     frame_number++;
 }
 
-// ---- DiskPresent/DiskRead/DiskWrite — заглушки (диски не поддерживаются) ----
-uint8_t DiskPresent(uint8_t ID) { (void)ID; return 0; }
-uint8_t DiskRead(uint8_t ID, uint8_t *Buf, int N) { (void)ID; (void)Buf; (void)N; return 0; }
-uint8_t DiskWrite(uint8_t ID, const uint8_t *Buf, int N) { (void)ID; (void)Buf; (void)N; return 0; }
+// r1369: определение расширения образа (регистронезависимо).
+static int msx_ext_eq(const char* name, const char* ext)
+{
+  const char* d = strrchr(name, '.');
+  if (!d) return 0;
+  for (const char *a = d, *b = ext; *a && *b; a++, b++) {
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+    if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+    if (ca != cb) return 0;
+    if (!b[1] && !a[1]) return 1;
+  }
+  return 0;
+}
+// fMSX CHGDSK: ChangeDisk(0,"MSXDSK.DSK") -> LoadFDI -> rfopen("MSXDSK.DSK"),
+// который msx_compat.c отдаёт наш буфер. Затем ChangeDisk(0,0) (извлечь).
+uint8_t ChangeDisk(uint8_t N, const char* FileName);   // msx_Msx (fMSX/MSX.c)
+
+static int msx_disk_insert(int drive, const char* path, const uint8_t* data,
+                           uint32_t size, const char* name)
+{
+  (void)path; (void)name;
+  if (drive != 0 || !data || size == 0) return -1;
+  msx_compat_set_disk(data, size);
+  return ChangeDisk(0, "MSXDSK.DSK") ? 0 : -1;
+}
+
+static const emu_disk_ops_t g_ops_msx = {
+  1, "dsk;fdi;trd;scl;img", 1, msx_disk_insert
+};
 
 // ---- public API ----
 
@@ -231,24 +257,31 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
 
     // r735: модель из подменю. Для MSX1 — 64K RAM/32K VRAM (минимум),
     // MSX2/2+/503 — 128K RAM/128K VRAM (как раньше). Регион: PAL (Европа).
+    // r1369: MSX_PATCHBDOS — загрузить DISK.ROM (BDOS/PHYDIO) и
+    // MSX_MSXDOS2 — MSXDOS2.ROM (Disk BASIC 2.0 на MSX2+): без них .dsk не
+    // читается (как fmsx_simbdos/fmsx_dos2=Yes в эталоне).
     int model = g_msx_model;
     int NewMode;
     int RAMpg, VRAMpg;
     switch (model) {
     case 0:  // MSX1
-        NewMode = MSX_MSX1 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        NewMode = MSX_MSX1 | MSX_PAL | MSX_GUESSA | MSX_GUESSB |
+                  MSX_PATCHBDOS;
         RAMpg = 4; VRAMpg = 2;   // 64K RAM, 32K VRAM
         break;
     case 2:  // MSX2+
-        NewMode = MSX_MSX2P | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        NewMode = MSX_MSX2P | MSX_PAL | MSX_GUESSA | MSX_GUESSB |
+                  MSX_PATCHBDOS | MSX_MSXDOS2;
         RAMpg = 8; VRAMpg = 8;   // 128K RAM, 128K VRAM
         break;
     case 3:  // Yamaha YIS-503III (MSX2, Европа)
-        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB |
+                  MSX_PATCHBDOS | MSX_MSXDOS2;
         RAMpg = 4; VRAMpg = 4;
         break;
     default: // MSX2
-        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB;
+        NewMode = MSX_MSX2 | MSX_PAL | MSX_GUESSA | MSX_GUESSB |
+                  MSX_PATCHBDOS | MSX_MSXDOS2;
         RAMpg = 4; VRAMpg = 4;
         break;
     }
@@ -280,8 +313,22 @@ int msx_init_game(const uint8_t* rom, uint32_t size) {
     // Если был передан образ картриджа — загружаем в слот A.
     // LoadCart() в ядре делает rfopen("CARTA.ROM"), поэтому даём стабу
     // валидный источник через msx_compat_set_cart() (буфер в памяти).
+    // r1369: .dsk/.fdi/.trd/.scl/.img — это НЕ картридж, а ДИСК: монтируем
+    // через ChangeDisk (как в эталоне libretro.c:1219-1231), картридж не грузим.
     int cart_lr = -1;
-    if (rom && size > 0) {
+    int is_disk = 0;
+    {
+        const char* nm = (g_cart_name[0] ? g_cart_name : "game.rom");
+        is_disk = msx_ext_eq(nm, ".dsk") || msx_ext_eq(nm, ".fdi") ||
+                  msx_ext_eq(nm, ".trd") || msx_ext_eq(nm, ".scl") ||
+                  msx_ext_eq(nm, ".img");
+    }
+    if (rom && size > 0 && is_disk) {
+        msx_compat_set_disk(rom, size);
+        printf("MSX: disk image '%s' (%u Б) через ChangeDisk\n", g_cart_name, (unsigned)size);
+        if (!ChangeDisk(0, "MSXDSK.DSK"))
+            printf("MSX: ChangeDisk FAILED (DISK.ROM?)\n");
+    } else if (rom && size > 0) {
         msx_compat_set_cart(rom, size);
         // r0.392: диагностика до LoadCart — типичные причины «игра не
         // запустилась» с большими/чужими ROM:
@@ -601,7 +648,9 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
      * на десятки секунд с «рваным» экраном; на железе всё проскакивает
      * за секунды). После прогрева — обычные 50 Гц. */
     uint32_t msx_start = h3_hs_timer_lo_us();
+    emu_disk_register(&g_ops_msx);   /* r1369: F12 hot-swap дискеты */
     for (;;) {
+        emu_disk_poll();   /* r1369: F12 — до msx_run_frame, иначе уйдёт в Z80 */
         msx_run_frame();
         if ((int32_t)(h3_hs_timer_lo_us() - msx_start) >= 3000000)
             emu_throttle();

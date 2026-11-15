@@ -647,13 +647,17 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
 - **Hot-swap дискет (F12, r1363)** — `cores/disk_swap.c`. Хост регистрирует
   `emu_disk_ops_t` (число приводов, расширения, `in_memory`, callback вставки)
   и зовёт `emu_disk_poll()` в начале кадра до чтения клавиатуры. F12 открывает
-  оверлей: выбор привода (если >1) и списка образов каталога, откуда запущена
-  игра (`emu_disk_set_dir` из `rom_browser.c`). Файл читается в `.swap_buf`
-  (только при `in_memory`) либо ядру отдаётся путь; после закрытия клавиши
-  дожидаются отпускания. Подключены: Apple II+/Агат (Agat FDD), Fuse (disk
-  control), CPC (`cpc_dsk_load`), C64 (`IEC::SwapDrive`), UAE4All
-  (`amiga_swap_disk`), Atari 800 (`SIO_Mount`). MS1504/Enterprise/MSX/BK
-  образов дисков не используют.
+  список образов каталога, где запущена игра (`emu_disk_set_dir` из
+  `rom_browser.c`). Файл читается в `.swap_buf`
+  и передаётся callback-вставки; клавиши после оверлея
+  дожидаются отпускания. Подключены: Apple II+/Агат (Agat FDD, 2/1 привода,
+  свой буфер на привод — r1368), Fuse (disk
+  control API), C64/Frodo (`IEC::SwapDrive`, 2), CPC (`cpc_dsk_load`, 2),
+  Amiga/ UAE4All
+  (`amiga_swap_disk`, 1), Atari 800 (`SIO_Mount`, 1), MSX (r1369: fMSX WD1793 +
+  вшитые DISK.ROM/MSXDOS2, `ChangeDisk`+`rfopen`, 1), Enterprise (r1369:
+  `setDiskImageFile` на WD177x через файловый слой fs_layer, 1).
+  MS1504/BK образов дисков не используют.
 - **Плановые компьютеры** (в `systems.h`, ядер в дереве нет): CPC (8 «готово-консольных», см. отдельно), остальные — см. `docs/ROADMAP.md`.
   C64 — READY (Frodo, r1284), Atari 8-bit — READY (r975 звук).
 

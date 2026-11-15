@@ -73,39 +73,6 @@ static unsigned woz_u32(const byte *p)
 	       ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
 }
 
-static int woz_bit(const byte *b, unsigned n, unsigned p)
-{
-	p %= n;
-	return (b[p >> 3] >> (7 - (p & 7))) & 1;
-}
-
-/* r1360: сырой битпоток WOZ → nibble-поток. Apple II Disk II сам
-   синхронизируется по единичному биту (LDA $C0EC / BPL), поэтому и здесь
-   каждый nibble начинается с ближайшей 1: так переносятся и межсекторные
-   сдвиги защищённых дорожек, и обычные синхробайты 0xFF. */
-static unsigned woz_to_nibbles(const byte *b, unsigned n, byte *out, unsigned maxOut)
-{
-	unsigned pos = 0, cnt = 0;
-
-	while (cnt < maxOut) {
-		unsigned scanned = 0;
-		byte v = 0;
-		int k;
-
-		while (scanned < n) {
-			if (woz_bit(b, n, pos)) break;
-			pos++;
-			scanned++;
-		}
-		if (scanned >= n) break;		/* единичных битов больше нет */
-		for (k = 0; k < 8; k++)
-			v = (byte)((v << 1) | (byte)woz_bit(b, n, pos + (unsigned)k));
-		out[cnt++] = v;
-		pos += 8;
-	}
-	return cnt;
-}
-
 #ifdef FDD1_DEBUG
 static const char*regs[16] = 
 {
@@ -897,14 +864,14 @@ static void fdd_load_woz_track(struct FDD_DRIVE_DATA *d)
 {
 	static byte bits[WOZ1_TRACK_SIZE];
 	byte tmap = 0xFF, trk[8];
-	unsigned idx, bitCount = 0, bytes = 0, outBytes;
+	unsigned idx, bitCount = 0, bytes = 0;
 
 	d->TrackIndex = 0;
 	d->Rotated = 0;
 	if (!d->disk || !d->woz) goto empty;
 
 	if (d->Track >= 0 && d->Track < 40 &&
-	    iosseek(d->disk, d->woz_tmap + d->Track * 4, SSEEK_SET) == 0)
+	    iosseek(d->disk, d->woz_tmap + d->Track, SSEEK_SET) == 0)
 		iosread(d->disk, &tmap, 1);
 	idx = tmap;
 	if (idx == 0xFF) goto empty;
@@ -939,14 +906,53 @@ static void fdd_load_woz_track(struct FDD_DRIVE_DATA *d)
 	if (bitCount == 0) goto empty;
 	if (bitCount > bytes * 8) bitCount = bytes * 8;
 
-	/* 8 байт 0xFF перед потоком: fdd_rot() сдвигает индекс ДО чтения,
-	   и первый байт после загрузки иначе терялся бы. */
-	memset(d->TrackData, 0xFF, 8);
-	outBytes = woz_to_nibbles(bits, bitCount, d->TrackData + 8,
-	                          WOZ1_TRACK_SIZE - 8);
-	if (!outBytes) goto empty;
-	d->TrackLen = outBytes + 8;
-	return;
+	/* r1368: TrackData — байтовый поток дорожки, выровненный по первому
+	   адресному маркеру D5 AA 96 (или данному D5 AA AD) в БИТОВОМ потоке.
+	   WOZ хранит дорожку как сырые биты (1 бит = 1 bitcell), граница байта
+	   проивольна: маркер может начинаться с любой битовой позиции. Прежний
+	   woz_to_nibbles (выравнивание по «первому единичному биту») дергал фазу,
+	   и загрузчик Disk II ($C600) искал D5 AA по смещённым байтам — уходил
+	   в мусор (стенд: «шахматное поле»/адреса). Теперь ищем сам маркер в
+	   бит-потоке и упаковываем 8 бит на байт от его начала — получаем те же
+	   D5 AA 96 DE AA EB D5 AA AD ..., что реально видит дисковод. */
+	{
+		/* паттерны D5 AA 96 и D5 AA AD в битах (MSB first) */
+		static const byte p96[24] = {1,1,0,1,0,1,0,1, 1,0,1,0,1,0,1,0, 1,0,0,1,0,1,1,0};
+		static const byte pAD[24] = {1,1,0,1,0,1,0,1, 1,0,1,0,1,0,1,0, 1,0,1,0,1,1,0,1};
+		unsigned mlen = bytes * 8;      /* бит в загруженном куске */
+		unsigned pos = 0, i, out = 0;
+		int found = -1;
+
+		if (mlen > bitCount) mlen = bitCount;
+		/* ищем первое вхождение любого из маркеров (скольжение по битам) */
+		while (pos + 24 <= mlen && found < 0) {
+			int m96 = 1, mAD = 1;
+			for (i = 0; i < 24; i++) {
+				unsigned bp = pos + i;
+				byte b = (byte)((bits[bp >> 3] >> (7 - (bp & 7))) & 1);
+				if (b != p96[i]) m96 = 0;
+				if (b != pAD[i]) mAD = 0;
+			}
+			if (m96 || mAD) found = (int)pos;
+			pos++;
+		}
+		if (found < 0) goto empty;      /* маркер не найден — дорожка пуста */
+
+		memset(d->TrackData, 0xFF, 8);
+		pos = (unsigned)found;
+		while (out < WOZ1_TRACK_SIZE - 8 && pos + 8 <= mlen) {
+			byte v = 0;
+			for (i = 0; i < 8; i++) {
+				unsigned bp = pos + i;
+				v = (byte)((v << 1) | ((bits[bp >> 3] >> (7 - (bp & 7))) & 1));
+			}
+			d->TrackData[8 + out++] = v;
+			pos += 8;
+		}
+		d->TrackLen = (int)out + 8;
+		if (d->TrackLen <= 8) goto empty;
+		return;
+	}
 
 empty:
 	memset(d->TrackData, 0xFF, sizeof(d->TrackData));
@@ -1082,7 +1088,7 @@ static void fdd_load_track(struct FDD_DATA*data)
 }
 
 /* r1363: hot-swap образа в приводе без сброса машины. Вызывающий уже
-   обновил ag_disk_image/ag_disk_name (agat_set_disk_image); здесь
+   обновил образ/имя привода (agat_set_disk_image_ex); здесь
    переоткрываем поток привода и загружаем текущую дорожку. */
 int fdd1_swap(struct SYS_RUN_STATE* sr, int slot, int drive, const char* name)
 {

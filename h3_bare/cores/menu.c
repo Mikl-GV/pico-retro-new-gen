@@ -712,6 +712,19 @@ void menu_help(void) {
         "Portfolio: full keyboard emulation",
         "ESC hold = exit",
         0,
+        // страница 27: смена дискет по F12 (r1363 hot-swap)
+        "--- DISK SWAP (F12) ---",
+        "Works: Apple II, Agat, ZX, CPC,",
+        "C64, Amiga, Atari 800",
+        "Press F12 in emulator to open",
+        "the image list (SAME folder)",
+        "2 drives (Apple II, CPC, C64):",
+        "  choose drive, then image",
+        "Enter = insert,  ESC = cancel",
+        "No reset - machine keeps running",
+        "MSX/BK/RK-86/MS1504/Enterprise:",
+        "no disk swap (no disk subsystem)",
+        0,
     };
 
     // Таблица смещений страниц: pages[] — ПЛОСКИЙ массив строк, каждая

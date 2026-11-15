@@ -479,7 +479,7 @@ int tft_init(void) {
     spi0_init();
     if (tft_ili_init() == 0) {
         g_tft_ready = 1;
-    printf("TFT: 480x320 ready\n");
+    printf("TFT: 480x320 ready, for help res\n");
         return 0;
     }
     g_tft_ready = 0;
@@ -621,8 +621,8 @@ static const struct {
       "MultiTool Retro",
       {"Up / Down: navigate","Enter: open system / ROM",
        "ESC: back",
+       "F12 in emulator:","  swap disk (Apple II, Agat,","  ZX, CPC, C64, Amiga, A8)",
        "Settings / About: right columns",
-       "","",
        NULL}
     },
     { "gameboy",
@@ -715,7 +715,7 @@ static const struct {
     },
     { "zxspectrum",
       "ZX Spectrum",
-      {"Keyboard emulation","Enter = Start BASIC / ROM","ESC hold = exit",NULL}
+      {"Keyboard emulation","Enter = Start BASIC / ROM","F12 = insert disk (+3/Beta)","ESC hold = exit",NULL}
     },
     { "bk0010",
       "BK-0010/0011M",
@@ -727,7 +727,7 @@ static const struct {
     },
     { "cpc",
       "Amstrad CPC",
-      {"Keyboard emulation","Enter = BIOS/BASIC","Z/X/C/A = joy fire 1..4","D-Pad = joystick","ESC hold = exit",NULL}
+      {"Keyboard emulation","Enter = BIOS/BASIC","Z/X/C/A = joy fire 1..4","D-Pad = joystick","F12 = insert disk (A/B)","ESC hold = exit",NULL}
     },
     { "enterprise",
       "Enterprise 64/128",
@@ -736,7 +736,7 @@ static const struct {
     // r1232: Amiga (PUAE) — вшитый KS 1.3, системный диск в DF0.
     { "amiga",
       "Commodore Amiga",
-      {"Workbench 1.3 or .adf from SD","Keyboard emulation (A500)","Pad: D-Pad + A/B (fire 1/2)","Start = fire 2","ESC hold = exit",NULL}
+      {"Workbench 1.3 or .adf from SD","Keyboard emulation (A500)","Pad: D-Pad + A/B (fire 1/2)","Start = fire 2","F12 = insert disk (DF0)","ESC hold = exit",NULL}
     },
     // r1358: страницы для систем, которые уже запускаются, но справки на TFT
     // не имели (id приходил из rom_browser -> tft_help_show, совпадения не
@@ -747,11 +747,11 @@ static const struct {
     },
     { "c64",
       "Commodore 64",
-      {"Keyboard emulation (PAL)","BASIC V2 / KERNAL built-in",".d64/.t64 from SD","ESC hold = exit",NULL}
+      {"Keyboard emulation (PAL)","BASIC V2 / KERNAL built-in",".d64/.t64 from SD","F12 = insert disk (8/9)","ESC hold = exit",NULL}
     },
     { "atari800",
       "Atari 8-bit",
-      {"Keyboard emulation","OS/BASIC built-in","ROMs from SD","ESC hold = exit",NULL}
+      {"Keyboard emulation","OS/BASIC built-in","ROMs from SD","F12 = insert disk (D1)","ESC hold = exit",NULL}
     },
     { "agat",
       "Agat-9",
@@ -760,7 +760,7 @@ static const struct {
     // r1360: Apple II+ — то же ядро Agat Emulator, вшитые Applesoft/Disk II.
     { "apple2",
       "Apple II+",
-      {"Keyboard emulation (ASCII)","Applesoft ROM built-in","Disks .dsk/.do/.po/.nib/.woz","Pad: joystick ($C061/$C070)","Start = Enter","ESC hold = exit",NULL}
+      {"Keyboard emulation (ASCII)","Applesoft ROM built-in","Disks .dsk/.do/.po/.nib/.woz","Pad: joystick ($C061/$C070)","Start = Enter    F12 = insert disk","ESC hold = exit",NULL}
     },
     { "32x",
       "Sega 32X",

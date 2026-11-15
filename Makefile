@@ -360,7 +360,9 @@ OBJ  += $(foreach f,$(wildcard $(GPGX)/core/cart_hw/svp/*.c),$(BUILD)/gpgx_svp_$
 MSX := $(TOP)h3_bare/cores/msx
 MSX_INC := -I$(MSX) -I$(MSX)/host -I$(MSX)/host/include -I$(MSX)/fMSX -I$(MSX)/Z80 -I$(MSX)/EMULib -I$(MSX)/NukeYKT
 # fMSX: C-only, использует свой sscanf/strcasestr в msx_compat
-MSX_CFLAGS := $(CFLAGS) -DLSB_FIRST -D__C99__ -DINLINE=inline $(MSX_INC)
+# r1369: -DPATCH_Z80 включает Patch.c — эмуляцию BDOS/DiskROM (иначе диски
+# fMSX не читаются вообще, PatchZ80 выключен в Z80.h по этому флагу).
+MSX_CFLAGS := $(CFLAGS) -DLSB_FIRST -D__C99__ -DINLINE=inline -DPATCH_Z80 $(MSX_INC)
 # objcopy-переименование конфликтующих символов MSX (как GBA_RENAME/PPU для SNES),
 # чтобы не сталкиваться с CPU/RAM (Snes9x), LoadROM (Snes9x), rf* (GPGX),
 # sscanf/time/localtime/strlcpy/fill_pathname_join (FCEUmm/GBA compat).
@@ -387,8 +389,11 @@ MSX_RENAME := $(OBJCOPY) \
 	--redefine-sym strcasestr=msx_strcasestr \
 	--redefine-sym chdir=msx_chdir \
 	--redefine-sym getcwd=msx_getcwd
-OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data msx2p_rom_data msx2pext_rom_data msx_rom_data msx503_cpm_data msx503_net_data msx_carts_sha_data))
+OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_host msx_compat msx_log msx2_rom_data msx2ext_rom_data msx2p_rom_data msx2pext_rom_data msx_rom_data msx503_cpm_data msx503_net_data msx_carts_sha_data msx_disk_rom_data msx_dos2_rom_data))
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,msx_MSX msx_V9938 msx_Sound msx_SHA1 msx_Floppy msx_FDIDisk msx_MCF msx_Z80 msx_I8255 msx_YM2413 msx_AY8910 msx_SCC msx_WD1793 msx_opll msx_WrapNukeYKT))
+# r1369: Patch.c — эмуляция BDOS/DiskROM (PHYDIO/DSKCHG) поверх WD1793. Включён
+# вместе с -DPATCH_Z80 (иначе диски fMSX не читаются).
+OBJ  += $(BUILD)/msx_Patch.o
 
 $(BUILD)/msx_host.o: $(MSX)/host/msx_host.c | $(BUILD)
 	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
@@ -422,6 +427,15 @@ $(BUILD)/msx503_net_data.o: $(MSX)/host/msx503_net_data.c | $(BUILD)
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx_carts_sha_data.o: $(MSX)/host/msx_carts_sha_data.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_disk_rom_data.o: $(MSX)/host/msx_disk_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_dos2_rom_data.o: $(MSX)/host/msx_dos2_rom_data.c | $(BUILD)
+	$(CC) $(CFLAGS) -c -o $@.tmp $<
+	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
+$(BUILD)/msx_Patch.o: $(MSX)/fMSX/Patch.c | $(BUILD)
+	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<
 	$(MSX_RENAME) $@.tmp $@; rm -f $@.tmp
 $(BUILD)/msx_MSX.o: $(MSX)/fMSX/MSX.c | $(BUILD)
 	$(CC) $(MSX_CFLAGS) $(INCLUDES) -c -o $@.tmp $<

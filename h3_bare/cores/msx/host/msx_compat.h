@@ -13,6 +13,9 @@ extern "C" {
 
 // Подать буфер картриджа хосту (CARTA.ROM)
 void msx_compat_set_cart(const uint8_t* rom, uint32_t size);
+/* r1369: образ дискеты для fMSX hot-swap (F12). fMSX откроет его через
+   rfopen("MSXDSK.DSK","rb") после ChangeDisk. size==0 — диск извлечён. */
+void msx_compat_set_disk(const uint8_t* data, uint32_t size);
 
 // RFILE = opaque int (дескриптор открытого файла в памяти)
 typedef int RFILE;
