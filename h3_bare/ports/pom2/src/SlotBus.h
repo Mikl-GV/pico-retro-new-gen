@@ -1,0 +1,419 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// SlotBus — Apple II expansion bus dispatcher. Owns up to 8 SlotPeripheral
+// instances (slots 0-7) and decodes the $C080-$CFFF address space:
+//
+//   $C080-$C0FF   16-byte device-select per slot (slot N = $C080+N*16).
+//   $C100-$C7FF   256-byte slot ROM (slots 1-7). An access by a slot that
+//                 HOLDS A CARD also claims the shared expansion window
+//                 below, if nobody holds it yet.
+//   $C800-$CFFE   2 KB expansion ROM, routed to the slot that claimed it.
+//   $CFFF         Special "disable expansion ROM" switch — read or write
+//                 releases the claim, so the next $CnXX can take it. The
+//                 owner may let go on more than that one address
+//                 (SlotPeripheral::releasesC800At): the Super Serial Card
+//                 does on all of $CFxx, as its manual says.
+//
+// **$C800 ownership is FIRST-one-wins, and only a populated slot claims.**
+// MAME `apple2e.cpp:2970-2987` (`read_slot_rom`) / `:2989-3025`
+// (`write_slot_rom`) claim only under `m_slotdevice[slotnum] != nullptr &&
+// m_cnxx_slot == CNXX_UNCLAIMED && take_c800()`, and `c800_r` (`:3137-3155`)
+// releases at offset $7FF. On real hardware each card latches its own
+// $C800 enable off its I/O SELECT and only the $CFFF deselect clears them,
+// so a second card touching its $CnXX cannot steal the window — it starts
+// a bus fight, which MAME resolves as first-one-wins. POM2 used to latch
+// last-one-wins AND to latch on empty slots.
+//
+// **Empty slots read the FLOATING BUS, not $FF.** Every one of the three
+// upstream handlers above ends in `return read_floatingbus();`, as does
+// `c080_r` (`:2883-2918`). Install the source with `setFloatingBusSource`
+// (Memory does, at construction); without one the bus falls back to $FF.
+//
+// All entry points are called from the CPU thread under
+// EmulationController's stateMutex. Plug/unplug/reset must run under the
+// same lock so the dispatcher's internal state never races with a CPU
+// fetch in flight.
+
+#ifndef POM2_SLOT_BUS_H
+#define POM2_SLOT_BUS_H
+
+#include "SlotPeripheral.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace pom2 { class Z80Observer; }
+
+class SlotBus
+{
+public:
+    static constexpr int kSlotCount = 8;
+
+    /// IRQ routing sink. Installed by Memory at `setCpu()` time; the
+    /// closure forwards `(slot, asserted)` to `M6502::setIrqLine(slot,
+    /// asserted)`. SlotBus stays decoupled from the CPU type — anyone
+    /// (e.g. headless tests) can install their own sink. Set to a no-op
+    /// or empty function to disconnect.
+    using IrqRouter = std::function<void(int slot, bool asserted)>;
+
+    /// NMI routing sink: called once per FALLING EDGE of the wire-OR'd /NMI
+    /// line (pin 29). Memory installs a closure calling `M6502::setNMI()`.
+    using NmiRouter = std::function<void()>;
+
+    /// Open-bus source for unclaimed reads. Memory installs a closure
+    /// returning `Memory::floatingBus()`; tests may leave it unset, in
+    /// which case `openBus()` answers $FF (the pre-2026-09-07 constant).
+    /// Called only on the SLOW $Cxxx dispatch paths.
+    using FloatingBusFn = std::function<uint8_t()>;
+    void setFloatingBusSource(FloatingBusFn fn) { floatingBus_ = std::move(fn); }
+
+    /// Watch every card Z80, present and future (the OS-call trace). Null
+    /// detaches.
+    void setZ80Observer(pom2::Z80Observer* o);
+    /// Hang a card-trace sink on every card, and on any plugged later
+    /// (CardTraceSink.h); null takes it off.
+    void setCardTrace(pom2::CardTraceSink* sink);
+
+    SlotBus() = default;
+    /// Deliberately does NOT call onUnplug(), unlike unplug() and clear().
+    /// The bus is a member of Memory, and its owners (EmulationController,
+    /// Pom2Core) declare Memory BEFORE the M6502, so the CPU is already gone
+    /// when this runs: TranswarpCard::onUnplug would call
+    /// setCmosSubstitute() on it, Saturn / Premium SoftCard would write into
+    /// a Memory being destroyed. Nothing an onUnplug() does outlives the
+    /// machine; a card's media commit lives in its destructor (CLAUDE.md).
+    /// Checked 2026-11-07 against the bug hunt's "the one teardown path that
+    /// skips onUnplug()".
+    ~SlotBus() = default;
+
+    SlotBus(const SlotBus&) = delete;
+    SlotBus& operator=(const SlotBus&) = delete;
+
+    /// Insert a card into `slot` (0-7). Replaces and unplugs whatever was
+    /// there. Calls `onPlug()` on the new card. Pass `nullptr` to clear
+    /// (equivalent to `unplug`).
+    void plug(int slot, std::unique_ptr<SlotPeripheral> card);
+
+    /// Remove the card from `slot`, calling `onUnplug()` first. Returns
+    /// the unique_ptr so the caller can hold on to it if needed (most
+    /// callers just discard it). If the unplugged slot was driving the
+    /// expansion ROM, the active expansion slot is cleared.
+    std::unique_ptr<SlotPeripheral> unplug(int slot);
+
+    /// Non-owning peek — useful for the UI to display "what's plugged".
+    SlotPeripheral* peripheral(int slot) const {
+        return (slot >= 0 && slot < kSlotCount) ? slots[slot].get() : nullptr;
+    }
+    bool isPlugged(int slot) const {
+        return slot >= 0 && slot < kSlotCount && slots[slot] != nullptr;
+    }
+
+    // ─── Per-slot access log ────────────────────────────────────────────
+    /// One bus access the CPU made to a slot: its $C0nX device-select
+    /// registers, its $CnXX ROM page, or the $C800-$CFFF window while that
+    /// slot owns it (a $CFFF release is logged against the owner it
+    /// releases). `value` is what the card returned on a read, what the CPU
+    /// wrote on a write. `cycle` comes from the installed cycle source —
+    /// Memory's counter, i.e. the cycle of the instruction, not of its bus
+    /// cycle within it.
+    struct SlotAccess {
+        uint64_t cycle;
+        uint16_t addr;
+        uint8_t  value;
+        bool     write;
+    };
+    using CycleSourceFn = std::function<uint64_t()>;
+    void setCycleSource(CycleSourceFn fn) { cycleSource_ = std::move(fn); }
+    /// The CPU cycle at which the beam next enters VBL, strictly after
+    /// `cpuNow` — on the crystal's clock, so an accelerator stretches it
+    /// (Memory::videoCycleAt). 0 when no Memory is behind the bus. Once a
+    /// frame, not per instruction.
+    /// The CPU cycle of the bus access being made now (Memory::accessCycle,
+    /// the instruction's start plus its in-flight cycles); falls back to the
+    /// cycle source. For a card whose own clock must sample at the access.
+    void setAccessCycleSource(CycleSourceFn fn) { accessCycle_ = std::move(fn); }
+    uint64_t accessCycle() const
+    {
+        return accessCycle_ ? accessCycle_() : cycleSource_ ? cycleSource_() : 0;
+    }
+    using VblEdgeFn = std::function<uint64_t(uint64_t cpuNow)>;
+    void setVblEdgeSource(VblEdgeFn fn) { vblEdge_ = std::move(fn); }
+    uint64_t nextVblCpuCycle(uint64_t cpuNow) const { return vblEdge_ ? vblEdge_(cpuNow) : 0; }
+    /// The same counter as a raw pointer, for a card that reads it on its
+    /// `advanceCycles` path (`SlotPeripheral::busCycleCounter`) where a
+    /// `std::function` call per instruction would cost. Memory installs it
+    /// next to the cycle source; a standalone bus leaves it null.
+    void setCycleCounterRef(const uint64_t* p) { cycleCounterRef_ = p; }
+    const uint64_t* cycleCounterRef() const { return cycleCounterRef_; }
+    /// Memory's auxiliary 64 KB (the CPU's selected bank), for a card that
+    /// observes it (`SlotPeripheral::busAuxRam`). Null on a standalone bus.
+    void setAuxRamRef(const uint8_t* p) { auxRamRef_ = p; }
+    const uint8_t* auxRamRef() const { return auxRamRef_; }
+    /// Start (or restart, clearing it) logging `slot`, keeping at most
+    /// `capacity` entries; past it the oldest go and `accessLogDropped`
+    /// counts them. Logging costs one mask test per slot access when off.
+    void enableAccessLog(int slot, std::size_t capacity = 65536);
+    void disableAccessLog(int slot);
+    bool accessLogEnabled(int slot) const
+    {
+        return slot >= 1 && slot < kSlotCount && (accessLogMask_ >> slot) & 1u;
+    }
+    /// Hand over the entries logged so far and empty the log (it keeps
+    /// running). Slot out of range or never enabled: an empty vector.
+    std::vector<SlotAccess> takeAccessLog(int slot);
+    std::uint64_t accessLogDropped(int slot) const;
+
+    /// CPU-side dispatch (called by Memory::memRead / memWrite).
+    uint8_t deviceSelectRead (uint16_t addr);   // $C080-$C0FF
+    void    deviceSelectWrite(uint16_t addr, uint8_t v);
+    uint8_t slotRomRead      (uint16_t addr);   // $C100-$C7FF
+    void    slotRomWrite     (uint16_t addr, uint8_t v); // for cards
+                                                  // (e.g. Mockingboard) that
+                                                  // decode MMIO inside the
+                                                  // slot ROM window
+    uint8_t expansionRomRead (uint16_t addr);   // $C800-$CFFF (CFFF disables)
+    void    expansionRomWrite(uint16_t addr, uint8_t v);
+
+    /// $CFFF read/write semantics: clears the active expansion slot.
+    /// Exposed so callers (e.g. the Memory dispatcher) can short-circuit
+    /// without going through the regular expansionRomRead path.
+    void deactivateExpansion() { activeExpansionSlot = -1; }
+    int  getActiveExpansionSlot() const { return activeExpansionSlot; }
+
+    /// Snapshot / rewind restore of the $C800 window owner (Memory's MEX
+    /// blob carries it — it is the slot-side partner of `intC8Rom`). `slot`
+    /// is 1..7, or anything else for "unclaimed". Validated on the way in:
+    /// a blob naming an empty slot, or a card that does not drive /IOSTB,
+    /// restores as unclaimed rather than pointing `expansionRomRead` at a
+    /// card that cannot serve the window.
+    void restoreExpansionOwner(int slot) {
+        activeExpansionSlot =
+            (slot >= 1 && slot <= 7 && slots[static_cast<size_t>(slot)] &&
+             slots[static_cast<size_t>(slot)]->takesC800())
+                ? slot : -1;
+    }
+
+    /// CPU pacing — forwarded from Memory::advanceCycles().
+    void advanceCycles(int cycles);
+    /// True when at least one card is plugged — lets Memory::advanceCycles()
+    /// skip the out-of-line fan-out call on an empty bus (the
+    /// pom2_bench banner shape, and a ][+ with nothing plugged).
+    bool hasActiveCards() const { return activeCount_ > 0; }
+
+    /// The card currently claiming DMA bus mastery (SoftCard Z80), or
+    /// nullptr when the 6502 owns the bus — consulted by
+    /// EmulationController before each CPU budget slice.
+    ///
+    /// Lowest slot wins if several claim — and that is POM2'S CONVENTION, not
+    /// an upstream match. Checked 2026-11-01: MAME's `a2bus.cpp set_dma_line`
+    /// is three lines that just forward the line, with no per-slot mask and no
+    /// arbitration at all (unlike `set_irq_line`, which does keep one). The
+    /// Apple II Reference Manual (1979) Table 33 documents pin 24 DMA OUT
+    /// "daisy-chained DMA output to lower priority devices... usually
+    /// connected to pin 22" and pin 27 DMA IN likewise — i.e. the chain is
+    /// formed by the CARDS, and the manual nowhere says which slot heads it.
+    /// So the rule is a choice; the comment used to cite MAME for it, which
+    /// was false. What would settle it: a motherboard schematic showing
+    /// whether DMA IN of slot n is tied to anything on the board (if not,
+    /// there is no board-imposed order), or Sather ch. 7.
+    SlotPeripheral* dmaClaimant() const {
+        for (const auto& c : slots)
+            if (c && c->dmaActive()) return c.get();
+        return nullptr;
+    }
+
+    /// The CPU clock multiplier imposed by a plugged ACCELERATOR, or 1.0
+    /// when nothing is accelerating. Lowest slot wins — POM2's convention,
+    /// same choice as `dmaClaimant()` above and with no more upstream backing:
+    /// MAME handles accelerators at the motherboard level (`m_accel_*` in
+    /// apple2e.cpp), not as slot arbitration. Read once per frame by
+    /// EmulationController.
+    double cpuSpeedMultiplier() const {
+        for (const auto& c : slots) {
+            if (!c) continue;
+            const double m = c->cpuSpeedMultiplier();
+            if (m > 0.0 && m != 1.0) return m;
+        }
+        return 1.0;
+    }
+
+    /// The plugged accelerator that wants to SNOOP the bus, or nullptr.
+    /// Cached at plug time rather than scanned, because the snoop sites
+    /// (`Memory::softSwitchAccess` and the slot windows below) are on the
+    /// path every $C0xx access takes — a null pointer test there is free,
+    /// an eight-slot virtual scan would not be.
+    SlotPeripheral* busSnooper() const { return busSnooper_; }
+
+    /// The card claiming `page` ($Cn00) of a //c-class machine's window
+    /// from its INTERNAL EXPANSION CONNECTOR, or nullptr. See
+    /// `SlotPeripheral::iicRomWindowPage` — the Mockingboard 4c is the
+    /// case: it answers at $C400-$C4FF wherever POM2 holds it, because a
+    /// //c has no slots for it to sit in.
+    SlotPeripheral* peripheralForIicRomPage(int page) const
+    {
+        if (page < 1 || page > 7) return nullptr;
+        for (const auto& s : slots)
+            if (s && s->iicRomWindowPage() == page) return s.get();
+        return nullptr;
+    }
+
+    /// System soft-switch broadcast — fan-out to every plugged card's
+    /// onVideoSoftSwitch(). Used by Memory::softSwitchAccess() for the
+    /// switches that aren't in the per-slot device-select range but that
+    /// video cards (Le Chat Mauve, Video-7) still need to observe:
+    /// $C00C/$C00D (80COL) and $C05E/$C05F (AN3).
+    void broadcastVideoSwitch(uint16_t addr);
+    /// Same fan-out for a WRITE, carrying the data byte (the Eve's CPREG).
+    void broadcastVideoSwitchWrite(uint16_t addr, uint8_t value);
+
+    /// Install (or replace) the IRQ router. Pass an empty function to
+    /// disconnect — any subsequent `assertIrq()` from a card becomes a
+    /// no-op until a new sink is installed.
+    void setIrqRouter(IrqRouter sink) { irqRouter = std::move(sink); }
+
+    /// Called by `SlotPeripheral::assertIrq` to forward an edge to the
+    /// CPU. Public so the friend access on SlotPeripheral resolves
+    /// cleanly; cards shouldn't call this directly — use `assertIrq()`
+    /// in their base class instead.
+    void forwardSlotIrq(int slot, bool asserted) {
+        if (irqRouter) irqRouter(slot, asserted);
+    }
+
+    /// Install (or replace) the NMI router; an empty function disconnects.
+    void setNmiRouter(NmiRouter sink) { nmiRouter = std::move(sink); }
+
+    /// Called by `SlotPeripheral::assertNmi` / `restoreNmiLevel`. Keeps the
+    /// wire-OR of the slots pulling /NMI and fires the router on the line's
+    /// falling edge only — when the first card pulls it, and `edge` says the
+    /// pull is an event, not a restored level.
+    void forwardSlotNmi(int slot, bool asserted, bool edge) {
+        if (slot < 0 || slot >= kSlotCount) return;
+        const bool wasLow = nmiMask_ != 0;
+        const auto bit = static_cast<uint8_t>(1u << slot);
+        nmiMask_ = asserted ? static_cast<uint8_t>(nmiMask_ | bit)
+                            : static_cast<uint8_t>(nmiMask_ & ~bit);
+        if (edge && !wasLow && nmiMask_ != 0 && nmiRouter) nmiRouter();
+    }
+
+    /// The /NMI line is low (some slot is pulling it).
+    bool nmiLineLow() const { return nmiMask_ != 0; }
+
+    /// Apple II RESET line — calls onReset() on every plugged card.
+    /// A cold boot passes true to dispatch onPowerCycle() instead.
+    /// A power cycle clears activeExpansionSlot. RESET clears it only when
+    /// the owner says its latch is reset by RESET (releasesC800OnReset —
+    /// the Super Serial Card); for cards in general the rule is unsourced.
+    void reset(bool powerCycle = false);
+
+    /// Unplug every card. Each is given an `onUnplug()` callback first.
+    /// `activeExpansionSlot` is also cleared. Used by MainWindow's
+    /// "restart emulation" path when the Slot Configuration panel
+    /// applies a new mapping — no reason to keep a card whose slot or
+    /// presence is about to change.
+    void clear();
+
+private:
+    /// So a plugged card can reach `openBus()` through
+    /// `SlotPeripheral::openBus()` — the MAME `get_open_bus()` tail several
+    /// a2bus cards end their `read_c0nx` switch on. Nothing else in the
+    /// private section is exposed by this.
+    friend class SlotPeripheral;
+
+    std::array<std::unique_ptr<SlotPeripheral>, kSlotCount> slots{};
+
+    /// Compact list of the cards actually plugged, so the per-instruction
+    /// `advanceCycles` fan-out does not walk eight `unique_ptr` slots to find
+    /// the one or two that exist.
+    ///
+    /// A Callgrind profile (2026-07-30) measured `SlotBus::advanceCycles` at
+    /// 65 host instructions per EMULATED instruction with a single Disk II
+    /// plugged — 15.7 % of the whole emulation core, nearly all of it the
+    /// eight-way scan and its `unique_ptr` dereferences (which showed up
+    /// separately as another 1.9 % under `unique_ptr.h`).
+    ///
+    /// These are RAW, NON-OWNING pointers into `slots`, so they dangle the
+    /// instant a card is destroyed. Every mutation of `slots` must therefore
+    /// call `rebuildActiveCache()` — there are exactly three (`plug`,
+    /// `unplug`, `clear`), `slots` is private, and no accessor hands out a way
+    /// to reseat a slot from outside. `advanceCycles` asserts the cache matches
+    /// in debug builds so a future fourth mutation point fails loudly rather
+    /// than silently skipping a card or following a freed pointer.
+    ///
+    /// Safe without extra locking: mutations happen under `stateMutex` (the
+    /// worker is additionally stopped across `applyProfile`), which is the same
+    /// lock the CPU worker holds around `runCpuSlice` → `advanceCycles`.
+    std::array<SlotPeripheral*, kSlotCount> activeCards_{};
+    int activeCount_ = 0;
+    // Set by rebuildActiveCache() — the lowest-slot card whose snoopsBus()
+    // is true. Null on every ordinary machine, which is what keeps the
+    // snoop sites free.
+    SlotPeripheral* busSnooper_ = nullptr;
+    void rebuildActiveCache();
+
+    /// -1 = CNXX_UNCLAIMED. Claimed by the FIRST slot whose $CnXX window is
+    /// touched **and whose card returns true from `takesC800()`** (MAME
+    /// `a2bus.h:145` `take_c800()`, default false); released by $CFFF and by
+    /// unplug() of the holder. MAME `apple2e.cpp:216` (`CNXX_UNCLAIMED`) +
+    /// `:2977-2981`. The callers do the gating so `claimExpansion` stays the
+    /// one place the first-one-wins rule lives.
+    int activeExpansionSlot = -1;
+    void claimExpansion(int slot) {
+        if (activeExpansionSlot < 0) activeExpansionSlot = slot;
+    }
+    /// IRQ routing sink (see `IrqRouter`). Optional — left empty in
+    /// tests that don't care, or before Memory wires the CPU.
+    IrqRouter irqRouter;
+    /// NMI routing sink (see `NmiRouter`) and the slots pulling /NMI.
+    NmiRouter nmiRouter;
+    uint8_t   nmiMask_ = 0;
+    /// Open-bus source (see `FloatingBusFn`). Optional.
+    FloatingBusFn floatingBus_;
+    pom2::Z80Observer* z80Observer_ = nullptr;
+    pom2::CardTraceSink* cardTrace_ = nullptr;
+
+    /// MAME's `read_floatingbus()` tail — what an unclaimed $Cxxx read
+    /// puts on the data bus.
+    uint8_t openBus() const { return floatingBus_ ? floatingBus_() : uint8_t{0xFF}; }
+
+    // Access log state. `accessLogMask_` bit N = slot N is logged; the only
+    // thing the dispatch paths test when nothing is logged.
+    uint8_t accessLogMask_ = 0;
+    struct AccessLog {
+        std::deque<SlotAccess> entries;
+        std::size_t   capacity = 0;
+        std::uint64_t dropped = 0;
+    };
+    std::array<AccessLog, kSlotCount> accessLogs_{};
+    CycleSourceFn cycleSource_;
+    VblEdgeFn vblEdge_;
+    CycleSourceFn   accessCycle_;
+    const uint64_t* cycleCounterRef_ = nullptr;
+    const uint8_t*  auxRamRef_ = nullptr;
+    void logAccess(int slot, uint16_t addr, uint8_t value, bool write)
+    {
+        if ((accessLogMask_ >> slot) & 1u) recordAccess(slot, addr, value, write);
+    }
+    void recordAccess(int slot, uint16_t addr, uint8_t value, bool write);
+};
+
+#endif // POM2_SLOT_BUS_H

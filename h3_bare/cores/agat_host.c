@@ -140,7 +140,8 @@ static int agat_hid_to_code(uint8_t hid, int shift)
    всегда заглавные; Shift меняет только цифры и символы. Enter = CR,
    Esc = $1B, Backspace = $08, Tab = $09. Стрелки отдаём как Ctrl-H/U/J/K —
    именно эти коды понимает монитор Apple II при редактировании строки. */
-static int apple2_hid_to_code(uint8_t hid, int shift)
+/* r1388: раскладка Apple II нужна и слою POM2 (pom2_host.c) — снят static. */
+int apple2_hid_to_code(uint8_t hid, int shift)
 {
 	if (hid >= 0x04 && hid <= 0x1D) {            /* A..Z — только верхний */
 		return 'A' + (hid - 0x04);
@@ -615,7 +616,12 @@ void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)
 	agat_run_common(SYSTEM_9, 0, "Agat", rom, size, rom_name);
 }
 
+/* r1388: Apple II обслуживается портом POM2 (pom2_host.c). Параметр rom у
+   этого пути — ОБРАЗ ДИСКА (так его передаёт rom_browser), ПЗУ вшито в
+   agat_rom_apple2p. rom == NULL/0 — старт в Applesoft BASIC без диска.
+   rom_name нужен порту: .dsk и .po одного размера, порядок секторов
+   определяется по расширению. */
 void emu_run_apple2(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
-	agat_run_common(SYSTEM_P, 1, "Apple II", rom, size, rom_name);
+	emu_run_apple2_pom2(rom, size, rom_name);
 }

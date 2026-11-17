@@ -1,0 +1,2310 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#include "Memory.h"
+#include "RomErrata.h"
+
+#include "CharRomDump.h"
+#include "MemoryProfile_IIcClass.h"
+#include "CassetteDevice.h"
+#include "IWMDevice.h"
+#include "SmartPortHub.h"
+#include "Sony35Drive.h"
+#include "Logger.h"
+#include "M6502.h"
+#include "NoSlotClock.h"
+#include "SpeakerDevice.h"
+
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+
+namespace {
+// `POM2_TRACE_IIE_REBOOT=1` enables verbose tracing of IIe paging soft-
+// switch writes ($C001-$C00F), the auto-INTCXROM flip-flop, and (in
+// M6502.cpp) the PC-landing-on-$FA62 reset-entry hook. The three sites
+// share the same env var so a single export captures the entire reboot
+// path. Resolved once at startup via static init.
+bool iieRebootTraceEnabled()
+{
+    static const bool e = []() {
+        const char* env = std::getenv("POM2_TRACE_IIE_REBOOT");
+        return env && env[0] != '\0' && env[0] != '0';
+    }();
+    return e;
+}
+}
+
+Memory::Memory()
+{
+    mem.fill(0);
+    writable.fill(true);
+    clearRam();   // power-on RAM is never zero: Joust froze on it (CHANGELOG 2026-10-31)
+    // ROM mirror. Language Card RAM is separate and selected by the paging
+    // latches; $D000-$FFFF starts ROM-protected here. The slot ROM range
+    // $C100-$C7FF is NOT marked as ROM here: SlotBus owns that window and
+    // dispatches reads to plugged cards (writes dropped in Memory::memWrite).
+    markRomRegion(0xD000, 0xFFFF);  // Applesoft + Monitor
+
+    // Unclaimed slot reads put the floating bus on the data lines, not a
+    // hard $FF — MAME `apple2e.cpp` ends `c080_r`, `read_slot_rom` and
+    // `c800_r` with `return read_floatingbus();`. SlotBus has no video
+    // timing of its own, so Memory hands it the source — and the cycle
+    // counter that stamps SlotBus's access log. SLOW path only: reached from
+    // `memReadSlow`'s $Cxxx dispatch, never the fast bus (PERFORMANCE §§ 8.2/8.5).
+    slots.setFloatingBusSource([this]() { return floatingBus(); });
+    slots.setCycleSource([this]() { return getCycleCounter(); });
+    slots.setAccessCycleSource([this]() { return accessCycle(); });
+    slots.setVblEdgeSource([this](uint64_t now) { return nextVblCpuCycle(now); });
+    slots.setCycleCounterRef(&cycleCounter);
+    slots.setAuxRamRef(aux.data());   // VidHD's SHR source; stable (RamWorks memcpys INTO aux)
+
+    // Default reset vector points at $F800 (Monitor cold start) so a
+    // fresh boot without ROM loaded still runs *something* (BRK loop)
+    // instead of jumping into uninitialised memory.
+    mem[0xFFFC] = 0x00;
+    mem[0xFFFD] = 0xF8;
+    // IRQ/BRK and NMI both land at $F800 by default.
+    mem[0xFFFE] = 0x00;
+    mem[0xFFFF] = 0xF8;
+    mem[0xFFFA] = 0x00;
+    mem[0xFFFB] = 0xF8;
+
+    // POM2_TRACE_HANG implies the bank-mismatch detector too, so one env var
+    // captures everything in a single run.
+    if (std::getenv("POM2_TRACE_BANK") || std::getenv("POM2_TRACE_HANG")) {
+        bankTrace_ = true;
+        iieWriteSlow_ = true;
+        writeBank_.assign(0xC000, static_cast<int8_t>(-1));
+        writeVal_.assign(0xC000, 0);
+        std::fprintf(stderr, "[BANK] write/read bank-mismatch detector ARMED\n");
+    }
+    refreshReadFastFlags();
+}
+
+void Memory::noteBankWrite(uint16_t addr, bool toAux, uint8_t v)
+{
+    if (!bankTrace_ || addr >= 0xC000) return;
+    writeBank_[addr] = toAux ? 1 : 0;
+    writeVal_[addr]  = v;
+}
+
+void Memory::checkBankRead(uint16_t addr, bool fromAux, uint8_t v)
+{
+    if (!bankTrace_ || addr >= 0xC000) return;
+    const int8_t wb = writeBank_[addr];
+    if (wb < 0) return;                         // never written this session
+    const int rb = fromAux ? 1 : 0;
+    if (rb != wb && v != writeVal_[addr]) {
+        static int n = 0;
+        if (n++ < 300) {
+            std::fprintf(stderr,
+                "[BANK] MISMATCH $%04X: wrote bank%d=%02X, read bank%d=%02X "
+                "(80STORE=%d RAMRD=%d RAMWRT=%d ALTZP=%d PAGE2=%d HIRES=%d) cyc=%llu\n",
+                addr, wb, writeVal_[addr], rb, v,
+                (iieMemMode & MF_80STORE) ? 1 : 0, (iieMemMode & MF_RAMRD) ? 1 : 0,
+                (iieMemMode & MF_RAMWRT) ? 1 : 0, (iieMemMode & MF_ALTZP) ? 1 : 0,
+                display.page2 ? 1 : 0, display.hiRes ? 1 : 0,
+                static_cast<unsigned long long>(cycleCounter));
+        }
+    }
+}
+
+void Memory::setCpu(M6502* c)
+{
+    cpu = c;
+    // Re-install the SlotBus IRQ router whenever the CPU is rewired. The
+    // closure captures the CPU pointer by value so a later swap doesn't
+    // dangle — re-issuing setCpu() re-installs against the new pointer.
+    // An empty function on `c == nullptr` disconnects stray assertIrq()
+    // calls from cards that haven't been unplugged yet.
+    if (c) {
+        slots.setIrqRouter([c](int slot, bool asserted) { c->setIrqLine(slot, asserted); });
+        slots.setNmiRouter([c] { c->setNMI(); });   // /NMI: on the line's falling edge only
+    } else {
+        slots.setIrqRouter({}); slots.setNmiRouter({});
+    }
+}
+
+std::string Memory::busStateSummary() const
+{
+    if (!lcReadRam && !lcWriteEnable) return " (LC: ROM)";
+    std::string s = " (LC: ";
+    s += lcReadRam ? "RAM" : "ROM";
+    s += lcBank2Active ? " bank2" : " bank1";
+    s += lcWriteEnable ? " writable)" : " write-protected)";
+    return s;
+}
+
+void Memory::markRomRegion(uint16_t lo, uint16_t hi)
+{
+    for (int a = lo; a <= hi; ++a) writable[a] = false;
+    // A watched address inside the range is already forced non-writable, so
+    // the loop above changed nothing for it — but its SHADOW still claims the
+    // old permission, and the shadow is what memWriteSlow honours. Update it,
+    // or a ROM region marked while a watchpoint is armed (a profile switch
+    // reloading ROMs) would leave that one address writable.
+    if (writeWatch_.empty()) return;
+    for (int a = lo; a <= hi; ++a)
+        writeWatch_[a] = static_cast<uint8_t>(writeWatch_[a] & ~kWatchWasWritable);
+}
+
+bool Memory::loadRomBytes(const uint8_t* src, size_t length, uint16_t addr)
+{
+    if (!src || length == 0) return false;
+    if (static_cast<size_t>(addr) + length > 0x10000) return false;
+    std::memcpy(mem.data() + addr, src, length);
+    return true;
+}
+
+int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
+{
+    AppleIIRomImage image;
+    if (!prepareAppleIIRom(filename, image, lastError)) {
+        pom2::log().warn("ROM", lastError);
+        return 0;
+    }
+    return loadAppleIIRom(image, pickLower16KFor32K);
+}
+
+bool Memory::prepareAppleIIRom(const char* filename, AppleIIRomImage& image, std::string& error)
+{
+    image = {};
+    error.clear();
+    std::ifstream f(filename, std::ios::binary | std::ios::ate);
+    if (!f) { error = std::string("Cannot open ROM: ") + filename; return false; }
+    const auto length = f.tellg();
+    if (length < 0x800 || length > 0x10000) {
+        error = "Unexpected ROM size: " + std::to_string(static_cast<long long>(length));
+        return false;
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(length));
+    f.seekg(0, std::ios::beg);
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), length)) {
+        error = "Short read"; return false;
+    }
+    image.path = filename;
+    image.bytes = std::move(bytes);
+    return true;
+}
+
+int Memory::loadAppleIIRom(const AppleIIRomImage& image, bool pickLower16KFor32K)
+{
+    // Cards that map over the motherboard ROM step aside for the reload and
+    // come back over the NEW one (see SlotPeripheral::beforeMainRomReload).
+    for (int s = 0; s < SlotBus::kSlotCount; ++s)
+        if (SlotPeripheral* p = slots.peripheral(s)) p->beforeMainRomReload();
+    const int loaded = loadAppleIIRomImpl(image, pickLower16KFor32K);
+    for (int s = 0; s < SlotBus::kSlotCount; ++s)
+        if (SlotPeripheral* p = slots.peripheral(s)) p->afterMainRomReload();
+    return loaded;
+}
+
+int Memory::loadAppleIIRomImpl(const AppleIIRomImage& image, bool pickLower16KFor32K)
+{
+    const auto& buf = image.bytes;
+    const auto size = buf.size();
+    const char* filename = image.path.c_str();
+    // Common image sizes:
+    //   12 KB ($D000-$FFFF) = Apple II+ Autostart + Applesoft
+    //   16 KB ($C000-$FFFF) = Apple //e — split into the internal I/O ROM
+    //     ($C100-$CFFF, motherboard firmware) and the main ROM ($D000-$FFFF)
+    //     when iieMode is on. On II+, the same 16 KB image just loads at
+    //     $C000 and skips the I/O page (legacy behaviour).
+    //   32 KB = TWO common layouts, indistinguishable by size alone:
+    //     * Apple //e "system + video" combined dump. The 16 KB firmware
+    //       lives at file offsets 0x4000-0x7FFF (reset vector at 0x7FFC
+    //       maps to $FFFC); lower 16 KB carries video / char data we
+    //       don't load through this path. → pickLower16KFor32K = false.
+    //     * Apple //c / //c+ two-bank firmware dump. Bank 0 (cold-reset
+    //       entry) at file offsets 0x0000-0x3FFF; bank 1 (alt firmware,
+    //       AppleTalk / MouseText / SmartPort drivers) at 0x4000-0x7FFF.
+    //       The two banks are swapped at runtime via the $C028 ROMBANK
+    //       soft switch; bank 0 must be the one mapped at reset.
+    //       → pickLower16KFor32K = true.
+    uint16_t loadAddr = 0;
+    bool iieFromUpper16K = false;
+    size_t  skipBytes = 0;  // leading bytes to drop from the file
+    if (size == 12 * 1024) {
+        loadAddr = 0xD000;
+    } else if (size == 16 * 1024) {
+        loadAddr = 0xC000;
+    } else if (size == 20 * 1024) {
+        // Some Apple II+ dumps (notably the MAME "apple2_plus" combined
+        // pack) prepend 4 KB of filler — typically zeros or an unused
+        // alternate Integer BASIC bank — to the real 16 KB
+        // $C000-$FFFF firmware. The high 16 KB is what every Apple II+
+        // expects at $C000 onwards. Skip the first 4 KB so the loader
+        // doesn't poke ROM bytes into user RAM at $B000-$BFFF (the old
+        // "best effort" branch landed loadAddr there, which clobbered
+        // the user-RAM region with whatever pad bytes the file carried).
+        loadAddr  = 0xC000;
+        skipBytes = 0x1000;
+    } else if (size == 32 * 1024) {
+        loadAddr = 0xC000;
+        iieFromUpper16K = !pickLower16KFor32K;
+    } else if (size >= 0x800 && size <= 0x10000) {
+        // Best effort: fit at the high end so vectors land at $FFFA-$FFFF.
+        loadAddr = static_cast<uint16_t>(0x10000 - size);
+    } else {
+        lastError = "Unexpected ROM size: " + std::to_string(size);
+        pom2::log().warn("ROM", lastError);
+        return 0;
+    }
+
+    // Slice out the firmware payload — for 32 KB dumps this drops the
+    // unused half (upper for //c-style, lower for //e-style). After
+    // this, `payload` is a 16 KB block that covers $C000-$FFFF (or
+    // 12 KB for II+, or whatever the user gave us in the best-effort
+    // branch).
+    const uint8_t* payload      = buf.data() + skipBytes;
+    size_t         payloadSize  = size - skipBytes;
+    const uint8_t* altBankSrc   = nullptr;   // //c 32 KB bank 1, else null
+    if (size == 32 * 1024) {
+        if (iieFromUpper16K) {
+            payload     = buf.data() + 0x4000;   // //e layout
+        } else {
+            payload     = buf.data();            // //c bank 0 (active at reset)
+            // Bank 1 (upper 16 KB) feeds the $C028 ROMBANK toggle. Bytes
+            // 0x000-0x0FF (the $C000-$C0FF soft-switch shadow) are never
+            // returned — that range always routes through softSwitchAccess
+            // regardless of the active bank. IIcClassProfile stashes the
+            // rest (0x100-0xFFF mirror $C100-$CFFF; 0x1000-0x3FFF mirror
+            // $D000-$FFFF).
+            altBankSrc  = buf.data() + 0x4000;
+        }
+        payloadSize = 0x4000;
+    }
+
+    // Unified //c-class detection — runs for BOTH 16 KB and 32 KB iieMode
+    // dumps (matches MAME `apple2e.cpp:1275-1299` which probes the ROM
+    // regardless of size). 16 KB //c rev-255 needs this too — without it
+    // INTCXROM isn't forced and $C100-$C7FF reads return slot-bus $FF
+    // (D-1-1). On a //c-class ROM we install an IIcClassProfile (it does
+    // the //c+ probe + alt-firmware stash); II/II+/IIe clear it.
+    if (iieMode && payloadSize >= 0x3c00 && payload[0x3bc0] == 0x00) {
+        iicProfile_ = std::make_unique<IIcClassProfile>(
+            payload, payloadSize, altBankSrc,
+            iwmDevice, smartPortHub, iwmAuthoritative);
+        iicProfile_->setExternalSmartPort(externalSmartPort_);
+            // //c boots with INTCXROM forced on. applyProfile calls
+        // resetSoftSwitches BEFORE loadAppleIIRom, so its MF_INTCXROM
+        // hook (now gated on iicProfile_) doesn't catch the just-detected
+        // class — set it here too.
+        iieMemMode |= MF_INTCXROM;
+    } else {
+        iicProfile_.reset();
+        }
+    refreshReadFastFlags();   // romFastRead_ follows iicProfile_
+
+    if (iieMode && payloadSize == 16 * 1024) {
+        // IIe split: bytes 0x0000-0x00FF map to $C000-$C0FF (I/O page,
+        // ignored — those addresses are soft switches, not ROM). Bytes
+        // 0x0100-0x0FFF go into the internal I/O ROM, callable via
+        // INTCXROM=on or SLOTC3ROM=off (slot 3 only). Bytes 0x1000-0x3FFF
+        // load into $D000-$FFFF as the main Applesoft + Monitor ROM.
+        for (size_t i = 0x100; i < 0x1000; ++i) {
+            internalIORom[i] = payload[i];
+        }
+        for (size_t i = 0x1000; i < payloadSize; ++i) {
+            uint16_t addr = static_cast<uint16_t>(0xC000 + i);
+            mem[addr] = payload[i];
+        }
+    } else {
+        // II+ path (or non-16-KB): linear load, skipping the I/O page so
+        // soft switches keep working when a 16 KB II+ image is provided.
+        for (size_t i = 0; i < payloadSize; ++i) {
+            uint16_t addr = static_cast<uint16_t>(loadAddr + i);
+            if (addr >= 0xC000 && addr <= 0xC0FF) continue;
+            mem[addr] = payload[i];
+        }
+    }
+    // Known defects of a pinned dump, put right in memory (RomErrata.h).
+    if (const std::string fix = pom2::applyRomErrata(mem.data()); !fix.empty())
+        pom2::log().info("ROM", std::string(filename) + ": " + fix);
+    pom2::log().info("ROM", std::string("Loaded ") + filename + " at $" +
+                     [&]{ char b[8]; std::snprintf(b, 8, "%04X", loadAddr); return std::string(b); }() +
+                     (iieMode ? " (IIe)" : ""));
+    return 1;
+}
+
+int Memory::loadCharRom(const char* filename, int bank)
+{
+    std::ifstream f(filename, std::ios::binary);
+    if (!f) {
+        lastError = std::string("Cannot open char ROM: ") + filename;
+        pom2::log().warn("ROM", lastError);
+        return 0;
+    }
+    f.seekg(0, std::ios::end);
+    auto size = static_cast<size_t>(f.tellg());
+    f.seekg(0, std::ios::beg);
+    // 2K (II/II+) and 4K (IIe-class) dumps are normalized below. An 8K dump is
+    // an INTERNATIONAL //e video ROM: MAME's `gfx1` region is 8K = two 4K
+    // banks, and the machine's charset switch picks one. The US apple2ee fills
+    // both banks with the same 4K dump (342-0265-a.chr at offset 0 AND 0x1000);
+    // the French apple2eefr ships one 8K part, 342-0274-a.e9, whose low bank is
+    // the FR-CA set and whose high bank is the US set — verified by CRC against
+    // POM2's own 4K apple2e_char_frca.rom / apple2e_char.rom. So an 8K dump is
+    // handled by selecting `bank` and running the ordinary 4K path on it, which
+    // keeps one normalization routine rather than two. Anything else is
+    // rejected rather than stored raw (the renderer gates on size >= 2048 and
+    // would happily draw garbage).
+    if (size != 2048 && size != 4096 && size != 8192) {
+        lastError = "Char ROM must be 2K, 4K or 8K, got " + std::to_string(size);
+        return 0;
+    }
+    characterRom.resize(size);
+    f.read(reinterpret_cast<char*>(characterRom.data()), size);
+    charRomDualBank_ = false;
+    if (size == 8192 && f && bank < 0) {
+        // DUAL-BANK: keep both 4 KB sets; annunciator 2 selects the live one
+        // at render time (charRomActiveData). This is the real localized-//e
+        // wiring — the char ROM's A12 is driven by AN2 ($C05C/$C05D) — and it
+        // is what lets a demo switch its whole font mid-run (French Touch
+        // "Block ASCII Anthology": normal text ↔ block glyphs). Normalise each
+        // 4 KB half in place, then skip the single-bank normalisation below.
+        const pom2::CharRomFacts f0 =
+            pom2::normaliseCharRom(characterRom.data(),        4096);
+        (void)pom2::normaliseCharRom(characterRom.data() + 4096, 4096);
+        charRomLowercase_ = f0.hasLowercase;
+        charRomDualBank_  = true;
+        pom2::log().info("ROM",
+            std::string("Char ROM: 8K two-set dump, dual-bank (AN2 $C05C/$C05D "
+                        "selects the live 4K set): ") + filename);
+        return 1;
+    }
+    if (size == 8192 && f) {
+        // Collapse to the selected 4K bank, then fall through to the ordinary
+        // 4K normalization. Done before the short-read check below so a failed
+        // read still lands in the same error path.
+        const size_t off = (bank == 1) ? 4096u : 0u;
+        characterRom.erase(characterRom.begin() + static_cast<long>(off) + 4096,
+                           characterRom.end());
+        characterRom.erase(characterRom.begin(),
+                           characterRom.begin() + static_cast<long>(off));
+        size = 4096;
+        pom2::log().info("ROM",
+            std::string("Char ROM: 8K international dump, bank ") +
+            std::to_string(bank == 1 ? 1 : 0) + " of " + filename);
+    }
+    if (!f) {
+        // Short read — don't leave a partial ROM the renderer would treat as
+        // valid (it gates on size >= 2048 and would draw the garbage tail).
+        characterRom.clear();
+        lastError = std::string("Short read on char ROM: ") + filename;
+        return 0;
+    }
+
+    // Convention normalisation + the lowercase question both live in
+    // CharRomDump: they are facts about the DUMP, not about the memory
+    // map, and two dumps of the same size can need opposite treatment.
+    const pom2::CharRomFacts facts =
+        pom2::normaliseCharRom(characterRom.data(), size);
+    charRomLowercase_ = facts.hasLowercase;
+    if (size == 2048 && !facts.bit7Marker) {
+        pom2::log().info("ROM",
+            "Char ROM: 2 KB dump with no bit-7 range marker (Videx-style), "
+            "split by offset instead");
+    }
+
+    pom2::log().info("ROM",
+        "Loaded char ROM (" + std::to_string(size) + " B" +
+        (charRomLowercase_ ? ", lowercase" : ", uppercase only") + "): " +
+        filename);
+    return 1;
+}
+
+void Memory::cassetteAdvanceCycles(int cycles)
+{
+    cassette->advanceCycles(cycles);
+}
+
+void Memory::advanceCyclesVideo()
+{
+    const uint64_t vnow = videoNow();   // the beam's clock, not the CPU's
+    // Scanline-accurate VBL transition detection. Apple II video timing:
+    // 65 CPU cycles/line; 262 lines NTSC / 312 PAL. Visible: 0..191. VBL is
+    // 192..261 (NTSC) / 192..311 (PAL) → the VBL/frame period must follow the
+    // standard, or a French Touch demo that measures the VBL frame length to
+    // detect PAL vs NTSC sees the wrong machine. The "long cycle" (1 extra
+    // every 65) isn't modelled; nominal 65/line is close enough.
+    constexpr uint64_t kCyclesPerScanline = 65;
+    // Relaxed: the standard is a plain enum flipped by the UI under the
+    // state lock; the derived `frameCycles` is re-checked every call below,
+    // so no ordering is needed — and this runs once per emulated instruction.
+    const uint64_t kScanlinesPerFrame =
+        static_cast<uint64_t>(pom2VideoTiming(
+            videoStandard_.load(std::memory_order_relaxed)).scanlinesPerFrame);
+    constexpr uint64_t kVisibleScanlines  = 192;
+    // Track the start-of-frame cycle incrementally instead of deriving the
+    // scanline with `(cycleCounter / 65) % scanlinesPerFrame` every time.
+    //
+    // This runs once per EMULATED INSTRUCTION (~4 M times per 10 emulated
+    // seconds), and `% kScanlinesPerFrame` is a true hardware division: the
+    // divisor is a runtime value, so unlike `/ 65` — a compile-time constant the
+    // compiler turns into a multiply-shift — it cannot be strength-reduced.
+    // Removing it measured **15 % off the emulation core** (Callgrind +
+    // wall-clock, 2026-07-30). Note Callgrind *understates* it: a `div` is one
+    // instruction but 20-40 cycles.
+    //
+    // The subtraction below is deliberately unsigned. `cycleCounter` does not
+    // only march forward — `setCycleCounter()` moves it arbitrarily on a
+    // snapshot restore or a rewind, backwards included. A backwards jump wraps
+    // the difference to a huge value, which fails the `< 2 * frameCycles` test
+    // and lands in the resync branch, so the base self-heals in one division on
+    // the next call. (An earlier draft reset the base to 0 and let the `while`
+    // loop walk forward instead — that would have spun for millions of
+    // iterations on any rewind with a large cycle counter.)
+    //
+    // The base is only meaningful for the frame period it was aligned to; the
+    // invariant the incremental scheme rests on is
+    // `vblFrameBase_ % frameCycles == 0`. The period is a LIVE input:
+    // `setVideoStandard()` flips NTSC↔PAL on an already-running machine
+    // (profile switch), and the rollover test below can never notice, because
+    // the two periods sit within a factor of two of each other (17030 vs
+    // 20280) — `sinceBase` always lands in the ordinary-rollover branch, which
+    // carries the stale residue forward forever. A boot-in-NTSC then
+    // switch-to-//c-PAL put the VBL edge on scanline 252 instead of 192, out
+    // of step with `$C019`, `pushVideoEventLocked` and
+    // `Apple2Display::frameCycleToPos` (all of which take a true modulo). So
+    // re-derive the base whenever the period moves, comparing the DERIVED
+    // `frameCycles` rather than the video standard: any future input feeding
+    // into the period re-aligns the base automatically instead of silently
+    // reintroducing the phase error.
+    const uint64_t frameCycles = kCyclesPerScanline * kScanlinesPerFrame;
+    if (frameCycles != vblFrameCycles_) {
+        vblFrameCycles_ = frameCycles;
+        vblFrameBase_   = vnow - (vnow % frameCycles);
+    }
+    const uint64_t sinceBase   = vnow - vblFrameBase_;   // wraps if behind
+    if (sinceBase >= frameCycles) {
+        vblFrameBase_ = (sinceBase < 2 * frameCycles)
+                            ? vblFrameBase_ + frameCycles          // ordinary rollover
+                            : vnow - (vnow % frameCycles);  // resync
+    }
+    const uint64_t scanline = (vnow - vblFrameBase_) / kCyclesPerScanline;
+    const bool nowActive = scanline < kVisibleScanlines;
+
+    // Line-boundary edge, same as the $C019 read path (see the long note
+    // there: an intra-line phase was tried both ways against MAD EFFECT and
+    // measured to be wrong). This path drives the //c-class VBLINT *latch*
+    // and is evaluated per tick rather than per cycle, so it would be coarse
+    // regardless.
+
+    // Edge: active video → VBL. `$C05B` (EnVBL) arms the per-frame VBL
+    // interrupt. The old blanket "never assert the CPU IRQ line" existed
+    // because POM2 did not model IOUDIS: with IOUDIS disabled the same
+    // address is the AN1 annunciator (legacy II/II+ behaviour), and the
+    // many programs that poke $C05B for paddle / annunciator reasons
+    // would have raised an IRQ with no handler installed (ProDOS crash).
+    //
+    // POM2 models IOUDIS now (2026-07-30), and $C05A/$C05B only reach
+    // the VBL mask on a //c-class machine with IOUDIS clear — the real
+    // mouse/VBL switch decode, gated in softSwitchAccess. So on //c-class
+    // the arm is unambiguous and the line CAN be driven, which is what a
+    // //c PAL demo (Le Chat Mauve / French Touch target) uses as its
+    // 50 Hz frame sync: without it such a demo either spins on its
+    // "wait for frame" flag forever or free-runs and tears. MAME raises
+    // IRQ_VBL for //c-class the same way (`apple2e.cpp` m_isiic).
+    //
+    // IIe keeps the polling-only behaviour: there $C05A/$C05B really are
+    // plain annunciators (POM2 overlays the mask for the vbl_smoke_test
+    // contract), so asserting would resurrect the original crash.
+    if (vblWasActive && !nowActive) {
+        if (iieMode && vblIrqMask) {
+            vblIrqPending = true;
+            if (iicProfile_ && cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, true);
+        }
+    }
+    vblWasActive = nowActive;
+
+    // ── Per-video-frame publication of the beam-racing event log ────────
+    // The recording frame closes at each video-frame boundary (65 × 262/312
+    // cycles) and becomes the published frame the UI renders from. Decoupled
+    // from both the worker's CPU budget tick (17045/20313 ≠ one video frame)
+    // and the UI's vsync: a 60 Hz UI over 50 Hz PAL content re-renders the
+    // same published frame instead of stealing a half-recorded one — the
+    // old tick-bracket model dropped every event recorded between the UI's
+    // take and the next tick (~1 empty take in 6 under PAL → mid-scanline
+    // effects like French Touch *Mad Effect* flickered at ~10 Hz). Legacy
+    // mode: tests bracket synchronously via beginVideoEventFrame().
+    // The frame boundary is `vblFrameBase_` moving — it IS
+    // `cycleCounter - cycleCounter % frameCycles`, maintained incrementally
+    // above, so compare it rather than divide again: `cycleCounter /
+    // frameCycles` here was a second runtime-divisor 64-bit division per
+    // emulated instruction (the first one was removed in 2026-07; this one
+    // arrived with the per-video-frame publication and measured ~2 % of the
+    // core on an M1, more on a Cortex-A72 where `udiv` is slower).
+    if (!legacyEventBracket_ && vblFrameBase_ != lastVideoFrameStart_) {
+        onVideoFramePublished(lastVideoFrameStart_, !videoEvents_.empty());
+        lastVideoFrameStart_ = vblFrameBase_;
+        const uint64_t newFrameStart = vblFrameBase_;
+        std::lock_guard<std::mutex> lk(stateMutex);
+        publishedFrameStart_ = displayAtFrameStart_;
+        // An instruction can straddle the frame boundary: its soft-switch
+        // event is stamped `cycleCounter + currentInstructionCycles`, which
+        // may land PAST the boundary (rawLine wrapped to ~0) while
+        // publication only runs here, after the instruction. Publishing
+        // such an event into the closing frame applied the switch one
+        // frame early across all of frame N. Stamps are non-decreasing, so
+        // boundary-crossers form the tail of the log — carry them into the
+        // new recording frame instead.
+        auto firstNew = videoEvents_.begin();
+        while (firstNew != videoEvents_.end() &&
+               firstNew->emuCycle < newFrameStart)
+            ++firstNew;
+        std::vector<VideoEvent> carry(firstNew, videoEvents_.end());
+        videoEvents_.erase(firstNew, videoEvents_.end());
+        publishedEvents_     = std::move(videoEvents_);
+        videoEvents_         = std::move(carry);
+        displayAtFrameStart_ = display;   // state at scanline 0 of the new frame
+    }
+
+    // Nothing above can change again before the VBL edge of this frame (if
+    // it is still ahead) or, failing that, the frame boundary — so that is
+    // the next cycle the inline gate lets this function run.
+    const uint64_t edge = vblFrameBase_ + kVisibleScanlines * kCyclesPerScanline;
+    vblNextEventCycle_ = cpuCycleForVideo((vnow < edge) ? edge : vblFrameBase_ + frameCycles);
+}
+
+void Memory::beginVideoEventFrame()
+{
+    // Legacy synchronous bracket (tests): from here on, recording is gated
+    // by the open flag and takeVideoEvents() moves the log out directly —
+    // the per-video-frame publication in advanceCycles() stands down.
+    std::lock_guard<std::mutex> lk(stateMutex);
+    legacyEventBracket_  = true;
+    displayAtFrameStart_ = display;
+    videoEvents_.clear();
+    videoEventFrameOpen_ = true;
+}
+
+std::vector<Memory::VideoEvent> Memory::takeVideoEvents()
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    if (legacyEventBracket_) {
+        videoEventFrameOpen_ = false;
+        return std::move(videoEvents_);
+    }
+    // Published mode: COPY, not move — the UI re-renders the same frame
+    // when no new one has been published (60 Hz vsync over 50 Hz content).
+    return publishedEvents_;
+}
+
+void Memory::recordVideoEvent(VideoEventKind kind, bool value)
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    if (!videoEventFrameOpen_) return;
+    pushVideoEventLocked(kind, value);
+}
+
+void Memory::pushVideoEventLocked(VideoEventKind kind, bool value)
+{
+    if (!videoEventFrameOpen_) return;
+    // PAL frames are 312 scanlines (vs 262 NTSC); the horizontal 65-cycle line
+    // and 192 visible lines are the same. Using the active standard's geometry
+    // keeps mid-frame soft-switch edges on the right scanline for beam-racing.
+    const VideoTiming& t = pom2VideoTiming(videoStandard_.load());
+    const uint64_t kCyclesPerScanline = static_cast<uint64_t>(t.cyclesPerScanline);
+    const uint64_t kScanlinesPerFrame = static_cast<uint64_t>(t.scanlinesPerFrame);
+    const uint64_t kVisibleScanlines  = static_cast<uint64_t>(t.visibleScanlines);
+    const uint64_t now = videoAccessCycle();
+    const uint64_t rawLine = (now / kCyclesPerScanline) % kScanlinesPerFrame;
+    // A switch thrown during VBL (rawLine >= 192) must NOT be replayed
+    // inside the visible frame: the beam already finished the picture in
+    // the pre-switch state (throwing mode switches in VBL is the canonical
+    // tear-free idiom). Stamp it as scanline 192 — Apple2Display's replay
+    // loops only consume scanlines 0..191, so the event sorts after every
+    // visible position and is skipped; its effect reaches the NEXT frame
+    // through displayAtFrameStart_. (Clamping to 191, as previously done,
+    // painted a spurious post-switch split on the last visible line.)
+    const uint16_t scanline = static_cast<uint16_t>(
+        rawLine < kVisibleScanlines ? rawLine : kVisibleScanlines);
+
+    videoEvents_.push_back({now, scanline, kind, value});
+}
+
+void Memory::resetSoftSwitchesWarm()
+{
+    // II/II+: LC bank-select, display switches and the expansion-ROM latch
+    // SURVIVE the reset key. So does the keyboard strobe, and so does the
+    // key byte. [B] Sather, *Understanding the Apple II*, Fig. 7.7 (p. 7-44,
+    // Rev 1+ boards): the strobe flip-flop is B10 (LS74); its CLR (pin 13)
+    // is driven by A12 (LS02), a NOR of C01X (via C11) and the OUTPUT of the
+    // power-up 555 A13; the RESET key grounds only the collector of Q5 —
+    // the "RESET TO MPU AND PERIPH. SLOTS" net — which never reaches A12.
+    // The 555 drives both ("This pulse resets the keyboard strobe flip-flop
+    // and also forces the RESET' line low", p. 7-45): siblings, not cause
+    // and effect. Same on Rev 0: Apple II Reference Manual (Jan 1978)
+    // Fig. S-10, B10's only asynchronous input is the $C01X decode from F13.
+    // The byte lives in the keyboard's encoder (MM5740 / AY-5-3600), which
+    // the RESET switch does not touch. [D] MAME's `keyb_reset_w` agrees;
+    // AppleWin's `KeybReset` clears both and cites nothing. The //e branch
+    // below already kept it ("except KEYSTROBE", Sather IIe 7-3); this
+    // branch called Keyboard::reset() and dropped strobe AND byte, so a
+    // ][ (1977) coming back to its Monitor lost the key that was waiting.
+    // Not measured on hardware. `docs/audits/parite-apple2-2026-11-01.md`.
+    // IIe/IIc/IIc+ reset_w (apple2e.cpp:1453-1508) runs the full MMU/IOU/LC
+    // list — our cold reset, keyboard aside.
+    if (iieMode) { resetSoftSwitches(/*warm=*/true); return; }
+    keyboard_.cancelPaste();   // abandon an in-flight paste; strobe and byte stay
+    // NB: cnxx-slot tracker analogue lives in SlotBus, which the caller
+    // (EmulationController::softReset) drives via slotBus().reset();
+    // nothing else needs touching here on II/II+.
+}
+
+bool Memory::chatMauveBlockedBySlot3() const
+{
+    SlotPeripheral* card = slots.peripheral(3);
+    if (!card) return false;                 // empty slot: Eve window free
+    // A Chat Mauve IS allowed to sit in slot 3 and answer there; only a
+    // FOREIGN card (SSC, Mockingboard…) blocks the window. Compared by
+    // name to avoid dragging the card's header into Memory.
+    return card->name() != "Le Chat Mauve";
+}
+
+void Memory::resetSoftSwitches(bool warm)
+{
+    std::lock_guard<std::mutex> lk(stateMutex);
+    const DisplayState kept = display;
+    display = DisplayState{};
+    // Ctrl-Reset clears 80STORE/80COL/ALTCHR/PAGE2/HIRES/AN0-3: TEXT and
+    // MIXED survive, DHGR/AN3 does NOT (Sather IIe p. 7-3; DEV § Soft switches).
+    // AN3 low with DHGR off is a pair no switch makes, but it lives a few
+    // instructions only: [C] every //e and //c RESET handler throws $C05F
+    // (AN3 high, DHIRES off) — enhanced //e $C2B0 via $FA62's GOTOCX,
+    // unenhanced $C234, //c and //c+ $FA75 — so a ROM reset always ends
+    // where Le Chat Mauve's `an3Prev = true` assumes (bug hunt 2026-11-07).
+    if (warm) { display.textMode = kept.textMode; display.mixedMode = kept.mixedMode; }
+    // A reset wipes the beam-racing timeline: drop the logged events (stale
+    // ones would paint ghost segments) and resync the frame-start snapshots.
+    videoEvents_.clear();
+    publishedEvents_.clear();
+    displayAtFrameStart_ = display;
+    publishedFrameStart_ = display;
+    lcReadRam     = false;
+    // Sather "Understanding the Apple //e" Fig 5.13: post-reset LC state is
+    // read ROM / write RAM enabled / bank 2 selected / no pre-write. MAME
+    // `apple2e.cpp:1227-1232` + `:1492-1497` sets `m_lcwriteenable=true` on
+    // both machine_reset and reset_w. The Language Card on II/II+ powers up
+    // in the same state, so the rule applies universally.
+    lcWriteEnable = true;
+    lcBank2Active = true;
+    lcPrewrite    = false;
+    iieMemMode    = 0;
+    intC8Rom      = false;   // //e expansion-window auto-INTCXROM flip-flop
+    // VBL interrupt: disarm AND drop the line. Without this a //c that had
+    // enabled it ($C05B) kept re-asserting IRQ_SRC_VBL on the very next
+    // frame edge into a freshly reset machine with no handler — and the
+    // guest could no longer turn it off, because $C05A (DisVBL) only
+    // decodes while IOUDIS is CLEAR and the reset below forces it back
+    // TRUE. The setIrqLine below is what drops the line: M6502's resets
+    // leave the source mask to the devices since CPU-2 (2026-11-06).
+    vblIrqMask    = false;
+    vblIrqPending = false;
+    if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+    if (iicProfile_) iicProfile_->onResetSoftSwitches(warm);  // ROMBANK: kept warm
+    if (accel_) accel_->onReset(cycleCounter);  // Zip: MAME reset_w → accel_reset
+    // //c boots with INTCXROM forced on (MAME `apple2e.cpp:1273`,
+    // `apple2e.cpp:1467-1475`). Gate on `isIIcClass` so BOTH 16 KB
+    // rev-255 //c dumps and 32 KB rev-0/3/4 + //c+ dumps re-force the
+    // bit on every reset. (Pre-Theme-6 this was gated on iicHasAltBank
+    // and missed the 16 KB case — D-1-1/D-3-1.) The internal ROM stays
+    // mapped either way (see the isIIcClass gate in memRead). Setting
+    // it here keeps $C015 (RDCXROM) consistent with what real //c
+    // firmware sees when probing the switch.
+    if (iicProfile_ && iicProfile_->forcesIntCxRom()) iieMemMode |= MF_INTCXROM;
+    // IOUDIS = true. Upstream sets it ONLY in `machine_reset`
+    // (`apple2e.cpp:1215` @ tag `mame0287`): `reset_w`, the Ctrl-Reset
+    // path, leaves it alone (1440-1511, unchanged on master). POM2
+    // applies it on EVERY reset — the //c's end state: [B] IIc Technical Ref.
+    // 2nd ed. p. 50 (reset turns IOUDis on, "the same for any type of reset");
+    // [C] //c ROM $FA62 -> $C41C, STA $C078 at $C467. The FIRMWARE sets it; [F]
+    // whether the IOU itself presets it is unknown (probe a //c's IOU at reset).
+    // The comment here used to claim upstream did the same —
+    // caught by `docs/audits/parite-apple2e-2026-11-01.md`.
+    // It gates the IOU/mouse softswitches off until the firmware clears
+    // it via $C07F. Shared by IIe, IIc, IIc+; a plain //e ignores SET/CLR
+    // and its $C07E read is the floating bus (RDIOUDIS is //c-class only).
+    ioudis = true;
+    // RamWorks III — MAME `a2eramworks3.cpp:65-68 device_reset` snaps
+    // `m_bank = 0`, but that is a MACHINE reset: the reset key
+    // (`apple2e.cpp:1430-1508` reset_w) runs the MMU/IOU/LC list and
+    // `m_a2bus->reset_bus()` and never touches the aux slot. AppleWin
+    // agrees (Ctrl-Reset → MemResetPaging keeps g_uActiveBank; only
+    // MemReset, the power cycle, clears it — GH#1414). So only the cold
+    // path (coldBoot / bootFromSlot / profile switch) returns to bank 0;
+    // Ctrl-Reset and F12 keep the bank software selected. Data in all
+    // banks is preserved either way.
+    if (!warm && iieMode && ramWorksBanks_ > 1) {
+        ramWorksSwapToBank(0);
+    }
+    // Annunciators AN0-AN2. The 74LS259 addressable latch that drives them
+    // has its /CLR tied to the reset line, so every reset drops all four
+    // outputs — MAME `apple2e.cpp` machine_reset zeroes `m_an0..m_an3`
+    // alongside the rest of the IOU. AN3 lives in `display` and was already
+    // cleared by the `display = DisplayState{}` above; these three were not,
+    // and AN2 is not decorative: on an 8 KB international character
+    // generator it is wired to the ROM's A12, so a stale AN2 left a
+    // freshly-reset machine rendering the second 4 KB font
+    // (`charRomBankOffset`). Same reason they are in the snapshot trailer.
+    an1 = false;   // (AN0 and AN2 are in `display`, cleared above)
+    // reset_w keeps the latch, so the //c Plus ROM sees Esc held through
+    // Ctrl-Reset ($FD82); power-on re-strobes a key held (Keyboard::powerOn).
+    if (warm) keyboard_.cancelPaste(); else keyboard_.powerOn();
+}
+
+void Memory::clearRam()
+{
+    iicExpansionAwake_ = false;   // power-on: the 4c sleeps (MAME machine_reset;
+                                  // reset_w, i.e. Ctrl-Reset, leaves it awake)
+    // Power-on RAM: `00 FF 00 FF…`. A deterministic stand-in — NOT what a
+    // real machine holds, because no single pattern is (DEV § Power-on RAM
+    // pattern has the reports).
+    // [D] MAME `apple2.cpp:290-291` @ mame0287, from commit b24ab572 (2019),
+    //     "AppleWin-like memory fill; fixes hang in Joust": never measured.
+    // [B] Sather, UtA II p. 4-19: "much of RAM goes to a state of all zeroes".
+    // [A] (by report) Real machines disagree: AppleWin #206 (Michael Mahon,
+    //     relayed). [E] That it depends on the DRAM maker and the board.
+    // [F] Any one machine's pattern. Settled by: a RAM dump taken before the
+    //     cold start runs. Until 2026-11-06 this said real DRAM "settles
+    //     into" the fill, which nothing supports.
+    // The Language Card is RAM too, so a power-cycle clears it even though
+    // its window overlaps motherboard ROM. Pre-Theme-11 POM2 zero-filled.
+    auto fill00FF = [](auto& span, size_t bytes) {
+        for (size_t i = 0; i < bytes; i += 2) {
+            span[i]     = 0x00;
+            if (i + 1 < bytes) span[i + 1] = 0xFF;
+        }
+    };
+    fill00FF(mem,    0xC000);
+    fill00FF(lcBank1, lcBank1.size());
+    fill00FF(lcBank2, lcBank2.size());
+    fill00FF(lcHigh,  lcHigh.size());
+    // Aux unconditionally: a Memory is born in ][ mode (setIIEMode won't paint).
+    fill00FF(aux,        aux.size());
+    fill00FF(auxLcBank1, auxLcBank1.size());
+    fill00FF(auxLcBank2, auxLcBank2.size());
+    fill00FF(auxLcHigh,  auxLcHigh.size());
+    if (iieMode) {
+        // RamWorks III backing — wipe every bank slot, snap back to
+        // bank 0 (MAME `device_reset`-equivalent, plus a cold RAM
+        // wipe which `device_reset` itself doesn't do).
+        if (ramWorksBanks_ > 1) {
+            fill00FF(ramWorksBacking_, ramWorksBacking_.size());
+            ramWorksBank_ = 0;
+        }
+    }
+}
+
+void Memory::setIIEMode(bool on)
+{
+    iieMode = on;
+    refreshReadFastFlags();
+    iieMemMode = 0;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        display.altChar     = false;
+        display.eightyStore = false;
+        display.eightyCol   = false;
+        display.dhgr        = false;
+    }
+    // Drop any RamWorks backing when leaving IIe (the card is aux-slot
+    // only). Re-enabling IIe leaves the user setting to MainWindow.
+    if (!on) {
+        ramWorksBanks_ = 1;
+        ramWorksBank_  = 0;
+        ramWorksBacking_.clear();
+        ramWorksBacking_.shrink_to_fit();
+    }
+}
+
+// MAME `a2eramworks3.cpp:108-115 write_c07x`: bank index = data & 0x7F.
+// One backing slot per bank (including bank 0). Swap is symmetric:
+// snapshot visible → backing[prev], advance ramWorksBank_, load
+// backing[curr] → visible. The visible buffers (`aux`, `auxLcBank1/2`,
+// `auxLcHigh`) always reflect the active bank so the rest of Memory.cpp
+// reads them directly without bank-aware indexing.
+void Memory::ramWorksSwapToBank(uint8_t newBank)
+{
+    if (ramWorksBanks_ <= 1 || auxPort_) return;   // aux slot taken: setAuxSlotPort
+    // Clamp to populated banks via modulo. MAME does not clamp (it
+    // allocates a fixed 8 MB array and reads garbage for unpopulated
+    // slots — UB-adjacent in C++); we wrap. On a real RamWorks III with
+    // fewer than 128 banks installed, the chip-select decoder aliases
+    // higher-bank writes to populated banks anyway.
+    newBank = static_cast<uint8_t>(newBank % ramWorksBanks_);
+    if (newBank == ramWorksBank_) return;
+
+    const size_t stride = kRamWorksBankStride;
+    uint8_t* prev = ramWorksBacking_.data()
+                  + static_cast<size_t>(ramWorksBank_) * stride;
+    std::memcpy(prev,             aux.data(),         0x10000);
+    std::memcpy(prev + 0x10000,   auxLcBank1.data(),  0x1000);
+    std::memcpy(prev + 0x11000,   auxLcBank2.data(),  0x1000);
+    std::memcpy(prev + 0x12000,   auxLcHigh.data(),   0x2000);
+
+    ramWorksBank_ = newBank;
+
+    const uint8_t* curr = ramWorksBacking_.data()
+                        + static_cast<size_t>(newBank) * stride;
+    std::memcpy(aux.data(),        curr,             0x10000);
+    std::memcpy(auxLcBank1.data(), curr + 0x10000,   0x1000);
+    std::memcpy(auxLcBank2.data(), curr + 0x11000,   0x1000);
+    std::memcpy(auxLcHigh.data(),  curr + 0x12000,   0x2000);
+}
+
+
+uint64_t Memory::accelNow() const   // the Zip's clock: the exact cycle of the access
+{
+    return cycleCounter + (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+}
+
+void Memory::restoreMainRam(const uint8_t* data, size_t n)
+{
+    const size_t lim = (n < mem.size()) ? n : mem.size();
+    for (size_t i = 0; i < lim; ++i) {
+        // ramWritable(), not writable[]: an address diverted by a write
+        // watchpoint reads as non-writable there, and a snapshot or rewind
+        // restore would silently skip that one byte for as long as the watch
+        // stayed armed.
+        if (ramWritable(static_cast<uint16_t>(i))) mem[i] = data[i];
+    }
+}
+
+uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
+{
+    // Soft-switch byte is in $C000-$C07F. Many switches respond to either
+    // a read OR a write (both edges work as toggles). We snapshot the
+    // current keyboard latch under kbMutex on every $C000/$C010 access.
+    // Only the keyboard addresses ($C000-$C01F: latch, strobe, the //e
+    // status reads) consume the latch — every other soft switch in this page
+    // (speaker $C030, display $C050-$C05F, paddles $C06x/$C070) used to take
+    // the lock too, for nothing. A speaker-driven tune toggles $C030 tens of
+    // thousands of times a second, so the uncontended lock/unlock pair was
+    // ~5 % of a banner profile on its own.
+    const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
+    const uint8_t kbLatch =
+        (low < 0x20) ? keyboard_.latchMirror() : uint8_t{0};
+
+    // Keyboard latch + IIe paging soft switches at $C000-$C00F.
+    //
+    // MAME's `apple2.cpp:548` mirrors $C000 across $C001-$C00F via
+    // `.mirror(0xf)`, and `apple2e.cpp:1825-1828` does the same with
+    // `if((offset & 0xf0) == 0) return m_transchar | m_strobe;`. So on
+    // either II+ or IIe, READS of $C000-$C00F return the keyboard
+    // latch — they do NOT toggle the IIe paging soft switches. WRITES
+    // to $C001-$C00F dispatch to the IIe handler (writes-only on real
+    // hardware).
+    //
+    // BUT $C00C/$C00D drive the Le Chat Mauve / Video-7 RGB FIFO data
+    // line — and those cards sniff the bus regardless of read/write
+    // direction. On a IIe the broadcast is folded into
+    // `iieHandleSoftSwitch`; on a II+ we run the broadcast directly
+    // here because there's no IIe handler to do it for us.
+    if (low <= 0x0F) {
+        if (!iieMode && (low == 0x0C || low == 0x0D)) {
+            {
+                std::lock_guard<std::mutex> lk(stateMutex);
+                display.eightyCol = (low == 0x0D);
+            }
+            recordVideoEvent(VideoEventKind::EightyCol, low == 0x0D);
+            slots.broadcastVideoSwitch(addr);
+        }
+        if (isWrite) {
+            if (iieMode) iieHandleSoftSwitch(addr);
+            return kbLatch;   // store: the return value is unused
+        }
+        // A READ of $C000-$C00F is the guest asking for a key, and that is
+        // where a draining host paste hands its next byte over (Keyboard.h) —
+        // never on the $C010 strobe clear, which a program may poll.
+        return readKeyLatch();   // MemoryPaste.cpp: the line-at-a-time paste
+    }
+    // Keyboard strobe clear.
+    //
+    // II/II+: $C010 is mirrored across the whole $C010-$C01F page — MAME
+    // `apple2.cpp:548` `map(0xc010,0xc010).mirror(0xf)` routes both reads
+    // and writes of any $C01x to the strobe clear. The II decodes only
+    // A4-A7 here; there are no IIe status registers to shadow. (POM2
+    // previously answered $C011/$C012 with IIe-style LC status on II+ —
+    // a deliberate convenience that diverged from hardware; software
+    // acking a key via `STA $C01x` (x≠0) never saw its strobe clear.)
+    // Nothing drives the data bus there, so the read is the video scanner's
+    // byte: MAME `apple2.cpp:362-372` read_floatingbus(), AppleWin IORead_C01x
+    // IO_Null (GH#1261). The key latch made $C019 vapor-lock see a constant.
+    if (!iieMode && low >= 0x10 && low <= 0x1F) {
+        clearKeyStrobe();
+        return floatingBus();
+    }
+    // IIe: any WRITE in $C010-$C01F clears the strobe (MAME `apple2e.cpp`
+    // c000_w: `if ((offset & 0xf0) == 0x10) { m_strobe = 0; ... }` — only
+    // $C010 additionally pings the keyboard MCU). Reads of $C011-$C01F
+    // are status-only and fall through to the handlers below.
+    if (iieMode && isWrite && low >= 0x10 && low <= 0x1F) {
+        clearKeyStrobe();
+        return kbLatch & 0x7F;   // store: return value unused
+    }
+    // IIe AKD follows physical key state, independently of the strobe.
+    // II/II+ reads still clear the strobe and return bit 7 low.
+    if (low == 0x10) return keyboard_.readStrobe(iieMode);
+    // //c mouse IOU overrides the IIe status aliases and paddle inputs.
+    // Keyboard writes above retain their strobe-clear side effect.
+    if (iicProfile_ && (low == 0x15 || low == 0x17 || (low >= 0x40 && low <= 0x6F))) {
+        if (auto* mouse = slots.peripheral(4)) {
+            uint8_t value; const uint8_t bus = low < 0x20 ? (kbLatch & 0x7F) : floatingBus();
+            if (mouse->iicMouseAccess(low, isWrite, ioudis, bus, value)) return value;
+        }   // No IOU mouse claimed it: X0/Y0 IRQ flags clear (MAME c000_iic_r), not RDCXROM/RDC3ROM.
+        if (low == 0x15 || low == 0x17) return kbLatch & 0x7F;
+    }
+    // IIe Language Card status reads RDBNK2/RDLCRAM (only reachable in
+    // iieMode: II+ $C01x is the strobe mirror handled above). Low 7 bits
+    // carry m_transchar (last keyboard char) per MAME
+    // `apple2e.cpp:1842-1871`.
+    if (low == 0x11 || low == 0x12) {
+        const bool on = (low == 0x11) ? lcBank2Active : lcReadRam;
+        uint8_t low7 = 0;
+        if (iieMode) {
+            low7 = keyboard_.lastKey7();
+        }
+        return static_cast<uint8_t>((on ? 0x80 : 0x00) | low7);
+    }
+
+    // (The IIe paging dispatch for $C001-$C00F now lives inside the
+    // `low <= 0x0F` block above — gated on `isWrite` so reads of those
+    // addresses don't accidentally flip paging bits.)
+
+    // IIe status reads at $C013-$C018 + $C01E-$C01F (high bit reflects
+    // the matching MF_* / DisplayState bit). Out-of-band "handled" flag:
+    // an in-band sentinel byte is unusable here because every status
+    // value `0x80 | transchar` is legitimate — with lastKey = $7E ('~')
+    // an ON switch reads back exactly $FE, and a sentinel collision sent
+    // RDRAMRD-class polls to the floating bus (reporting OFF while ON).
+    if (iieMode && low >= 0x13 && low <= 0x1F) {
+        uint8_t s = 0;
+        if (iieReadStatus(addr, s)) return s;
+    }
+    // VBL (vertical blank) strobe — IIe-only register. Scanline-accurate
+    // Apple II frame: 262 scanlines × 65 cycles. Visible video =
+    // 0..191, VBL = 192..261. Bit 7 of $C019 reflects the active-video
+    // state per MAME `apple2e.cpp:2107` convention: HIGH during active,
+    // LOW during VBL. II/II+ doesn't decode $C019 at all — the address
+    // falls through to the floating bus per MAME `apple2.cpp` (no
+    // $C019 case in `do_io`). Without the iieMode gate, software
+    // running on II+ that probes $C019 (e.g. some ProDOS detection
+    // routines) would see a deterministic scanline-derived value
+    // instead of the random-ish video DMA byte real hardware returns.
+    //
+    // **$C019 read does NOT clear the VBL IRQ** — per Apple IIc
+    // Technical Note #9 (and MAME `apple2e.cpp:2244` comment "does not
+    // reset"). The clear path is the $C05A AN1 write (IIc/IIc+; POM2
+    // overlays the same on IIe as documented in the $C058-$C05D block
+    // below). Earlier POM2 versions cleared the IRQ on every $C019
+    // read, contradicting Tech Note #9.
+    if (iieMode && low == 0x19) {
+        uint8_t low7 = 0;
+        {
+            low7 = keyboard_.lastKey7();
+        }
+        // //c-class: $C019 is VBLINT — the LATCHED "a VBL interrupt
+        // occurred" flag, not the live beam state. MAME `c000_iic_r`
+        // case 0x19 (apple2e.cpp:2256-2257): `(m_irqmask & (1<<IRQ_VBL))
+        // ? 0x80 : 0` with the comment "does not reset, see Apple IIc
+        // Technical Note #9". POM2 already maintains exactly that latch
+        // (vblIrqPending) but returned the IIe beam state on every
+        // iieMode machine, so //c software polling for its VBL interrupt
+        // saw a free-running beam signal instead.
+        if (iicProfile_) {
+            // The latch as of the ACCESS cycle (vblintEdgeInFlight, MemoryVideoLog.cpp).
+            const bool latched = vblIrqPending || vblintEdgeInFlight();
+            return static_cast<uint8_t>((latched ? 0x80 : 0x00) | low7);
+        }
+        // IIe: live VBLBAR beam state (MAME apple2e.cpp:2092-2093),
+        // OR m_transchar into the low 7 bits.
+        constexpr uint64_t kCyclesPerScanline = 65;
+        const uint64_t kScanlinesPerFrame =
+            static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+        constexpr uint64_t kVisibleScanlines  = 192;
+        // Sample at the ACTUAL data-fetch cycle: cycleCounter only
+        // advances at end-of-instruction, so a bare read placed the beam
+        // up to 7 cycles early and could report the wrong side of a
+        // scanline/VBL boundary. floatingBus() and pushVideoEventLocked
+        // already add the in-flight instruction progress — this is the
+        // same stamp, and it matters for beam-racing code that polls
+        // $C019 to find the VBL edge.
+        // ONE cycle ahead (PHASE 0 read, counters advanced): [A] arekkusu42's
+        // BEAMPOS, //e and //c (DEV § Horizontal splits; beamColForEvent).
+        const uint64_t now = videoAccessCycle() + 1;
+        // Beyond that one cycle, NO intra-line phase shift is applied, and
+        // that is a measured conclusion rather than an omission.
+        //
+        // French Touch's MAD EFFECT (//e PAL + Mockingboard, GPLv3 sources
+        // in disks_5.4/demo/madef/) syncs its whole frame off this edge and
+        // its `Sources/main.a` says "DISPLAY detected from cycle #52 of last
+        // line (#311) of VBL", which reads like a 13-cycle lead. Two
+        // different anchorings of that sentence into POM2's beam coordinates
+        // were implemented and BOTH were falsified by replaying the real
+        // disk: a +13 lead and a -12 lead each moved the demo's 192
+        // per-scanline lit-run starts FURTHER outside the visible window,
+        // and the -12 variant also broke `pal_timing` / `vbl_smoke` (which
+        // require line 192 to read VBL from its first cycle).
+        //
+        // The sentence pins a relation, not a position: it cannot say where
+        // the demo's "cycle 0" sits relative to POM2's line boundary — one
+        // equation, two unknowns. Sweeping all 65 phases against the real
+        // disk shows the lit-run starts land wholly inside the 40-column
+        // window for offsets 21..24 with NO shift here, i.e. within 1-4
+        // cycles of `frameCycleToPos`'s existing 25. Any shift on this edge
+        // moves it away. Pinned by `vbl_edge_phase`; see CHANGELOG.
+        const uint64_t scanline = (now / kCyclesPerScanline) % kScanlinesPerFrame;
+        const bool nowActive = scanline < kVisibleScanlines;
+        return static_cast<uint8_t>((nowActive ? 0x80 : 0x00) | low7);
+    }
+
+    // Annunciators AN0 ($C058/9), AN1 ($C05A/B), AN2 ($C05C/D). Each
+    // pair toggles a dedicated output line on the game I/O connector
+    // (MAME `apple2e.cpp:1750-1773`). POM2 doesn't wire those lines
+    // anywhere yet, but software still expects the soft switch to
+    // *swallow* the access (return zero / floating bus, no side
+    // effects on display). The IIe-specific note: MAME treats $C05A/B
+    // as plain AN1 toggles on IIe — VBL IRQ masking lives on IIc/IIc+
+    // only (`apple2e.cpp:2057-2065` `lower_irq` is `m_isiic ||
+    // m_isace500`). POM2 historically wired the mask in IIe mode for
+    // convenience (and `tests/vbl_smoke_test.cpp` pins it that way);
+    // we keep that behaviour AS AN OVERLAY on top of the AN1 state
+    // tracking so a future IIc port can drop the overlay without
+    // disturbing the AN-state model.
+    // //c-class with IOUDIS clear: $C058-$C05F are the IIc mouse/VBL
+    // switches, NOT annunciators and NOT DHGR. MAME `apple2e.cpp do_io`
+    // (the `(m_isiic || m_isace500) && !m_ioudis` branch, ~:1807-1852):
+    // 58/59 DisXY/EnbXY, 5A/5B DisVBL/EnVBL, 5C-5F X0/Y0 edge selects —
+    // and it RETURNS without touching AN0-AN3 or an3_w (DHGR). POM2
+    // tracked `ioudis` (writable at $C07E/F, readable at $C07E) but never
+    // gated anything on it, so a //c guest driving the mouse firmware's
+    // switch protocol wrongly flipped AN3/DHGR and the display.
+    if (low >= 0x58 && low <= 0x5F && iicProfile_ && !ioudis) {
+        if (low == 0x5A) {              // DisVBL
+            vblIrqMask = false;
+            if (vblIrqPending) {
+                vblIrqPending = false;
+                if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+            }
+        } else if (low == 0x5B) {       // EnVBL
+            vblIrqMask = true;
+        }
+        // The native IOU owner handles XY and edge selects above. With
+        // an explicit AppleWin HLE substitute there is no IOU consumer.
+        return isWrite ? 0 : floatingBus();
+    }
+
+    if (low >= 0x58 && low <= 0x5D) {
+        const bool on = (low & 1) != 0;
+        switch ((low - 0x58) >> 1) {
+            case 0: { std::lock_guard<std::mutex> lk(stateMutex); display.an0 = on; break; }
+            case 1: an1 = on; break;
+            case 2: {
+                std::lock_guard<std::mutex> lk(stateMutex);
+                display.an2 = on;
+                pushVideoEventLocked(VideoEventKind::An2, on);
+                break;
+            }
+        }
+        if (iieMode && !iicProfile_ && (low == 0x5A || low == 0x5B)) {
+            // POM2 overlay: $C05A/B doubles as VBL IRQ mask in IIe.
+            // Strictly speaking that's an IIc/IIc+ feature in MAME;
+            // we keep it here so existing software that relies on the
+            // overlay (and `vbl_smoke_test.cpp`) keeps working.
+            //
+            // //c-class is EXCLUDED (`!iicProfile_`): there the VBL mask
+            // is reachable only through the real IOU decode above. MAME
+            // `apple2e.cpp:1808-1876` splits the same way — the
+            // `(m_isiic || m_isace500) && !m_ioudis` branch (:1811) owns
+            // DisVBL/EnVBL (:1823-1830) and `return`s (:1848); the else
+            // branch is commented "IIe does not have IOUDIS" (:1851),
+            // handles only SETDHIRES/CLRDHIRES and falls through to the
+            // plain AN0/AN1/AN2 cases (:1975-1983), which touch `m_an1`
+            // and the gameio pin and NOTHING else. MAME quotes the IIc
+            // Technical Reference in that fall-through (:1867-1870): "if
+            // the IOUDis switch is on, both reading from and writing to
+            // addresses C058 through C05D are reserved".
+            //
+            // IOUDIS resets to TRUE (`resetSoftSwitches`, MAME
+            // `apple2e.cpp:1234`), so without this gate the reset default
+            // on a //c sent a plain `LDA $C05B` (the legacy AN1 idiom)
+            // into the overlay, arming vblIrqMask — and unlike IIe, the
+            // //c-class edge in advanceCycles DOES drive the CPU IRQ
+            // line, so the guest took an unhandled 50/60 Hz IRQ storm
+            // through $FFFE. The mirror case was as bad: `LDA $C05A`
+            // silently ACKed a VBL interrupt the guest had legitimately
+            // armed with IOUDIS clear, costing a //c PAL demo its frame
+            // sync.
+            if (low == 0x5A) {
+                vblIrqMask = false;
+                if (vblIrqPending) {
+                    vblIrqPending = false;
+                    if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+                }
+            } else {
+                vblIrqMask = true;
+            }
+        }
+        // Annunciators don't drive the data bus: a READ returns the floating
+        // bus (video scanner byte), like the paddle/catch-all paths below —
+        // not a hard 0. RNG / copy-protection code samples these expecting
+        // non-deterministic low bits.
+        return isWrite ? 0 : floatingBus();
+    }
+
+    // $C040 utility strobe — MAME `apple2e.cpp:1711-1716` pulses the
+    // game I/O connector's STRB pin (high → low → high) on every access.
+    // No POM2 peripheral consumes the strobe, but the address is UNDRIVEN,
+    // so a read returns the floating bus like every other undriven $C0xx —
+    // matching real hardware (a vapor-lock loop polling $C040 must see the
+    // scanner byte, not a hard 0). Writes don't drive the bus.
+    if (low == 0x40) return isWrite ? 0 : floatingBus();
+
+    // RDVBLMSK ($C041) — //c-class ONLY. MAME `c000_iic_r`
+    // (`apple2e.cpp:2312-2313`): `(m_vblmask ? 0x80 : 0x00) | uFloatingBus7`.
+    // The plain-//e `c000_r` has no case for it and drops out to the
+    // floating bus, which is what POM2 returned on EVERY machine: a //c
+    // program that arms its 50/60 Hz frame interrupt with $C05B and then
+    // reads $C041 back to confirm got bit 7 of the video scanner byte — a
+    // coin flip, and one that reads "disarmed" on any scanner byte below
+    // $80. POM2 already tracks the mask (`vblIrqMask`, set by the real IOU
+    // decode above and already in the snapshot), so answering costs no new
+    // state. $C040/$C042/$C043 (RDXYMSK / RDX0EDGE / RDY0EDGE) are the
+    // other three of MAME's quad. The native IOU intercepts them above;
+    // with an explicit AppleWin HLE substitute they stay on the floating bus.
+    if (low == 0x41 && !isWrite && iicProfile_) {
+        return static_cast<uint8_t>((vblIrqMask ? 0x80 : 0x00) |
+                                    (floatingBus() & 0x7F));
+    }
+
+    // Display soft switches. They don't drive the data bus either: a READ
+    // flips the mode AND returns the floating bus (video scanner byte) —
+    // MAME `apple2.cpp do_io` returns `read_floatingbus()` for $C050-$C057.
+    // DROL's cut-scene depends on this: it vapor-locks with
+    //     LDX #$02 / LDA $C050 / CMP #$80 / BNE / DEX / BPL
+    // (three consecutive scanner reads of $80) — a hard 0 here spins it
+    // forever (the same hang LinApple had; AppleWin fixed it in 1.13.0 by
+    // implementing the floating bus). NB: floatingBus() takes stateMutex,
+    // so it is sampled outside the switch work's lock.
+    //
+    // The byte is sampled BEFORE the switch flips: the scanner fetches in
+    // PHASE 1 and the MPU reads that motherboard byte, while the switch
+    // only changes during the PHASE 0 access of the same cycle, so the
+    // access that flips a mode returns the byte of the mode BEFORE it.
+    // [A] Ryan Schmidt, real unenhanced //e (TomHarte/CLK#1204, 2023): in
+    //     TEXT + HIRES, `LDX $C050` returns a text-page byte, the next
+    //     `LDY $C050` an HGR byte.
+    // [B] Sather, Understanding the Apple IIe p. 7-26: "the MPU will read
+    //     the motherboard video data from PHASE 1 video scanning".
+    // [D] MAME apple2e.cpp / apple2.cpp `read_floatingbus(); // video
+    //     side-effects latch after reading` (PR #14590, 67b96bf9). AppleWin
+    //     Video.cpp reads it after NTSC_SetVideoMode, like POM2 used to.
+    // Audit: docs/audits/parite-apple2video-2026-11-01.md, Rapport 2.
+    if (low >= 0x50 && low <= 0x57) {
+        const uint8_t bus = isWrite ? 0 : floatingBus();
+        {
+            std::lock_guard<std::mutex> lk(stateMutex);
+            switch (low) {
+                case 0x50: display.textMode  = false; break;
+                case 0x51: display.textMode  = true;  break;
+                case 0x52: display.mixedMode = false; break;
+                case 0x53: display.mixedMode = true;  break;
+                case 0x54: display.page2     = false; break;
+                case 0x55: display.page2     = true;  break;
+                case 0x56: display.hiRes     = false; break;
+                case 0x57: display.hiRes     = true;  break;
+            }
+            switch (low) {
+                case 0x50: pushVideoEventLocked(VideoEventKind::TextMode,  false); break;
+                case 0x51: pushVideoEventLocked(VideoEventKind::TextMode,  true);  break;
+                case 0x52: pushVideoEventLocked(VideoEventKind::MixedMode, false); break;
+                case 0x53: pushVideoEventLocked(VideoEventKind::MixedMode, true);  break;
+                case 0x54: pushVideoEventLocked(VideoEventKind::Page2,     false); break;
+                case 0x55: pushVideoEventLocked(VideoEventKind::Page2,     true);  break;
+                case 0x56: pushVideoEventLocked(VideoEventKind::HiRes,      false); break;
+                case 0x57: pushVideoEventLocked(VideoEventKind::HiRes,      true);  break;
+            }
+            if (iieRebootTraceEnabled()) {
+                static const char* dnames[8] = {
+                    "TEXT=off(gfx)", "TEXT=on", "MIXED=off", "MIXED=on",
+                    "PAGE2=off",     "PAGE2=on","HIRES=off(lo)","HIRES=on"
+                };
+                std::ostringstream oss;
+                oss << std::hex << std::uppercase << std::setfill('0');
+                oss << "display $" << std::setw(4) << static_cast<int>(addr)
+                    << " " << dnames[low - 0x50]
+                    << " text=" << display.textMode
+                    << " mixed=" << display.mixedMode
+                    << " page2=" << display.page2
+                    << " hires=" << display.hiRes
+                    << " cyc=" << std::dec << cycleCounter;
+                pom2::log().warn("IIE", oss.str());
+            }
+        }
+        return bus;
+    }
+
+    // (The II/II+ 80COL / Le Chat Mauve FIFO hook for $C00C/$C00D lives
+    // in the `low <= 0x0F` block at the top of this function — that block
+    // returns unconditionally, so no $C00x can reach this point.)
+
+    // AN3 annunciator ($C05E off / $C05F on). Used as the FIFO clock by
+    // Le Chat Mauve — every $C05E→$C05F rising edge pushes the current
+    // 80COL bit into the card's mode register.
+    //
+    // On a IIe the same two addresses are DHIRESON ($C05E) / DHIRESOFF
+    // ($C05F): they enable / disable double hi-res mode. The polarity is
+    // OPPOSITE the AN3 line (AN3 high ↔ DHGR off), so we track DHGR as a
+    // separate bit instead of inverting at the read site. The Le Chat
+    // Mauve hook below still fires on every access so its FIFO continues
+    // to clock on a IIe with the card plugged.
+    if (low == 0x5E || low == 0x5F) {
+        {
+            std::lock_guard<std::mutex> lk(stateMutex);
+            display.an3 = (low == 0x5F);
+            if (iieMode) display.dhgr = (low == 0x5E);
+            pushVideoEventLocked(VideoEventKind::An3, low == 0x5F);
+            if (iieMode) pushVideoEventLocked(VideoEventKind::Dhgr, low == 0x5E);
+        }
+        slots.broadcastVideoSwitch(addr);
+        return isWrite ? 0 : floatingBus();
+    }
+
+    // Speaker click — toggles on every access ($C030-$C03F all alias).
+    // The audio path uses cycleCounter + the CPU's current-instruction
+    // cycle progress for sub-instruction timestamps; without this every
+    // toggle inside a frame collapses to one cycle and the audio aliases.
+    if (low >= 0x30 && low <= 0x3F) {
+        if (isWrite && (low & 0xFE) == 0x34) slots.broadcastVideoSwitchWrite(addr, writeVal);  // VidHD $C034/5 (AppleWin IOWrite_C03x)
+        speakerToggles.fetch_add(1, std::memory_order_relaxed);
+        if (speaker) {
+            const uint64_t now = cycleCounter +
+                (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+            speaker->recordToggle(now);
+        }
+        // The speaker latch doesn't drive the bus — a READ clicks AND
+        // returns the floating bus (same rule as $C040/$C05x).
+        return isWrite ? 0 : floatingBus();
+    }
+
+    // Apple //c ROMBANK ($C020-$C02F): on every //c-class machine the
+    // $C02x range toggles `iicRomBank` (matches MAME `apple2e.cpp:
+    // 1907-1923` `if (m_isiic) m_romswitch = !m_romswitch`). Gating on
+    // `isIIcClass` (not `iicHasAltBank`) keeps 16 KB rev-255 //c users
+    // out of the cassette-toggle path — the //c has no cassette port.
+    // On 16 KB dumps the alt-firmware read paths stay inert because
+    // `iicHasAltBank` remains false, so the toggle is cosmetic but
+    // MAME-faithful. The Apple IIc Tech Ref 2e lists the softswitch
+    // at "$c02x" range, not just $C028. Both reads and writes trigger.
+    if (low >= 0x20 && low <= 0x2F) {
+        if (isWrite && (low == 0x22 || low == 0x29)) slots.broadcastVideoSwitchWrite(addr, writeVal);  // VidHD (AppleWin IOWrite_C02x)
+        // //c-class: $C02x toggles ROMBANK — the profile flips its alt-
+        // firmware bank and resets MIG state on the →bank-0 edge (MAME
+        // `apple2e.cpp:1907-1923`). On II/II+/IIe it's the cassette
+        // OUTPUT toggle: the Monitor WRITE routine ($FECD) loops on
+        // BIT $C020 to drive the head with 770 Hz / 1 kHz / 2 kHz square
+        // waves encoding sync, ones and zeroes.
+        // $C02x doesn't drive the data bus on any machine (cassette OUT and
+        // ROMBANK are toggles, not registers): a READ returns the floating
+        // bus like $C040/$C050-$C05F above, not a hard 0 — RNG /
+        // copy-protection entropy loops sample this range.
+        if (iicProfile_ && iicProfile_->romBankToggle())
+            return isWrite ? 0 : floatingBus();
+        if (cassette) cassette->toggleOutput();
+        return isWrite ? 0 : floatingBus();
+    }
+
+    // Cassette INPUT ($C060 only): bit-7 = sign of the audio comparator.
+    // The Monitor's READ routine ($FEFD) tight-loops on $C060 measuring
+    // sign-flip durations to recover bits from the tape. Note: $C061-$C067
+    // are NOT cassette aliases on the II/II+ — they're the paddle buttons
+    // and paddle inputs, handled below.
+    // Real hardware ORs the floating-bus byte into the low 7 bits here too
+    // — MAME `apple2e.cpp:2177-2185` (`case 0x60: case 0x68:`) returns
+    // `(m_cassette->input() > 0.0 ? 0 : 0x80) | uFloatingBus7`, and with no
+    // cassette device fitted it returns `uFloatingBus7` alone. POM2 returned
+    // a bare comparator byte with bits 0-6 clamped to 0, so the $C060 half
+    // of the mirrored pair disagreed with its own $C068 twin below.
+    // $C060-$C06F are read-only (MAME apple2.cpp:657 `.nopw()`, apple2e.cpp:2039):
+    // a store ran readTapeInput(), which starts an armed PLAY (hunt 2026-11-01).
+    if (isWrite && low >= 0x60 && low <= 0x6F) return 0;
+    if (low == 0x60) {
+        // //c-class: no cassette port — $C060 is the keyboard's 80/40 switch,
+        // bit 7 SET in the 40 position.
+        // [B] Apple IIc Technical Reference, 1st ed. Table 4-1: "$C060
+        //     40-column switch status on bit 7; 1 = 40-column display";
+        //     2nd ed. Fig. 11-52: input I0 of the 74LS251 driving D7.
+        // [B] 2nd ed.: "The Apple IIc Plus has no 80/40-column switch", and
+        //     $C060 is "reserved" there — so bit 7 reads 0 on a //c Plus
+        //     whatever the setting says ([D] MAME @ mame0287, same; [F] the
+        //     level of that input with nothing on it. Settled by: PEEK(49248)
+        //     on a real //c Plus).
+        // It must never reach the deck: a read used to start an armed PLAY.
+        const bool forty = iic40ColSwitch_ && iicProfile_ && !iicProfile_->isIIcPlus();
+        const uint8_t bit7 = iicProfile_ ? (forty ? uint8_t{0x80} : uint8_t{0})
+            : cassette ? static_cast<uint8_t>(cassette->readTapeInput() & 0x80)
+                       : uint8_t{0x80};   // nothing connected reads high
+        return static_cast<uint8_t>(bit7 | (floatingBus() & 0x7F));
+    }
+
+    // Cassette input + push-buttons + paddle inputs at $C060-$C067,
+    // mirrored across $C068-$C06F (MAME `apple2.cpp:554` `.mirror(0x8)`
+    // and `apple2e.cpp:1889/1903/1909/1915/1919/1923/1927`) — $C068
+    // reads the cassette comparator just like $C060. Real hardware ORs
+    // the floating-bus byte into the low 7 bits (Beagle Bros and
+    // demoscene RNGs depend on this). The IIgs STATEREG at $C068 stays
+    // unexposed — POM2 is II/II+/IIe-class only.
+    if (low >= 0x61 && low <= 0x6F) {
+        const uint8_t mirrored = static_cast<uint8_t>(0x60 | (low & 0x07));
+        const uint8_t bit7 = gamePortReadBit7(mirrored);
+        return static_cast<uint8_t>(bit7 | (floatingBus() & 0x7F));
+    }
+
+    // Paddle-trigger reset ($C070-$C07F mirrored). MAME `apple2.cpp:555`
+    // `.mirror(0xf)`; the read returns floating bus (used as a poor
+    // RNG seed by many games). The 558's one-shots are not retriggered
+    // while they run — re-strobing during a count leaves that axis alone
+    // (PaddleInputs::rearm, MAME apple2e.cpp:2053-2056).
+    //
+    // RamWorks III (IIe aux-slot card) sniffs writes to $C071/3/5/7
+    // on the same address window. MAME `a2eramworks3.cpp:108-115`
+    // predicate `(offset & 0x9) == 1` over the low nibble selects
+    // those four addresses; the data byte's low 7 bits (`data & 0x7F`,
+    // line 113) is the new bank index. Bank switch and paddle reset
+    // both fire on the same access — they share the bus, neither
+    // shadows the other.
+    if (low >= 0x70 && low <= 0x7F) {
+        // An accelerator (TransWarp) lives entirely in this window: $C070
+        // is its joystick-slowdown trigger, $C072 releases its ROM shadow
+        // and $C074 is its speed register. $C074 is the one address it
+        // takes OFF the bus — MAME `transwarp.cpp dma_w` returns there —
+        // so a consumed access skips the paddle rearm and everything below
+        // it. Null on any machine without one.
+        if (SlotPeripheral* snoop = slots.busSnooper()) {
+            if (snoop->busSnoop(addr, isWrite, isWrite ? writeVal : 0))
+                return isWrite ? 0 : floatingBus();
+        }
+        paddles_.rearm(cycleCounter, [this](uint64_t l) { return stockSinceCycle(l); });
+        // //c-class: ANY $C070-$C07F access acknowledges the VBL
+        // interrupt — MAME `apple2e.cpp` c000_iic_r/w case 0x70-0x7F:
+        // `if (m_isiic ...) lower_irq(IRQ_VBL);` (~:2014-2017). Pairs
+        // with the latched $C019 VBLINT read above: poll $C019, then
+        // strobe $C070 to re-arm for the next frame (Tech Note #9).
+        // NOT gated on vblIrqPending: MAME's lower_irq is unconditional,
+        // and gating it meant any state where the line was asserted while
+        // the latch read false (a restored snapshot, a reset race) could
+        // never be acknowledged — the //c would spin in its IRQ vector.
+        if (iicProfile_) {
+            vblIrqPending = false;
+            if (cpu) cpu->setIrqLine(M6502::IRQ_SRC_VBL, false);
+        }
+        if (isWrite && iieMode && ramWorksBanks_ > 1
+            && (low & 0x09) == 0x01) {
+            ramWorksSwapToBank(static_cast<uint8_t>(writeVal & 0x7F));
+        }
+        // IOUDIS SET/CLR — MAME `apple2e.cpp:2569-2587`. Only IIc-class
+        // honours the write; IIe falls through (the softswitch exists
+        // but is read-only). $C07E = SET (ioudis=true), $C07F = CLR
+        // (ioudis=false). $C078/$C079 are //c mouse firmware mirrors
+        // of the same SET/CLR pair. The paddle-latch side-effect above
+        // still fires; the IOUDIS toggle is a parallel decode.
+        // A Premium SoftCard in the aux slot decodes $C07E (PremiumSoftCard.h).
+        if (isWrite && low == 0x7E && auxPort_ && iieMode && !iicProfile_)
+            auxPort_->c07eWrite(writeVal);
+        if (isWrite && iicProfile_ && low >= 0x78) {
+            // MAME apple2e.cpp: on //c EVERY even $C078/A/C/E is SETIOUDIS
+            // and every odd $C079/B/D/F is CLRIOUDIS (not just $C078/E).
+            ioudis = !(low & 1);
+        }
+        // RDIOUDIS. MAME puts this in `c000_iic_r` ONLY (`apple2e.cpp:
+        // 2336-2338`, `case 0x78: case 0x7a: case 0x7c: case 0x7e:` →
+        // `(m_ioudis ? 0x80 : 0x00) | uFloatingBus7`); the plain-//e
+        // `c000_r` switch has no $7E case at all and falls out to
+        // `return uFloatingBus;`. Two divergences fixed here: the //e read
+        // must NOT answer (there is no IOU on a //e — the switch is
+        // write-inert AND read-inert there), and the //c answer carries the
+        // floating bus in bits 0-6 like every other IOU status read.
+        // The read decodes by parity across $C078-$C07F exactly as the
+        // write above does. (The ODD half is RDDHIRES upstream — bit 7 =
+        // !dhires — which POM2 does not answer yet.)
+        if (!isWrite && iicProfile_ && low >= 0x78 && (low & 1) == 0) {
+            return static_cast<uint8_t>((ioudis ? 0x80 : 0x00) |
+                                        (floatingBus() & 0x7F));
+        }
+        // RDDHIRES — the ODD half of the same //c-only decode. MAME
+        // `c000_iic_r` (`apple2e.cpp:2341-2343`, `case 0x79: case 0x7b:
+        // case 0x7d: case 0x7f:`) returns
+        // `(m_video->get_dhires() ? 0x00 : 0x80) | uFloatingBus7` — bit 7
+        // is the INVERSE of DHGR, because the bit the IOU latches is AN3
+        // and AN3 high means double hi-res OFF. POM2 answered with the raw
+        // floating bus on every machine, so `LDA $C07F / BMI notDoubleHires`
+        // decided on bit 7 of the video scanner byte: with the parked
+        // scanner used by the probe it read $6D — "DHGR is on" — while DHGR
+        // was in fact off, and under a live scanner it flips frame to frame.
+        // A //e must keep falling through (no IOU: `c000_r` has no case).
+        if (!isWrite && iicProfile_ && low >= 0x79 && (low & 1) == 1) {
+            bool dh;
+            {
+                std::lock_guard<std::mutex> lk(stateMutex);
+                dh = display.dhgr;
+            }
+            return static_cast<uint8_t>((dh ? 0x00 : 0x80) |
+                                        (floatingBus() & 0x7F));
+        }
+        return isWrite ? 0 : floatingBus();
+    }
+
+    // Unknown soft switch — Apple II hardware floats the bus. For reads,
+    // return whatever the video DMA is currently fetching (matches real
+    // hardware so software that uses $C0xx as a poor RNG, or that BMI/BPL
+    // on a status read's low 7 bits, behaves correctly). Writes don't
+    // care about the return value.
+    return isWrite ? 0 : floatingBus();
+}
+
+void Memory::iieHandleSoftSwitch(uint16_t addr)
+{
+    // $C000-$C00F: 80STORE / RAMRD / RAMWRT / INTCXROM / ALTZP / SLOTC3ROM
+    // / 80COL / ALTCHAR. Even byte = OFF (clear bit), odd byte = ON.
+    const uint8_t low = static_cast<uint8_t>(addr & 0x0F);
+    const bool   on  = (low & 1) != 0;
+    uint16_t flag = 0;
+    switch (low >> 1) {
+        case 0: flag = MF_80STORE;   break;
+        case 1: flag = MF_RAMRD;     break;
+        case 2: flag = MF_RAMWRT;    break;
+        case 3: flag = MF_INTCXROM;  break;
+        case 4: flag = MF_ALTZP;     break;
+        case 5: flag = MF_SLOTC3ROM; break;
+        case 6: flag = MF_80COL;     break;
+        case 7: flag = MF_ALTCHAR;   break;
+    }
+    if (on) iieMemMode |= flag;
+    else    iieMemMode &= static_cast<uint16_t>(~flag);
+
+    if (bankTrace_ && flag == MF_ALTZP) {
+        std::fprintf(stderr, "[ALTZP] %s via $%04X  PC=$%04X cyc=%llu\n",
+                     on ? "ON " : "OFF", static_cast<unsigned>(addr),
+                     cpu ? static_cast<unsigned>(cpu->getProgramCounter()) : 0u,
+                     static_cast<unsigned long long>(cycleCounter));
+    }
+
+    if (iieRebootTraceEnabled()) {
+        static const char* names[8] = {
+            "80STORE", "RAMRD", "RAMWRT", "INTCXROM",
+            "ALTZP",   "SLOTC3ROM", "80COL",  "ALTCHAR"
+        };
+        std::ostringstream oss;
+        oss << std::hex << std::uppercase << std::setfill('0');
+        oss << "IIe paging $" << std::setw(4) << static_cast<int>(addr)
+            << " " << names[low >> 1] << "=" << (on ? "ON" : "OFF")
+            << " mode=" << std::setw(4) << static_cast<int>(iieMemMode)
+            << " cyc=" << std::dec << cycleCounter;
+        pom2::log().warn("IIE", oss.str());
+    }
+
+    // Mirror display-relevant bits into DisplayState so Apple2Display can
+    // pick them up via its single getDisplayState() snapshot per frame.
+    if (flag == MF_80STORE || flag == MF_80COL || flag == MF_ALTCHAR) {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        display.eightyStore = (iieMemMode & MF_80STORE) != 0;
+        display.eightyCol   = (iieMemMode & MF_80COL)   != 0;
+        display.altChar     = (iieMemMode & MF_ALTCHAR) != 0;
+        if (flag == MF_80COL)
+            pushVideoEventLocked(VideoEventKind::EightyCol, on);
+        if (flag == MF_80STORE)
+            pushVideoEventLocked(VideoEventKind::EightyStore, on);
+        if (flag == MF_ALTCHAR)
+            pushVideoEventLocked(VideoEventKind::AltChar, on);
+    }
+    // Le Chat Mauve / Video-7 RGB FIFO clocking — for the 80COL pair
+    // ($C00C/D) we need to forward the data-bit edge to plugged video
+    // cards even in IIe mode. AN3 ($C05E/F) takes a separate path
+    // outside this handler. Without this broadcast, software that uses
+    // 80COL toggles on a IIe to drive the Le Chat Mauve mode FIFO
+    // would silently stop clocking.
+    if (flag == MF_80COL) {
+        slots.broadcastVideoSwitch(addr);
+    }
+}
+
+bool Memory::iieReadStatus(uint16_t addr, uint8_t& out) const
+{
+    const uint8_t low = static_cast<uint8_t>(addr & 0xFF);
+    DisplayState ds;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        ds = display;
+    }
+    // MAME `apple2e.cpp:1842-1871` `c000_r`: every status read in
+    // $C011-$C01F returns `(bit ? 0x80 : 0x00) | m_transchar`. The low
+    // 7 bits carry the last latched keyboard character — software like
+    // Beagle Bros' Pro-Byter, Print Shop, and the IIe Self-Test rely on
+    // this to read "key + status flag" in one byte. POM2's
+    // `lastKey` is the same latch as MAME's m_transchar.
+    uint8_t transchar = 0;
+    {
+        transchar = keyboard_.lastKey7();
+    }
+    auto bit = [transchar](bool on) -> uint8_t {
+        return static_cast<uint8_t>((on ? 0x80 : 0x00) | transchar);
+    };
+    switch (low) {
+        case 0x13: out = bit((iieMemMode & MF_RAMRD)     != 0); return true; // RDRAMRD
+        case 0x14: out = bit((iieMemMode & MF_RAMWRT)    != 0); return true; // RDRAMWRT
+        case 0x15: out = bit((iieMemMode & MF_INTCXROM)  != 0); return true; // RDCXROM
+        case 0x16: out = bit((iieMemMode & MF_ALTZP)     != 0); return true; // RDALTZP
+        case 0x17: out = bit((iieMemMode & MF_SLOTC3ROM) != 0); return true; // RDC3ROM
+        case 0x18: out = bit((iieMemMode & MF_80STORE)   != 0); return true; // RD80STORE
+        case 0x1A: out = bit(ds.textMode);                      return true; // RDTEXT
+        case 0x1B: out = bit(ds.mixedMode);                     return true; // RDMIXED
+        case 0x1C: out = bit(ds.page2);                         return true; // RDPAGE2
+        case 0x1D: out = bit(ds.hiRes);                         return true; // RDHIRES
+        case 0x1E: out = bit((iieMemMode & MF_ALTCHAR)   != 0); return true; // RDALTCHAR
+        case 0x1F: out = bit((iieMemMode & MF_80COL)     != 0); return true; // RD80COL
+    }
+    return false;  // not a status read ($C019 VBL etc.) — caller continues
+}
+
+uint8_t Memory::iieMemRead(uint16_t addr)
+{
+    // Routing rules and the mutex rationale both live on iieReadFromAux()
+    // in the header — it is the single definition of the aux/main decision,
+    // shared with memRead()'s inline fast path.
+    const bool fromAux = iieReadFromAux(addr);
+    if (fromAux && auxPort_) {                     // the aux-slot card's turn
+        uint8_t s;
+        if (addr == 0x2000 && (iieMemMode & MF_RAMRD) && auxPort_->answersStatus(s))
+            return s;
+        if (auxFlip_) return auxPhysical(static_cast<uint16_t>(addr ^ 0x8000));
+    }
+    const uint8_t v = fromAux ? aux[addr] : mem[addr];
+    if (bankTrace_) checkBankRead(addr, fromAux, v);
+    return v;
+}
+
+void Memory::iieMemWrite(uint16_t addr, uint8_t value)
+{
+    const bool toAux = iieWriteToAux(addr);
+    if (toAux && auxFlip_) auxPhysical(static_cast<uint16_t>(addr ^ 0x8000)) = value;
+    else if (toAux) aux[addr] = value;
+    else       mem[addr] = value;
+    if (bankTrace_) {
+        noteBankWrite(addr, toAux, value);
+        // Trace writes to the $0080-$00AB zero-page trampoline region (the
+        // routine the Nox freeze jumps to) — shows which bank (main/aux) the
+        // game copies it into vs the ALTZP state when later executed.
+        if (addr >= 0x0080 && addr <= 0x00AB)
+            std::fprintf(stderr,
+                "[ZP] W $%04X=%02X -> %s (ALTZP=%d) cyc=%llu\n",
+                addr, value, toAux ? "AUX" : "MAIN",
+                (iieMemMode & MF_ALTZP) ? 1 : 0,
+                static_cast<unsigned long long>(cycleCounter));
+    }
+}
+
+uint64_t Memory::accessCycle() const
+{
+    return cycleCounter +
+        (cpu ? static_cast<uint64_t>(cpu->getCurrentInstructionCycles()) : 0);
+}
+
+uint8_t Memory::floatingBus() const
+{
+    // CPU read path: the data fetch happens at the in-flight instruction's
+    // access cycle (last cycle for LDA/CMP/BIT $C0xx), so sample the scanner
+    // there — consistent with pushVideoEventLocked's timestamp.
+    return floatingBus(videoAccessCycle());
+}
+
+uint8_t Memory::floatingBus(uint64_t absCycle) const
+{
+    // MAME `apple2video.cpp:124-201 scanner_address`, vs Sather's maps.
+    // Input: h_clock [0..64] (active video from 25), v_clock [0..261]
+    // (active video from 0). Output: 16-bit DRAM address the video
+    // scanner is currently fetching. Used by reads of unimplemented
+    // soft switches ($C040, $C050-$C05F mirrors during VBL, $C019 in
+    // II/II+, etc.) which let the floating bus byte through. Software
+    // using this as an RNG seed (Beagle Bros copy protection, some
+    // demos) needs bit-exact replication of the scanner counter.
+    //
+    // The earlier POM2 implementation built the address from a
+    // text/HGR row-interleave formula; that gave the same byte during
+    // active video but diverged during HBL (where MAME's `addend0=0x0D
+    // + h-carries` produces the "$1000 phantom row" effect) and on
+    // page-2 HGR (m_hgr2 base differs).
+    // Scanner geometry follows the active video standard: 262 lines NTSC,
+    // 312 lines PAL (same 65-cycle line). A vapor-locking demo polls this
+    // until the beam reaches its marker, so under PAL the scanner MUST sweep
+    // a 312-line / 20280-cycle frame — a hardcoded 262 would make the lock
+    // recur every 17030 cycles instead, drifting the per-frame sync of French
+    // Touch / DIX. (cyclesPerScanline=65 both; only the line count differs.)
+    constexpr uint64_t kCyclesPerLine  = 65;
+    const uint64_t kLinesPerFrame =
+        static_cast<uint64_t>(pom2VideoTiming(videoStandard_.load()).scanlinesPerFrame);
+    const uint64_t kCyclesPerFrame = kCyclesPerLine * kLinesPerFrame;
+
+    const uint64_t cyc     = absCycle % kCyclesPerFrame;
+    const int      v_clock = static_cast<int>(cyc / kCyclesPerLine);  // 0..311
+    const int      h_clock = static_cast<int>(cyc % kCyclesPerLine);  // 0..64
+
+    DisplayState ds;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex);
+        ds = display;
+    }
+    int Hires = (ds.hiRes && !ds.textMode) ? 1 : 0;
+    const int Mixed = ds.mixedMode ? 1 : 0;
+    // The video scanner honours PAGE2 only when 80STORE is off. With
+    // 80STORE on, PAGE2 redirects aux-bank selection rather than the
+    // displayed page, so the scanner — and therefore the floating bus —
+    // always reads page 1. MAME apple2video.cpp use_page_2() = m_page2 &&
+    // !m_80store. Uses iieMemMode (same source as the iieMemRead routing)
+    // so II/II+ (no 80STORE bit) are unaffected.
+    const int Page2 = (ds.page2 && !(iieMemMode & MF_80STORE)) ? 1 : 0;
+
+    // MAME `apple2video.cpp:140`: two 0-states ([0, 0..63]).
+    const int h_state = h_clock - (h_clock > 0);
+    const int h_0 = (h_state >> 0) & 1;
+    const int h_1 = (h_state >> 1) & 1;
+    const int h_2 = (h_state >> 2) & 1;
+    const int h_3 = (h_state >> 3) & 1;
+    const int h_4 = (h_state >> 4) & 1;
+    const int h_5 = (h_state >> 5) & 1;
+
+    // MAME `apple2video.cpp:149`: V[543210CBA] = 100000000 = 256+v.
+    // The overflow compensation uses screen().height() in MAME; POM2's
+    // frame is 262 lines so we subtract the screen height when v wraps.
+    int v_state = 256 + v_clock;
+    if (v_clock >= 256) v_state -= static_cast<int>(kLinesPerFrame);
+    const int v_A = (v_state >> 0) & 1;
+    const int v_B = (v_state >> 1) & 1;
+    const int v_C = (v_state >> 2) & 1;
+    const int v_0 = (v_state >> 3) & 1;
+    const int v_1 = (v_state >> 4) & 1;
+    const int v_2 = (v_state >> 5) & 1;
+    const int v_3 = (v_state >> 6) & 1;
+    const int v_4 = (v_state >> 7) & 1;
+
+    // Mixed-mode bottom 4 text rows: HGR off when Mixed && v_4 && v_2.
+    if (Hires && Mixed && v_4 && v_2) Hires = 0;
+
+    const int addend0 = 0x0D;
+    const int addend1 = (h_5 << 2) | (h_4 << 1) | (h_3 << 0);
+    const int addend2 = (v_4 << 3) | (v_3 << 2) | (v_4 << 1) | (v_3 << 0);
+    const int sum     = (addend0 + addend1 + addend2) & 0x0F;
+
+    uint16_t address = 0;
+    address |= static_cast<uint16_t>(h_0 << 0);
+    address |= static_cast<uint16_t>(h_1 << 1);
+    address |= static_cast<uint16_t>(h_2 << 2);
+    address |= static_cast<uint16_t>(sum << 3);
+    address |= static_cast<uint16_t>(v_0 << 7);
+    address |= static_cast<uint16_t>(v_1 << 8);
+    address |= static_cast<uint16_t>(v_2 << 9);
+    if (Hires) {
+        address |= static_cast<uint16_t>(v_A << 10);
+        address |= static_cast<uint16_t>(v_B << 11);
+        address |= static_cast<uint16_t>(v_C << 12);
+        // HGR page base: $2000 (page 1) or $4000 (page 2). MAME's
+        // `m_hgr2` is the page-2 base for IIe; on II/II+ it's the
+        // same $4000.
+        address |= static_cast<uint16_t>(Page2 ? 0x4000 : 0x2000);
+    } else {
+        // Text base. MAME also adds 0x1000 during HBL on II/II+ ("Apple
+        // II HBL phantom row"); on IIe that bit is suppressed. POM2 is
+        // a II/II+/IIe emulator — gate on !iieMode to match the model.
+        address |= static_cast<uint16_t>(Page2 ? 0x0800 : 0x0400);
+        if (!iieMode && h_clock < 25) {
+            address |= 0x1000;
+        }
+    }
+    return mem[address];
+}
+
+std::string Memory::recentIoReadSummary() const
+{
+    const uint32_t n = (ioReadRingPos_ < kIoReadRing) ? ioReadRingPos_ : kIoReadRing;
+    if (n == 0) return "(none captured)";
+    uint16_t addrs[kIoReadRing];
+    int      cnts [kIoReadRing];
+    int t = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint16_t a = ioReadRing_[(ioReadRingPos_ - 1 - i) % kIoReadRing];
+        int j = 0;
+        for (; j < t; ++j) if (addrs[j] == a) { ++cnts[j]; break; }
+        if (j == t) { addrs[t] = a; cnts[t] = 1; ++t; }
+    }
+    // Sort distinct addresses by descending count (t is tiny).
+    for (int i = 0; i < t; ++i)
+        for (int j = i + 1; j < t; ++j)
+            if (cnts[j] > cnts[i]) {
+                int ct = cnts[i]; cnts[i] = cnts[j]; cnts[j] = ct;
+                uint16_t at = addrs[i]; addrs[i] = addrs[j]; addrs[j] = at;
+            }
+    auto label = [](uint16_t a) -> const char* {
+        switch (a) {
+            case 0xC000: return "KBD";
+            case 0xC010: return "KBDSTRB";
+            case 0xC011: case 0xC012: return "LCSTATE";
+            case 0xC019: return "RDVBL";
+            case 0xC01F: return "RD80COL";
+            case 0xC061: return "PB0/OpenApple";
+            case 0xC062: return "PB1/SolidApple";
+            case 0xC064: case 0xC065: return "PADDLE";
+            default: break;
+        }
+        if (a >= 0xC0E0 && a <= 0xC0EF) return "DISKII/IWM";
+        if (a >= 0xC0D0 && a <= 0xC0DF) return "HDV(slot5)";
+        return "";
+    };
+    std::string out;
+    const int show = (t < 8) ? t : 8;
+    char buf[24];
+    for (int i = 0; i < show; ++i) {
+        if (i) out += "  ";
+        std::snprintf(buf, sizeof(buf), "$%04X", addrs[i]);
+        out += buf;
+        const char* lab = label(addrs[i]);
+        if (*lab) { out += '('; out += lab; out += ')'; }
+        std::snprintf(buf, sizeof(buf), "x%d", cnts[i]);
+        out += buf;
+    }
+    return out;
+}
+
+// The slow half of the bus read. memRead() in the header decides the two hot
+// cases inline (main RAM below $C000, ROM at $D000+) and calls this for
+// everything else — and for EVERYTHING while a read watchpoint is armed
+// (`readDivert_`), which is the only time the test below can succeed. The
+// report happens after the read so the hit carries the value the bus saw.
+uint8_t Memory::memReadSlow(uint16_t addr)
+{
+    const bool watched = readDivert_ && readWatch_[addr] && watchSink_;
+    const auto bank = watched ? debugBank(addr) : pom2::DebugBank{};
+    const uint8_t v = memReadSlowBody(addr);
+    if (watched) watchSink_->noteBankAccess(addr, v, false, bank);
+    return v;
+}
+// memReadSlow's body, unchanged from before the fast-path split: any path
+// that reaches it behaves exactly as it always did.
+inline uint8_t Memory::memReadSlowBody(uint16_t addr)
+{
+    // Flat test RAM, or a card CPU's own bus. → Memory.h ForeignBus
+    if (flatBus_) return foreignBus_ ? foreignBus_->read(addr) : mem[addr];
+
+    // Fast path: RAM below $C000. In IIe mode the read may route to aux RAM
+    // (RAMRD / ALTZP / 80STORE+PAGE2). In II+ mode, plain main bank.
+    if (addr < 0xC000) {
+        return iieMode ? iieMemRead(addr) : mem[addr];
+    }
+    if (addr >= 0xD000) {
+        uint8_t v = languageCardRead(addr);
+        // Dallas DS1216E "SmartWatch" on Apple II / II+ ONLY. AppleWin
+        // parity (Memory.cpp:IO_F8xx — "NSC for Apple II/II+, GH#827"):
+        // II/II+ have no internal slot-3/8 ROM, so the chip sits under
+        // the Monitor ROM at $F800 instead. //e / //c-class hook the
+        // NSC inside the INTCXROM/SLOTC3ROM branches at $C300 + $C800
+        // (where ProDOS 2.4 + GS-OS actually scan). Gate on !iieMode +
+        // ROM-mapped + INH released. NOT AppleWin's `!SW_HIGHRAM &&
+        // !SW_WRITERAM`: MF_WRITERAM is the LC's write-enable, set at
+        // reset, so AppleWin's clock is off after every reset until an even
+        // $C08x access; the ROM socket's chip-select does not depend on the
+        // LC's write-enable, and POM2 deliberately does not follow it.
+        if (noSlotClock_ && !iieMode && addr >= 0xF800 && !lcReadRam && !inhRead_) {
+            v = noSlotClock_->interceptRead(addr, v);
+        }
+        return v;
+    }
+
+    // Diagnostic: record $C000-$C0FF reads (soft switches + slot registers)
+    // so the hang detector can show which register a frozen loop polls.
+    if (addr <= 0xC0FF) noteIoRead(addr);
+
+    // //c-class : tout acces $C0xx etranger au device-select du slot 5
+    // referme la fenetre $C800 de la carte percee (voir iicCardWindow_ au
+    // perçage). Le firmware interne tape les soft-switches en permanence,
+    // le stub du SmartPort jamais — c'est ce qui les departage.
+    if (iicCardWindow_ && addr <= 0xC0FF &&
+        (addr < 0xC0D0 || addr > 0xC0DF))
+        iicCardWindow_ = false;
+
+    // $C000-$C07F — built-in I/O page (keyboard, speaker, cassette,
+    // display soft switches, paddles).
+    if (addr <= 0xC0FF) if (auto* a = activeAccel()) {   // Zip Chip (ZipChip.h)
+        uint8_t v; if (accelIoRead(*a, addr, v)) return v;
+    }
+    if (addr <= 0xC07F) return softSwitchAccess(addr, /*isWrite=*/false, 0);
+
+    // $C080-$C0FF — slot device-select (16 bytes per slot, slot N at
+    // $C080+N*16; slot 0 = language card, slots 1-7 = expansion cards).
+    if (addr <= 0xC08F) return languageCardSwitchAccess(addr, /*isWrite=*/false);
+    // //c (32 KB ROM rev 0/3/4) and //c+ on-board IWM: $C0E0-$C0EF.
+    // MAME wires `A2BUS_IWM` at sl6 for both `apple2c_iwm` (apple2c0,
+    // UniDisk 3.5) and `apple2c_mem` (apple2c3/c4, Memory Expansion)
+    // — see `apple2e.cpp:5249-5254` + `5263-5272`. The original 16 KB
+    // //c (rev 255) is the **only** //c-class that uses A2BUS_DISKIING
+    // (`apple2e.cpp:5212`); ROM 0/3/4 ditched the LSS for the IWM
+    // when Apple unified the //c motherboard around the IWM chip in
+    // 1985-86. The slot-6 DiskIICard still observes the access so its
+    // motor sound / disk-turbo / head-position tracking stay current
+    // — but the **value returned to the CPU is the IWM's**. The IWM's
+    // sync() walks DiskImage flux via DiskIICard's pushed-in
+    // setFloppy() so both controllers see the same flux stream; only
+    // the bit-cell window walker differs (LSS in DiskIICard vs
+    // MAME-faithful IWM state machine here).
+    //
+    // `iicHasAltBank` is the right gate because POM2 sets it precisely
+    // for 32 KB //c-class dumps (apple2c0/c3/c4 AND apple2cp) —
+    // matching MAME's rom-→-machine-config mapping at
+    // `apple2e.cpp:6281-6302`.
+    if (addr >= 0xC0E0 && addr <= 0xC0EF && iicProfile_) {
+        uint8_t v;
+        // At the access's own bus cycle, as the Disk II takes it: the
+        // instruction start sampled 3-6 cycles (1.5-3 Sony cells) early.
+        if (iicProfile_->ioReadIWM(addr, accessCycle(), v)) {
+            // Not the Disk II's while the hub routes to a 3.5" (= ioWriteIWM).
+            if (!iicProfile_->servesExternalSmartPort() && !iicProfile_->iwmRoutedTo35())
+                (void)slots.deviceSelectRead(addr);
+            return v;
+        }
+        // Shadow mode (or no IWM/media): IWM state advanced, but the
+        // byte returned to the CPU comes from the slot-6 DiskIICard LSS.
+    }
+    // Le Chat Mauve Eve switches, $C0B0-$C0BF — slot 3's window, forwarded
+    // to the card only while slot 3 is free (Memory.h, chatMauveBlockedBySlot3).
+    if (addr >= 0xC0B0 && addr <= 0xC0BF && !chatMauveBlockedBySlot3())
+        slots.broadcastVideoSwitch(addr);
+    // //c-class: the two 6551 ACIAs ($C098-$C09F printer port, $C0A8-$C0AF
+    // modem port) are soldered to the motherboard, not cards — MAME's
+    // apple2c config instantiates both unconditionally. When the slot-1/2
+    // SSC that models them is missing (a hand-built bench, a profile whose
+    // card failed to plug) the read must still come from an ACIA, never the
+    // floating bus: the //c ROM polls both status registers on EVERY IRQ,
+    // and a video byte with bit 7 set reads as a serial interrupt, so the
+    // ROM swallows it and the mouse VBL never reaches the program. An idle
+    // 6551 with nothing attached answers like MAME's device_reset: status
+    // TDRE|DCD|DSR ($70, no IRQ), every other register $00. A0-A1 decode
+    // only, so $C0nC-$C0nF mirror $C0n8-$C0nB.
+    if (iicProfile_ && (addr & 0x08) &&
+        ((addr & 0xFFF0) == 0xC090 || (addr & 0xFFF0) == 0xC0A0) &&
+        !slots.isPlugged((addr >> 4) & 0x07))
+        return (addr & 0x03) == 0x01 ? uint8_t{0x70} : uint8_t{0x00};
+    if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
+
+    // $C100-$CFFF — slot ROM dispatch.
+    //
+    // II+: $C100-$C7FF goes to slot bus, $C800-$CFFF is the shared expansion
+    // window owned by the most-recently-selected slot.
+    //
+    // IIe: INTCXROM=on swallows the entire $C100-$CFFF range into the
+    // motherboard internal I/O ROM. Even when INTCXROM=off, $C300-$C3FF
+    // is owned by the internal ROM unless SLOTC3ROM=on (so PR#3 reads
+    // the IIe 80-col firmware out of the box).
+    //
+    if (iieMode) {
+        // //c-class (isIIcClass): no physical slots — internal ROM is
+        // always mapped at $C100-$CFFF regardless of INTCXROM. MAME
+        // `apple2e.cpp:1619-1631` (`update_slotrom_banks`) ORs `m_isiic`
+        // into every internal-ROM gate; the softswitch is still
+        // writable/readable via $C006/$C007/$C015 but has no effect on
+        // what actually executes from $CnXX. The //c reset routine at
+        // $FA62 immediately `JSR $CE4D` etc. — without this override
+        // those addresses would fall through to slot bus (empty → $FF),
+        // and the //c never boots. Pre-Theme-6 this was gated on
+        // `iicHasAltBank`, missing the 16 KB rev-255 //c case (D-1-1).
+        if ((iieMemMode & MF_INTCXROM) ||
+            (iicProfile_ && iicProfile_->forcesIntCxRom())) {
+            if (addr == 0xCFFF) {
+                intC8Rom = false;
+                slots.deactivateExpansion();
+            }
+            // INTC8ROM latches on ANY $C3xx access while SLOTC3ROM=off —
+            // INTCXROM state does not gate it (UTAIIe 5-28; MAME
+            // `apple2e.cpp` `c300_int_r`: the $C300 page of the
+            // INTCXROM-on view still runs c300_int_r, whose only
+            // condition is `!m_slotc3rom`). Missing this: read $C3xx
+            // with INTCXROM on, drop INTCXROM, then JMP into
+            // $C800-$CFFF — must still see internal ROM, not slot bus.
+            if (addr >= 0xC300 && addr <= 0xC3FF &&
+                !(iieMemMode & MF_SLOTC3ROM)) {
+                intC8Rom = true;
+            }
+            // //c-class override: //c+ MIG windows ($CC00/$CE00 in bank 1)
+            // or alt-firmware bank-1 bytes (plain //c rev-0/3/4 + //c+
+            // outside the MIG windows). Bank 0 — and plain //e INTCXROM —
+            // fall through to internalIORom. See IIcClassProfile.
+            // The CPU-socket Mockingboard 4c comes first, in either ROM bank
+            // (MAME c400_int_r / c400_int_bank_r test m_mockingboard4c first),
+            // and only once a write woke it: awake from power-on it hid the
+            // ROM 0 mouse firmware and the //c never said "Check Disk Drive".
+            if (iicExpansionAwake_ && addr >= 0xC100 && addr <= 0xC7FF)
+                if (SlotPeripheral* p = slots.peripheralForIicRomPage((addr >> 8) & 7))
+                    return p->slotRomRead(static_cast<uint8_t>(addr & 0xFF));
+            uint8_t out;
+            if (iicProfile_ && iicProfile_->internalRomRead(addr, floatingBus(), out))
+                return out;
+            // Bank-0 slot-ROM punch through INTCXROM via exposesIicOnboardRom.
+            // Bank 1 is handled above; device-select I/O remains on the bus.
+            //
+            //   sl5 SmartPort: host-served stub, armed by bootFromSlot only.
+            //   sl4 AppleWin HLE mouse (its EPROM at $C400 reaches its PIA
+            //     at $C0C0); the native IIcMouse exposes no card ROM. Unarmed.
+            if (iicProfile_ && addr >= 0xC100 && addr <= 0xC7FF) {
+                const int slot = (addr >> 8) & 0x07;
+                const bool armOk = (slot != 5) ||
+                    (iicSmartPortArmed_ && !iicProfile_->servesExternalSmartPort());
+                if (armOk) {
+                    if (SlotPeripheral* p = slots.peripheral(slot);
+                        p && p->exposesIicOnboardRom()) {
+                        // Le flux d'execution entre chez la carte : sa banque
+                        // $C800 redevient visible (voir iicCardWindow_).
+                        if (slot == 5) iicCardWindow_ = true;
+                        return slots.slotRomRead(addr);
+                    }
+                }
+            }
+            // //c-class $C800-$CFFF : la banque d'EXTENSION de la carte
+            // percee. Le driver du stub $C500 saute en $CD00/$CE00 — le
+            // vrai firmware Liron fait le meme BIT $CFFF + JMP $CE00 — et
+            // sans ce perçage le //c executait le ROM interne comme si
+            // c'etait le gestionnaire SmartPort : le boot HDV pendait en
+            // boucle firmware, bloc 0 jamais lu (2026-08-30).
+            //
+            // La garde fine est iicCardWindow_ : sur un vrai //c cette
+            // region est TOUJOURS interne (le reset moteur fait JSR $CE4D
+            // sans toucher $C3xx), donc le proprietaire SlotBus ne suffit
+            // pas — apres un appel du pilote il restait au slot 5 et le
+            // premier JMP $CExx du moniteur ($FB4F, trace du 2026-08-30)
+            // executait la banque carte. La fenetre ne s'ouvre que par un
+            // fetch dans la page $C5xx du stub et se referme au premier
+            // acces $C0xx etranger au device-select du slot (le firmware
+            // interne tape les soft-switches en permanence, le stub
+            // jamais). intC8Rom garde en plus le firmware 80 colonnes.
+            if (iicProfile_ && addr >= 0xC800 && addr <= 0xCFFE &&
+                !intC8Rom && iicSmartPortArmed_ && iicCardWindow_ &&
+                slots.getActiveExpansionSlot() == 5) {
+                if (SlotPeripheral* p = slots.peripheral(5);
+                    p && p->exposesIicOnboardRom())
+                    return slots.expansionRomRead(addr);
+            }
+            uint8_t romVal = internalIORom[addr - 0xC000];
+            // Dallas DS1216E "No-Slot Clock" — AppleWin parity. On //e /
+            // //c-class (INTCXROM forced or SLOTC3ROM off) the NSC sits
+            // under the internal ROM at $C300-$C3FF and the expansion
+            // ROM page at $C800-$C8FF. ProDOS 2.4 + GS-OS walk the magic
+            // key there, not at $F800. See AppleWin Memory.cpp
+            // IsPotentialNoSlotClockAccess (UAIIe:5-28).
+            if (noSlotClock_ &&
+                ((addr >= 0xC300 && addr <= 0xC3FF) ||
+                 (addr >= 0xC800 && addr <= 0xC8FF))) {
+                romVal = noSlotClock_->interceptRead(addr, romVal);
+            }
+            return romVal;
+        }
+        // $C300-$C3FF with SLOTC3ROM=off: return internal 80-col
+        // firmware AND auto-enable `intC8Rom` so the firmware's
+        // continuation in $C800-$CFFF (JMP $C803/$C87C/$C9B4/...) reads
+        // internal ROM instead of slot bus. MAME
+        // `apple2e.cpp:c300_int_r`: `m_intc8rom = true; update_slotrom_banks()`.
+        if (addr >= 0xC300 && addr <= 0xC3FF &&
+            !(iieMemMode & MF_SLOTC3ROM)) {
+            if (iieRebootTraceEnabled() && !intC8Rom) {
+                const uint16_t rpc = cpu ? cpu->getProgramCounter() : 0;
+                std::ostringstream oss;
+                oss << std::hex << std::uppercase << std::setfill('0');
+                oss << "auto-INTCXROM flip via read $" << std::setw(4)
+                    << static_cast<int>(addr) << " intC8Rom=true pc=$"
+                    << std::setw(4) << static_cast<int>(rpc)
+                    << " cyc=" << std::dec << cycleCounter;
+                pom2::log().warn("IIE", oss.str());
+            }
+            intC8Rom = true;
+            uint8_t out;
+            if (iicProfile_ && iicProfile_->internalRomRead(addr, floatingBus(), out))
+                return out;
+            uint8_t romVal = internalIORom[addr - 0xC000];
+            // NSC at $C300 with SLOTC3ROM=off (//e default). Same hook
+            // as the INTCXROM-forced branch above.
+            if (noSlotClock_) {
+                romVal = noSlotClock_->interceptRead(addr, romVal);
+            }
+            return romVal;
+        }
+        // $C800-$CFFF with `intC8Rom` set: shared expansion window
+        // mapped to internal ROM. Reading $CFFF additionally clears
+        // `intC8Rom` and releases the slot expansion-ROM owner —
+        // MAME `apple2e.cpp:c800_int_r`: `if (offset == 0x7ff) {
+        // m_cnxx_slot = CNXX_UNCLAIMED; m_intc8rom = false; ... }`.
+        if (intC8Rom && addr >= 0xC800 && addr <= 0xCFFF) {
+            uint8_t v = internalIORom[addr - 0xC000];
+            // NSC hook at $C800-$C8FF (AppleWin parity: only page 8 is
+            // watched, the rest of $C800-$CFFF is left alone).
+            if (noSlotClock_ && addr >= 0xC800 && addr <= 0xC8FF) {
+                v = noSlotClock_->interceptRead(addr, v);
+            }
+            if (addr == 0xCFFF) {
+                intC8Rom = false;
+                slots.deactivateExpansion();
+            }
+            return v;
+        }
+        // $CFFF without intC8Rom set falls through to
+        // SlotBus::expansionRomRead, which reads the owner's byte and then
+        // releases it (MAME `c800_r`). Releasing here first starved the
+        // card of the access.
+    }
+    if (addr <= 0xC7FF) {
+        uint8_t v = slots.slotRomRead(addr);
+        // No-Slot Clock under THIS slot card's ROM (NoSlotClock::setSlot):
+        // the II+ placement every ProDOS NSC driver scans for. Only while a
+        // card is plugged there — the chip needs a ROM socket to sit in.
+        if (noSlotClock_ && noSlotClock_->slot() == ((addr >> 8) & 0x07) &&
+            slots.peripheral((addr >> 8) & 0x07))
+            v = noSlotClock_->interceptRead(addr, v);
+        return v;
+    }
+    return slots.expansionRomRead(addr);
+}
+
+void Memory::memWriteSlow(uint16_t addr, uint8_t value)
+{
+    // Write watchpoints (Memory.h § Write watchpoints). Armed addresses below
+    // $C000 are diverted here by having their `writable[]` byte cleared;
+    // everything from $C000 up already comes through here, so one test covers
+    // RAM, soft switches, slot I/O and the language card alike. Costs an empty
+    // -vector test when nobody is debugging, on the SLOW path only.
+    if (!writeWatch_.empty() && (writeWatch_[addr] & kWatchArmed) && watchSink_)
+        watchSink_->noteBankAccess(addr, value, true, debugBank(addr, true));
+
+    // Flat test RAM, or a card CPU's own bus — see memReadSlowBody.
+    if (flatBus_) {
+        if (foreignBus_) foreignBus_->write(addr, value);
+        else             mem[addr] = value;
+        return;
+    }
+
+    // Fast path: writable RAM and Language Card overlay for $D000-$FFFF.
+    if (addr < 0xC000) {
+        if (!ramWritable(addr)) return;
+        if (videoWriteLogCovers(addr)) noteVideoWrite(addr, value);   // MemoryVideoLog.cpp
+            // Diagnostic: log every write to $0400 (top-left text cell) while the
+        // IIe reboot trace is armed — an 'M' landing there after Choplifter's
+        // title screen; from which PC and at which cycle?
+        if (addr == 0x0400 && value == 0xCD && iieRebootTraceEnabled()) {
+            // The 'M' write to $0400 is the smoking gun. Dump 16 bytes
+            // around the writing PC plus the M6502 PC trace ring buffer
+            // so we can see how control got here.
+            const uint16_t pc = cpu ? cpu->getProgramCounter() : 0;
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0');
+            oss << "write $0400 = $CD ('M') pc=$" << std::setw(4)
+                << static_cast<int>(pc) << " cyc=" << std::dec << cycleCounter
+                << std::hex << " ctx-16..+16:";
+            for (int off = -16; off <= 16; ++off) {
+                const uint16_t a = static_cast<uint16_t>(pc + off);
+                oss << " " << std::setw(2) << static_cast<int>(mem[a]);
+                if (off == 0) oss << "<";
+            }
+            pom2::log().warn("IIE", oss.str());
+            if (cpu) cpu->dumpPcTrace("M-write pc-trace");
+        }
+        else if (addr >= 0x0400 && addr <= 0x0427 && iieRebootTraceEnabled()) {
+            std::ostringstream oss;
+            oss << std::hex << std::uppercase << std::setfill('0');
+            oss << "write $" << std::setw(4) << static_cast<int>(addr)
+                << " = $" << std::setw(2)
+                << static_cast<int>(value) << " ('"
+                << ((value & 0x7F) >= 0x20 && (value & 0x7F) < 0x7F
+                    ? static_cast<char>(value & 0x7F) : '.')
+                << "') pc=$"
+                << (cpu ? std::setw(4) : std::setw(0))
+                << (cpu ? static_cast<int>(cpu->getProgramCounter()) : 0)
+                << " cyc=" << std::dec << cycleCounter;
+            pom2::log().warn("IIE", oss.str());
+        }
+        if (iieMode) {
+            iieMemWrite(addr, value);
+            // Eve CPREG auto-write (Memory.h § Aux shadow): CPREG lands in AUX
+            // at the address of a write that went to MAIN.
+            if (auxShadowCovers(addr) && !iieWriteToAux(addr)) aux[addr] = auxShadowByte_;
+        } else {
+            mem[addr] = value;
+        }
+        return;
+    }
+    if (addr >= 0xD000) {
+        // DS1216E No-Slot Clock, WRITE cycles: AppleWin's
+        // `CNoSlotClock::Write(address)` drives the SAME state machine
+        // as reads (the key bit rides on A0 of the ADDRESS; R/W is
+        // irrelevant to the matcher) — some NSC drivers feed the 64-bit
+        // key with STA and never unlocked the clock with only the read
+        // hook wired. Same gating as the read site (II+ Monitor-ROM
+        // window, LC ROM mapped).
+        // INH removes the ROM socket's chip-select for writes too ([B] on a
+        // ][+ R/W does not reach the socket, INH does): a Saturn reading RAM
+        // fed every store to the clock's key matcher (bug hunt 2026-11-07).
+        if (noSlotClock_ && !iieMode && addr >= 0xF800 && !lcReadRam &&
+            !(lcInhibitor_ && (inhRead_ || lcInhibitor_->inhibitsWrite()))) {
+            noSlotClock_->interceptWrite(addr);
+        }
+        languageCardWrite(addr, value);
+        return;
+    }
+
+    // //c-class : meme regle que la lecture (voir memReadSlowBody) — tout
+    // acces $C0xx etranger au device-select du slot 5 referme la fenetre
+    // $C800 de la carte percee. Doit rester AVANT le retour anticipe des
+    // soft switches $C000-$C07F : le firmware interne les ECRIT autant
+    // qu'il les lit (STA $C00D, STA $C051…), et ces ecritures ne
+    // refermaient rien — la fenetre restait ouverte apres un appel du
+    // pilote et le premier JMP $CExx du moniteur executait la banque carte,
+    // exactement le bug que la garde existe pour empecher.
+    if (iicCardWindow_ && addr <= 0xC0FF &&
+        (addr < 0xC0D0 || addr > 0xC0DF))
+        iicCardWindow_ = false;
+
+    if (addr <= 0xC0FF) if (auto* a = activeAccel())     // Zip Chip: watches, never takes
+        a->ioWrite(static_cast<uint8_t>(addr), value, accelNow());
+    if (addr <= 0xC07F) {
+        softSwitchAccess(addr, /*isWrite=*/true, value);
+        return;
+    }
+    if (addr <= 0xC0FF) {
+        if (addr <= 0xC08F) {
+            languageCardSwitchAccess(addr, /*isWrite=*/true);
+            return;
+        }
+        // //c (32 KB ROM) / //c+ IWM (see memRead for the read side
+        // and MAME refs). Writes are dispatched to IWMDevice (mode
+        // register, data write, etc.) AND forwarded to DiskIICard
+        // so its slot-6 state stays in sync (phases, motor on/off,
+        // sound + writeback gating).
+        if (addr >= 0xC0E0 && addr <= 0xC0EF && iicProfile_) {
+            // A write the external port claimed is not the Disk II's (flux!).
+            if (iicProfile_->ioWriteIWM(addr, value, accessCycle())) return;
+        }
+        // Le Chat Mauve Eve registers — mirror of the memRead path so the
+        // toggle reacts to STA $C0B9 and friends, not just LDA. Same
+        // slot-3 collision guard as the read path.
+        if (addr >= 0xC0B0 && addr <= 0xC0BF && !chatMauveBlockedBySlot3())
+            slots.broadcastVideoSwitchWrite(addr, value);
+        slots.deviceSelectWrite(addr, value);
+        return;
+    }
+    // Same $CFFF + INTCXROM deactivate handling as memRead. MAME's
+    // `c800_w` serves both banks (`m_c800bank[0..2]` all write through
+    // it): the owning card gets `write_c800(0x7ff)`, then the window is
+    // released — so the write reaches the owner even when INTCXROM absorbs
+    // the rest of $C100-$CFFF below.
+    if (iieMode && addr == 0xCFFF) {
+        intC8Rom = false;   // same flip-flop reset as the read side
+        slots.expansionRomWrite(addr, value);
+    }
+    // Mirror the memRead INTCXROM override for //c: when internal ROM
+    // is mapped at $C100-$CFFF, writes are absorbed (real silicon: ROM
+    // is read-only, slot bus is not reached). Without this, a //c
+    // firmware write into $CnXX would forward to a (non-existent) slot
+    // card and possibly latch activeExpansionSlot to a stale value.
+    if (iieMode && ((iieMemMode & MF_INTCXROM) ||
+                    (iicProfile_ && iicProfile_->forcesIntCxRom()))) {
+        // NSC write-cycle hook — same $C300/$C800 windows as the
+        // INTCXROM-forced read intercepts.
+        if (noSlotClock_ &&
+            ((addr >= 0xC300 && addr <= 0xC3FF) ||
+             (addr >= 0xC800 && addr <= 0xC8FF))) {
+            noSlotClock_->interceptWrite(addr);
+        }
+        // INTC8ROM latches on ANY $C3xx ACCESS while SLOTC3ROM=off, and the
+        // write half of that access has to latch it too: the flip-flop is
+        // clocked by the address decode, not by R/W (UTAIIe 5-28; the read
+        // side says the same and does it). This branch used to return
+        // before reaching the $C3xx case below, so `STA $C3xx` with INTCXROM
+        // on left INTC8ROM clear — and a later CLRCXROM + JMP into
+        // $C800-$CFFF then executed the slot bus instead of the internal
+        // 80-column firmware (bug hunt #8).
+        if (addr >= 0xC300 && addr <= 0xC3FF &&
+            !(iieMemMode & MF_SLOTC3ROM)) {
+            intC8Rom = true;
+        }
+        // A card on the internal expansion connector is NOT internal ROM:
+        // its window carries writes, which is how DIGIDREAM wakes its
+        // Mockingboard 4c ($C403/$C404) and how every AY register store
+        // reaches the chip. See SlotPeripheral::iicRomWindowPage.
+        if (iicProfile_ && addr >= 0xC100 && addr <= 0xC7FF) {
+            if (SlotPeripheral* p =
+                    slots.peripheralForIicRomPage((addr >> 8) & 0x07)) {
+                iicExpansionAwake_ = true;          // wakes the card (MAME c400_w)
+                p->slotRomWrite(static_cast<uint8_t>(addr & 0xFF), value);
+                return;
+            }
+        }
+        // //c-class internal ROM is read-only: writes are absorbed,
+        // except the //c+ MIG windows ($CC00/$CE00 in bank 1) which the
+        // profile dispatches (drive enable/disable, IWM reset, MIG RAM —
+        // MAME `apple2e.cpp:3186-3190`).
+        if (iicProfile_) iicProfile_->internalRomWrite(addr, value);
+        return;
+    }
+    // IIe $C300-$C3FF with SLOTC3ROM=off: the motherboard claims the
+    // page — slot 3's I/O SELECT never asserts, so the write must NOT
+    // reach the slot bus (slotRomWrite would both poke a deselected
+    // card and latch slot 3 as the $C800 expansion-ROM owner, stealing
+    // the window from the rightful card). The access still arms
+    // INTC8ROM, mirroring the read side (UTAIIe 5-28: any $C3xx access;
+    // MAME `apple2e.cpp` write view runs the same c300 internal handler).
+    if (iieMode && addr >= 0xC300 && addr <= 0xC3FF &&
+        !(iieMemMode & MF_SLOTC3ROM)) {
+        // NSC write-cycle hook — same window as the read-side intercept.
+        if (noSlotClock_) noSlotClock_->interceptWrite(addr);
+        intC8Rom = true;
+        return;
+    }
+    if (addr <= 0xC7FF) {
+        // Slot ROM is read-only on most cards, but a handful (Mockingboard
+        // in particular) decode 6522 VIA MMIO inside the $CnXX window.
+        // SlotBus::slotRomWrite forwards to the card and latches the slot
+        // as the active expansion-ROM owner (same as a read into the
+        // window), so cards that genuinely have read-only ROM still see
+        // their slot select on writes.
+        // NSC write-cycle hook for the chip under this slot's ROM — the
+        // key bit rides on the address, R/W is irrelevant to it.
+        if (noSlotClock_ && noSlotClock_->slot() == ((addr >> 8) & 0x07) &&
+            slots.peripheral((addr >> 8) & 0x07))
+            noSlotClock_->interceptWrite(addr);
+        slots.slotRomWrite(addr, value);
+        return;
+    }
+    // $C800-$CFFF with INTC8ROM set: internal ROM owns the window —
+    // the write is absorbed by ROM, never forwarded to a slot card
+    // (the $CFFF deactivate already ran above). Mirrors the read side.
+    if (iieMode && intC8Rom) {
+        // NSC write-cycle hook — same $C800-$C8FF window as reads.
+        if (noSlotClock_ && addr >= 0xC800 && addr <= 0xC8FF)
+            noSlotClock_->interceptWrite(addr);
+        return;
+    }
+    // $C800-$CFFF — expansion ROM, conventionally read-only. Forward
+    // through SlotBus so $CFFF disable still works on writes (the
+    // address bus is what matters, not the direction).
+    slots.expansionRomWrite(addr, value);
+}

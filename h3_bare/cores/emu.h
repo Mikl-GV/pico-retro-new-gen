@@ -70,6 +70,12 @@ void emu_scale_rgb565_src_aspect(const uint16_t* src, int sw, int sh,
 // (Amiga 720×574 в 1024×600): пиксель в пиксель по центру, поля — border.
 void emu_show_rgb565_native(const uint16_t* src, int w, int h, int stride_px);
 
+// r1401: прямой вывод RGBA-кадра (0x00RRGGBB, как отдают ядра) в HDMI FB с
+// ЦЕЛЫМ множителем: каждый исходный пиксель становится mul×mul. Без
+// промежуточного RGB565-буфера и без дробного nearest (у Apple II 280×192 при
+// растяжении на 600 строк давал рваные столбцы — «слипшиеся» символы).
+void emu_show_rgba_int(const uint32_t* src, int sw, int sh, int stride_px);
+
 // Целочисленный scale (integer scale) для портативных: каждый пиксель
 // исходника = N×N на экране, поля по периметру. Максимальный целый множитель,
 // влезающий в 1024×600. Чёткая картинка без мыла.
@@ -126,6 +132,8 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name);      
 void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1284 Frodo
 void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1297 Агат-9
 void emu_run_apple2(const uint8_t* rom, uint32_t size, const char* rom_name);     // r1360 Apple II+
+void emu_run_apple2_pom2(const uint8_t* disk, uint32_t disk_size,
+                         const char* name);                                       // r1388 Apple II на ядре POM2
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1185
 void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name);      // r1243 UAE4All (было r1191 PUAE)
 void emu_run_amiga_wb(void);   // r1232: вшитый диск Workbench 1.3 (DF0)

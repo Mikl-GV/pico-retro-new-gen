@@ -1,0 +1,501 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Cross-platform commit of a sibling temporary file over an existing file.
+
+#ifndef POM2_ATOMIC_FILE_REPLACE_H
+#define POM2_ATOMIC_FILE_REPLACE_H
+
+#include "MediaNotch.h"
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <system_error>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <cerrno>
+#  include <fcntl.h>
+#  include <unistd.h>
+#  ifdef __APPLE__
+#    include <sys/stdio.h>
+#  elif defined(__linux__)
+#    include <linux/fs.h>
+#    include <sys/syscall.h>
+#  endif
+#endif
+
+namespace pom2 {
+
+/// Push a file's CONTENTS to stable storage.
+///
+/// `rename` is atomic with respect to a READER — it never exposes a half
+/// written file — but it says nothing about DURABILITY. Until the data pages
+/// are flushed, a power cut (or a kernel panic, or a yanked USB stick) can
+/// land the directory entry while the blocks behind it are still in page
+/// cache: the classic outcome is a 0-byte file where the user's disk image
+/// used to be, because the metadata commit reached the journal and the data
+/// did not. Every write-back path in POM2 replaces the user's ONLY copy of
+/// their media — the rest of the disk lives in RAM and dies with the process
+/// — so this flush is not optional here.
+///
+/// Returns false only on a REAL I/O failure (EIO, ENOSPC): the caller should
+/// then treat the save as failed and keep its dirty state so the user can
+/// retry. A filesystem that simply cannot honour the request (EINVAL /
+/// EOPNOTSUPP — some network and virtual filesystems, Emscripten's MEMFS)
+/// reports success: failing the user's save over a missing guarantee would
+/// be strictly worse than saving without it.
+inline bool syncFileContents(const std::filesystem::path& p,
+                             std::error_code& ec)
+{
+#ifdef _WIN32
+    // FlushFileBuffers is documented to need GENERIC_WRITE on the handle, so
+    // this cannot mirror the POSIX branch's O_RDONLY. That matters because
+    // the callers restore the ORIGINAL file's permissions onto the temp copy
+    // before committing: a write-protected disk image left the temp
+    // FILE_ATTRIBUTE_READONLY, CreateFileW then failed ERROR_ACCESS_DENIED,
+    // and the whole write-back failed — on Windows only, for an image that
+    // saves fine everywhere else. A handle we cannot open for write is the
+    // same class of answer as a volume that does not implement write-through:
+    // the flush cannot be PROMISED, and refusing the user's save over a
+    // missing guarantee would be strictly worse than saving without it. So
+    // an access/sharing refusal reports success, exactly like the
+    // ERROR_INVALID_FUNCTION branch below and like POSIX's EROFS/EBADF.
+    const HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD openErr = GetLastError();
+        if (openErr == ERROR_ACCESS_DENIED || openErr == ERROR_SHARING_VIOLATION) {
+            ec.clear();
+            return true;
+        }
+        ec = std::error_code(static_cast<int>(openErr), std::system_category());
+        return false;
+    }
+    const BOOL  ok  = FlushFileBuffers(h);
+    const DWORD err = ok ? 0u : GetLastError();
+    CloseHandle(h);
+    if (ok) { ec.clear(); return true; }
+    // The volume does not implement write-through (ERROR_INVALID_FUNCTION is
+    // what FlushFileBuffers returns on several network redirectors).
+    if (err == ERROR_INVALID_FUNCTION || err == ERROR_NOT_SUPPORTED) {
+        ec.clear();
+        return true;
+    }
+    ec = std::error_code(static_cast<int>(err), std::system_category());
+    return false;
+#else
+    // O_RDONLY is enough for fsync on Linux/macOS/BSD, and it is what lets
+    // this run AFTER the caller has restored the original file's permissions
+    // onto the temp copy (which may be read-only).
+    const int fd = ::open(p.c_str(), O_RDONLY);
+    if (fd < 0) {
+        ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+    int rc;
+    do { rc = ::fsync(fd); } while (rc != 0 && errno == EINTR);
+    const int saved = (rc == 0) ? 0 : errno;
+    ::close(fd);
+    if (rc == 0) { ec.clear(); return true; }
+    if (saved == EINVAL || saved == ENOTSUP || saved == EOPNOTSUPP ||
+        saved == EBADF  || saved == EROFS) {
+        ec.clear();               // cannot promise it → not a write failure
+        return true;
+    }
+    ec = std::error_code(saved, std::generic_category());
+    return false;
+#endif
+}
+
+/// Flush the DIRECTORY ENTRY a freshly renamed file lives in, so the rename
+/// itself survives a crash (POSIX requires the containing directory to be
+/// fsync'd for that; the data flush above only covers the file's blocks).
+///
+/// Best-effort by design: a fair number of filesystems refuse fsync on a
+/// directory handle, and none of those refusals make the preceding data
+/// flush any less valid. On Windows the rename already goes out with
+/// MOVEFILE_WRITE_THROUGH, which is the documented equivalent.
+inline void syncParentDirectory(const std::filesystem::path& p) noexcept
+{
+#ifdef _WIN32
+    (void)p;
+#else
+    std::error_code ignored;
+    const std::filesystem::path dir =
+        p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+#  ifdef O_DIRECTORY
+    const int flags = O_RDONLY | O_DIRECTORY;
+#  else
+    const int flags = O_RDONLY;
+#  endif
+    const int fd = ::open(dir.c_str(), flags);
+    if (fd < 0) return;
+    int rc;
+    do { rc = ::fsync(fd); } while (rc != 0 && errno == EINTR);
+    (void)rc;
+    ::close(fd);
+#endif
+}
+
+/// The suffix `tempSiblingPath` gives every temporary it hands out. One
+/// definition, because three other places have to recognise the debris:
+/// `sweepStaleTempSiblings` below, `.gitignore`, and the packaging manifest's
+/// `denyglob`.
+inline constexpr const char* kTempSiblingSuffix = ".pom2tmp";
+
+/// Resolve a symlinked TARGET to the file it names.
+///
+/// A rename does not follow links: renaming over `~/.config/POM2/state.cfg`
+/// when that is a symlink into a dotfiles repo REPLACES the link with a
+/// regular file. The user's setup is quietly dismantled, their repo stops
+/// tracking the file, and nothing says so. Nobody symlinks a path in order
+/// to have it replaced — the link IS the instruction "write to the thing I
+/// point at" — so POM2 follows it rather than refusing (refusing would make
+/// a symlinked settings file or disk image unsaveable, which is worse).
+///
+/// `tempSiblingPath` resolves through here too, so the temp file sits next
+/// to the REAL file and the rename stays on one filesystem. It used to sit
+/// next to the LINK: a disk image symlinked onto a USB stick then failed
+/// every commit with `cross_device_link`, forever — eject and swap refused,
+/// the destructor flush failed at quit, and the session's writes were lost
+/// (bug hunt 2026-09-16). The rename has to write in the target's directory
+/// anyway, so putting the temp there asks for nothing more.
+inline std::filesystem::path resolveReplaceTarget(const std::filesystem::path& to)
+{
+    std::error_code ec;
+    if (!std::filesystem::is_symlink(std::filesystem::symlink_status(to, ec)) || ec)
+        return to;
+    const std::filesystem::path real = std::filesystem::weakly_canonical(to, ec);
+    return (ec || real.empty()) ? to : real;
+}
+
+/// A sibling temporary path that is UNIQUE to this process and this call.
+///
+/// Every write-back used to derive the temp name from the target alone —
+/// `<target>.tmp` / `<target>.pom2tmp`. That name is not ours, it is the
+/// name every POM2 on the machine picks: two instances sharing one $HOME (a
+/// second window, a kiosk session, a headless run) both open `state.cfg.tmp`
+/// with `trunc`, interleave their writes, and whichever renames last
+/// publishes a file made of both. Same shape for a disk image opened twice.
+/// The pid + counter make the name collide only with ourselves, which we
+/// control; `prepareTempPath` below still runs on it, because a NAME being
+/// unlikely is not the same as a path being safe.
+inline std::filesystem::path tempSiblingPath(const std::filesystem::path& target)
+{
+    static std::atomic<unsigned long long> counter{0};
+#ifdef _WIN32
+    const unsigned long pid = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+    const unsigned long pid = static_cast<unsigned long>(::getpid());
+#endif
+    // The REAL file's sibling, so the rename that publishes the temp never
+    // crosses a filesystem (see resolveReplaceTarget).
+    const std::filesystem::path real = resolveReplaceTarget(target);
+    return std::filesystem::path(
+        real.string() + "." + std::to_string(pid) + "-" +
+        std::to_string(counter.fetch_add(1) + 1) + kTempSiblingSuffix);
+}
+
+/// Make a sibling temporary path safe to create-and-truncate.
+///
+/// Every write-back path here writes `<target>.tmp` and then renames it over
+/// the target. The CALLER validates the target — refuses a path outside the
+/// working directory, refuses a symlink, checks the extension — but the temp
+/// path is derived afterwards and gets none of that scrutiny, while
+/// `ofstream(..., trunc)` follows symlinks like any other open.
+///
+/// So a file planted at `<target>.tmp` beforehand redirects the write: the
+/// bytes land on whatever it points at, and the rename then moves the symlink
+/// away, leaving the destroyed target behind with nothing to show what
+/// happened. The temp name is ours by construction, so anything already
+/// sitting there is either our own debris from a crashed run or somebody
+/// else's doing — remove it either way, and refuse to proceed if it will not
+/// go, rather than writing through it.
+///
+/// Returns false only when the path is still unusable afterwards; a missing
+/// temp (the normal case) is success.
+inline bool prepareTempPath(const std::filesystem::path& tmp,
+                            std::error_code& ec)
+{
+    ec.clear();
+    std::error_code probe;
+    // symlink_status, NOT status: status() follows the link and would report
+    // on the victim, which is exactly the thing being hidden here.
+    const auto st = std::filesystem::symlink_status(tmp, probe);
+    if (probe || st.type() == std::filesystem::file_type::not_found)
+        return true;                       // nothing in the way
+
+    if (st.type() == std::filesystem::file_type::regular) {
+        // Our own leftover always has link count 1. A regular file HARD-
+        // LINKED to the target shares the target's inode, so the caller's
+        // ofstream(trunc) through it would destroy the target BEFORE
+        // anything is committed — the same redirection the symlink branch
+        // below removes, and a violation of the "target untouched on every
+        // failure path" contract. remove() only unlinks THIS name.
+        std::error_code lc;
+        const auto links = std::filesystem::hard_link_count(tmp, lc);
+        if (!lc && links > 1) {
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);
+            if (rm) { ec = rm; return false; }
+        }
+        return true;                       // a plain leftover; trunc is fine
+    }
+
+    // ONLY a symlink is removed. It is the one entry that redirects the write
+    // somewhere else, and the temp name is ours by construction, so nothing
+    // legitimate is being destroyed. Everything else non-regular — a
+    // directory, a fifo, a device node — is refused rather than deleted:
+    // removing it would be a bigger act than this function is entitled to,
+    // and the open would fail on its own anyway.
+    if (st.type() != std::filesystem::file_type::symlink) {
+        ec = std::make_error_code(std::errc::file_exists);
+        return false;
+    }
+
+    std::error_code rm;
+    std::filesystem::remove(tmp, rm);
+    if (rm) { ec = rm; return false; }
+    return true;
+}
+
+/// Delete `*.pom2tmp` files older than `maxAgeHours` directly inside `dir`.
+///
+/// A temp sibling normally lives for milliseconds — it is created, written,
+/// and renamed over its target. It survives only when the process is killed
+/// between the two, and then nothing ever removes it: the name carries the
+/// dead process's pid, so the next run picks a different one and walks past.
+/// The debris accumulates next to the user's disk images and in the config
+/// directory, and inside a folder served as a ProDOS volume it is not inert —
+/// `buildVolumeFromFolder` scans the directory, so a crashed write-back turns
+/// into a file on the guest's volume.
+///
+/// Age-gated rather than unconditional: another POM2 (a second window, a
+/// headless run) may be part-way through a write in the same directory this
+/// instant, and its temp file is not ours to remove. Hours of slack make that
+/// impossible while still clearing yesterday's crash.
+///
+/// Best effort throughout — a directory that cannot be listed, or a file that
+/// will not go, is not an error worth reporting to anybody. Returns how many
+/// were removed.
+inline std::size_t sweepStaleTempSiblings(const std::filesystem::path& dir,
+                                          int maxAgeHours = 24)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return 0;
+    const auto cutoff = fs::file_time_type::clock::now() -
+                        std::chrono::hours(maxAgeHours < 0 ? 0 : maxAgeHours);
+    std::size_t removed = 0;
+    // Non-recursive on purpose: the debris is always a SIBLING of a file POM2
+    // writes, so it is in this directory or in none.
+    fs::directory_iterator it(dir, ec), end;
+    if (ec) return 0;
+    for (; it != end; it.increment(ec)) {
+        if (ec) break;
+        const fs::path p = it->path();
+        if (p.extension() != kTempSiblingSuffix) continue;
+        // symlink_status: a planted symlink named `*.pom2tmp` is not a
+        // regular file, and unlinking the LINK (never its target) is exactly
+        // what remove() does — but a directory or a device node with that
+        // name is left alone, like prepareTempPath leaves it.
+        std::error_code stEc;
+        const auto st = fs::symlink_status(p, stEc);
+        if (stEc || st.type() != fs::file_type::regular) continue;
+        std::error_code timeEc;
+        const auto mtime = fs::last_write_time(p, timeEc);
+        if (timeEc || mtime > cutoff) continue;
+        std::error_code rmEc;
+        if (fs::remove(p, rmEc) && !rmEc) ++removed;
+    }
+    return removed;
+}
+
+inline bool replaceFileAtomic(const std::filesystem::path& from,
+                              const std::filesystem::path& to,
+                              std::error_code& ec)
+{
+    // Data first: the temp file's contents must be on the medium BEFORE the
+    // rename publishes them, or the swap can expose blocks still in flight.
+    if (!syncFileContents(from, ec)) return false;
+    const std::filesystem::path dest = resolveReplaceTarget(to);
+#ifdef _WIN32
+    // A notched image (MediaNotch.h: the host read-only bit, which on
+    // Windows is FILE_ATTRIBUTE_READONLY on the TARGET) refuses
+    // MOVEFILE_REPLACE_EXISTING with ERROR_ACCESS_DENIED, so "a notch
+    // flipped while dirty still commits" (media_contract, media_notch,
+    // block512_notch_flush) failed on Windows only. POSIX rename() never
+    // looks at the target's mode. Clear the bit for the swap and put it back
+    // on failure; on success the temp already carries the original's
+    // attributes (the callers copy them before committing), so the new file
+    // is as read-only as the one it replaced.
+    const DWORD destAttrs = GetFileAttributesW(dest.c_str());
+    const bool destReadOnly = destAttrs != INVALID_FILE_ATTRIBUTES &&
+                              (destAttrs & FILE_ATTRIBUTE_READONLY) != 0;
+    if (destReadOnly)
+        SetFileAttributesW(dest.c_str(), destAttrs & ~FILE_ATTRIBUTE_READONLY);
+    if (MoveFileExW(from.c_str(), dest.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec.clear();
+        return true;
+    }
+    ec = std::error_code(static_cast<int>(GetLastError()),
+                         std::system_category());
+    if (destReadOnly) SetFileAttributesW(dest.c_str(), destAttrs);
+    return false;
+#else
+    std::filesystem::rename(from, dest, ec);
+    if (ec) return false;
+    syncParentDirectory(dest); // ...then the directory entry that names them
+    return true;
+#endif
+}
+
+/// Publish a finished temporary as a NEW file. The existence check and the
+/// publish are one filesystem operation, so another export cannot create the
+/// destination between a caller's earlier check and this commit.
+inline bool publishNewFileAtomic(const std::filesystem::path& from,
+                                 const std::filesystem::path& to,
+                                 std::error_code& ec)
+{
+    if (!syncFileContents(from, ec)) return false;
+#ifdef _WIN32
+    if (!MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code(static_cast<int>(GetLastError()),
+                             std::system_category());
+        return false;
+    }
+#else
+#  ifdef __APPLE__
+    if (::renameatx_np(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(),
+                       RENAME_EXCL) != 0) {
+        if (errno != ENOTSUP && errno != ENOSYS && errno != EINVAL) {
+            ec = std::error_code(errno, std::generic_category());
+            return false;
+        }
+        // Older filesystems may lack exclusive rename; link() below still
+        // publishes atomically and refuses an existing destination.
+    } else {
+        ec.clear();
+        syncParentDirectory(to);
+        return true;
+    }
+#  elif defined(__linux__) && defined(SYS_renameat2)
+    if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD,
+                  to.c_str(), RENAME_NOREPLACE) == 0) {
+        ec.clear();
+        syncParentDirectory(to);
+        return true;
+    }
+    if (errno != ENOSYS && errno != EINVAL && errno != EOPNOTSUPP) {
+        ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+#  endif
+    if (::link(from.c_str(), to.c_str()) != 0) {
+        ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(from, ignored);
+    syncParentDirectory(to);
+#endif
+    ec.clear();
+    return true;
+}
+
+/// `replaceFileAtomic` for a media image: carries `to`'s CURRENT permissions
+/// onto `from` and renames, with `mediaPermissionMutex` held across both. A
+/// target that does not exist yet keeps the temp's own mode.
+inline bool replaceMediaFileAtomic(const std::filesystem::path& from,
+                                   const std::filesystem::path& to,
+                                   std::error_code& ec)
+{
+    // The data flush first and outside the lock: it is the slow part, and
+    // the notch toggle runs on the UI thread. replaceFileAtomic flushes
+    // again; a second fsync of clean contents is cheap.
+    if (!syncFileContents(from, ec)) return false;
+    std::lock_guard<std::mutex> lk(mediaPermissionMutex());
+    std::error_code permEc;
+    const auto perms = std::filesystem::status(to, permEc).permissions();
+    if (!permEc) {
+        std::error_code ignored;
+        std::filesystem::permissions(from, perms, ignored);
+    }
+    return replaceFileAtomic(from, to, ec);
+}
+
+/// Write `bytes` to `path` through the same durable temp + rename commit
+/// every other write-back in POM2 uses: sibling temp file, contents synced to
+/// the medium, then an atomic rename that publishes them.
+///
+/// Exists so a caller that has already SERIALISED something into memory can
+/// commit it without a second format-aware writer. That split is the point:
+/// the AI control server builds a snapshot blob under `stateMutex` (RAM only,
+/// microseconds) and then lands it here with the lock released, instead of
+/// holding the emulator and the window still across the write and its two
+/// fsyncs.
+///
+/// Returns false with `ec` set; the target is untouched on every failure path.
+inline bool writeFileAtomic(const std::filesystem::path& path,
+                            const void* bytes, std::size_t length,
+                            std::error_code& ec)
+{
+    ec.clear();
+    const std::filesystem::path tmp = tempSiblingPath(path);
+    if (!prepareTempPath(tmp, ec)) return false;
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+        if (length)
+            f.write(static_cast<const char*>(bytes),
+                    static_cast<std::streamsize>(length));
+        f.close();
+        if (!f) {
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);
+            ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
+    }
+    if (!replaceFileAtomic(tmp, path, ec)) {
+        std::error_code rm;
+        std::filesystem::remove(tmp, rm);
+        return false;
+    }
+    return true;
+}
+
+} // namespace pom2
+
+#endif // POM2_ATOMIC_FILE_REPLACE_H

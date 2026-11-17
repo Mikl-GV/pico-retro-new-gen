@@ -155,6 +155,7 @@ static void fdd_io_access(unsigned short a, struct FDD_DATA*xd);
 static byte fdd_io_read(unsigned short a, struct FDD_DATA*xd);
 static byte fdd_rom_read(unsigned short a, struct FDD_DATA*xd);
 static byte get_cs(byte*data,int n);
+static void fdd_diag_reset(void);
 
 
 static void fill_fdd_drive(struct FDD_DRIVE_DATA*data)
@@ -451,6 +452,9 @@ int  fdd1_init(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*st, struct SLOTCON
 
 	data->dt = DEFAULT_DT;
 
+	/* r1383-ДИАГ: счётчики замера чтения — свои на каждый запуск слоя. */
+	fdd_diag_reset();
+
 	rom=isfopen(cf->cfgstr[CFG_STR_DRV_ROM]);
 	if (!rom) {
 		load_buf_res(cf->cfgint[CFG_INT_DRV_ROM_RES], data->fdd_rom, FDD_ROM_SIZE);
@@ -467,6 +471,10 @@ int  fdd1_init(struct SYS_RUN_STATE*sr, struct SLOT_RUN_STATE*st, struct SLOTCON
 		if (!name) name = cf->cfgstr[CFG_STR_DRV_IMAGE1];
 		strcpy(data->drives[0].disk_name, name);
 		if (name[0]) open_fdd1(data->drives, name, cf->cfgint[CFG_INT_DRV_RO_FLAGS] & 1, 0);
+		/* r1379-ДИАГ: открылся ли образ в приводе 0 (иначе загрузчик Disk II
+		   крутится на пустой дорожке — «шахматка» на экране). */
+		printf("fdd1: drive0 '%s' %s\n", name,
+		       data->drives[0].disk ? "open" : "NOT open");
 	}
 	if (cf->cfgint[CFG_INT_DRV_TYPE2] == DRV_TYPE_SHUGART) {
 		data->drives[1].present = 1;
@@ -507,9 +515,26 @@ static void fdd_rot(struct FDD_DATA*data)
 }
 
 
+/* r1383-ДИАГ: состояние замера чтения $C0EC. Живёт на файл, чтобы сбрасывать
+   его на каждый запуск слоя (fdd1_init): иначе счётчики «съедаются» первым
+   образом и следующие запуски в том же включении молчат. */
+static struct {
+	unsigned all, real, marks, dmarks, skips, io, pc_addr, pc_data, pc_other;
+	int prev_idx, addr_left;
+	byte h1, h2, h3, ab[8];
+	int shown;
+} g_fdd_diag;
+
+static void fdd_diag_reset(void)
+{
+	memset(&g_fdd_diag, 0, sizeof(g_fdd_diag));
+	g_fdd_diag.prev_idx = -1;
+}
+
 static byte fdd_read_data(struct FDD_DATA*data)
 {
 	byte r;
+	int real = 0;
 	struct FDD_DRIVE_DATA *d = data->drives+data->drv;
 
 	if (!d->present) {
@@ -526,8 +551,79 @@ static byte fdd_read_data(struct FDD_DATA*data)
 	else {
 		r = d->TrackData[d->TrackIndex];
 		d->Rotated = 0;
+		real = 1;
 //		printf("TrackData[%i] = %X\n", d->TrackIndex, r);
 //		if (!data->sr->in_debug) fdd_rot(data);
+	}
+	/* r1381/r1383-ДИАГ: замер того, что реально получает загрузчик Disk II.
+	   real — байт из TrackData (а не «данных ещё нет»), marks/dmarks — сколько
+	   раз в подряд идущих реальных байтах встретились D5 AA 96 / D5 AA AD,
+	   skip — сколько раз дорожка уехала больше чем на один байт между двумя
+	   реальными чтениями (значит ROM не успевает за 32 циклами на байт).
+	   ab[8] — восемь нибблов адресного поля, прочитанных сразу после 96. */
+	{
+		g_fdd_diag.all++;
+		/* r1385-ДИАГ: где стоит PC в момент чтения $C0EC. Разбивка по участкам
+	   загрузчика Disk II: $C65E..$C6A5 — поиск/разбор адресного поля,
+	   $C6A6..$C6FF — чтение поля данных. Если pc_data == 0, адресное поле
+	   не принимается вообще и до данных дело не доходит. */
+	if ((g_fdd_diag.all & 15) == 0) {
+		struct REGS_6502 rg;
+		/* ВАЖНО: у system_command третий аргумент — data, четвёртый — param;
+		   указатель на REGS_6502 передаётся ЧЕТВЁРТЫМ. */
+		if (system_command(data->sr, SYS_COMMAND_GETREGS6502,
+		                   0, (long)&rg)) {
+			word pc = rg.PC;
+			if (pc >= 0xC65E && pc <= 0xC6A5) g_fdd_diag.pc_addr++;
+			else if (pc >= 0xC6A6 && pc <= 0xC6FF) g_fdd_diag.pc_data++;
+			else g_fdd_diag.pc_other++;
+		}
+	}
+	if (real) {
+			g_fdd_diag.real++;
+			if (!g_fdd_diag.shown && g_fdd_diag.real <= 12)
+				printf("fdd1: real[%u]=%02X idx=%d len=%d\n",
+				       g_fdd_diag.real, r, d->TrackIndex, d->TrackLen);
+			if (g_fdd_diag.real == 12) g_fdd_diag.shown = 1;
+			if (g_fdd_diag.prev_idx >= 0 && d->TrackLen > 0) {
+				int delta = d->TrackIndex - g_fdd_diag.prev_idx;
+				if (delta <= 0) delta += d->TrackLen;
+				if (delta > 1) g_fdd_diag.skips++;
+			}
+			g_fdd_diag.prev_idx = d->TrackIndex;
+			if (g_fdd_diag.h1 == 0xD5 && g_fdd_diag.h2 == 0xAA &&
+			    g_fdd_diag.h3 == 0x96) {
+				g_fdd_diag.marks++;
+				g_fdd_diag.addr_left = 8;
+			} else if (g_fdd_diag.h1 == 0xD5 && g_fdd_diag.h2 == 0xAA &&
+			           g_fdd_diag.h3 == 0xAD) {
+				g_fdd_diag.dmarks++;
+			}
+			if (g_fdd_diag.addr_left > 0) {
+				g_fdd_diag.ab[8 - g_fdd_diag.addr_left] = r;
+				g_fdd_diag.addr_left--;
+				if (g_fdd_diag.addr_left == 0 && g_fdd_diag.marks <= 8)
+					printf("fdd1: addr %02X %02X %02X %02X %02X %02X %02X %02X (trk=%d)\n",
+					       g_fdd_diag.ab[0], g_fdd_diag.ab[1], g_fdd_diag.ab[2],
+					       g_fdd_diag.ab[3], g_fdd_diag.ab[4], g_fdd_diag.ab[5],
+					       g_fdd_diag.ab[6], g_fdd_diag.ab[7], d->Track);
+			}
+			g_fdd_diag.h1 = g_fdd_diag.h2;
+			g_fdd_diag.h2 = g_fdd_diag.h3;
+			g_fdd_diag.h3 = r;
+		}
+		if (g_fdd_diag.all == 2000 || g_fdd_diag.all == 20000 ||
+		    g_fdd_diag.all == 60000) {
+			printf("fdd1: DIAG reads=%u real=%u marks=%u dmarks=%u skip=%u trk=%d dbg=%d pc_a=%u pc_d=%u pc_o=%u\n",
+			       g_fdd_diag.all, g_fdd_diag.real, g_fdd_diag.marks,
+			       g_fdd_diag.dmarks, g_fdd_diag.skips, d->Track,
+			       (int)data->sr->in_debug, g_fdd_diag.pc_addr,
+			       g_fdd_diag.pc_data, g_fdd_diag.pc_other);
+			/* r1384-ДИАГ: где стоит CPU в этот момент — видно, крутится ли
+			   загрузчик в поиске маркера или дошёл до чтения данных. */
+			if (g_fdd_diag.all != 2000)
+				system_command(data->sr, SYS_COMMAND_DUMPCPUREGS, 0, 0);
+		}
 	}
 	data->last_read = r;
 	data->access++;
@@ -906,63 +1002,99 @@ static void fdd_load_woz_track(struct FDD_DRIVE_DATA *d)
 	if (bitCount == 0) goto empty;
 	if (bitCount > bytes * 8) bitCount = bytes * 8;
 
-	/* r1368: TrackData — байтовый поток дорожки, выровненный по первому
-	   адресному маркеру D5 AA 96 (или данному D5 AA AD) в БИТОВОМ потоке.
-	   WOZ хранит дорожку как сырые биты (1 бит = 1 bitcell), граница байта
-	   проивольна: маркер может начинаться с любой битовой позиции. Прежний
-	   woz_to_nibbles (выравнивание по «первому единичному биту») дергал фазу,
-	   и загрузчик Disk II ($C600) искал D5 AA по смещённым байтам — уходил
-	   в мусор (стенд: «шахматное поле»/адреса). Теперь ищем сам маркер в
-	   бит-потоке и упаковываем 8 бит на байт от его начала — получаем те же
-	   D5 AA 96 DE AA EB D5 AA AD ..., что реально видит дисковод. */
+	/* r1368/r1382: TrackData — байтовый поток дорожки, собранный от адресных
+	   маркеров D5 AA 96 / D5 AA AD БИТОВОГО потока. WOZ хранит дорожку как
+	   сырые биты (1 бит = 1 bitcell), граница байта произвольна.
+	   r1382: упаковка идёт СЕГМЕНТАМИ «маркер → следующий маркер», потому что
+	   фаза битпотока в WOZ может меняться по дорожке: у Zorro первый кластер
+	   секторов начинается на бите 1697 (1697 mod 8 = 1), остальные — на 12966
+	   (12966 mod 8 = 6). Сквозная упаковка 8 бит на байт от первого маркера
+	   оставляла байт-выровненными только первые три сектора, остальные 13
+	   размазывались (стенд r1381: `marks=0` при 4872 реальных байтах —
+	   загрузчик $C600 не видел ни одного D5 AA 96 и уходил в «шахматку»).
+	   Остаток меньше 8 бит на стыке уходит в промежуток, следующий сегмент
+	   снова начинается с байт-границы. */
 	{
 		/* паттерны D5 AA 96 и D5 AA AD в битах (MSB first) */
 		static const byte p96[24] = {1,1,0,1,0,1,0,1, 1,0,1,0,1,0,1,0, 1,0,0,1,0,1,1,0};
 		static const byte pAD[24] = {1,1,0,1,0,1,0,1, 1,0,1,0,1,0,1,0, 1,0,1,0,1,1,0,1};
 		unsigned mlen = bytes * 8;      /* бит в загруженном куске */
-		unsigned pos = 0, i, out = 0;
+		unsigned start = 0, pos, i, out = 0, q;
 		int found = -1;
 
 		if (mlen > bitCount) mlen = bitCount;
-		/* ищем первое вхождение любого из маркеров (скольжение по битам) */
-		while (pos + 24 <= mlen && found < 0) {
+		/* первый маркер — начало дорожки (позиция 0 вывода) */
+		for (pos = 0; pos + 24 <= mlen && found < 0; pos++) {
 			int m96 = 1, mAD = 1;
 			for (i = 0; i < 24; i++) {
-				unsigned bp = pos + i;
+				unsigned bp = (pos + i) % mlen;
 				byte b = (byte)((bits[bp >> 3] >> (7 - (bp & 7))) & 1);
 				if (b != p96[i]) m96 = 0;
 				if (b != pAD[i]) mAD = 0;
 			}
 			if (m96 || mAD) found = (int)pos;
-			pos++;
 		}
 		if (found < 0) goto empty;      /* маркер не найден — дорожка пуста */
+		start = (unsigned)found;
 
 		memset(d->TrackData, 0xFF, 8);
-		pos = (unsigned)found;
-		while (out < WOZ1_TRACK_SIZE - 8 && pos + 8 <= mlen) {
-			byte v = 0;
-			for (i = 0; i < 8; i++) {
-				unsigned bp = pos + i;
-				v = (byte)((v << 1) | ((bits[bp >> 3] >> (7 - (bp & 7))) & 1));
+		out = 8;
+		pos = 0;
+		while (out < WOZ1_TRACK_SIZE - 8) {
+			unsigned seg_end = mlen;
+			int nm = -1;
+
+			/* ближайший маркер после pos (дорожка круговая) */
+			for (q = pos + 1; q + 24 <= mlen; q++) {
+				unsigned bp0 = (start + q) % mlen;
+				int m96 = 1, mAD = 1;
+				for (i = 0; i < 24; i++) {
+					unsigned bp = (bp0 + i) % mlen;
+					byte b = (byte)((bits[bp >> 3] >> (7 - (bp & 7))) & 1);
+					if (b != p96[i]) m96 = 0;
+					if (b != pAD[i]) mAD = 0;
+				}
+				if (m96 || mAD) { nm = (int)q; break; }
 			}
-			d->TrackData[8 + out++] = v;
-			pos += 8;
+			if (nm >= 0) seg_end = (unsigned)nm;
+
+			while (pos + 8 <= seg_end && out < WOZ1_TRACK_SIZE - 8) {
+				byte v = 0;
+				for (i = 0; i < 8; i++) {
+					unsigned bp = (start + pos + i) % mlen;
+					v = (byte)((v << 1) | ((bits[bp >> 3] >> (7 - (bp & 7))) & 1));
+				}
+				d->TrackData[out++] = v;
+				pos += 8;
+			}
+			if (nm < 0) break;          /* оборот пройден */
+			pos = seg_end;              /* остаток <8 бит — в промежуток */
 		}
-		d->TrackLen = (int)out + 8;
+		d->TrackLen = (int)out;
 		if (d->TrackLen <= 8) goto empty;
+		/* r1380-ДИАГ: дорожка WOZ собрана для чтения загрузчиком. */
+		printf("fdd1: woz track %d built len=%d tmap=%u\n",
+		       d->Track, d->TrackLen, (unsigned)tmap);
+		printf("fdd1: woz head %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+		       d->TrackData[0], d->TrackData[1], d->TrackData[2], d->TrackData[3],
+		       d->TrackData[4], d->TrackData[5], d->TrackData[6], d->TrackData[7],
+		       d->TrackData[8], d->TrackData[9], d->TrackData[10], d->TrackData[11]);
 		return;
 	}
 
 empty:
 	memset(d->TrackData, 0xFF, sizeof(d->TrackData));
 	d->TrackLen = WOZ1_TRACK_SIZE;
+	/* r1380-ДИАГ: дорожка не разобрана (нет маркера/tmap 0xFF) — загрузчик
+	   Disk II увидит только 0xFF и не найдёт адресные поля. */
+	printf("fdd1: woz track %d EMPTY (tmap=%u idx=%u bits=%u)\n",
+	       d->Track, (unsigned)tmap, (unsigned)idx, (unsigned)bitCount);
 }
 
 static void fdd_load_track(struct FDD_DATA*data)
 {
 	struct FDD_DRIVE_DATA *drv = data->drives+data->drv;
-	int i, j, d;
+	int i, j, d, apple;
 	byte a2[2];
 	byte buf[257];
 
@@ -991,6 +1123,15 @@ static void fdd_load_track(struct FDD_DATA*data)
 		return;
 	}
 //	puts("fdd_load_track");
+	/* r1386: для Apple II раскладка дорожки — как в AppleWin
+	   (NibblizeTrack): физическая позиция i помечается ЛОГИЧЕСКИМ сектором
+	   и данные берутся ИЗ ТОГО ЖЕ сектора файла
+	   (`ms_SectorNumber[order][i]`, код DOS-порядка 0,7,14,6,13,5,12,4,…).
+	   Прежний код (наследие Агат-эмулятора) метил позицию `ren1[i]`, а файл
+	   читал подряд — метка адресного поля расходилась с данными, и после
+	   первого же сектора RWTS получал чужой сектор. Для Агата поведение
+	   оставлено прежним (SYSTEM_9), там образы в другой раскладке. */
+	apple = (data->sr->cursystype == SYSTEM_P);
 	iosseek(drv->disk, drv->start_ofs + drv->Track*
 		FDD_SECTOR_DATA_SIZE*FDD_SECTOR_COUNT, SSEEK_SET);
 	memset(drv->TrackData,0x00,sizeof(drv->TrackData));
@@ -1008,7 +1149,15 @@ static void fdd_load_track(struct FDD_DATA*data)
 		drv->TrackData[d++] = 0x96;
 		buf[0] = drv->volume;
 		buf[1] = drv->Track;
-		buf[2] = drv->prodos?pren1[i]:ren1[i];
+		if (apple) {
+			buf[2] = drv->prodos ? pren[i] : ren[i];
+			if (iosseek(drv->disk, drv->start_ofs + drv->Track*
+			             FDD_SECTOR_DATA_SIZE*FDD_SECTOR_COUNT +
+			             buf[2]*FDD_SECTOR_DATA_SIZE, SSEEK_SET) != 0)
+				drv->error = 1;
+		} else {
+			buf[2] = drv->prodos?pren1[i]:ren1[i];
+		}
 		buf[3] = fdd_check_sum(buf,3);
 		for (j=0; j<4; j++) {
 			fdd_code_fm(buf[j], a2);
@@ -1084,6 +1233,9 @@ static void fdd_load_track(struct FDD_DATA*data)
 	drv->TrackIndex = 0;
 	drv->TrackLen = sizeof(drv->TrackData);
 	drv->Rotated = 0;
+	/* r1379-ДИАГ: какая дорожка реально собрана для чтения загрузчиком. */
+	printf("fdd1: track %d built len=%d raw=%d prodos=%d\n",
+	       drv->Track, (int)drv->TrackLen, drv->rawfmt, drv->prodos);
 //	data->time = 0;
 }
 
@@ -1262,6 +1414,10 @@ byte fdd_io_read(unsigned short a,struct FDD_DATA*data)
 		break;
 	}
 	dprintf("fdd1: read[%x, %s]=%x\n", a, regs[a], r);
+	/* r1380-ДИАГ: первые обращения загрузчика к контроллеру ($C0EC — данные,
+	   $C0E9 — мотор, $C0EA/$C0EB — привод). Показывает, читает ли ROM диск
+	   вообще, и что ему возвращается. */
+	{ if (g_fdd_diag.io < 24) { printf("fdd1: io %02X -> %02X\n", a, r); g_fdd_diag.io++; } }
 //	system_command(data->st->sr, SYS_COMMAND_DUMPCPUREGS, 0, 0);
 	return r;
 }

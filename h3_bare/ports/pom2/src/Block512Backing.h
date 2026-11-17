@@ -1,0 +1,455 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Block512Backing — shared 512-byte block backing store for ProDOS
+// hard-disk style cards. Owns the in-memory image, the 2IMG/.2mg container
+// envelope (header + any trailer preserved bit-for-bit on write-back),
+// medium write-protect, dirty-block tracking, policy-controlled host-file write-back,
+// and host-folder synth volumes.
+//
+// Consumers (DEV.md § ProDOSHardDiskCard / § CffaCard / § SmartPortCard):
+//   - ProDOSHardDiskCard  — synthetic streaming port → byte-level access.
+//   - AtaBlockDevice / CffaCard — MAME-faithful ATA → block-level access.
+//   - SmartPortHdvUnit — hard-disk units behind SmartPort wrappers.
+//
+// Extracted verbatim from ProDOSHardDiskCard (2026-05-24, P1 § Cartes de
+// stockage MAME-fidèles) so behaviour — and the hdv_* pin tests — are
+// unchanged. eject() does NOT auto-save; the owning card decides whether to
+// flush first (it has the policy context, e.g. save-on-eject).
+
+#ifndef POM2_BLOCK512_BACKING_H
+#define POM2_BLOCK512_BACKING_H
+
+#include "MediaWritePolicy.h"
+
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace pom2 {
+
+struct HostNameMap;   // ProDOSVolume.h
+
+// ── Media-write epoch ────────────────────────────────────────────────────
+//
+// The rewind ring captures CPU + RAM + slot-card state, never the MEDIA of a
+// block device (an HDV is up to 32 MiB, a 3.5" image 800 KB — capturing one
+// per rewind frame is not an option). That left a real corruption path: RAM
+// rolls back over a ProDOS SAVE but the volume does not, so the restored
+// directory and the restored bitmap disagree with the blocks on the disk and
+// the next allocation cross-links them.
+//
+// The chosen policy is the safe minimum: a rewind may never CROSS a media
+// write. Every path that mutates a block device / 3.5" medium / writable WOZ
+// bumps this counter; `EmulationController` compares it at its capture point
+// and clears the ring when it moved, so the history restarts after the write
+// instead of spanning it. It is process-wide (a leaf storage class has no
+// controller handle).
+//
+// Release/acquire, not relaxed. The original rationale — "the compare happens
+// on the CPU worker, which is also where every guest write originates" — has
+// not been true since the deferred 3.5" write-back moved commits onto their
+// own thread and the UI gained host-side media swaps: the bump can now come
+// from a thread the worker never synchronises with. Under relaxed on both
+// sides nothing orders the counter against the bytes the write put on the
+// medium, so the worker may capture one or two rewind frames that already
+// span the write and still read the old epoch — which is precisely the state
+// the epoch exists to make impossible. The release on the bump and the
+// acquire on the compare cost nothing measurable (one counter, read once per
+// captured frame) and make the ordering the policy already assumed.
+inline std::atomic<uint64_t>& mediaWriteEpoch()
+{
+    static std::atomic<uint64_t> epoch{0};
+    return epoch;
+}
+inline void noteMediaWrite()
+{
+    mediaWriteEpoch().fetch_add(1, std::memory_order_release);
+}
+
+class Block512Backing
+{
+public:
+    static constexpr size_t kBlockBytes = 512;
+    // ProDOS block NUMBERS are 16-bit, so the highest addressable block index is
+    // $FFFF — which means a volume can hold up to 65536 blocks (indices
+    // 0..$FFFF) = exactly 32 MiB. The HDV card's uint16_t selectedBlock reaches
+    // every one of them. Many real 32 MiB raw .hdv dumps (e.g. A2DeskTop) are
+    // exactly 65536 blocks; only 65537+ (index $10000, unreachable) is rejected.
+    static constexpr size_t kMaxBlocks  = 0x10000;  // 65536 blocks (indices 0..$FFFF)
+
+    /// Load a raw .hdv or 2IMG/.2mg image. Parses + strips the 2IMG header,
+    /// validates ProDOS block order, 512-byte multiple, and ≤65536 blocks.
+    /// On failure leaves the store empty and sets lastError().
+    ///
+    /// Reads the file INLINE, so a caller holding `stateMutex` holds it across
+    /// the whole read — up to 32 MiB, the largest single stall in the tree.
+    /// UI callers want the two-phase pair below; this stays for the
+    /// single-threaded callers (CLI, tests, the profile-switch remount).
+    bool loadImage(const std::string& path);
+
+    /// ── Two-phase mount ─────────────────────────────────────────────────
+    /// What phase 1 hands to phase 2. Just bytes and the two facts about the
+    /// FILE that phase 2 would otherwise have to go back to the filesystem
+    /// for — so phase 2 makes no syscalls at all.
+    struct PreparedImage {
+        std::vector<uint8_t> bytes;
+        std::string          path;
+        /// False when the file could not be opened for writing. Probed in
+        /// phase 1 because it is a syscall, and because a chmod-read-only
+        /// image must mount write-protected rather than accept a session of
+        /// writes and fail at flush time.
+        bool                 hostWritable = true;
+        bool                 valid        = false;
+    };
+
+    /// Two host paths name the same file or folder: equal strings, or
+    /// `std::filesystem::equivalent` (a trailing '/', a relative path, a
+    /// symlink, /tmp vs /private/tmp). Every "re-read the same medium"
+    /// guard uses this — a string compare alone missed the other spellings.
+    /// Inline so a binary that links DiskIICard without this class still
+    /// links.
+    static bool sameFile(const std::string& a, const std::string& b)
+    {
+        if (a.empty() || b.empty()) return false;
+        if (a == b) return true;
+        std::error_code ec;
+        const bool same = std::filesystem::equivalent(a, b, ec);
+        return !ec && same;
+    }
+
+    /// Phase 1, to be called WITHOUT `stateMutex`: read `path` whole, with the
+    /// same size and emptiness gates loadImage() applies. Touches no object
+    /// state — it is static for exactly that reason.
+    static bool readImageFile(const std::string& path, PreparedImage& out,
+                              std::string& error);
+
+    /// Phase 2, to be called WITH `stateMutex` held: flush the outgoing
+    /// medium, then parse and adopt what phase 1 read. All the 2IMG decoding
+    /// and validation lives here, so nothing is skipped relative to
+    /// loadImage() — this is the same code, reached from the other side.
+    ///
+    /// Re-reads under the lock in one case, deliberately: when the outgoing
+    /// medium is the SAME file with unsaved changes, the prepared bytes
+    /// predate the flush and installing them would roll the guest's writes
+    /// back. This exception requires the same image path and pending writes;
+    /// preserving those writes takes precedence over mount latency.
+    bool adoptImage(PreparedImage&& prepared);
+
+private:
+    /// The parse-and-adopt half both entry points share. Performs NO file
+    /// I/O — everything it needs is already in `prepared` — so it is the part
+    /// that is cheap to run under the lock.
+    bool adoptPrepared(PreparedImage&& prepared);
+
+public:
+
+    /// Replace the image with synthesised bytes (e.g. a host-folder volume).
+    /// `hostFolder` non-empty marks it a synth volume whose write-back decodes
+    /// back into that folder. Must be a non-zero multiple of 512, with
+    /// at most kMaxBlocks blocks, just like file-backed images.
+    bool loadFromBytes(std::vector<uint8_t> bytes, const std::string& label,
+                       const std::string& hostFolder);
+
+    /// Drop the image. Does NOT auto-save — the owning card flushes first if
+    /// its policy says so (see ProDOSHardDiskCard::ejectImage).
+    void eject();
+
+    /// Persist dirty blocks to the source (.hdv/.2mg in-place rewrite that
+    /// preserves header + trailer; OR synth-folder decode). No-op (returns
+    /// true) when write-back is off, the medium is WP, or nothing is dirty.
+    ///
+    /// Does its file work INLINE, so a caller holding `stateMutex` freezes the
+    /// machine for the whole read-modify-write + rename. That is the eject
+    /// path's problem, and `takeWriteBack` + `commitWriteBack` below are the
+    /// split that solves it; this stays for single-threaded callers and for
+    /// the deliberate flush-before-destroy in `adoptImage`.
+    bool saveDirty();
+
+    /// ── Two-phase eject ─────────────────────────────────────────────────
+    /// The mirror of `PreparedImage`: what phase 1 lifts OUT of the backing so
+    /// phase 2 can write it with `stateMutex` released. Carries the decoded
+    /// facts (offset, dirty block numbers and their bytes) so phase 2 needs
+    /// nothing from the object — by then the medium may already be gone.
+    class CommitBarrier {
+    public:
+        virtual ~CommitBarrier() = default;
+        virtual void wait() = 0;
+        virtual void complete() = 0;
+    };
+    struct CommitTicket {
+        std::shared_ptr<CommitBarrier> barrier;
+        ~CommitTicket() { if (barrier) barrier->complete(); }
+    };
+    struct PreservedHostFiles {
+        std::mutex            mutex;
+        std::set<std::string> paths;
+    };
+    struct PendingWriteBack {
+        // Preserve capture order even when an eject overtakes an autosave
+        // worker. Abandoning a payload releases its successor without reordering.
+        std::shared_ptr<CommitTicket> commitTicket;
+        /// Set by `takeDetachWriteBack` only: the backing refuses a new
+        /// image for as long as this lives (see there).
+        std::shared_ptr<const int> reservation;
+        std::shared_ptr<const int> captureReservation;
+        bool                  valid      = false;  ///< false → phase 2 no-ops
+        bool                  synth      = false;
+        std::string           path;               ///< file case
+        std::string           hostFolder;         ///< synth case
+        size_t                dataOffset = 0;
+        size_t                dataLength = 0;
+        std::vector<uint32_t> dirtyIndices;       ///< file case
+        std::vector<uint8_t>  dirtyBytes;         ///< 512 × dirtyIndices
+        std::vector<uint8_t>  synthImage;         ///< synth case: whole volume
+        /// Synth case: when the folder snapshot was taken. The decode uses
+        /// it to preserve host files edited AFTER the mount instead of
+        /// silently reverting them to the snapshot's stale copy.
+        bool                  hasMountTime = false;
+        std::filesystem::file_time_type mountTime{};
+        bool                  textConversion = false;
+        /// Synth case: the mount's set of preserved host files, shared
+        /// with the backing so a preservation outlives the pass (see
+        /// `decodeVolumeToFolder`'s `stickyPreserved`).
+        std::shared_ptr<PreservedHostFiles> preserved;
+        /// Synth case: the names the folder was served under (ProDOSVolume.h).
+        std::shared_ptr<const HostNameMap> nameMap;
+    };
+
+    /// Phase 1, to be called WITH `stateMutex` held: MOVE out exactly what
+    /// `saveDirty()` would write. Memcpy only — no syscalls — so it is cheap
+    /// under the lock. CLEARS the dirty flags it captured, atomically with
+    /// the capture: the medium stays mounted and writable while phase 2
+    /// commits with the lock released, so a block the guest dirties (or
+    /// re-dirties) during that window must keep its flag — it is NOT in this
+    /// pending payload and still needs a later flush. A blanket phase-3
+    /// clear instead silently dropped exactly those writes. A failed commit
+    /// calls `restoreDirty(pending.dirtyIndices)` so a retry re-captures.
+    ///
+    /// `scratch` is the buffer the dirty bytes land in when it is large
+    /// enough — handed in by a caller that sized and TOUCHED it with no lock
+    /// held (`pom2::prefaultCaptureBuffer`, MediaMount.h). The cost of a
+    /// capture is not the memcpy but the page faults of a fresh allocation:
+    /// 30 MiB of them, for a volume copy that dirtied most of a 32 MiB HDV,
+    /// were 3-5 ms of `stateMutex` on a desktop and 33 ms on a CI virtual
+    /// machine (storage_lock_budget, 2026-11-01). Too small, it is grown —
+    /// the old cost, for the rare case; empty, it is the old behaviour.
+    PendingWriteBack takeWriteBack(std::vector<uint8_t> scratch = {});
+
+    /// `takeWriteBack` for an explicit EJECT, which retires the flags for
+    /// good: the backing then refuses to adopt or load another image for as
+    /// long as the returned payload lives. A mount that landed while phase 2
+    /// ran (the AI control server mounts from its own thread) left a failed
+    /// commit nothing to hand its blocks back to, and the caller then dropped
+    /// the only copy of the guest's writes (bug hunt 2026-09-16). The
+    /// autosave needs no such thing: it keeps the flags until the file lands.
+    PendingWriteBack takeDetachWriteBack(std::vector<uint8_t> scratch = {});
+
+    struct WriteBackResult { bool ok = true; std::string error; };
+    // Called under the machine lock; copies bytes and starts file work on a
+    // separate thread. The worker owns no card/memory pointers. A forced
+    // capture is a barrier for the writes present when it is requested.
+    class WriteBackOperation {
+    public:
+        virtual ~WriteBackOperation() = default;
+        virtual bool ready() const = 0;
+        virtual WriteBackResult wait() = 0;
+    };
+    class WriteBackExecutor {
+    public:
+        virtual ~WriteBackExecutor() = default;
+        virtual std::shared_ptr<CommitBarrier> reserve(std::shared_ptr<CommitBarrier>) = 0;
+        virtual std::shared_ptr<WriteBackOperation> submit(
+            PendingWriteBack, std::shared_ptr<WriteBackOperation> previous) = 0;
+    };
+    void setWriteBackExecutor(std::shared_ptr<WriteBackExecutor> executor)
+    { writeBackExecutor_ = std::move(executor); }
+    std::shared_ptr<WriteBackOperation> pollWriteBack(bool force = false);
+    const char* persistenceState() const;
+    // Session media are detached from host files, including after policy changes.
+    bool sessionCaptureReady() const { return !backgroundWrite_ && detachReservation_.expired() && pendingWrites_.use_count() == 1; }
+    bool sessionReplaceable() const { return sessionCaptureReady() && (!anyDirty_ || detachedSession_); }
+    bool appendSessionMedia(std::vector<uint8_t>& out, std::string& error) const;
+    bool loadSessionMedia(const uint8_t* data, size_t size, std::string& error);
+    void swapSessionMedia(Block512Backing& prepared);
+    const std::string& persistenceError() const { return persistenceError_; }
+
+    /// Phase 2, to be called WITHOUT the lock: perform the deferred write.
+    /// Static because the backing it came from may no longer exist.
+    ///
+    /// `newMountTime` (optional, host-folder case only): whenever the decode
+    /// walk ran (success or partial failure; untouched when it stopped before
+    /// writing anything), receives
+    /// the stamp the STILL-MOUNTED volume must adopt as its mount time. The
+    /// decode has just written files whose mtime is now later than the old
+    /// stamp; without this, the very next flush classifies POM2's own output
+    /// as a host-side edit and preserves the guest's second round of changes
+    /// away. An ejecting caller has nothing left to update and passes null.
+    static bool commitWriteBack(PendingWriteBack&& pending,
+                                std::string& error,
+                                std::filesystem::file_time_type* newMountTime
+                                    = nullptr,
+                                std::string* notice = nullptr);
+
+    /// A failed eject's commit, host-folder case: the decode may already have
+    /// written part of the tree before failing, and the medium stays mounted.
+    /// Adopt the stamp `commitWriteBack` published, as `saveDirty` does,
+    /// or the retry files POM2's own output as host edits
+    /// (`.pom2-conflicts/`). No-op unless this backing still serves `folder`
+    /// and the stamp is real (`min()` = the walk never ran).
+    void adoptFolderStamp(const std::string& folder,
+                          std::filesystem::file_time_type stamp);
+
+    /// Undo a `takeWriteBack` whose commit failed: re-mark its captured
+    /// blocks dirty (merging with any block dirtied since). Out-of-range
+    /// indices — the image was replaced meanwhile — are ignored.
+    void restoreDirty(const std::vector<uint32_t>& indices);
+
+    bool   isLoaded()   const { return loaded_; }
+    size_t blockCount() const { return image_.size() / kBlockBytes; }
+    const std::string& path()      const { return path_; }
+    const std::string& hostFolder() const { return hostFolder_; }
+    const std::string& lastError() const { return lastError_; }
+    /// This mount's process-unique identity (0 = nothing loaded). Unlike
+    /// `mountGeneration_` it survives a move from a freshly loaded object.
+    uint64_t mountId() const { return loaded_ ? mountId_ : 0; }
+
+    bool isWriteProtected()   const { return wpHeader_ || hostReadOnly_; }
+    /// The medium's OWN lock: the 2IMG header's locked bit, and nothing
+    /// else. Distinct from `isWriteProtected()`, which also carries the
+    /// NOTCH — the host file's read-only bit, which
+    /// `StorageCoordinator::setMediaNotch` can flip while the image is
+    /// mounted. That is the difference that matters to the write-back:
+    ///
+    ///   guest writes block 2 → dirty → user ticks "Write-protected" →
+    ///   `takeWriteBack()` refuses (`isWriteProtected()`), `saveDirty()`
+    ///   returns SUCCESS with `hasUnsavedChanges()` still true, the card's
+    ///   eject guard (`!isWriteProtected()`) skips the flush, and `eject()`
+    ///   drops the only copy of the write. Silently.
+    ///
+    /// There was never a reason to refuse: the commit writes a temp sibling
+    /// and renames it, which a chmod-read-only file accepts (the rename
+    /// needs the DIRECTORY, and `syncFileContents` opens O_RDONLY for
+    /// exactly this reason — see AtomicFileReplace.h). And a medium that
+    /// was already protected at mount can hold no dirty block at all:
+    /// `writeBlock`/`writeByte` refuse from the first access. So gating the
+    /// FLUSH on the header lock alone changes exactly one case — the one
+    /// above — and leaves "a locked disk mounts read-only" untouched.
+    bool isMediumLocked()     const { return wpHeader_; }
+    /// The notch (MediaNotch.h) on a mounted image — see Disk35Image.
+    void setHostWriteProtected(bool on) { hostReadOnly_ = on; }
+    bool isHostWriteProtected() const   { return hostReadOnly_; }
+    bool isSynthVolume()      const { return synth_; }
+    void setHostFolderTextConversion(bool enabled)
+    { hostTextConversion_ = synth_ && enabled; }
+    bool hostFolderTextConversion() const { return hostTextConversion_; }
+    bool isWriteBackEnabled() const { return writeBack_; }
+    void setWriteBackEnabled(bool on) { writeBack_ = on; }
+    bool canWriteBack()       const { return supportsWriteBack_ && !isWriteProtected(); }
+    bool hasUnsavedChanges()  const { return anyDirty_; }
+    /// How many blocks `hasUnsavedChanges` stands for — the size of the
+    /// payload the next `takeWriteBack` captures, which is what an unlocked
+    /// phase 0 sizes its buffer from (`MediaBayInfo::unsavedBlocks`).
+    uint32_t dirtyBlockCount() const;
+
+    /// Block-level access (ATA path). Returns false when blk is out of range.
+    /// readBlock copies 512 bytes into dst512; writeBlock copies from src512
+    /// and marks the block dirty (no-op + false when the medium is WP).
+    bool readBlock (uint32_t blk, uint8_t* dst512) const;
+    bool writeBlock(uint32_t blk, const uint8_t* src512);
+
+    /// Byte-level access (streaming HDV port). `absolute` = blk*512 + offset.
+    /// readByte returns 0xFF out of range; writeByte is a no-op out of range
+    /// or when WP, and marks the containing block dirty otherwise.
+    uint8_t readByte (size_t absolute) const;
+    void    writeByte(size_t absolute, uint8_t v);
+    /// `writeByte` for the rest of a block whose write was ALLOWED when it
+    /// began: the notch (`hostReadOnly_`) is not asked again, the medium's
+    /// own lock still is. The HDV card's ROM decides write-protect once per
+    /// block, so a notch flipped mid-loop must not tear the block it already
+    /// promised (ProDOSHardDiskCard::writeDataByte, bug hunt 2026-11-01).
+    void    writeByteLatched(size_t absolute, uint8_t v);
+
+    /// Auto-turbo busy signal — any access bumps it; the UI bleeds it off one
+    /// step per frame so a multi-block transfer stays in turbo end-to-end.
+    bool isBusy() const
+    {
+        return activityTicks_.load(std::memory_order_relaxed) > 0;
+    }
+    void tickActivityDecay()
+    {
+        uint32_t v = activityTicks_.load(std::memory_order_relaxed);
+        if (v) activityTicks_.store(v - 1, std::memory_order_relaxed);
+    }
+
+private:
+    void collectWriteBack();
+    /// True, with `lastError_` set, while a detached payload is alive.
+    bool refusedWhileDetaching();
+    std::weak_ptr<const int> detachReservation_;
+    std::shared_ptr<const int> pendingWrites_ = std::make_shared<const int>(0);
+    std::shared_ptr<WriteBackExecutor> writeBackExecutor_;
+    std::shared_ptr<CommitBarrier> commitTail_;
+    std::shared_ptr<WriteBackOperation> backgroundWrite_;
+    std::vector<std::pair<uint32_t, uint64_t>> backgroundVersions_;
+    std::vector<uint64_t> blockVersions_;
+    uint64_t mountGeneration_ = 0, backgroundGeneration_ = 0;
+    uint64_t mountId_ = 0;   // process-unique per load (mountId()); 0 = empty
+    std::chrono::steady_clock::time_point nextWriteBack_{};
+    std::string persistenceError_;
+    void markDirty(uint32_t blk);
+    void bumpActivity() const
+    {
+        activityTicks_.store(kBusyHysteresisFrames, std::memory_order_relaxed);
+    }
+
+    std::vector<uint8_t> image_;
+    std::vector<uint8_t> headerBytes_;   // 2IMG container bytes [0..dataOffset)
+    size_t  dataOffset_ = 0;
+    size_t  dataLength_ = 0;
+    std::vector<bool> dirtyBlocks_;
+    bool    anyDirty_          = false;
+    bool    writeBack_         = pom2::mediaWritableByDefault();   // MediaWritePolicy.h
+    bool    wpHeader_          = false;   // 2IMG lock flag
+    bool    hostReadOnly_      = false;   // the notch — host file read-only
+    bool    supportsWriteBack_ = false;
+    bool    synth_             = false;
+    bool    hostTextConversion_ = false;
+    /// Synth volumes: when the host-folder snapshot was taken (see
+    /// PendingWriteBack::mountTime).
+    bool    hasMountTime_      = false;
+    std::filesystem::file_time_type mountTime_{};
+    std::shared_ptr<PreservedHostFiles> preserved_;
+    std::shared_ptr<const HostNameMap> nameMap_;   // synth: takeFolderNameMap
+    std::string hostFolder_;
+    std::string path_;
+    std::string lastError_;
+    bool    loaded_ = false;
+    bool    detachedSession_ = false;
+
+    static constexpr uint32_t kBusyHysteresisFrames = 8;
+    mutable std::atomic<uint32_t> activityTicks_{0};
+};
+
+} // namespace pom2
+
+#endif // POM2_BLOCK512_BACKING_H

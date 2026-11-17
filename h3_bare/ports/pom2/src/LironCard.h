@@ -1,0 +1,429 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// LironCard — the Apple II 3.5" Disk Controller (Apple 670-0186, "Liron"),
+// running its OWN firmware over a real IWM.
+//
+// POM2 already had a card called SmartPortCard on this hardware's name, and
+// the two are not rivals: that one answers ProDOS's block calls from the
+// host with an invented streaming port, borrowing only the Liron dump's
+// identity bytes. It works, it needs no bit-cell emulation, and it is the
+// right thing for a user who wants a 3.5" volume on a //e. This is the other
+// half — the card as silicon:
+//
+//   * the real 4 KB EPROM (`roms/liron.rom`, the BMOW/Yellowstone dump)
+//     executing on the 6502, both its $Cn00 page and its $C800 half;
+//   * a real `IWMDevice` behind $C0nX, which the firmware drives itself;
+//   * `Sony35Drive` mechanisms with zoned GCR under the head.
+//
+// Nothing is served from the host: ProDOS boots because the firmware read
+// the sectors. That is the whole point, and it is only worth having because
+// it is now possible — the IWM's bit-cell walker could not recover a Sony
+// sector until 2026-09-01 (see `sony35_iwm_read_path`), so a card written
+// before that would have been a card that did not boot.
+//
+// **Wiring, and the one thing that differs from the //c+.** On a //c+ the
+// MIG gate array selects the drive and drives head-select. A Liron has no
+// MIG: the IWM's own SEL line (control bit 5, $C0nA/$C0nB) is head select,
+// and it is also bit 3 of the Sony's register address — `regSelect()` is
+// `{ HDSEL, CA2, CA1, CA0 }`. So SEL is forwarded to `Sony35Drive::ssW`
+// here, where `SmartPortHub` forwards the MIG's $C240/$C260 instead.
+//
+// Deliberately out of scope, as TODO § Storage has always said: the UniDisk
+// 3.5's drive-side 65C02. This card drives the *dumb* Apple 3.5 Drive, which
+// is what the firmware's GCR path talks to; an intelligent UniDisk would
+// need its own processor emulated inside the drive.
+
+#ifndef POM2_LIRON_CARD_H
+#define POM2_LIRON_CARD_H
+
+#include "Disk35Image.h"
+#include "IWMDevice.h"
+#include "MountableMediaCard.h"
+#include "SlotPeripheral.h"
+#include "SmartPortBusDevice.h"
+#include "Sony35Drive.h"
+
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+class FloppySoundSink;
+
+namespace pom2 {
+
+class LironCard : public SlotPeripheral, public MountableMediaCard
+{
+public:
+    static constexpr int kDefaultSlot = 5;
+    /// Sony mechanisms behind the IWM — the dumb-drive path, which only the
+    /// bus-responder-off configuration reaches (`setBusResponderEnabled`).
+    static constexpr int kDrives      = 2;
+    /// Units on the SmartPort BUS, the path the firmware actually boots
+    /// from: up to FOURTEEN (2026-09-11) — the most ProDOS 8 can list. The
+    /// firmware's INIT scan numbers sixteen without complaint; ProDOS 8 2.4
+    /// fills its 14-entry device table and stops (`liron_chain`).
+    static constexpr int kMaxUnits    = 14;
+    static_assert(kMaxUnits <= SmartPortBusDevice::kMaxUnits,
+                  "the bus responder must carry the whole chain");
+    /// The whole chain by default: a fresh Liron answers for every unit it
+    /// can carry. A count saved under `media_slotN_bays` still wins; 2 is one
+    /// click away in the media panel for a ProDOS older than 2.4, which does
+    /// not remap units 3+ anyway.
+    static constexpr int kDefaultUnits = kMaxUnits;
+
+    explicit LironCard(int slot = kDefaultSlot);
+
+    /// Flushes both bays' write-back, like `~DiskIICard`. A card is destroyed
+    /// by `SlotBus::plug`/`unplug` on every slot rebuild and profile switch,
+    /// and by the machine teardown at quit; without this the medium's dirty
+    /// blocks died with the object and the remount read the untouched file
+    /// back, reverting everything the guest had written since the mount.
+    ~LironCard() override;
+
+    // ── SlotPeripheral ───────────────────────────────────────────────────
+    std::string_view name() const override { return "Apple II 3.5\" (Liron)"; }
+
+    /// $C0nX — the IWM, all sixteen registers, no interception. The
+    /// firmware's mode/status/handshake dance is its own business.
+    uint8_t deviceSelectRead (uint8_t low4) override;
+    void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
+
+    /// $Cn00 — the dump's per-slot page. The EPROM carries eight of them
+    /// (offsets 0x100..0x7FF) that differ only in the slot number they load
+    /// into X, so the firmware knows where it lives without self-modifying
+    /// code. Offset 0x000 is a copyright string, not a page.
+    uint8_t slotRomRead(uint8_t low8) override;
+    /// The page has no side effect: the debugger and the SmartPort trace
+    /// read it through peekCpuView.
+    bool peekSlotRom(uint8_t low8, uint8_t& out) const override
+    {
+        out = (!romLoaded_ || slot_ < 1 || slot_ > 7)
+            ? 0xFF : rom_[static_cast<std::size_t>(slot_) * 256 + low8];
+        return true;
+    }
+
+    /// $C800-$CFFF — the upper 2 KB of the dump, where the GCR routines and
+    /// the SmartPort dispatcher live.
+    uint8_t expansionRomRead(uint16_t offset) override;
+    /// The upper 2 KB of the Liron EPROM IS the /IOSTB window, so the card
+    /// takes it — MAME `a2bus.h:145` `take_c800()` defaults to false and
+    /// only a card with an expansion ROM overrides it (`a2ssc.cpp:50` etc.).
+    bool takesC800() const override { return true; }
+    /// The enable latch lets go on $CFFE as well as $CFFF, and RESET clears
+    /// it.
+    /// [B] The Liron's schematic as reverse-engineered from a board
+    ///     (steve-chamberlin/fpga-disk-controller, `liron.sch`) — a third
+    ///     party's reading of the card, not Apple's drawing: /HISTROBE is a
+    ///     74LS30 over IOSTROBE, A5..A10 and the AND of A1..A4 (A0 is not
+    ///     decoded), and the latch's clear is a 74LS20 over /HISTROBE and
+    ///     /RES.
+    /// [C] The EPROM agrees on the width: $CFFE and $CFFF are both $FF.
+    /// [F] The RESET half rests on that one schematic. Settled by: a
+    ///     continuity check from pin 31 to IC2 on a real card.
+    bool releasesC800At(uint16_t offset) const override { return offset >= 0x7FE; }
+    bool releasesC800OnReset() const override { return true; }
+
+    void advanceCycles(int cycles) override;
+    void onReset() override;
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
+    // ── MountableMediaCard ───────────────────────────────────────────────
+    // One bay per unit on the daisy chain: 2 to 14 of them (`setUnitCount`).
+    // A unit is whatever disk is put in it (2026-09-11): a 3.5" 800K image
+    // (`Disk35Image` — the UniDisk 3.5 the chain was built for, and the only
+    // kind the dumb Sony path behind bays 0-1 can read) or a ProDOS hard-disk
+    // image up to 32 MiB (`Block512Backing` — a SmartPort hard disk on the
+    // same bus, which is all a block device is to this firmware). No type
+    // select: the FILE decides — a `.woz`, or anything that loads as an 800K
+    // 3.5" image, is a 3.5"; everything else is a hard disk. Hard disks take
+    // the two-phase mount, eject and the background autosave; 3.5" bays keep
+    // the one-phase mount and the two-phase whole-file flush they had.
+    int          bayCount() const override { return unitCount_; }
+    std::vector<int> bayCountChoices() const override
+    { return { 2, 4, 6, 8, 10, 12, 14 }; }
+    void         setBayCount(int n) override { setUnitCount(n); }
+    MediaBayInfo bayInfo(int bay) const override;
+    uint64_t bayMediaIdentity(int bay) const override
+    {
+        if (bay < 0 || bay >= kMaxUnits) return 0;
+        return busUnits_[static_cast<std::size_t>(bay)].loadedIdentity();
+    }
+    bool         mountBay(int bay, const std::string& path,
+                          std::string& errOut) override;
+    /// Two-phase mount, phase 2 — hard disks only. An image the size of an
+    /// 800K disk is declined with an empty error, so the caller falls back to
+    /// `mountBay` and it mounts as a 3.5" (the kind the dumb path can read).
+    bool         adoptBay(int bay, Block512Backing::PreparedImage&& prepared,
+                          std::string& errOut) override;
+    bool         ejectBay(int bay) override;
+    /// Two-phase eject — hard disks only (3.5" bays decline: empty error).
+    bool         prepareEjectBay(int bay, Block512Backing::PendingWriteBack& out,
+                                 std::string& errOut) override;
+    void         restoreBayDirty(int bay,
+                                 const std::vector<uint32_t>& indices) override;
+    bool         flushBay(int bay, std::string& errOut) override;
+    /// Two-phase flush — 3.5" bays (800 KB whole-file images), and `flushAll`
+    /// runs under the machine lock. A hard disk declines (empty error) and is
+    /// flushed inline, its dirty blocks only, as every block card's is — and
+    /// the background autosave has normally committed them already.
+    bool         prepareFlushBay(int bay, PendingBayFlush& out,
+                                 std::string& errOut) override;
+    void         restoreFlushBayDirty(int bay, uint64_t lineage) override;
+    void         noteFlushBayDiversion(int bay, uint64_t lineage,
+                                        const std::string& path) override;
+    /// Forwarded to every mechanism (Sony35Drive::setStandardClock).
+    void         setStandardClock(double hz) override;
+    /// The IWM's drive-disable delay (~1 s of the 7M crystal) is real time:
+    /// under a Zip or TransWarp the card's private IWM counted it in
+    /// accelerated cycles and dropped the drive ~4x early, as the //c+ IWM
+    /// did before Memory::stockCyclesBetween (IWMDevice::setStockSpan).
+    /// Menu pacing advances the whole machine and must not change this
+    /// ratio. The machine notification follows setCpuClock before ticking.
+    void         setCpuClock(double hz) override { if (hz > 0.0) cpuHz_ = hz; }
+    void         setMachineCpuClock(double hz) override { setCpuClock(hz); }
+    void         setBayWriteBack(int bay, bool on) override;
+    void         setBayHostWriteProtected(int bay, bool on) override;
+
+    /// The hard-disk bays, index = bay, for the background autosave
+    /// (`EmulationController::pollBlockWriteBacks`). A 3.5" bay's entry is an
+    /// unloaded backing, which the executor skips.
+    std::vector<Block512Backing*> blockBackings() override;
+    /// The 3.5" bays, same indexing; an empty image is skipped by the poll.
+    std::vector<AutosavedMedium*> autosavedMedia() override
+    {
+        std::vector<AutosavedMedium*> out;
+        for (auto& img : images_) out.push_back(&img);
+        return out;
+    }
+
+    /// True once the EPROM was found and loaded. Without it the card is
+    /// inert — there is no synthetic fallback here on purpose: a synthesised
+    /// ROM would be a different card, and POM2 already has that card
+    /// (`SmartPortCard`).
+    bool romLoaded() const { return romLoaded_; }
+
+    /// How many units the firmware's INIT scan finds on the chain — 2 to 14
+    /// (odd counts round up: ProDOS drives come in pairs), exactly
+    /// `SmartPortCard::setUnitCount`'s rule. The guest sees a change at its
+    /// next INIT, i.e. the next boot; ProDOS 8 2.4+ remaps units 3+ onto
+    /// slots with no disk device of their own. Configuration, not state: the
+    /// snapshot does not carry it, as the SmartPort card's does not.
+    ///
+    /// Shrinking does not eject: a bay past the new count keeps its medium,
+    /// unseen by the guest but still flushed by the destructor. The host
+    /// (`StorageCoordinator::setMediaBayCount`) refuses to shrink over a
+    /// loaded bay, so that state is only reachable by hand.
+    void setUnitCount(int n);
+    int  unitCount() const { return unitCount_; }
+    const std::string& lastError() const { return lastError_; }
+
+    /// The byte-level SmartPort **bus** responder (`SmartPortBusDevice`).
+    ///
+    /// ON by default: with it, the real firmware finds an intelligent device
+    /// on its port, enumerates it, and boots from it — which is what a Liron
+    /// with a UniDisk 3.5 attached does. It only answers while a bay holds
+    /// media; an empty chain is silence on the wire, the scan reports $28
+    /// and a //c-class autostart falls through to its internal drive. Off,
+    /// the card is a Liron with nothing plugged in, and the dumb Sony models
+    /// behind the IWM see the phase lines instead (`POM2_TRACE_SMARTPORT_BUS
+    /// =1` prints every byte in both directions either way).
+    void setBusResponderEnabled(bool on) { busEnabled_ = on; }
+    bool busResponderEnabled() const { return busEnabled_; }
+
+    /// How far the last bus exchange got, for tests and diagnostics.
+    using BusProgress = SmartPortBusDevice::Progress;
+    BusProgress busProgress() const { return bus_.progress(); }
+
+    /// What the BUS unit answers when the guest asks "can I write?" — the
+    /// value `SmartPortBusDevice` gates WRITE and FORMAT on, which is NOT the
+    /// same question as `bayInfo(bay).writeProtected` (that one reports the
+    /// medium's own flag, straight from the backing). The two diverged once
+    /// already: the hard-disk bay answered the raw flag while the 3.5" bay
+    /// folded in the write-back opt-in, so with write-back off a guest SAVE to
+    /// a hard disk was acknowledged and then discarded at eject — a write the
+    /// guest was told had succeeded (TODO.md R1). Exposed so that contract can
+    /// be asserted directly: the bus device itself is private, and a pin
+    /// written through `bayInfo()` would stay green while the bug lived.
+    bool busUnitWriteProtected(int bay) const
+    {
+        if (bay < 0 || bay >= kMaxUnits) return true;
+        return busUnits_[static_cast<std::size_t>(bay)].writeProtected();
+    }
+
+    /// Mechanical sound sink, shared with the rest of the 3.5" stack.
+    void setFloppySound(FloppySoundSink* fs);
+
+    int slot() const { return slot_; }
+
+    // Diagnostics for tests and the inspector.
+    const IWMDevice&   iwm()      const { return iwm_; }
+    const Sony35Drive& drive(int i) const { return drives_[i]; }
+
+private:
+    int  slot_       = kDefaultSlot;
+    bool romLoaded_  = false;
+    std::string lastError_;
+    std::vector<uint8_t> rom_;          // the 4 KB dump, verbatim
+
+    IWMDevice                          iwm_;
+    std::array<Disk35Image, kMaxUnits> images_;   // a bay's 3.5" medium…
+    std::array<Block512Backing, kMaxUnits> blocks_; // …or its hard disk; never both
+    std::array<Sony35Drive, kDrives>   drives_;   // bays 0-1 only
+    int                                unitCount_ = kDefaultUnits;
+
+    // ── The SmartPort bus ────────────────────────────────────────────────
+    // The firmware's device scan is not talking to a disk: it drives PH1 and
+    // LSTRB high, then exchanges BYTES through the IWM's data register with
+    // an intelligent device (a UniDisk 3.5 carries its own 65C02). POM2 has
+    // no such drive and will not emulate that processor; `SmartPortBusDevice`
+    // answers the protocol instead, at the byte level, which is the same seam
+    // `SmartPortCard` already uses one layer up (docs/lle_vs_hle.md). This
+    // card owns the IWM registers, so it is the one that decides which
+    // accesses are the bus's: PH1 + LSTRB high with the port enabled is what
+    // the scan asserts and no disk transaction ever does, and a transaction
+    // once begun stays routed until its reply is consumed.
+    /// One unit on the bus: the bay's 3.5" image or its hard disk, whichever
+    /// is loaded (the card keeps them exclusive).
+    class ImageUnit final : public SmartPortBusUnit {
+    public:
+        void bind(Disk35Image* img, Block512Backing* blk,
+                  MountableMediaCard* owner, int bay)
+        { img_ = img; blk_ = blk; owner_ = owner; bay_ = bay; }
+        /// A UniDisk's EJECT: the card's owner takes the 3.5" out.
+        void requestEject() override
+        {
+            if (owner_ && disk()) owner_->requestGuestEject(bay_, img_->mountId());
+        }
+        /// The bay's mount identity, as loaded — not as the guest sees it.
+        uint64_t loadedIdentity() const
+        {
+            if (img_ && img_->isLoaded()) return img_->mountId();
+            return (blk_ && blk_->isLoaded()) ? blk_->mountId() : 0;
+        }
+        bool hasMedia() const override { return disk() || hard(); }
+        uint64_t mediaIdentity() const override
+        {
+            if (disk()) return img_->mountId();
+            return hard() ? blk_->mountId() : 0;
+        }
+        /// An empty bay has no blocks. Answering the 800K geometry with no
+        /// media let a STATUS on an empty unit report a 1600-block volume the
+        /// firmware could then try to read — every sibling unit
+        /// (`SmartPort35Unit`, `SmartPortHdvUnit`) gates this on the medium.
+        uint32_t blockCount() const override
+        {
+            // The disk's own size: a 400K raw .po is 800 blocks and a 1.44M
+            // MOOF 2880. The 800K constant made STATUS report 1600 for every
+            // disk, so a formatter laid a 1600-block volume on an 800-block
+            // one and blocks past the end failed as I/O errors, not $2D
+            // (bug hunt 2026-10-23). SmartPort35Unit already did this.
+            if (disk()) return img_->blockCount();
+            return hard() ? static_cast<uint32_t>(blk_->blockCount()) : 0u;
+        }
+        /// One rule for both bays of this card (TODO.md R1, settled
+        /// 2026-09-07): physically write-protected OR no write-back opt-in.
+        /// The 3.5" bay already answered that way — `Disk35Image::
+        /// isWriteProtected` folds in `!writeBackEnabled_` — while the
+        /// hard-disk bay asked `Block512Backing::isWriteProtected`, which is
+        /// the medium flag alone (`wpHeader_ || hostReadOnly_`). So two bays
+        /// of ONE card gave opposite answers to the same toggle, and the
+        /// hard-disk one was the dangerous direction: the bus replied "write
+        /// accepted", the blocks went dirty, and `dropBay`/`flushBay` then
+        /// discarded them because write-back was off — a guest SAVE reported
+        /// as successful that never reached the user's file. `SmartPortHdvUnit`
+        /// was aligned when R1 was settled; the Liron's hard-disk bay is newer
+        /// code (chains of eight) and was written against the raw flag.
+        bool writeProtected() const override
+        {
+            if (disk()) return img_->isBlockWriteProtected();
+            if (!hard()) return true;
+            return blk_->isWriteProtected() || !blk_->isWriteBackEnabled();
+        }
+        bool readBlock(uint32_t b, uint8_t out[512]) override
+        {
+            if (disk()) return img_->readBlock(b, out);
+            return hard() && blk_->readBlock(b, out);
+        }
+        bool writeBlock(uint32_t b, const uint8_t in[512]) override
+        {
+            if (disk()) return img_->writeBlock(b, in);
+            return hard() && blk_->writeBlock(b, in);
+        }
+        /// A Liron bay holds either a 3.5" or an HDV. Empty, it is still
+        /// whichever it was last — default UniDisk, because that is the
+        /// drive on this controller until an HDV is put in.
+        bool isUnidisk35() const override
+        {
+            if (disk()) { lastUnidisk_ = true;  return true;  }
+            if (hard()) { lastUnidisk_ = false; return false; }
+            return lastUnidisk_;
+        }
+    private:
+        // A disk the guest ejected is out of the drive from its side until
+        // the UI thread takes it out (MountableMediaCard::requestGuestEject).
+        bool disk() const
+        {
+            return img_ && img_->isLoaded() &&
+                   !(owner_ && owner_->guestDoorArmed(bay_) &&
+                     owner_->guestDoorOpen(bay_, img_->mountId()));
+        }
+        bool hard() const { return blk_ && blk_->isLoaded(); }
+        Disk35Image*     img_ = nullptr;
+        Block512Backing* blk_ = nullptr;
+        MountableMediaCard* owner_ = nullptr;
+        int              bay_ = 0;
+        mutable bool     lastUnidisk_ = true;
+    };
+    bool busEnabled_ = true;
+    mutable SmartPortBusDevice   bus_;
+    mutable unsigned             busMediaMask_ = 0;   // which bays held media last look
+    std::array<ImageUnit, kMaxUnits> busUnits_;
+
+    /// Enabled, and a bay holds media — the device is on the port.
+    bool busLive() const;
+    bool bayLoaded(int bay) const
+    {
+        const auto b = static_cast<std::size_t>(bay);
+        return images_[b].isLoaded() || blocks_[b].isLoaded();
+    }
+    /// Save and drop whichever medium `bay` holds; false (medium kept) when
+    /// the save fails, like every sibling eject.
+    bool dropBay(int bay);
+    /// PH1 + LSTRB high with the port enabled: the host is addressing the
+    /// bus, not a drive.
+    bool busAddressed() const;
+
+    /// Which drive the IWM's devsel currently points at, or -1 for none.
+    /// The Liron's port is a daisy chain: devsel 1 is the first drive, 2 the
+    /// second, and 0 means the IWM has dropped both (motor-off drain).
+    int      active_ = -1;
+    uint64_t cycles_ = 0;
+    double   cpuHz_   = 0.0;   // 0 = never given: no accelerator
+    double   stockHz_ = 0.0;
+
+    void onPhases(uint8_t phases);
+    void onDevsel(uint8_t devsel);
+    void retargetIwm();
+    /// Point the enabled mechanism's head at the IWM's SEL line.
+    void syncHeadSelect();
+};
+
+}  // namespace pom2
+
+#endif  // POM2_LIRON_CARD_H

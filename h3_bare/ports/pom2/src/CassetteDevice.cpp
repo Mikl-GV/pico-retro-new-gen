@@ -1,0 +1,1362 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Apple II built-in cassette interface, ported from POM1's ACI.
+
+#include "CassetteDevice.h"
+#include "AtomicFileReplace.h"
+
+// miniaudio is compiled via AudioDevice.cpp (MINIAUDIO_IMPLEMENTATION lives
+// there). We only need the function prototypes here.
+#include "third_party/miniaudio.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <type_traits>
+#include <vector>
+
+namespace {
+
+// .aci magic — kept identical to POM1 so cassettes recorded on either
+// emulator can round-trip. The format (8-byte magic + 1 version byte +
+// 1 initial-level byte + 2 padding + 4 LE count + count×4 LE durations)
+// is structural to the pulse-stream representation, not Apple-specific.
+constexpr char kAciMagic[] = "POM1ACI1";
+constexpr uint32_t kMaxRealtimeGapCycles = 50000;
+constexpr uint32_t kAudioRampInSamples = 64;
+
+template <typename Emit>
+bool writeTapeAtomic(const std::string& path, std::string& error, Emit&& emit)
+{
+    namespace fs = std::filesystem;
+    const fs::path target(path);
+    const fs::path tmp(path + ".pom2tmp");
+    std::error_code permEc;
+    const fs::perms perms = fs::status(target, permEc).permissions();
+    const bool havePerms = !permEc;
+    // The temp name is ours by construction, so whatever sits on it is our own
+    // debris from a crashed run or somebody else's plant — and ofstream(trunc)
+    // follows a symlink like any other open, which would land the tape on the
+    // link's victim and then rename the link away. Same rule as every other
+    // write-back (AtomicFileReplace.h).
+    {
+        std::error_code tmpEc;
+        if (!pom2::prepareTempPath(tmp, tmpEc)) {
+            error = "Cannot use temp tape file " + tmp.string() + ": " + tmpEc.message();
+            return false;
+        }
+    }
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) { error = "Cannot write tape file: " + tmp.string(); return false; }
+        emit(out);
+        out.flush();
+        out.close();
+        if (!out) {
+            error = "Short write on tape file: " + tmp.string();
+            std::error_code ignored;
+            fs::remove(tmp, ignored);
+            return false;
+        }
+    }
+    std::error_code ec;
+    if (havePerms) {
+        fs::permissions(tmp, perms, ec);
+        ec.clear();
+    }
+    if (!pom2::replaceFileAtomic(tmp, target, ec)) {
+        error = "Cannot replace tape file " + path + ": " + ec.message();
+        std::error_code ignored;
+        fs::remove(tmp, ignored);
+        return false;
+    }
+    return true;
+}
+
+uint16_t readLe16(const uint8_t* d)
+{
+    return static_cast<uint16_t>(d[0] | (static_cast<uint16_t>(d[1]) << 8));
+}
+
+uint32_t readLe32(const uint8_t* d)
+{
+    return static_cast<uint32_t>(d[0]) |
+           (static_cast<uint32_t>(d[1]) << 8) |
+           (static_cast<uint32_t>(d[2]) << 16) |
+           (static_cast<uint32_t>(d[3]) << 24);
+}
+
+void writeLe16(std::ofstream& f, uint16_t v)
+{
+    const uint8_t b[2] = { static_cast<uint8_t>(v & 0xFF),
+                           static_cast<uint8_t>((v >> 8) & 0xFF) };
+    f.write(reinterpret_cast<const char*>(b), 2);
+}
+
+void writeLe32(std::ofstream& f, uint32_t v)
+{
+    const uint8_t b[4] = { static_cast<uint8_t>(v & 0xFF),
+                           static_cast<uint8_t>((v >> 8) & 0xFF),
+                           static_cast<uint8_t>((v >> 16) & 0xFF),
+                           static_cast<uint8_t>((v >> 24) & 0xFF) };
+    f.write(reinterpret_cast<const char*>(b), 4);
+}
+
+std::string lowerExtension(const std::string& path)
+{
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
+
+struct PcmDurationDecoder {
+    uint32_t sampleRate = 0;
+    // Comparator threshold. Zero is the ideal-signal answer; both loaders
+    // pre-measure the file and set the DC average here: a line-in capture of a real
+    // tape rides on the sound card's DC bias, and when that bias exceeds the
+    // signal amplitude a sign-only detector sees zero zero-crossings — the
+    // tape "loads" with one transition and plays silence, with loadTape
+    // returning true and no error to show for it.
+    float threshold = 0.0f;
+    // Schmitt band, half-width around `threshold`: the level flips only once
+    // the sample leaves the band on the other side. A bare sign comparator
+    // turned every wobble of tape hiss into a transition — ~17 k/s ([F] a
+    // simulation, not a capture), so a minute of a real rip's quiet filled the 1 M-transition cap and the
+    // whole tape was refused. 0 = the old comparator. Set by PcmLevelStats.
+    float hysteresis = 0.0f;
+    bool foundSignal = false;
+    bool initialLevel = false;
+    bool currentLevel = false;
+    uint64_t heldSamples = 0;
+    std::vector<uint32_t> durations;
+};
+
+// One linear pass over the waveform, before decoding it.
+struct PcmLevelStats {
+    long double sum = 0.0L, sumSq = 0.0L;
+    float peak = 0.0f;
+    size_t n = 0;
+    void add(float v) { sum += v; sumSq += static_cast<long double>(v) * v; peak = std::max(peak, std::fabs(v)); ++n; }
+    // Threshold: the DC mean, clamped inside the signal's own band — a
+    // line-in rip rides on the sound card's bias, and past |bias| > amplitude
+    // a sign-only comparator finds no crossings at all; a clean file keeps
+    // threshold ~ 0. Band: [F] tuned, not measured — min(10 % of the peak
+    // swing, 25 % of the RMS about the mean). The RMS term keeps a loud click
+    // from widening the band past the signal, the peak term keeps a file that
+    // is all signal from a band a quarter of its swing. Settled by: real rips
+    // of several decks, and the Apple's own input comparator's hysteresis.
+    void calibrate(PcmDurationDecoder& d) const
+    {
+        if (n == 0) return;
+        const long double meanL = sum / static_cast<long double>(n);
+        const float mean = static_cast<float>(meanL);
+        const float limit = peak * 0.9f;
+        d.threshold = std::max(-limit, std::min(limit, mean));
+        const long double var = sumSq / static_cast<long double>(n) - meanL * meanL;
+        const float rms = var > 0.0L ? static_cast<float>(std::sqrt(var)) : 0.0f;
+        d.hysteresis = std::min(0.10f * std::max(0.0f, peak - std::fabs(mean)), 0.25f * rms);
+    }
+};
+
+bool emitPcmDuration(PcmDurationDecoder& d, std::string& error,
+                     size_t maxTransitions)
+{
+    if (d.durations.size() >= maxTransitions) {
+        error = "Audio tape exceeds the transition limit";
+        return false;
+    }
+    const long double scaled = static_cast<long double>(d.heldSamples) *
+        static_cast<long double>(POM2_CPU_CLOCK_HZ) /
+        static_cast<long double>(d.sampleRate);
+    const uint64_t rounded = static_cast<uint64_t>(std::llround(scaled));
+    d.durations.push_back(static_cast<uint32_t>(std::max<uint64_t>(
+        1, std::min<uint64_t>(rounded, std::numeric_limits<uint32_t>::max()))));
+    return true;
+}
+
+bool consumePcm(PcmDurationDecoder& d, const float* samples, size_t count,
+                std::string& error, size_t maxTransitions)
+{
+    for (size_t i = 0; i < count; ++i) {
+        const float sample = samples[i] - d.threshold;
+        const bool above = sample > d.hysteresis, below = sample < -d.hysteresis;
+        if (!d.foundSignal) {
+            if (!above && !below) continue;
+            d.foundSignal = true;
+            d.initialLevel = d.currentLevel = above;
+            d.heldSamples = 1;
+            continue;
+        }
+        const bool newLevel = above ? true : below ? false : d.currentLevel;
+        if (newLevel == d.currentLevel) {
+            ++d.heldSamples;
+            continue;
+        }
+        if (!emitPcmDuration(d, error, maxTransitions)) return false;
+        d.currentLevel = newLevel;
+        d.heldSamples = 1;
+    }
+    return true;
+}
+
+bool finishPcm(PcmDurationDecoder& d, std::string& error,
+               size_t maxTransitions)
+{
+    if (!d.foundSignal) {
+        error = "Audio file does not contain a detectable cassette signal";
+        return false;
+    }
+    return emitPcmDuration(d, error, maxTransitions);
+}
+
+} // namespace
+
+std::string CassetteDevice::lookupTapeInfo(const std::string& path)
+{
+    namespace fs = std::filesystem;
+    const fs::path tapePath(path);
+    const fs::path dir = tapePath.parent_path();
+    if (dir.empty()) return {};
+
+    const fs::path infoFile = dir / "tapeinfo.txt";
+    std::ifstream file(infoFile);
+    if (!file.is_open()) return {};
+
+    const std::string baseName = tapePath.filename().string();
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        while (!key.empty() && key.back() == ' ') key.pop_back();
+        while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+        if (key == baseName) return val;
+    }
+    return {};
+}
+
+CassetteDevice::CassetteDevice()
+{
+    // Threading-discipline guard: these flags cross the UI ↔ audio-callback
+    // thread boundary (audioStreamMode is read lock-free in fillAudioBuffer;
+    // the ramp counter is touched under two different mutexes). They MUST stay
+    // atomic — reverting either to a plain type breaks the build here on
+    // purpose (this is the pin for the round-8 data-race fix).
+    static_assert(std::is_same_v<decltype(audioStreamMode), std::atomic<bool>>,
+                  "audioStreamMode must be atomic (cross-thread flag)");
+    static_assert(std::is_same_v<decltype(audioRampInSamplesRemaining),
+                                 std::atomic<uint32_t>>,
+                  "audioRampInSamplesRemaining must be atomic (cross-thread)");
+    static_assert(std::is_same_v<decltype(playbackActive), std::atomic<bool>>,
+                  "playbackActive must be atomic (written from the audio callback)");
+    reset();
+}
+
+// See the declaration: the stream decoder is a miniaudio allocation that only
+// closeAudioStream() frees, and every other caller of it is an operational
+// path. Destroying a deck with a tape open therefore leaked it.
+CassetteDevice::~CassetteDevice()
+{
+    closeAudioStream();
+}
+
+void CassetteDevice::fillAudioBuffer(float* output, int frameCount)
+{
+    // Stream mode — direct decode + resample via miniaudio.
+    if (audioStreamMode) {
+        std::lock_guard<std::mutex> lock(audioStreamMutex);
+        if (!audioStreamDecoderOpen || !playbackActive ||
+            playbackPaused.load(std::memory_order_acquire)) {
+            std::fill_n(output, frameCount, 0.0f);
+            return;
+        }
+        ma_uint64 framesRead = 0;
+        ma_decoder_read_pcm_frames(&audioStreamDecoder, output,
+                                   static_cast<ma_uint64>(frameCount), &framesRead);
+        audioStreamCursor += framesRead;
+
+        constexpr float kStreamGain = 0.71f;
+        const float vol = muted.load(std::memory_order_relaxed)
+            ? 0.0f
+            : volume.load(std::memory_order_relaxed);
+        const int consumed = static_cast<int>(framesRead);
+        for (int i = 0; i < consumed; ++i) {
+            output[i] *= kStreamGain * vol;
+            if (audioRampInSamplesRemaining > 0) {
+                const float ramp = 1.0f - (static_cast<float>(audioRampInSamplesRemaining) /
+                                           static_cast<float>(kAudioRampInSamples));
+                output[i] *= ramp;
+                audioRampInSamplesRemaining--;
+            }
+        }
+        if (consumed < frameCount) {
+            std::fill_n(output + consumed, frameCount - consumed, 0.0f);
+            if (framesRead == 0) playbackActive = false;
+        }
+        // Mix the mode-transition clunk on top.
+        {
+            std::lock_guard<std::mutex> clickLock(audioMutex);
+            if (clickCursor < clickBuffer.size()) {
+                const int mix = std::min<int>(frameCount,
+                    static_cast<int>(clickBuffer.size() - clickCursor));
+                for (int i = 0; i < mix; ++i) {
+                    output[i] += clickBuffer[clickCursor++] * vol;
+                }
+            }
+        }
+        return;
+    }
+
+    // Pulse mode — drain the segment queue at the device sample rate.
+    static constexpr float kFilterAlpha = 0.33f;
+    std::lock_guard<std::mutex> lock(audioMutex);
+    if (playbackPaused.load(std::memory_order_acquire)) {
+        std::fill_n(output, frameCount, 0.0f);
+        audioPlaybackSample = 0.0f;
+        return;
+    }
+    const float vol = muted.load(std::memory_order_relaxed)
+        ? 0.0f
+        : volume.load(std::memory_order_relaxed);
+    const uint64_t lead = static_cast<uint64_t>(audioOutputSampleRate * kMonitorLeadSecs);
+    for (int i = 0; i < frameCount; ++i) {
+        float targetSample = 0.0f;
+        // A tape that stopped (its end, or STOP) owes what it queued, even
+        // short of the lead: a 30 ms tape was otherwise never heard.
+        if (!monitorPrimed_ && !audioQueue.empty() &&
+            (queuedSamples_ >= lead || !playbackActive.load(std::memory_order_relaxed)))
+            monitorPrimed_ = true;
+        if (monitorPrimed_ && audioQueue.empty()) monitorPrimed_ = false;   // ran dry: re-prime
+        if (monitorPrimed_) {
+            targetSample = audioQueue.front().sampleValue;
+            if (audioQueue.front().remainingSamples > 0) {
+                audioQueue.front().remainingSamples--;
+                if (queuedSamples_ > 0) --queuedSamples_;
+            }
+            if (audioQueue.front().remainingSamples == 0)
+                audioQueue.pop_front();
+        }
+        if (audioRampInSamplesRemaining > 0) {
+            const float ramp = 1.0f - (static_cast<float>(audioRampInSamplesRemaining) /
+                                       static_cast<float>(kAudioRampInSamples));
+            targetSample *= ramp;
+            audioRampInSamplesRemaining--;
+        }
+        audioPlaybackSample += (targetSample - audioPlaybackSample) * kFilterAlpha;
+        float s = audioPlaybackSample * vol;
+        if (clickCursor < clickBuffer.size())
+            s += clickBuffer[clickCursor++] * vol;
+        output[i] = s;
+    }
+}
+
+void CassetteDevice::setVolume(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 2.0f) v = 2.0f;
+    volume.store(v, std::memory_order_relaxed);
+}
+
+void CassetteDevice::resetPlaybackState()
+{
+    // Always leave the deck DISARMED. Arming is the user's responsibility
+    // (PLAY button only).
+    playbackArmed   = false;
+    playbackActive  = false;
+    playbackIndex   = 0;
+    cyclesUntilInputToggle = 0;
+    inputLevel      = loadedInitialLevel;
+    rewinding       = false;
+    rewCarryCycles  = 0;
+    lastTapeInputCycle = currentCycle;
+}
+
+void CassetteDevice::clearLiveAudioState()
+{
+    std::lock_guard<std::mutex> lock(audioMutex);
+    audioSampleRemainder = 0.0;
+    audioPlaybackSample  = 0.0f;
+    audioRampInSamplesRemaining = kAudioRampInSamples;
+    audioQueue.clear();
+    queuedSamples_ = 0;
+    monitorPrimed_ = false;
+}
+
+void CassetteDevice::stopPulseAudio()
+{
+    clearLiveAudioState();
+}
+
+void CassetteDevice::playMechanicalClick()
+{
+    // ~70 ms damped thud + noise burst, mixed on top of the deck output.
+    std::lock_guard<std::mutex> lock(audioMutex);
+    const uint32_t rate = std::max<uint32_t>(1, audioOutputSampleRate);
+    const uint32_t durSamples = rate / 14;
+    clickBuffer.assign(durSamples, 0.0f);
+    uint32_t lcg = 0xC7E5A5B7u;
+    constexpr float kTwoPi = 6.28318530718f;
+    for (uint32_t i = 0; i < durSamples; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(rate);
+        const float attack = std::min(1.0f, t * 400.0f);
+        const float decay  = std::exp(-t * 30.0f);
+        lcg = lcg * 1664525u + 1013904223u;
+        const float noise = (static_cast<float>(static_cast<int32_t>(lcg)) / 2147483648.0f);
+        const float thud = std::sin(kTwoPi * 95.0f * t);
+        const float tick = std::sin(kTwoPi * 1300.0f * t) * std::exp(-t * 120.0f);
+        clickBuffer[i] = (0.45f * thud + 0.30f * tick + 0.25f * noise) * attack * decay * 0.35f;
+    }
+    clickCursor = 0;
+}
+
+void CassetteDevice::fireClickIfModeChanged()
+{
+    const DeckMode m = getDeckMode();
+    if (m == lastDeckMode) return;
+    lastDeckMode = m;
+    playMechanicalClick();
+}
+
+void CassetteDevice::reset()
+{
+    currentCycle = 0;
+    outputLevel  = false;
+    recordedInitialLevel = false;
+    recordingStarted = false;
+    lastOutputToggleCycle = 0;
+    recordedDurations.clear();
+    recordRedo_.clear();
+    recordingOverflow = false;
+    playbackPaused.store(false, std::memory_order_release);
+    resetPlaybackState();
+    stopPulseAudio();
+}
+
+void CassetteDevice::resetCpuSide()
+{
+    // Apple II hard-reset clobbers the cassette OUTPUT flip-flop and the
+    // CPU-cycle timebase only. Tape position, recording buffer and
+    // mechanical state survive — a real deck doesn't rewind because the
+    // computer was reset.
+    // Mid-recording, the forced drop of a HIGH output is an edge like any
+    // other: recorded, or the alternation broke and the rest of the capture
+    // played inverted. The half-cycle already under way keeps its length.
+    const uint64_t since = currentCycle > lastOutputToggleCycle
+        ? std::min<uint64_t>(currentCycle - lastOutputToggleCycle, UINT32_MAX) : 0;
+    uint64_t keep = since;
+    if (outputLevel && recordingStarted && !recordedDurations.empty()) {
+        if (recordedDurations.size() < kMaxRecordedTransitions)
+            recordedDurations.push_back(static_cast<uint32_t>(std::max<uint64_t>(1, since)));
+        else
+            recordingOverflow = true;
+        keep = 0;
+    }
+    currentCycle = keep;
+    outputLevel  = false;
+    lastOutputToggleCycle = 0;
+    // Re-base the input-side stamp too: it is compared against
+    // `currentCycle` with unsigned subtraction (leader-rewind gap check),
+    // so leaving it at the pre-reset value would wrap to a huge gap.
+    lastTapeInputCycle = keep;
+}
+
+void CassetteDevice::resetForTimeJump()
+{
+    // See the header. Same re-base as resetCpuSide (the stamps are compared
+    // with unsigned subtraction, so a backwards CPU jump wraps them), plus a
+    // drop of the live audio queue, which holds segments generated for cycles
+    // that are no longer going to happen.
+    // The output LEVEL and the time already spent since the last toggle are
+    // kept: a rewind overrides both from its mark right after
+    // (rewindRecordingTo), a session load from the file, and the debugger's
+    // in-place assembler (time does not move at all) used to force the line
+    // low mid-SAVE — an unrecorded edge that inverted the rest of the capture.
+    const uint64_t since = currentCycle > lastOutputToggleCycle
+        ? std::min<uint64_t>(currentCycle - lastOutputToggleCycle, (1u << 30) - 1) : 0;
+    currentCycle          = since;
+    lastOutputToggleCycle = 0;
+    lastTapeInputCycle    = since;
+    stopPulseAudio();
+}
+
+// Packed into the ring's 64-bit side mark: recorded count (32 bits), cycles
+// since the last toggle (30 bits, clamped — a longer gap is a silence the
+// next toggle clamps anyway), output level, recording started.
+uint64_t CassetteDevice::recordMark() const
+{
+    const uint64_t count = std::min<uint64_t>(recordedDurations.size(), UINT32_MAX);
+    const uint64_t since = recordingStarted && currentCycle > lastOutputToggleCycle
+        ? std::min<uint64_t>(currentCycle - lastOutputToggleCycle, (1u << 30) - 1) : 0;
+    return count | (since << 32) | (uint64_t(outputLevel) << 62) |
+           (uint64_t(recordingStarted) << 63);
+}
+
+void CassetteDevice::rewindRecordingTo(uint64_t mark)
+{
+    const size_t count   = size_t(mark & 0xFFFFFFFFu);
+    const uint64_t since = (mark >> 32) & ((1u << 30) - 1);
+    if (count < recordedDurations.size()) {
+        // Back: the tail goes to the FRONT of the redo buffer, which holds
+        // the abandoned future in order.
+        recordRedo_.insert(recordRedo_.begin(), recordedDurations.begin() + count,
+                           recordedDurations.end());
+        recordedDurations.resize(count);
+    } else if (count > recordedDurations.size()) {
+        // Forward again within the same scrub: put back what the redo holds.
+        const size_t want = std::min(count - recordedDurations.size(), recordRedo_.size());
+        recordedDurations.insert(recordedDurations.end(), recordRedo_.begin(),
+                                 recordRedo_.begin() + want);
+        recordRedo_.erase(recordRedo_.begin(), recordRedo_.begin() + want);
+    }
+    // Toggles were dropped only once the recording sat at the cap, so only a
+    // mark from BELOW the cap is from before the loss. A short scrub that
+    // stayed past it used to clear the flag, and the save then wrote a
+    // silently truncated tape instead of refusing it.
+    if (count < kMaxRecordedTransitions) recordingOverflow = false;
+    recordingStarted = (mark >> 63) & 1;
+    outputLevel      = (mark >> 62) & 1;
+    // resetForTimeJump re-based the deck's clock to 0; place the last toggle
+    // `since` cycles back so the next duration counts the silence the frame
+    // was already in.
+    currentCycle          = since;
+    lastOutputToggleCycle = 0;
+    lastTapeInputCycle    = since;
+}
+
+void CassetteDevice::setPlaybackPaused(bool paused)
+{
+    const bool prev = playbackPaused.exchange(paused, std::memory_order_acq_rel);
+    if (prev == paused || paused) return;
+    if (audioStreamMode) {
+        std::lock_guard<std::mutex> lock(audioStreamMutex);
+        audioRampInSamplesRemaining = kAudioRampInSamples;
+    } else {
+        std::lock_guard<std::mutex> lock(audioMutex);
+        audioRampInSamplesRemaining = kAudioRampInSamples;
+    }
+}
+
+void CassetteDevice::seekRelativeSeconds(double deltaSeconds)
+{
+    if (!audioStreamMode) return;
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+    if (!audioStreamDecoderOpen || audioOutputSampleRate == 0) return;
+
+    const int64_t rate = static_cast<int64_t>(audioOutputSampleRate);
+    int64_t newFrame = static_cast<int64_t>(audioStreamCursor) +
+                       static_cast<int64_t>(std::llround(deltaSeconds * static_cast<double>(rate)));
+    if (newFrame < 0) newFrame = 0;
+    if (audioStreamTotalFrames > 0 &&
+        newFrame >= static_cast<int64_t>(audioStreamTotalFrames)) {
+        newFrame = static_cast<int64_t>(audioStreamTotalFrames) - 1;
+    }
+    if (ma_decoder_seek_to_pcm_frame(&audioStreamDecoder,
+                                     static_cast<ma_uint64>(newFrame)) != MA_SUCCESS)
+        return;
+    audioStreamCursor = static_cast<uint64_t>(newFrame);
+    audioRampInSamplesRemaining = kAudioRampInSamples;
+}
+
+double CassetteDevice::getPlaybackPositionSeconds() const
+{
+    if (!audioStreamMode) return 0.0;
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+    if (audioOutputSampleRate == 0) return 0.0;
+    return static_cast<double>(audioStreamCursor) / static_cast<double>(audioOutputSampleRate);
+}
+
+double CassetteDevice::getPlaybackTotalSeconds() const
+{
+    if (!audioStreamMode) return 0.0;
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+    if (audioOutputSampleRate == 0) return 0.0;
+    return static_cast<double>(audioStreamTotalFrames) / static_cast<double>(audioOutputSampleRate);
+}
+
+void CassetteDevice::queueAudioSegment(uint32_t cycles, bool level)
+{
+    if (!audioAvailable || cycles == 0) return;
+
+    const double totalSamples = audioSampleRemainder +
+        (static_cast<double>(cycles) * static_cast<double>(audioOutputSampleRate) /
+         realtimeTimebaseHz_.load(std::memory_order_relaxed));
+    const uint32_t sampleCount = static_cast<uint32_t>(totalSamples);
+    audioSampleRemainder = totalSamples - static_cast<double>(sampleCount);
+
+    if (sampleCount == 0) return;
+
+    const float sampleValue = level ? 0.22f : -0.22f;
+    std::lock_guard<std::mutex> lock(audioMutex);
+    if (!audioQueue.empty() && audioQueue.back().sampleValue == sampleValue) {
+        audioQueue.back().remainingSamples += sampleCount;
+    } else {
+        audioQueue.push_back({sampleCount, sampleValue});
+    }
+    queuedSamples_ += sampleCount;
+
+    static constexpr size_t kMaxQueuedSegments = 8192;
+    while (audioQueue.size() > kMaxQueuedSegments) {
+        const uint64_t dropped = audioQueue.front().remainingSamples;
+        queuedSamples_ = queuedSamples_ > dropped ? queuedSamples_ - dropped : 0;
+        audioQueue.pop_front();
+    }
+}
+
+void CassetteDevice::advancePlayback(uint32_t cycles)
+{
+    if (rewinding) { advanceRewind(cycles); return; }
+    if (!playbackActive || loadedDurations.empty() || cycles == 0) return;
+    if (playbackPaused.load(std::memory_order_acquire)) return;
+
+    uint64_t remaining = cycles;
+    while (remaining > 0 && playbackActive) {
+        if (cyclesUntilInputToggle == 0) {
+            if (playbackIndex >= loadedDurations.size()) {
+                playbackActive = false;
+                break;
+            }
+            cyclesUntilInputToggle = std::max<uint32_t>(1, loadedDurations[playbackIndex++]);
+        }
+        if (remaining < cyclesUntilInputToggle) {
+            cyclesUntilInputToggle -= remaining;
+            break;
+        }
+        remaining -= cyclesUntilInputToggle;
+        queueAudioSegment(std::max<uint32_t>(1, loadedDurations[playbackIndex - 1]),
+                          inputLevel);
+        cyclesUntilInputToggle = 0;
+        inputLevel = !inputLevel;
+        if (playbackIndex >= loadedDurations.size()) playbackActive = false;
+    }
+}
+
+void CassetteDevice::advanceRewind(uint32_t cycles)
+{
+    if (playbackPaused.load(std::memory_order_acquire)) return;
+    if (!loadedTapeReady || loadedDurations.empty() || playbackIndex == 0) {
+        rewinding = false;
+        rewCarryCycles = 0;
+        resetPlaybackState();
+        return;
+    }
+    uint64_t budget = static_cast<uint64_t>(cycles) * kRewSpeedFactor + rewCarryCycles;
+    while (playbackIndex > 0) {
+        const uint32_t segDur = std::max<uint32_t>(1, loadedDurations[playbackIndex - 1]);
+        if (budget < segDur) {
+            rewCarryCycles = budget;
+            return;
+        }
+        budget -= segDur;
+        --playbackIndex;
+        inputLevel = !inputLevel;
+    }
+    resetPlaybackState();
+    clearLiveAudioState();
+}
+
+void CassetteDevice::beginRecordingIfNeeded()
+{
+    if (!recordingStarted) {
+        clearLiveAudioState();
+        recordedInitialLevel = outputLevel;
+        lastOutputToggleCycle = currentCycle;
+        recordingStarted = true;
+    }
+}
+
+uint8_t CassetteDevice::toggleOutput()
+{
+    beginRecordingIfNeeded();
+    // A new edge writes a new future: the one a rewind set aside is gone.
+    if (!recordRedo_.empty()) recordRedo_.clear();
+
+    // Equal cycles mid-recording: two $C020 accesses inside one instruction
+    // (the NMOS `STA $C020,X` dummy read, then its write). Real edges, one
+    // cycle apart; skipping the segment while the level still flipped broke
+    // the alternation, and every later segment played inverted. Record the
+    // 1-cycle pulse (the clamp below).
+    if (currentCycle > lastOutputToggleCycle ||
+        (currentCycle == lastOutputToggleCycle && !recordedDurations.empty())) {
+        const uint64_t delta = currentCycle - lastOutputToggleCycle;
+        if (!(recordedDurations.empty() && delta == 0)) {
+            const uint32_t clamped = static_cast<uint32_t>(
+                std::min<uint64_t>(UINT32_MAX, std::max<uint64_t>(1, delta)));
+            if (recordedDurations.size() < kMaxRecordedTransitions)
+                recordedDurations.push_back(clamped);
+            else
+                recordingOverflow = true;
+            if (clamped > kMaxRealtimeGapCycles) {
+                clearLiveAudioState();
+            } else {
+                queueAudioSegment(clamped, outputLevel);
+            }
+        }
+    } else if (recordedDurations.empty()) {
+        // No time has elapsed since the recording baseline, so this toggle
+        // has no segment to emit — and that is the NORMAL case, because
+        // beginRecordingIfNeeded() above sets the baseline to `currentCycle`
+        // when the capture auto-starts on the very first $C020 access.
+        // `recordedInitialLevel` names the level of durations[0]; leaving it
+        // at the PRE-toggle value made that first (and by alternation every
+        // following) segment the inverse of what the line really did, so an
+        // auto-started capture came out 180° out of phase with the same
+        // waveform captured after REC (armRecording, which sets the baseline
+        // before any toggle and is correct). Roll the baseline level forward
+        // with the flip instead.
+        recordedInitialLevel = !outputLevel;
+    }
+
+    lastOutputToggleCycle = currentCycle;
+    outputLevel = !outputLevel;
+    return outputLevel ? 0x80 : 0x00;
+}
+
+void CassetteDevice::armPlaybackAtStart()
+{
+    playbackIndex = 0;
+    cyclesUntilInputToggle = 0;
+    inputLevel = loadedInitialLevel;
+    const bool becameActive = loadedTapeReady && !loadedDurations.empty();
+    playbackActive = becameActive;
+    playbackArmed  = false;
+    clearLiveAudioState();
+}
+
+uint8_t CassetteDevice::readTapeInput()
+{
+    // During REW, freeze the tape input — REW flips inputLevel as it walks
+    // playbackIndex backward, the read sees that frozen state.
+    // Polarity: a POSITIVE input reads bit 7 = 0; a low or unconnected one
+    // reads 1 (MAME apple2.cpp:439 / apple2e.cpp:2180 `input() > 0.0 ? 0 :
+    // 0x80`; AppleWin Tape.cpp, citing Understanding the Apple IIe pp.
+    // 7-5/7-6). POM2 had it inverted, and an idle deck read $00, not $80.
+    if (rewinding) return inputLevel ? 0x00 : 0x80;
+
+    // Leader-preservation (POM2-only, opt-in): if the Monitor's READ
+    // routine ($FEFD) hasn't polled $C060 for a long while, assume the
+    // user was typing in BASIC / Monitor (which doesn't touch the
+    // cassette input). Rewind + reactivate so the next READ sees the
+    // leader from the start and can synchronise to the 770 Hz sync
+    // tone. MAME never rewinds; some custom loaders (Penguin Software
+    // fast loaders, etc.) poll $C060 sporadically and are broken by
+    // this re-arm. Gated behind `autoRewindEnabled`, default off.
+    constexpr uint64_t kLeaderRewindGapCycles = POM2_CPU_CLOCK_HZ / 2;  // 500 ms
+    const bool leaderRewind =
+        autoRewindEnabled &&
+        loadedTapeReady && !loadedDurations.empty() && playbackIndex > 0 &&
+        (currentCycle - lastTapeInputCycle) > kLeaderRewindGapCycles;
+    if (leaderRewind || playbackArmed) armPlaybackAtStart();
+    lastTapeInputCycle = currentCycle;
+    return inputLevel ? 0x00 : 0x80;
+}
+
+void CassetteDevice::rewindTape()
+{
+    if (audioStreamMode) {
+        std::lock_guard<std::mutex> lock(audioStreamMutex);
+        if (audioStreamDecoderOpen) ma_decoder_seek_to_pcm_frame(&audioStreamDecoder, 0);
+        audioStreamCursor = 0;
+        playbackActive = false;
+        clearLiveAudioState();
+        return;
+    }
+    if (!loadedTapeReady || loadedDurations.empty() || playbackIndex == 0) {
+        resetPlaybackState();
+        stopPulseAudio();
+        return;
+    }
+    rewinding = true;
+    rewCarryCycles = 0;
+    // The forward segment's countdown means nothing once the head moves
+    // back, and it is saved with the session: left set, a session taken
+    // mid-rewind failed its own reader's check (remaining > the segment now
+    // under the head) and the whole session was refused (bug hunt
+    // 2026-10-23).
+    cyclesUntilInputToggle = 0;
+    playbackActive = false;
+    playbackArmed  = false;
+    stopPulseAudio();
+}
+
+void CassetteDevice::playTape()
+{
+    if (!loadedTapeReady) return;
+    playbackPaused.store(false, std::memory_order_release);
+    if (audioStreamMode) {
+        std::lock_guard<std::mutex> lock(audioStreamMutex);
+        if (!audioStreamDecoderOpen) return;
+        playbackActive = true;
+        playbackArmed  = false;
+        audioRampInSamplesRemaining = kAudioRampInSamples;
+        return;
+    }
+    if (loadedDurations.empty()) return;
+    // Pulse-mode PLAY: arms the deck but doesn't start advancing pulses.
+    // The tape only begins moving when the Monitor's READ routine reads
+    // $C060 for the first time (readTapeInput's armed→active transition).
+    // Without this, advancePlayback would chew through the whole tape on
+    // every CPU slice regardless of whether the routine was actually
+    // reading — a 30 s tape would disappear in <1 s at MAX speed while
+    // the user was typing the address range.
+    resetPlaybackState();
+    playbackArmed = true;
+}
+
+void CassetteDevice::stopTape()
+{
+    playbackActive = false;
+    playbackArmed  = false;
+    rewinding      = false;
+    rewCarryCycles = 0;
+    cyclesUntilInputToggle = 0;
+    stopPulseAudio();
+}
+
+void CassetteDevice::ejectTape()
+{
+    closeAudioStream();
+    stopPulseAudio();
+    audioStreamMode = false;
+    loadedDurations.clear();
+    loadedTapePath.clear();
+    loadInfo.clear();
+    loadedTapeReady    = false;
+    loadedInitialLevel = false;
+    resetPlaybackState();
+    fireClickIfModeChanged();
+}
+
+void CassetteDevice::clearRecordedTape()
+{
+    recordedDurations.clear();
+    recordRedo_.clear();
+    recordingOverflow = false;
+    recordedInitialLevel = outputLevel;
+    recordingStarted = false;
+    lastOutputToggleCycle = 0;
+    clearLiveAudioState();
+}
+
+bool CassetteDevice::loadPlaybackDurations(std::vector<uint32_t> durations,
+                                           bool initialLevel,
+                                           const std::string& path)
+{
+    if (durations.empty()) {
+        lastError = "Tape file does not contain any signal transitions";
+        return false;
+    }
+    // Candidate parsing happens before this commit point. Only now retire an
+    // existing streaming decoder, so a corrupt replacement leaves the old
+    // tape fully playable.
+    closeAudioStream();
+    stopPulseAudio();
+    detachedSession_ = false;
+    loadedDurations    = std::move(durations);
+    loadedInitialLevel = initialLevel;
+    loadedTapePath     = path;
+    loadedTapeReady    = true;
+    audioStreamMode    = false;
+    resetPlaybackState();
+    fireClickIfModeChanged();
+    lastError.clear();
+    return true;
+}
+
+bool CassetteDevice::loadTape(const std::string& path)
+{
+    const std::string ext = lowerExtension(path);
+    const std::string oldInfo = loadInfo;
+    bool ok = false;
+    if (ext == ".aci") ok = loadAciTape(path);
+
+    // Default: program tape via pulse extraction. .wav routes through the
+    // hand-rolled WAV loader (no decoder dependency); the rest go through
+    // miniaudio (mp3/ogg/flac).
+    else if (ext == ".wav") ok = loadWavTape(path);
+    else if (ext == ".mp3" || ext == ".ogg" || ext == ".flac")
+        ok = loadMiniaudioTape(path);
+    else
+        lastError = "Unsupported tape extension (expected .aci/.wav/.mp3/.ogg/.flac).";
+    if (ok) loadInfo = lookupTapeInfo(path);
+    else loadInfo = oldInfo;
+    return ok;
+}
+
+bool CassetteDevice::saveTape(const std::string& path) const
+{
+    return saveRecording(copyRecording(), path, lastError);
+}
+
+bool CassetteDevice::saveRecording(const RecordingCopy& rec, const std::string& path,
+                                   std::string& error)
+{
+    const std::string ext = lowerExtension(path);
+    if (ext == ".wav") return saveWavTape(rec, path, error);
+    return saveAciTape(rec, path, error);
+}
+
+bool CassetteDevice::loadAciTape(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
+    uint8_t header[16]{};
+    file.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        std::memcmp(header, kAciMagic, 8) != 0) {
+        lastError = "Invalid .aci tape file";
+        return false;
+    }
+    if (header[8] != 1) {
+        lastError = "Unsupported .aci tape version";
+        return false;
+    }
+    const bool initialLevel = header[9] != 0;
+    const uint32_t count = readLe32(header + 12);
+    if (count > kMaxRecordedTransitions) {
+        lastError = ".aci tape exceeds the transition limit";
+        return false;
+    }
+
+    std::vector<uint32_t> durations;
+    durations.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint8_t raw[4];
+        file.read(reinterpret_cast<char*>(raw), sizeof(raw));
+        if (file.gcount() != static_cast<std::streamsize>(sizeof(raw))) {
+            lastError = "Truncated .aci tape file";
+            return false;
+        }
+        durations.push_back(std::max<uint32_t>(1, readLe32(raw)));
+    }
+    return loadPlaybackDurations(std::move(durations), initialLevel, path);
+}
+
+bool CassetteDevice::saveAciTape(const RecordingCopy& rec, const std::string& path,
+                                 std::string& error)
+{
+    if (rec.durations.empty()) {
+        error = "No cassette output has been recorded yet";
+        return false;
+    }
+    if (rec.overflow) {
+        error = "Cassette recording exceeded the transition limit";
+        return false;
+    }
+    if (!writeTapeAtomic(path, error, [&](std::ofstream& file) {
+            file.write(kAciMagic, 8);
+            file.put(1);
+            file.put(rec.initialLevel ? 1 : 0);
+            file.put(0); file.put(0);
+            writeLe32(file, static_cast<uint32_t>(rec.durations.size()));
+            for (uint32_t d : rec.durations) writeLe32(file, d);
+        })) return false;
+
+    error.clear();
+    return true;
+}
+
+bool CassetteDevice::loadWavTape(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) { lastError = "Cannot open tape file: " + path; return false; }
+    // Bounded streaming read, including non-seekable/special files. A prior
+    // seek/tell gate still fed an endless FIFO or /dev/zero to an unbounded
+    // istreambuf_iterator when tellg() returned -1.
+    constexpr size_t kMaxTapeBytes = 64u * 1024u * 1024u;
+    std::vector<uint8_t> bytes;
+    bytes.reserve(64u * 1024u);
+    uint8_t readChunk[64u * 1024u];
+    while (file) {
+        file.read(reinterpret_cast<char*>(readChunk), sizeof(readChunk));
+        const size_t got = static_cast<size_t>(file.gcount());
+        if (got > kMaxTapeBytes - bytes.size()) {
+            lastError = "WAV tape exceeds 64 MiB: " + path;
+            return false;
+        }
+        bytes.insert(bytes.end(), readChunk, readChunk + got);
+        if (got < sizeof(readChunk)) break;
+    }
+    if (bytes.size() < 44 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||
+        std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) {
+        lastError = "Invalid WAV file";
+        return false;
+    }
+
+    uint16_t audioFormat = 0, channels = 0, bitsPerSample = 0, blockAlign = 0;
+    uint32_t sampleRate = 0;
+    const uint8_t* dataChunk = nullptr;
+    uint32_t dataSize = 0;
+
+    size_t offset = 12;
+    while (offset + 8 <= bytes.size()) {
+        const uint8_t* chunk = bytes.data() + offset;
+        const uint32_t chunkSize = readLe32(chunk + 4);
+        offset += 8;
+        const size_t avail = bytes.size() - offset;
+        const bool isData = std::memcmp(chunk, "data", 4) == 0;
+        // A `data` header claiming more bytes than the file holds is the
+        // normal shape of BOTH a truncated recording and every WAV a writer
+        // streamed to a pipe (it never seeks back to patch the placeholder
+        // size). Refusing the whole tape there threw away a perfectly
+        // readable waveform and blamed it on a "missing data chunk"; decode
+        // what is actually present instead. Any OTHER over-long chunk is
+        // still a stop: we cannot know where the next header begins.
+        if (chunkSize > avail && !isData) break;
+        const uint32_t usable =
+            static_cast<uint32_t>(std::min<size_t>(chunkSize, avail));
+        if (std::memcmp(chunk, "fmt ", 4) == 0 && usable >= 16) {
+            audioFormat   = readLe16(bytes.data() + offset + 0);
+            channels      = readLe16(bytes.data() + offset + 2);
+            sampleRate    = readLe32(bytes.data() + offset + 4);
+            blockAlign    = readLe16(bytes.data() + offset + 12);
+            bitsPerSample = readLe16(bytes.data() + offset + 14);
+            // WAVE_FORMAT_EXTENSIBLE ($FFFE) is what ffmpeg, Audacity and
+            // every Windows capture app emit for float32, for >2 channels
+            // and whenever a channel mask is written — the real encoding
+            // lives in the first two bytes of the 16-byte SubFormat GUID
+            // (RFC/Microsoft "WAVEFORMATEXTENSIBLE", fmt chunk ≥ 40 bytes).
+            // Reading only wFormatTag rejected those files outright.
+            static const uint8_t kGuidTail[14] = {
+                0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
+                0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+            if (audioFormat == 0xFFFE && usable >= 40 &&
+                std::memcmp(bytes.data() + offset + 26, kGuidTail, 14) == 0) {
+                audioFormat = readLe16(bytes.data() + offset + 24);
+            }
+        } else if (isData) {
+            dataChunk = bytes.data() + offset;
+            dataSize  = usable;
+        }
+        const size_t padded = static_cast<size_t>(usable) + (usable & 1u);
+        if (padded > avail) break;
+        offset += padded;
+    }
+    if (!dataChunk || channels == 0 || sampleRate == 0) {
+        lastError = "WAV file is missing format or data chunks";
+        return false;
+    }
+    if (audioFormat != 1 && audioFormat != 3) {
+        lastError = "Unsupported WAV format (only PCM and float are supported)";
+        return false;
+    }
+    // 24- and 32-bit integer PCM are what a studio capture or a
+    // high-resolution rip of a real tape produces (CASSETTE-002); they were
+    // refused outright.
+    const bool supportedSamples =
+        (audioFormat == 1 && (bitsPerSample == 8 || bitsPerSample == 16 ||
+                              bitsPerSample == 24 || bitsPerSample == 32)) ||
+        (audioFormat == 3 && bitsPerSample == 32);
+    if (!supportedSamples) {
+        lastError = "Only WAV PCM 8/16/24/32-bit and float32 are supported";
+        return false;
+    }
+    // The sample CONTAINER is nBlockAlign / channels bytes — a 24-bit file
+    // may store each sample in 4 (left-justified, WAVEFORMATEXTENSIBLE); the
+    // frame stride used to be derived from the valid bits alone, and such a
+    // file decoded as garbage.
+    const size_t validBytes = bitsPerSample / 8;
+    size_t bytesPerSample = validBytes;
+    if (blockAlign >= validBytes * channels && channels > 0 &&
+        blockAlign % channels == 0 && blockAlign / channels <= 4)
+        bytesPerSample = blockAlign / channels;
+    if (bytesPerSample == 0 || dataSize < bytesPerSample * channels) {
+        lastError = "Unsupported WAV sample format";
+        return false;
+    }
+
+    const size_t frames = dataSize / (bytesPerSample * channels);
+    const auto channelSample = [&](size_t f, uint16_t ch) -> float {
+        const uint8_t* p = dataChunk + (f * channels + ch) * bytesPerSample;
+        float v = 0.0f;
+        if (audioFormat == 3) { if (bytesPerSample == 4) std::memcpy(&v, p, 4); }
+        else if (bytesPerSample == 1) v = (static_cast<int>(p[0]) - 128) / 128.0f;
+        else if (bytesPerSample == 2) v = static_cast<float>(static_cast<int16_t>(readLe16(p))) / 32768.0f;
+        else if (bytesPerSample == 3) {
+            const uint32_t u = uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16);
+            v = static_cast<float>(static_cast<int32_t>(u << 8) >> 8) / 8388608.0f;
+        }
+        else if (bytesPerSample == 4) v = static_cast<float>(static_cast<int32_t>(readLe32(p)) / 2147483648.0);
+        // A NaN/Inf in a float file pinned the DC threshold at 0.9 x peak
+        // and swallowed most crossings.
+        return std::isfinite(v) ? v : 0.0f;
+    };
+    // One channel, the strongest — not the average: a rip with the tape on
+    // one side was halved, and a pair whose second channel is phase-inverted
+    // cancelled to nothing.
+    uint16_t tapeChannel = 0;
+    if (channels > 1) {
+        std::vector<float> peaks(channels, 0.0f);
+        for (size_t f = 0; f < frames; ++f)
+            for (uint16_t ch = 0; ch < channels; ++ch)
+                peaks[ch] = std::max(peaks[ch], std::fabs(channelSample(f, ch)));
+        for (uint16_t ch = 1; ch < channels; ++ch)
+            if (peaks[ch] > peaks[tapeChannel]) tapeChannel = ch;
+    }
+    const auto frameSample = [&](size_t f) -> float { return channelSample(f, tapeChannel); };
+
+    PcmDurationDecoder decoded;
+    decoded.sampleRate = sampleRate;
+    {   // Level pass: DC threshold + Schmitt band (PcmLevelStats).
+        PcmLevelStats stats;
+        for (size_t f = 0; f < frames; ++f) stats.add(frameSample(f));
+        stats.calibrate(decoded);
+    }
+    decoded.durations.reserve(std::min<size_t>(frames / 16,
+                                               kMaxRecordedTransitions));
+    for (size_t f = 0; f < frames; ++f) {
+        const float mono = frameSample(f);
+        if (!consumePcm(decoded, &mono, 1, lastError,
+                        kMaxRecordedTransitions)) return false;
+    }
+    if (!finishPcm(decoded, lastError, kMaxRecordedTransitions)) return false;
+    return loadPlaybackDurations(std::move(decoded.durations),
+                                 decoded.initialLevel, path);
+}
+
+bool CassetteDevice::loadAudioStream(const std::string& path)
+{
+    closeAudioStream();
+    loadedDurations.clear();
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, audioOutputSampleRate);
+    if (ma_decoder_init_file(path.c_str(), &cfg, &audioStreamDecoder) != MA_SUCCESS) {
+        lastError = "Cannot decode audio: " + path;
+        // closeAudioStream() already ran: the previous decoder is gone.
+        // Leaving loadedTapeReady / audioStreamMode set described a tape
+        // that Play and a rate change could not move (hunt #21).
+        audioStreamMode  = false;
+        loadedTapeReady  = false;
+        loadedTapePath.clear();
+        return false;
+    }
+    audioStreamDecoderOpen = true;
+    audioStreamCursor      = 0;
+    ma_uint64 total = 0;
+    if (ma_decoder_get_length_in_pcm_frames(&audioStreamDecoder, &total) != MA_SUCCESS) total = 0;
+    audioStreamTotalFrames = total;
+    audioStreamMode        = true;
+    loadedTapePath         = path;
+    loadedTapeReady        = true;
+    playbackArmed          = false;
+    playbackActive         = false;
+    loadedInitialLevel     = false;
+    stopPulseAudio();
+    fireClickIfModeChanged();
+    lastError.clear();
+    return true;
+}
+
+void CassetteDevice::setAudioOutputSampleRate(uint32_t hz)
+{
+    const uint32_t rate = std::max<uint32_t>(1, hz);
+    const uint32_t previous = audioOutputSampleRate;
+    if (rate == previous) return;
+    audioOutputSampleRate = rate;
+
+    // A stream-mode decoder converts to the rate it was OPENED with. Reopen
+    // it at the new one, landing on the same position in seconds.
+    std::string path;
+    double      seconds = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(audioStreamMutex);
+        if (!audioStreamDecoderOpen) return;
+        path    = loadedTapePath;
+        seconds = static_cast<double>(audioStreamCursor) /
+                  static_cast<double>(previous ? previous : 1);
+    }
+    if (path.empty()) return;
+
+    // `loadAudioStream` is the MOUNT path: it disarms the deck and drops the
+    // initial-level flag, which would silently stop a tape that is playing.
+    // Reopening is not a mount, so the transport state is carried across.
+    const bool armed     = playbackArmed;
+    const bool active    = playbackActive.load(std::memory_order_relaxed);
+    const bool initLevel = loadedInitialLevel;
+    if (!loadAudioStream(path)) return;          // leaves lastError set
+    playbackArmed      = armed;
+    loadedInitialLevel = initLevel;
+    playbackActive.store(active, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+    if (!audioStreamDecoderOpen) return;
+    const ma_uint64 frame =
+        static_cast<ma_uint64>(seconds * static_cast<double>(rate));
+    if (frame < audioStreamTotalFrames &&
+        ma_decoder_seek_to_pcm_frame(&audioStreamDecoder, frame) == MA_SUCCESS)
+        audioStreamCursor = frame;
+}
+
+void CassetteDevice::closeAudioStream()
+{
+    std::lock_guard<std::mutex> lock(audioStreamMutex);
+    if (audioStreamDecoderOpen) {
+        ma_decoder_uninit(&audioStreamDecoder);
+        audioStreamDecoderOpen = false;
+    }
+    audioStreamCursor      = 0;
+    audioStreamTotalFrames = 0;
+}
+
+bool CassetteDevice::loadMiniaudioTape(const std::string& path)
+{
+    // 30-minute cap — same as POM1.
+    static constexpr uint64_t kMaxFrames = 30ull * 60ull * 96000ull;
+
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path.c_str(), &cfg, &decoder) != MA_SUCCESS) {
+        lastError = "Cannot decode audio file: " + path;
+        return false;
+    }
+
+    const uint32_t sampleRate = decoder.outputSampleRate;
+    if (sampleRate == 0) {
+        ma_decoder_uninit(&decoder);
+        lastError = "Decoded audio reports an invalid sample rate";
+        return false;
+    }
+
+    constexpr size_t kChunkFrames = 4096;
+    float chunk[kChunkFrames];
+    uint64_t totalFrames = 0;
+    PcmDurationDecoder decoded;
+    decoded.sampleRate = sampleRate;
+    // Level pass, as loadWavTape's, then back to the start (re-opened when
+    // the decoder cannot seek).
+    {
+        PcmLevelStats stats;
+        while (stats.n < kMaxFrames) {
+            ma_uint64 got = 0;
+            const ma_result r = ma_decoder_read_pcm_frames(&decoder, chunk, kChunkFrames, &got);
+            for (ma_uint64 i = 0; i < got; ++i) stats.add(std::isfinite(chunk[i]) ? chunk[i] : 0.0f);
+            if (got == 0 || r != MA_SUCCESS) break;
+        }
+        if (ma_decoder_seek_to_pcm_frame(&decoder, 0) != MA_SUCCESS) {
+            ma_decoder_uninit(&decoder);
+            if (ma_decoder_init_file(path.c_str(), &cfg, &decoder) != MA_SUCCESS) {
+                lastError = "Cannot decode audio file: " + path;
+                return false;
+            }
+        }
+        stats.calibrate(decoded);
+    }
+    while (totalFrames < kMaxFrames) {
+        ma_uint64 framesRead = 0;
+        const ma_result r = ma_decoder_read_pcm_frames(&decoder, chunk, kChunkFrames, &framesRead);
+        if (framesRead == 0) {
+            if (r != MA_SUCCESS && r != MA_AT_END) {
+                ma_decoder_uninit(&decoder);
+                lastError = "Error while decoding audio file: " + path;
+                return false;
+            }
+            break;
+        }
+        if (!consumePcm(decoded, chunk, static_cast<size_t>(framesRead),
+                        lastError, kMaxRecordedTransitions)) {
+            ma_decoder_uninit(&decoder);
+            return false;
+        }
+        totalFrames += framesRead;
+        if (r != MA_SUCCESS && r != MA_AT_END) {
+            ma_decoder_uninit(&decoder);
+            lastError = "Error while decoding audio file: " + path;
+            return false;
+        }
+        if (r == MA_AT_END) break;
+    }
+    ma_decoder_uninit(&decoder);
+
+    if (totalFrames >= kMaxFrames) {
+        lastError = "Audio file exceeds 30-minute tape limit";
+        return false;
+    }
+
+    if (!finishPcm(decoded, lastError, kMaxRecordedTransitions)) return false;
+    return loadPlaybackDurations(std::move(decoded.durations),
+                                 decoded.initialLevel, path);
+}
+
+bool CassetteDevice::saveWavTape(const RecordingCopy& rec, const std::string& path,
+                                 std::string& error)
+{
+    if (rec.durations.empty()) {
+        error = "No cassette output has been recorded yet";
+        return false;
+    }
+    if (rec.overflow) {
+        error = "Cassette recording exceeded the transition limit";
+        return false;
+    }
+    constexpr uint64_t kMaxWavSamples =
+        static_cast<uint64_t>(kWavFileSampleRate) * 30u * 60u;
+    uint64_t sampleCount = kWavFileSampleRate / 10;
+    for (uint32_t d : rec.durations) {
+        const uint64_t n = std::max<uint64_t>(1, static_cast<uint64_t>(
+            std::llround(static_cast<double>(d) * kWavFileSampleRate /
+                         static_cast<double>(kTapeFileTimebaseHz))));
+        if (n > kMaxWavSamples - sampleCount) {
+            error = "Recording exceeds the 30-minute WAV limit";
+            return false;
+        }
+        sampleCount += n;
+    }
+    std::vector<int16_t> pcm;
+    pcm.reserve(static_cast<size_t>(sampleCount));
+    bool level = rec.initialLevel;
+    for (uint32_t d : rec.durations) {
+        const uint32_t n = std::max<uint32_t>(1, static_cast<uint32_t>(
+            std::llround(static_cast<double>(d) * static_cast<double>(kWavFileSampleRate) /
+                         static_cast<double>(kTapeFileTimebaseHz))));
+        const int16_t s = level ? 14000 : -14000;
+        pcm.insert(pcm.end(), n, s);
+        level = !level;
+    }
+    pcm.insert(pcm.end(), kWavFileSampleRate / 10, level ? 14000 : -14000);
+
+    const size_t fullSize = pcm.size() * sizeof(int16_t);
+    if (fullSize > UINT32_MAX - 36) {
+        error = "Recording too large to save as WAV";
+        return false;
+    }
+    const uint32_t dataSize = static_cast<uint32_t>(fullSize);
+    const uint32_t riffSize = 36 + dataSize;
+
+    if (!writeTapeAtomic(path, error, [&](std::ofstream& f) {
+            f.write("RIFF", 4); writeLe32(f, riffSize);
+            f.write("WAVE", 4);
+            f.write("fmt ", 4); writeLe32(f, 16);
+            writeLe16(f, 1); writeLe16(f, 1);
+            writeLe32(f, kWavFileSampleRate);
+            writeLe32(f, kWavFileSampleRate * sizeof(int16_t));
+            writeLe16(f, sizeof(int16_t)); writeLe16(f, 16);
+            f.write("data", 4); writeLe32(f, dataSize);
+            f.write(reinterpret_cast<const char*>(pcm.data()),
+                    static_cast<std::streamsize>(dataSize));
+        })) return false;
+
+    error.clear();
+    return true;
+}

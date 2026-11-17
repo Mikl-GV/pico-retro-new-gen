@@ -1,0 +1,344 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// MouseCardAppleWin — high-level emulation of the Apple II Mouse Interface
+// card, ported from AppleWin's `source/MouseInterface.cpp` (class
+// CMouseInterface). The MAME-faithful sibling `MouseCard` emulates the
+// MC68705P3 microcontroller cycle-by-cycle from the Apple 341-0269 mask
+// ROM; this variant follows AppleWin's approach instead: the MC6821 PIA
+// is real (shared MC6821 chip model) but the MCU side is *synthesised* in
+// C++ — reads/writes through the PIA are interpreted as a command byte
+// stream and replied to with mouse state computed directly from host
+// input. As a result this card only needs the slot EPROM
+// (`mouse_341-0270-c.bin`); no 341-0269 MCU mask ROM required.
+//
+// Protocol mirrored from AppleWin's OnCommand / OnWrite:
+//
+//   $00 MOUSE_SET     1-byte    Set mode (firmware writes MODE_MOUSE_ON /
+//                                MODE_INT_VBL / MODE_INT_BUTTON / etc.)
+//   $10 MOUSE_READ    6-byte    Read X-lo, X-hi, Y-lo, Y-hi, status
+//   $20 MOUSE_SERV    2-byte    Read pending IRQ source + clear CPU IRQ
+//   $30 MOUSE_CLEAR   1-byte    Clear position + state
+//   $40 MOUSE_POS     5-byte    Set absolute position
+//   $50 MOUSE_INIT    3-byte    Init (clamp 0..1023, pos = 0)
+//   $60 MOUSE_CLAMP   5-byte    Set X or Y clamp window (LSB of cmd byte
+//                                = axis select: 0 = X, 1 = Y)
+//   $70 MOUSE_HOME    1-byte    Re-home to the clamp window's (MinX, MinY)
+//                                — (0, 0) only while the window is the
+//                                power-on 0..1023 (see the .cpp)
+//   $90 MOUSE_TIME    1..4 byte VBL-time command. TIMEDATA ($Cn1C) sends
+//                                $90|A: bit 0 = 50 Hz, else 60 Hz, applied
+//                                at the next INIT (TN Mouse #2)
+//   $F0 MCU memory    3-byte    Read one byte of the MCU's RAM: address
+//                                lo, hi; one reply byte. GETCLAMP ($Cn1A,
+//                                TN Mouse #7) reads the clamp window at
+//                                $47-$4E. Not in AppleWin, which took the
+//                                address byte $4E for a MOUSE_POS command
+//
+// PIA Port B handshake (AppleWin's On6821_B): the firmware uses BIT5 of
+// Port B as a write-strobe (1→0 = "byte on Port A is for the MCU") and
+// BIT4 as a read-strobe (1→0 = "advance to next reply byte"). The
+// command buffer fills up command-then-data; the first byte's high
+// nibble selects the command and sets `nDataLen`. PIA Port B bits 1..3
+// drive the slot-ROM bank (8 banks × 256 B), exactly like the real card.
+// BIT6 and BIT7 are status bits driven *back* to the firmware (read-ack
+// + write-ack) so the firmware's polling loops complete.
+//
+// Interrupt model: `OnMouseEvent` is called on every host input change
+// and (optionally) once per emulated VBL — it sets the matching bits of
+// `byState` (movement / button / VBL) under the current mode mask and
+// raises the slot IRQ. The next MOUSE_SERV command clears it. AppleWin's
+// `CpuIrqAssert(IS_MOUSE)` maps to `SlotPeripheral::assertIrq(true)`.
+
+#ifndef POM2_MOUSE_CARD_APPLEWIN_H
+#define POM2_MOUSE_CARD_APPLEWIN_H
+
+#include "MC6821.h"
+#include "SlotPeripheral.h"
+
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+class MouseCardAppleWin : public SlotPeripheral
+{
+public:
+    static constexpr int kDefaultSlot = 4;
+
+    explicit MouseCardAppleWin(int slot = kDefaultSlot);
+
+    int getSlot() const { return slot_; }
+
+    /// Load the Apple 341-0270-c slot EPROM (2048 bytes). No second ROM
+    /// needed — the MCU side is HLE'd. Returns false on size mismatch or
+    /// open failure.
+    bool loadRom(const std::string& slotRomPath);
+    bool isReady() const { return slotRomLoaded; }
+
+    /// The //c uses this card as an on-board firmware substitute. Its
+    /// $C019 is VBLINT, so the IIe EPROM's VBLBAR calibration cannot run.
+    void setIicHost(bool enabled) { iicHost_ = enabled; }
+
+    /// Host-mouse position update — same signature as MouseCard so the UI
+    /// layer in MainWindow can drive either variant. `rawX`/`rawY` are
+    /// running 8-bit counters (the screen-hole closed-loop in MainWindow
+    /// drives this). Internally we compute signed 8-bit deltas with wrap
+    /// correction and apply them via the firmware's absolute clamp window.
+    /// Header-inline on purpose: AiControlServer's /mouse endpoint drives
+    /// this card without linking MouseCardAppleWin.o (see kCardName below),
+    /// so the call must not need a symbol from this TU.
+    uint8_t hostCounterX() const { return hostSetX_; }   // see MouseCard
+    uint8_t hostCounterY() const { return hostSetY_; }
+    void setHostMouse(uint8_t rawX, uint8_t rawY, bool button)
+    {
+        // Bank the motion HERE, per host update. The UI clamps each update
+        // to ±127, but several can land before the CPU polls (a flick, or
+        // any captured motion while paused), and a delta taken from the
+        // 8-bit counter at poll time wrapped past 128 — +200 read as −56,
+        // the pointer jumped backwards (bug hunt 2026-10-23).
+        int dx = static_cast<int>(rawX) - static_cast<int>(hostSetX_);
+        int dy = static_cast<int>(rawY) - static_cast<int>(hostSetY_);
+        if (dx > 0x80) dx -= 0x100; else if (dx < -0x80) dx += 0x100;
+        if (dy > 0x80) dy -= 0x100; else if (dy < -0x80) dy += 0x100;
+        hostAccX_.fetch_add(dx, std::memory_order_relaxed);
+        hostAccY_.fetch_add(dy, std::memory_order_relaxed);
+        hostSetX_ = rawX; hostSetY_ = rawY;
+        hostX.store(rawX, std::memory_order_relaxed);
+        hostY.store(rawY, std::memory_order_relaxed);
+        hostButton.store(button, std::memory_order_relaxed);
+        // Bumped LAST, and read first by advanceCycles: the CPU thread uses
+        // it to skip the whole drain while the pointer is still. Relaxed is
+        // enough because the ORDERING comes from stateMutex, not from these
+        // atomics: both callers (MouseCoordinator::routeHost and the AI
+        // server's /mouse handler) hold `lockState()`, and so does the CPU
+        // worker that reads them. "They are atomics, so a reordering only
+        // costs one stale sample" — the argument this comment used to make —
+        // is not a valid one: relaxed atomics give atomicity, never ordering.
+        // The atomics remain so that a future unlocked caller degrades to a
+        // torn-free stale read rather than to UB.
+        hostGen.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// Frame length in CPU cycles, so MODE_INT_VBL fires once per frame
+    /// AT THE BEAM'S VBL EDGE (scanline 192), like AppleWin, which raises
+    /// it from its video VBL hook.
+    ///
+    /// The phase is not counted from the card's reset: the edge is derived
+    /// from the machine's own cycle counter the way `Memory` places VBL —
+    /// frame start = `counter - counter % vblCycles_`, edge = start +
+    /// 192 × 65 — so it lands on line 192 whenever the card was reset,
+    /// plugged or restored (bug hunt 2026-09-29: it used to count from
+    /// `onReset`, and every Ctrl-Reset moved the A2DeskTop cursor's update
+    /// to a random scanline).
+    ///
+    /// `SlotCardFactory.cpp` passes the BEAM geometry —
+    /// `scanlinesPerFrame * cyclesPerScanline` (`CpuClock.h`), i.e.
+    /// **17030 NTSC (262×65)** and **20280 PAL (312×65)**. Since 2026-11-07
+    /// the profile's CPU budget `defaultCyclesPerFrame` (the worker's pacing
+    /// quantum) has the same value, but it is a different quantity — a
+    /// --speed changes it, never the raster — and VBL is a video event, so
+    /// it follows the raster. The 17030 default below is what a hand-built card in a test
+    /// sees before anything calls this.
+    void setVblCycles(int cycles)
+    {
+        if (cycles > 0) { vblCycles_ = cycles; nextVblCycle_ = kVblUnphased; }
+    }
+    int  vblCycles() const { return vblCycles_; }
+    /// The live CPU clock, for a VBL rate a program chose with TIMEDATA
+    /// (the MCU's own crystal: a rate in Hz, converted to machine cycles).
+    /// The MCU's timer runs on its own crystal, so an accelerator changing
+    /// the CPU clock rescales the distance to the next edge instead of
+    /// re-phasing it: the interrupts stay 1/60 s apart in real time.
+    void setCpuClock(double hz) override;
+    void setMachineCpuClock(double hz) override;
+    void setStandardClock(double hz) override { if (hz > 0) { stdHz_ = hz; restretch(); } }
+    /// The VBL interrupt rate TIMEDATA put in force at the last INIT: 50 or
+    /// 60, or 0 when no program asked — then the card runs at its default
+    /// 60 Hz: on the beam under NTSC, on its own timer under PAL.
+    int  timeDataHz() const { return vblRate_ < 0 ? 0 : (vblRate_ ? 50 : 60); }
+
+    /// Snapshot of internal mouse-firmware state for the Mouse Inspector
+    /// panel. Not part of the AppleWin protocol — POM2-only diagnostic
+    /// view of the HLE'd MCU's working set: clamp window, current
+    /// position iX/iY (firmware-resolved cursor inside the clamp),
+    /// last-MOUSE_READ snapshot nX/nY, button shadows, mode/state bytes,
+    /// and the PIA port latches. Read on the UI thread; the underlying
+    /// fields are scalars touched by the CPU thread, so values may be
+    /// momentarily stale but never torn for the purposes of a UI panel.
+    struct DebugSnapshot {
+        int iX, iY;
+        int nX, nY;
+        int iMinX, iMaxX;
+        int iMinY, iMaxY;
+        bool bBtn0, bBtn1;
+        bool bPrevBtn0, bPrevBtn1;
+        uint8_t byMode;
+        uint8_t byState;
+        uint8_t by6821A;
+        uint8_t by6821B;
+        int     buffPos;
+        int     dataLen;
+        uint8_t lastCmd;       // byBuff[0]
+        /// True when the last setHostMouse() has been drained by the CPU
+        /// thread — i.e. iX/iY already reflect it. The UI's closed-loop
+        /// cursor sync (MouseSync.h) must not compute a new correction
+        /// against a position that has a push still in flight.
+        bool    hostDrained;
+    };
+    DebugSnapshot debugSnapshot() const;
+
+    /// Stable identity tag, also returned by name(). AiControlServer's
+    /// /mouse endpoint identifies this card by comparing name() against
+    /// kCardName and then static_cast'ing, instead of dynamic_cast — a
+    /// dynamic_cast would reference this class's typeinfo (emitted in
+    /// MouseCardAppleWin.o) and force every headless binary that links
+    /// AiControlServer.cpp to link this TU too. Keep name() returning
+    /// exactly this constant.
+    static constexpr std::string_view kCardName{"Mouse (AppleWin HLE)"};
+
+    // ─── SlotPeripheral overrides ──────────────────────────────────────
+    std::string_view name() const override { return kCardName; }
+    uint8_t deviceSelectRead (uint8_t low4) override;
+    void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
+    uint8_t slotRomRead(uint8_t low8) override { return romByte(low8); }
+    bool    peekSlotRom(uint8_t low8, uint8_t& out) const override
+    { out = romByte(low8); return true; }
+    void    advanceCycles(int cycles) override;
+    void    onReset() override;
+    void    onPlug() override;
+    void    onUnplug() override;
+
+    /// Snapshot/rewind: 'MAW1'-tagged blob carrying the HLE'd MCU's whole
+    /// working set — mode/state bytes, position + clamp window, button
+    /// shadows, the command-byte cursor (byBuff/nBuffPos/nDataLen), the
+    /// Port A/B latch shadows, the VBL pacer and the slot IRQ level —
+    /// wrapping the real MC6821's own blob. Without this the card was
+    /// skipped entirely by MachineSnapshot (empty blob ⇒ no SLOTn
+    /// section), so a rewind past a MOUSE_SET left `byMode` holding
+    /// MODE_INT_VBL and the card kept interrupting a guest whose handler
+    /// no longer existed, with only a MOUSE_SERV that would never come to
+    /// release the line.
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+    // //c-class punches the forced INTCXROM mask for this card's $Cn00
+    // firmware so PR#4 runs the AppleWin EPROM (which drives our PIA at
+    // $C0C0) instead of the //c's on-board mouse firmware (which would
+    // poke the native IIcMouse IOU hardware, absent in this HLE variant).
+    bool    exposesIicOnboardRom() const override { return slotRomLoaded; }
+
+private:
+    uint8_t romByte(uint8_t low8) const;
+    int      slot_;
+    MC6821   pia;
+    std::array<uint8_t, 0x800> slotRom{};
+    bool     slotRomLoaded = false;
+    bool     iicHost_ = false;
+    bool     hasVblCalibration_ = false;
+
+    // ── PIA Port A/B latch shadows (AppleWin m_by6821A / m_by6821B). ──
+    uint8_t  by6821A = 0;
+    uint8_t  by6821B = 0x40;        // BIT6 starts set — matches AppleWin Reset
+
+    // ── Command-byte buffer (AppleWin m_byBuff / m_nBuffPos / m_nDataLen).
+    uint8_t  byBuff[8] = { 0 };
+    int      nBuffPos  = 0;
+    int      nDataLen  = 1;
+
+    // ── HLE'd MCU state (AppleWin m_byState / m_byMode / m_iX/Y / clamps).
+    uint8_t  byState   = 0;
+    uint8_t  byMode    = 0;
+    int      iX = 0, iY = 0;
+    int      nX = 0, nY = 0;
+    int      iMinX = 0, iMaxX = 1023;
+    int      iMinY = 0, iMaxY = 1023;
+    bool     bButtons[2] = { false, false };
+    bool     bBtn0 = false, bBtn1 = false;
+
+    // ── Host input shadow (UI → CPU thread). ──────────────────────────
+    std::atomic<uint8_t> hostX     { 0 };
+    std::atomic<uint8_t> hostY     { 0 };
+    std::atomic<bool>    hostButton{ false };
+    /// Bumped by setHostMouse, read by advanceCycles: while it is unchanged
+    /// there is nothing to drain and the per-instruction poll is skipped.
+    std::atomic<uint32_t> hostGen  { 0 };
+    /// Motion banked by setHostMouse since the last poll (see there).
+    std::atomic<int> hostAccX_{ 0 };
+    std::atomic<int> hostAccY_{ 0 };
+    uint8_t hostSetX_ = 0, hostSetY_ = 0;   // the counter the last update set
+    uint32_t lastHostGen_ = 0;
+    uint8_t  lastHostX = 0;
+    uint8_t  lastHostY = 0;
+    bool     lastHostButton = false;
+    bool     hostPrimed = false;
+
+    // ── VBL pacing. Frame length in cycles, profile-plumbed via
+    //    setVblCycles to the beam geometry, 17030 NTSC (262×65) / 20280 PAL
+    //    (312×65). The edge is phased to the machine's cycle counter
+    //    (`clock_` → Memory::cycleCounter once plugged), not to onReset.
+    //    `ownClock_` stands in when no Memory is behind the bus. ─────────
+    static constexpr uint64_t kVblUnphased = ~uint64_t{0};
+    int             vblCycles_    = 17030;
+    // TIMEDATA (TN Mouse #2): -1 = not called, 0 = 60 Hz, 1 = 50 Hz. The
+    // call only takes effect at the next INIT, and an INIT without one
+    // goes back to the default — so it is latched in two steps. The default
+    // is 60 Hz on any machine (TN Mouse #2), the 68705's own timer: a rate
+    // that matches the video standard is phased to the beam's VBL edge, any
+    // other (60 Hz on PAL, 50 Hz on NTSC) runs free from the last edge.
+    int8_t          timeDataPending_ = -1;
+    int8_t          vblRate_         = -1;
+    // Ignore paced notifications once the host supplies machine time, so
+    // a pending edge is rescaled only for a real hardware clock change.
+    bool            machineClockSet_ = false;
+    void            applyMachineClock(double hz);
+    double          cpuHz_           = 1022727.0;
+    double          stdHz_           = 0.0;   // 0 = not given: no accelerator
+    uint64_t        vblStretch_      = 1;     // ceil(cpuHz_ / stdHz_), >= 1
+    void            restretch()
+    {
+        const double r = stdHz_ > 0.0 ? cpuHz_ / stdHz_ : 1.0;
+        vblStretch_ = r > 1.0 ? static_cast<uint64_t>(r) + 1 : 1;
+    }
+    uint64_t        vblPeriod() const;
+    bool            vblOnBeam() const;   // the rate is the video standard's
+    uint64_t        nextVblCycle_ = kVblUnphased;   // absolute cycle of the next edge
+    uint64_t        ownClock_     = 0;
+    const uint64_t* clock_        = &ownClock_;
+    bool            ownsClock_    = true;
+    void bindBeamClock();
+    void serviceVbl(uint64_t now);
+
+    // ── Internal hooks (AppleWin parity) ─────────────────────────────
+    void onPiaPortAOut(uint8_t v);    // = On6821_A
+    void onPiaPortBOut(uint8_t v);    // = On6821_B
+    void onCommand();
+    void onWrite();
+    void onMouseEvent(bool vbl);
+    void clearState();
+    int  clampX();
+    int  clampY();
+    void setClampX(int lo, int hi);
+    void setClampY(int lo, int hi);
+    void setPositionAbs(int x, int y);
+    void setPositionRel(int dx, int dy);
+    void setButton(int idx, bool down);
+    void pollHostInput();             // pump atomics → setPositionRel/Button
+};
+
+#endif // POM2_MOUSE_CARD_APPLEWIN_H

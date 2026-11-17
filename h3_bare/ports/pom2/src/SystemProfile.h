@@ -1,0 +1,248 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// SystemProfile — canonical Apple II model selection. Each profile
+// resolves to:
+//   * a CPU type (NMOS 6502 or CMOS 65C02)
+//   * a ROM probe order (first existing file wins)
+//   * a charset ROM probe order
+//   * a Memory IIe paging flag (off for II/II+, on for IIe/IIc)
+//   * a default cycles-per-frame (1.023 MHz for II/II+/IIe/IIc; the
+//     IIc Plus defaults to 4× = ~4 MHz to match real silicon)
+//
+// Profile switching happens via `MainWindow::applyProfile()` which does
+// a full cold-reset: stops the CPU worker, wipes RAM + soft switches,
+// re-loads the new ROM, re-plugs the default slot cards, and restarts
+// from the new reset vector. Disk and HDV image MOUNT PATHS are
+// preserved across the switch so the user can test the same software
+// stack under different machines without re-mounting.
+
+#ifndef POM2_SYSTEM_PROFILE_H
+#define POM2_SYSTEM_PROFILE_H
+
+#include "M6502.h"
+#include "CpuClock.h"
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace pom2 {
+
+/// A slot occupied by construction on this machine (e.g. on-board Disk II
+/// at slot 6 on a //c, or the IWM SmartPort at slot 5 on a //c+). When a
+/// profile's `builtInSlots[N]` carries a `BuiltInSlot`, the slot card is
+/// force-plugged with `cardKey` regardless of user settings, and the
+/// Slot Configuration UI renders the row read-only with `label` as a
+/// badge so the user knows what's there but can't edit it.
+struct BuiltInSlot {
+    std::string cardKey;   // matches a kCardTypes[] key in MainWindow_Slots
+    std::string label;     // user-visible suffix in the panel
+};
+
+enum class SystemProfile {
+    AppleII,             // Apple II original (1977), Integer BASIC, 6502 NMOS
+    AppleIIPlus,         // Apple II+ (1979), Applesoft + Autostart, 6502 NMOS
+    AppleIIeUnenhanced,  // Apple //e (1983), 6502 NMOS, no-mousetext char ROM
+    AppleIIe,            // Apple //e Enhanced (1985), 65C02, mousetext char ROM
+    AppleIIc,            // Apple //c (1984), 65C02, IIe-class soft switches
+    AppleIIcPlus,        // Apple //c Plus (1988), 65C02 @ 4 MHz, built-in SmartPort
+    // European PAL variants (50 Hz, 312 lines): same ROMs/CPU as their NTSC
+    // siblings, but PAL machine timing. The //c PAL is the machine that took
+    // the Le Chat Mauve RGB Péritel adapter on its DB-15 port; //e PAL is the
+    // French Touch / DIX target. See CpuClock.h VideoStandard.
+    AppleIIePAL,         // Apple //e Enhanced PAL (65C02, 312 lines, 50 Hz)
+    AppleIIcPAL,         // Apple //c PAL (Le Chat Mauve RGB adapter machine)
+    // Appended after the first release of the enum (palette command ids use
+    // the numeric value within a session, so existing values stay put; the
+    // DISPLAY order lives in allProfiles(), which slots this one between
+    // the //c+ and the Enhanced PAL).
+    AppleIIeUnenhancedPAL, // Apple //e Unenhanced PAL — NMOS 6502 + 50 Hz.
+                           // The French Touch machine: the 6502-only demo
+                           // corpus (OLDSKOOL FORT ET VERT…) counts cycles
+                           // that differ on a 65C02.
+};
+
+struct ProfileConfig {
+    SystemProfile          profile;
+    std::string_view       key;             // canonical persistence key
+    std::string_view       displayName;
+    std::vector<std::string> romProbeOrder;   // 16/32 KB main ROM
+    std::vector<std::string> charRomProbeOrder;
+    bool                   iieMode;          // Memory::setIIEMode(...)
+    M6502::CpuMode         defaultCpu;
+    int                    defaultCyclesPerFrame;
+    // Indexed by slot $C1-$C7 (entries 1..7 used; entry 0 reserved for the
+    // language card sl0 if ever modelled as a SlotPeripheral). A populated
+    // entry means "the on-board hardware lives here and the user cannot
+    // swap it". An empty entry (nullopt) means the slot is free.
+    std::array<std::optional<BuiltInSlot>, 8> builtInSlots;
+    // True for machines with NO physical expansion bus — //c and //c+.
+    // On these, even the "empty" `builtInSlots` entries (sl3 / sl7) are
+    // not user-pluggable: the slot connector simply doesn't exist on
+    // real hardware, so POM2 force-empties any non-builtIn slot at
+    // profile-apply time and locks the Slot Config picker greyed out.
+    bool                   noPhysicalSlots = false;
+    // Machine video standard. NTSC (262 lines, 60 Hz) for US machines; PAL
+    // (312 lines, ~50 Hz) for the European //e PAL / //c PAL. Appended last
+    // and defaulted so existing positional initializers stay valid.
+    VideoStandard          videoStandard = VideoStandard::NTSC;
+};
+
+/// Resolve a profile enum to its full configuration. The probe orders
+/// are ordered by preference; the caller's job is to pick the first
+/// existing file at runtime. Every profile is always defined —
+/// missing ROM files do not remove its configuration. Startup can report
+/// "NO ROM"; switching from an existing machine refuses an absent or
+/// unreadable main ROM before committing the new profile.
+const ProfileConfig& profileConfig(SystemProfile p);
+
+/// Inverse — parse a persistence/CLI key to a profile enum. Returns
+/// `AppleIIPlus` (the historical POM2 default) when the key is empty
+/// or unrecognised. Accepts the canonical keys (`ii`, `ii+`, `iie`,
+/// `iic`) and a few common aliases (`apple2`, `apple2plus`, `//e`, `//c`).
+SystemProfile profileFromKey(std::string_view key);
+
+/// Forward — get the persistence key for a profile.
+std::string_view profileKey(SystemProfile p);
+
+/// Which half of a 32 KB main-ROM dump is the firmware POM2 must map at
+/// reset — `Memory::loadAppleIIRom(path, pickLower16KFor32K)`. A //c-class
+/// dump is TWO firmware banks with bank 0 (the cold-reset entry) in the
+/// LOWER half; a //e "system + video" dump puts its 16 KB firmware in the
+/// UPPER half. Same file size, opposite slicing, and nothing in the bytes
+/// says which — so the answer is a property of the PROFILE and belongs here
+/// rather than being re-spelled at each `loadAppleIIRom` call site (bug hunt
+/// #10: Reload ROM used the //e slicing on a //c and rebooted into bank 1).
+bool profileUsesLowerRomHalf(SystemProfile p);
+
+/// The order in which the machine's firmware looks for a disk to boot,
+/// slot numbers 1-7. The Autostart ROM of the ][+ / //e scans $C7 down to
+/// $C1 and takes the first slot that signs (`$FAB4-$FAD2`), hence 7 → 1.
+/// The //c starts from its internal 5.25" (slot 6) and then the SmartPort
+/// on the rear port (slot 5); the //c+ from its internal 3.5" (slot 5),
+/// then the 5.25" (slot 6). The slots no firmware boots from follow,
+/// descending. Used by Internal Disks & Media to list its slots in that
+/// order.
+std::array<int, 7> bootScanOrder(SystemProfile p);
+
+/// The settings key that holds `slot`'s card under `cfg`: `slot_N_card`,
+/// except for the //c-class INTERNAL expansion connector (POM2 slot 3), which
+/// has its own key, `iic_expansion_card`. It used to share `slot_3_card` with
+/// the //e, so a //e with a Mockingboard in slot 3 put a Mockingboard 4c
+/// inside every //c the user switched to — and a 4c answering at $C400 from
+/// power-on kept the //c from reaching "Check Disk Drive." (2026-09-17).
+std::string slotCardSettingKey(const ProfileConfig& cfg, int slot);
+
+/// Should `slot_N_card` be persisted for `slot` holding `cardKey` under
+/// this profile? False for profile-forced slots: built-in cards, and —
+/// except for the user-pluggable "chatmauve" rear-connector adapter — the
+/// force-emptied virtual connectors of a `noPhysicalSlots` machine. On
+/// those slots the live mapping carries the PROFILE's value, and writing
+/// it back would clobber the user's real saved choice (e.g. quitting on
+/// //c used to overwrite slot_4_card=mockingboard with the on-board
+/// "mouseaw"). `savedKey` is the slot's currently-persisted value: an
+/// empty `cardKey` over a saved "chatmauve" IS a user choice (adapter
+/// removal must stick), an empty over anything else is the force-empty.
+/// Shared by the ~MainWindow persist loop and the Slot Config panel's
+/// Apply button so both sites apply the identical guard.
+bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
+                         std::string_view cardKey, std::string_view savedKey);
+
+/// The full persist rule both slot writers apply (the Slot Config Apply
+/// button and the ~MainWindow shutdown loop): slotKeyIsUserChoice, plus a
+/// slot the configuration resolve EMPTIED on its own — a Videoterm on a //e,
+/// a VidHD on a ][+, the same single-instance card twice. There the plan
+/// reads "" while `savedKey` still names `droppedKey`; writing it erased a
+/// choice the user never made, and the card was gone on the profile it fits.
+bool slotKeyShouldPersist(const ProfileConfig& cfg, int slot,
+                          std::string_view cardKey, std::string_view savedKey,
+                          std::string_view droppedKey);
+
+/// All profiles in DISPLAY order (not enum order): the NTSC machines
+/// chronologically, then the three European PAL variants — Unenhanced //e,
+/// Enhanced //e, //c Le Chat Mauve. Used by the Presets menu / palette /
+/// toolbar / ROM Status loops, so this array is the one place that decides
+/// how the machine list reads.
+const std::array<SystemProfile, 9>& allProfiles();
+
+/// Stable machine identity stamped into a snapshot header's `flags` word,
+/// so a snapshot taken on one machine cannot be silently restored onto
+/// another. Derived from the profile's canonical PERSISTENCE KEY rather than
+/// from the enum's numeric value: the key is already contractually stable
+/// (it is written to state.cfg and accepted on the command line), whereas
+/// the enum is appended to and its order is deliberately not the display
+/// order. Never returns 0 — 0 is reserved on the wire to mean "written
+/// before this field existed", which must keep loading.
+std::uint32_t snapshotMachineId(SystemProfile p);
+
+/// Reverse lookup for the refusal message. Returns an empty view when the
+/// id belongs to no profile this build knows (a snapshot from a newer POM2),
+/// which the caller should report as "another machine" rather than guess.
+std::string_view profileNameForMachineId(std::uint32_t id);
+
+/// The machine's bit in a WOZ image's "Compatible Hardware" field
+/// (WozCompat.h). A PAL profile is the same machine as its NTSC sibling: the
+/// field names models, not video standards.
+inline std::uint16_t wozHardwareBit(SystemProfile p)
+{
+    switch (p) {
+        case SystemProfile::AppleII:               return 0x0001;
+        case SystemProfile::AppleIIPlus:           return 0x0002;
+        case SystemProfile::AppleIIeUnenhanced:
+        case SystemProfile::AppleIIeUnenhancedPAL: return 0x0004;
+        case SystemProfile::AppleIIc:
+        case SystemProfile::AppleIIcPAL:           return 0x0008;
+        case SystemProfile::AppleIIe:
+        case SystemProfile::AppleIIePAL:           return 0x0010;
+        case SystemProfile::AppleIIcPlus:          return 0x0040;
+    }
+    return 0;
+}
+
+/// The Apple II 3.5 Disk Controller card (catalog `superdrive`) is offered
+/// on every //e with slots, enhanced or not, NTSC or PAL, and nowhere else.
+/// One predicate for the factory, the Slot Config picker and `resolve()`,
+/// which used to disagree: the picker offered it on profiles where the
+/// factory then refused it in silence, and the staged change never cleared
+/// (bug hunt 2026-11-01 round 4).
+/// [B] Apple, "Apple II 3.5 Disk Controller Card Owner's Guide" (1991) and
+///     Tech Info Library article 9292 (2/97): the card is for "an Apple IIGS
+///     or Apple IIe computer". Neither says ENHANCED //e, and neither lists
+///     a ][ or ][+.
+/// [C] The card's ROM 341-0438-A: the code the HOST runs (the $Cn page from
+///     $8100, $CA00-$CBFF from $8200, $CC00-$CFFF from $8400, copied at
+///     $D319) splits on `BIT $CC09 / BVS`. The IIGS branch uses 65816 code
+///     (XCE, LDA [dp],Y, the $C036 speed register); the //e branch, followed
+///     from the boot, ProDOS and SmartPort entries, is NMOS-only. So an
+///     unenhanced //e's 6502 runs it, and POM2 used to refuse that machine
+///     on a rule nobody had sourced.
+/// [F] The ][ / ][+: Apple does not list them. The //e branch calls only
+///     monitor entries a ][+ also has ($FABA, $FB39, $FC58, $FE89, $FE93),
+///     so it may run there; kept out until a real card is tried in one.
+inline bool superDriveFitsProfile(SystemProfile p)
+{
+    return p == SystemProfile::AppleIIe || p == SystemProfile::AppleIIePAL ||
+           p == SystemProfile::AppleIIeUnenhanced ||
+           p == SystemProfile::AppleIIeUnenhancedPAL;
+}
+
+}  // namespace pom2
+
+#endif // POM2_SYSTEM_PROFILE_H

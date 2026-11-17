@@ -179,8 +179,13 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_amiga(rom, size, sel_name);     // Commodore Amiga — /roms/amiga (r1191, PUAE)
     else if (strcmp(sys_id, "agat") == 0)
         emu_run_agat(rom, size, sel_name);      // Агат-9 — /roms/agat (r1297)
-    else if (strcmp(sys_id, "apple2") == 0)
-        emu_run_apple2(rom, size, sel_name);    // Apple II+ — /roms/apple2 (r1360)
+    else if (strcmp(sys_id, "apple2") == 0) {
+        /* r1404: вход/выход в эмулятор отдельными строками — зависание
+           между ними локализуется по последней строке UART. */
+        printf("apple2: run '%s' size=%u\n", sel_name, (unsigned)size);
+        emu_run_apple2(rom, size, sel_name);
+        printf("apple2: run done\n");
+    }
     else if (strcmp(sys_id, "radio86rk") == 0)
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
     else if (strcmp(sys_id, "enterprise") == 0)

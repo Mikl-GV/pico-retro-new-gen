@@ -1,0 +1,76 @@
+// mutex — bare-metal заглушка std::mutex (в libstdc++ для arm-none-eabi
+// std::mutex отсутствует: он требует gthreads/pthreads).
+// Ядро POM2 однопоточное на core0, блокировки не нужны, но интерфейс
+// должен совпадать, чтобы исходники компилировались без правок.
+#ifndef POM2_PORT_STD_MUTEX_SHIM
+#define POM2_PORT_STD_MUTEX_SHIM
+
+#include <cstddef>
+
+namespace std {
+
+class mutex {
+public:
+    constexpr mutex() noexcept = default;
+    ~mutex() = default;
+    mutex(const mutex&) = delete;
+    mutex& operator=(const mutex&) = delete;
+
+    void lock() {}
+    void unlock() {}
+    bool try_lock() { return true; }
+};
+
+class recursive_mutex : public mutex {};
+
+// std::call_once/once_flag: в однопоточной прошивке достаточно флага.
+// Once-инициализация POM2 (таблицы AppleWinNtsc) идемпотентна, поэтому
+// повторный вызов после сброса ядра безопасен и не требует перезапуска.
+struct once_flag {
+    once_flag() noexcept = default;
+    once_flag(const once_flag&) = delete;
+    once_flag& operator=(const once_flag&) = delete;
+
+    bool done_ = false;
+};
+
+template <class Fn, class... Args>
+void call_once(once_flag& flag, Fn&& fn, Args&&... args) {
+    if (flag.done_) return;
+    flag.done_ = true;
+    fn(static_cast<Args&&>(args)...);
+}
+
+template <class M>
+class lock_guard {
+public:
+    explicit lock_guard(M& m) : m_(m) { m_.lock(); }
+    ~lock_guard() { m_.unlock(); }
+    lock_guard(const lock_guard&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+
+private:
+    M& m_;
+};
+
+template <class M>
+class unique_lock {
+public:
+    explicit unique_lock(M& m) : m_(&m), owns_(true) { m_->lock(); }
+    unique_lock() : m_(nullptr), owns_(false) {}
+    ~unique_lock() { if (owns_) m_->unlock(); }
+    unique_lock(const unique_lock&) = delete;
+    unique_lock& operator=(const unique_lock&) = delete;
+
+    void lock() { if (!owns_) { m_->lock(); owns_ = true; } }
+    void unlock() { if (owns_) { m_->unlock(); owns_ = false; } }
+    bool owns_lock() const { return owns_; }
+
+private:
+    M* m_;
+    bool owns_;
+};
+
+} // namespace std
+
+#endif

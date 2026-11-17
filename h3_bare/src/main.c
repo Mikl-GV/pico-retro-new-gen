@@ -395,6 +395,10 @@ static int amiga_source_dialog(void) {
     }
 }
 
+// r1378: диалог Apple II+ живёт в apple2_dialog.c и линкуется последним,
+// чтобы не сдвигать literal pools и адреса .text (r1376/r1377 ломали USB).
+extern int apple2_source_dialog(int *model);
+
 // r787: выбор машины Atari 8-bit (как MSX/ZX/BK). Индексы совпадают с
 // a8_machine_variants в a8_host.c. Возвращает индекс или -1 (ESC).
 extern int a8_machine_count(void);
@@ -518,7 +522,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1369";
+const char g_fw_version[] = "r1408";
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
@@ -1026,6 +1030,38 @@ void main(void) {
                 }
             }
             sega_pad_init();
+            continue;
+        }
+
+        // Apple II+: выбор источника -> встроенный Applesoft BASIC или образ
+        // диска с SD (r1370: как C64/A8; ROM вшит, правило владельца).
+        if (strcmp(id, "apple2") == 0) {
+            extern void emu_run_apple2(const uint8_t*, uint32_t, const char*);
+            extern void emu_set_apple2_model(int);
+            for (;;) {
+                int model = 0;
+                int src = apple2_source_dialog(&model); // 1=BASIC, 2=образ
+                if (src == 0) break;          // ESC — назад в главное меню
+                emu_set_apple2_model(model);  // 0 = ][+, 1 = //e 128K
+                printf("apple2: dialog src=%d model=%d\n", src, model);
+                sega_pad_init();
+                tft_help_show("apple2");
+                if (src == 1) {               // Applesoft BASIC (вшитый ROM)
+                    printf("apple2: run basic model=%d\n", model);
+                    *(volatile uint32_t*)0x74u = 1;
+                    __asm volatile("dsb st" ::: "memory");
+                    emu_run_apple2(NULL, 0, "applesoft");
+                    usb_wait_release_all();
+                    usb_kbd_restart_intr();
+                    *(volatile uint32_t*)0x74u = 0;
+                    __asm volatile("dsb st" ::: "memory");
+                } else {                      // образ диска (0x74 ставит run_emulator)
+                    printf("apple2: browser enter\n");
+                    rom_browser_run("apple2", name, "apple2");
+                    printf("apple2: browser exit\n");
+                }
+                sega_pad_init();
+            }
             continue;
         }
 

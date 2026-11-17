@@ -1,0 +1,57 @@
+// POM2 — GPL-3.0-or-later
+#ifndef POM2_SNES_MAX_CARD_H
+#define POM2_SNES_MAX_CARD_H
+#include "SlotPeripheral.h"
+#include "CpuClock.h"
+#include <array>
+#include <atomic>
+#include <cstdint>
+namespace pom2 {
+// MAME bus/a2bus/snesmax.cpp: read_c0nx, write_c0nx, latch callbacks;
+// bus/snes_ctrl/joypad.cpp:84-119 supplies the serial button protocol.
+// Reference implementations: BSD-3-Clause, Vas Crabb and Fabio Priuli.
+// Host state is live input; latched data, shifters and the seven-clock pulse
+// are guest-visible state and therefore belong in rewind snapshots.
+class SnesMaxCard final : public SlotPeripheral {
+public:
+    explicit SnesMaxCard(int slot) : slot_(slot) {
+        for (auto& pad : buttons_) pad.store(0, std::memory_order_relaxed);
+    }
+    std::string_view name() const override { return "SNES MAX"; }
+    int getSlot() const { return slot_; }
+    enum Button : uint16_t {
+        B = 1, Y = 2, Select = 4, Start = 8,
+        Up = 16, Down = 32, Left = 64, Right = 128,
+        A = 256, X = 512, L = 1024, R = 2048
+    };
+    void setButtons(int player, uint16_t pressed);
+    /// The card drives bits 7-6 of $C0n0 only (pad 1 / pad 2); the rest of
+    /// that byte and every other offset are the floating bus — AppleWin
+    /// SNESMAX.cpp, written by the card's designer (Lukazi), against MAME's
+    /// `0x3f | bits` on every offset.
+    uint8_t deviceSelectRead(uint8_t low4) override
+    {
+        const uint8_t bus = openBus();
+        return (low4 & 0x0F) == 0 ? static_cast<uint8_t>((bus & 0x3F) | (data_ & 0xC0)) : bus;
+    }
+    void deviceSelectWrite(uint8_t offset, uint8_t) override;
+    void advanceCycles(int cycles) override;
+    void setCpuClock(double hz) override;
+    // The latch follows machine time; menu pacing fast-forwards it too.
+    void setMachineCpuClock(double hz) override { setCpuClock(hz); }
+    void setStandardClock(double hz) override;
+    void onPowerCycle() override;
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t size) override;
+private:
+    void clock();
+    int slot_;
+    std::array<std::atomic<uint16_t>, 2> buttons_{};
+    std::array<uint32_t, 2> shift_{};
+    uint8_t data_ = 0xFF;
+    double latchRemaining_ = 0.0; // slot-bus ticks, independent of acceleration
+    double cpuHz_ = POM2_CPU_CLOCK_HZ;
+    double busHz_ = POM2_CPU_CLOCK_HZ;
+};
+}
+#endif

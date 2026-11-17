@@ -1216,6 +1216,14 @@ PICO_OBJ := $(addprefix $(BUILD)/pico_core_,$(addsuffix .o,$(PICO_CORE))) \
 	$(BUILD)/pico_host.o
 OBJ += $(PICO_OBJ)
 
+# r1378: диалог Apple II+ — ПОСЛЕДНИМ объектом. Вставка в main.c сдвигала
+# literal pools/адреса .text и на стенде совпала с отказом USB-энумерации
+# (r1376/r1377). Новый объект в конце не сдвигает существующие адреса.
+OBJ += $(BUILD)/apple2_dialog.o
+# r1388: слой Apple II на ядре POM2. Объект добавляется В КОНЕЦ списка:
+# вставка в середину сдвигает .text и ломает USB-клавиатуру на стенде.
+OBJ += $(BUILD)/pom2_host.o
+
 # Паттерн-правила по каталогам + rename-скрипт (как cps1)
 $(BUILD)/pico_core_%.o: $(PICO)/pico/%.c | $(BUILD)
 	$(CC) $(PICO_CFLAGS) $(PICO_INC) -c -o $@.tmp $<
@@ -1308,6 +1316,67 @@ $(BUILD)/%.o: $(TOP)h3_bare/platform/%.c | $(BUILD)
 
 $(BUILD)/%.o: $(TOP)h3_bare/platform/fb/%.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+
+# ---- POM2 (Apple II): порт ядра, ОТДЕЛЬНАЯ цель ----
+# Срез POM2 (GPL-3.0, см. h3_bare/ports/pom2/COPYING) собирается в
+# build/libpom2port.a. В $(OBJ) намеренно НЕ входит: подключение к слою
+# Apple II — отдельный шаг, чтобы сборка прошивки оставалась зелёной, а
+# адреса USB-символов на стенде не сдвигались. Объекты лежат в
+# build/pom2/, поэтому в общий build/deps.mk (там только build/*.d) не
+# попадают.
+# Шим h3_bare/ports/pom2/shim/mutex обязателен: в libstdc++ для
+# arm-none-eabi std::mutex отсутствует (собран без gthreads).
+# ВНИМАНИЕ: -ffreestanding здесь НЕЛЬЗЯ. Он выставляет __STDC_HOSTED__=0,
+# libstdc++ уходит в freestanding-режим (_GLIBCXX_HOSTED=0) и перестаёт
+# объявлять __throw_length_error/__throw_bad_alloc — падает на первом же
+# std::vector::resize / string::append. Остальные C++-ядра проекта
+# собираются с -ffreestanding только потому, что не используют STL.
+# RTTI включён (по умолчанию): MemoryCpuView.cpp приводит cross-cast
+# dynamic_cast<const LcInhibitor*>(slots.peripheral(slot)), а LcInhibitor —
+# самостоятельный базовый тип (Memory.h), сравнение указателей неверно.
+AR := $(PREFIX)ar
+POM2_PORT_DIR  := $(TOP)h3_bare/ports/pom2
+POM2_PORT_SRCS := $(wildcard $(POM2_PORT_DIR)/src/*.cpp)
+POM2_PORT_SRCS += $(POM2_PORT_DIR)/pom2_h3.cpp
+# Объекты: src/*.cpp → build/pom2/<имя>.o, файлы слоя из корня →
+# build/pom2/<имя>.o. Две подстановки, потому что patsubst по шаблону
+# src/%.cpp файл из корня не ловит и молча оставил бы .cpp в архиве.
+POM2_PORT_OBJS := $(patsubst $(POM2_PORT_DIR)/src/%.cpp,$(BUILD)/pom2/%.o,\
+	$(filter $(POM2_PORT_DIR)/src/%.cpp,$(POM2_PORT_SRCS)))
+POM2_PORT_OBJS += $(patsubst $(POM2_PORT_DIR)/%.cpp,$(BUILD)/pom2/%.o,\
+	$(filter-out $(POM2_PORT_DIR)/src/%.cpp,$(POM2_PORT_SRCS)))
+POM2_PORT_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS) \
+	-O2 -std=gnu++17 -fno-exceptions -fno-threadsafe-statics \
+	-ffunction-sections -fdata-sections -DNDEBUG \
+	-I$(POM2_PORT_DIR)/shim -I$(POM2_PORT_DIR)/src
+
+# r1402: ПЗУ Apple //e (16 КБ) — вшивается отдельным .S в конце $(OBJ),
+# чтобы новые байты .text не сдвигали раскладку USB на стенде.
+POM2_ROM_APPLE2E := $(TOP)h3_bare/cores/agat/rom/apple2e.rom
+OBJ += $(BUILD)/pom2_roms.o
+
+$(BUILD)/pom2_roms.o: $(POM2_PORT_DIR)/pom2_roms.S $(POM2_ROM_APPLE2E) | $(BUILD)
+	$(CC) -mcpu=cortex-a7 -marm -I$(TOP) -c -o $@ $<
+
+$(BUILD)/pom2/%.o: $(POM2_PORT_DIR)/src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(POM2_PORT_CXXFLAGS) -c -o $@ $<
+
+# Файлы слоя (pom2_h3.cpp) лежат в корне каталога порта, а не в src/.
+$(BUILD)/pom2/%.o: $(POM2_PORT_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(POM2_PORT_CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/libpom2port.a: $(POM2_PORT_OBJS)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+
+.PHONY: pom2-port
+pom2-port: $(BUILD)/libpom2port.a
+
+# Слой Apple II (C): единственный потребитель порта, видит только C-API.
+$(BUILD)/pom2_host.o: $(TOP)h3_bare/cores/pom2_host.c $(POM2_PORT_DIR)/pom2_h3.h | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-array-bounds $(INCLUDES) -I$(POM2_PORT_DIR) -c -o $@ $<
 
 # ---- cores/*.c, cores/*.cpp (общие правила по каталогам) ----
 $(BUILD)/menu.o: $(TOP)h3_bare/cores/menu.c | $(BUILD)
@@ -1712,9 +1781,10 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp $(BUILD)/libpom2port.a
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
+	$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(BUILD)/libpom2port.a))
 	$(file >>$(BUILD)/linker.rsp,-lstdc++ -lgcc -lc -lm -lgcc)
 	$(LD) -T $(TOP)h3_bare/platform/linker.ld -nostdlib -Wl,-gc-sections \
 	    -Wl,--allow-multiple-definition \

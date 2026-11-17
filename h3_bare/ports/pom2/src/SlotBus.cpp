@@ -1,0 +1,394 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+#include <cassert>
+#include "SlotBus.h"
+#include "Z80.h"
+
+// ─── SlotPeripheral ↔ SlotBus wiring ────────────────────────────────────
+// Definitions for SlotPeripheral live here so they have full visibility
+// of SlotBus (forward-declared in SlotPeripheral.h to avoid a circular
+// include). `attachToBus` and `detachFromBus` are private and called
+// only by SlotBus::plug / unplug / clear.
+
+void SlotPeripheral::attachToBus(SlotBus* bus, int slot)
+{
+    bus_ = bus;
+    busSlot_ = slot;
+    // Cards start with no IRQ contribution; if a constructor pre-set
+    // `irqAsserted_` we don't honour it here — the bus is responsible
+    // for re-asserting after attach if the card immediately requests
+    // it via assertIrq().
+    irqAsserted_ = false;
+    nmiAsserted_ = false;
+}
+
+void SlotPeripheral::detachFromBus()
+{
+    // Auto-release any pending IRQ this card was contributing, so the
+    // wire-OR aggregator doesn't keep the bit set after the card is
+    // gone. Without this each card would have to remember to clear in
+    // its own onUnplug() — easy to forget, and the cause of the legacy
+    // "stuck IRQ across profile switch" bug.
+    if (irqAsserted_ && bus_) bus_->forwardSlotIrq(busSlot_, false);
+    if (nmiAsserted_ && bus_) bus_->forwardSlotNmi(busSlot_, false, false);
+    irqAsserted_ = false;
+    nmiAsserted_ = false;
+    bus_ = nullptr;
+    busSlot_ = -1;
+}
+
+uint8_t SlotPeripheral::openBus() const
+{
+    // Defined here, not in the header: SlotPeripheral.h only forward-declares
+    // SlotBus (circular include), so the call needs the definition this file
+    // already has.
+    return bus_ ? bus_->openBus() : uint8_t{0xFF};
+}
+
+const uint64_t* SlotPeripheral::busCycleCounter() const
+{
+    return bus_ ? bus_->cycleCounterRef() : nullptr;
+}
+
+uint64_t SlotPeripheral::busAccessOffset() const
+{
+    const uint64_t* now = bus_ ? bus_->cycleCounterRef() : nullptr;
+    if (!now) return 0;
+    const uint64_t at = bus_->accessCycle();
+    return at > *now ? at - *now : 0;
+}
+
+uint64_t SlotPeripheral::busNextVblCycle(uint64_t cpuNow) const
+{
+    return bus_ ? bus_->nextVblCpuCycle(cpuNow) : 0;
+}
+
+const uint8_t* SlotPeripheral::busAuxRam() const
+{
+    return bus_ ? bus_->auxRamRef() : nullptr;
+}
+
+void SlotPeripheral::assertIrq(bool asserted)
+{
+    if (asserted == irqAsserted_) return;
+    irqAsserted_ = asserted;
+    if (bus_) bus_->forwardSlotIrq(busSlot_, asserted);
+}
+
+void SlotPeripheral::assertNmi(bool asserted)
+{
+    if (asserted == nmiAsserted_) return;
+    nmiAsserted_ = asserted;
+    if (bus_) bus_->forwardSlotNmi(busSlot_, asserted, true);
+}
+
+void SlotPeripheral::restoreNmiLevel(bool asserted)
+{
+    if (asserted == nmiAsserted_) return;
+    nmiAsserted_ = asserted;
+    if (bus_) bus_->forwardSlotNmi(busSlot_, asserted, false);
+}
+
+// ─── SlotBus ────────────────────────────────────────────────────────────
+
+void SlotBus::plug(int slot, std::unique_ptr<SlotPeripheral> card)
+{
+    if (slot < 0 || slot >= kSlotCount) return;
+
+    if (slots[slot]) {
+        slots[slot]->onUnplug();
+        slots[slot]->detachFromBus();
+        if (activeExpansionSlot == slot) activeExpansionSlot = -1;
+        slots[slot].reset();
+    }
+    if (card) {
+        slots[slot] = std::move(card);
+        slots[slot]->attachToBus(this, slot);
+        slots[slot]->onPlug();
+        if (pom2::Z80* z = slots[slot]->z80Core()) z->setObserver(z80Observer_);
+        slots[slot]->setCardTrace(cardTrace_);
+    }
+    rebuildActiveCache();
+}
+
+void SlotBus::setZ80Observer(pom2::Z80Observer* o)
+{
+    z80Observer_ = o;
+    for (auto& card : slots)
+        if (card)
+            if (pom2::Z80* z = card->z80Core()) z->setObserver(o);
+}
+
+void SlotBus::setCardTrace(pom2::CardTraceSink* sink)
+{
+    cardTrace_ = sink;
+    for (auto& card : slots)
+        if (card) card->setCardTrace(sink);
+}
+
+std::unique_ptr<SlotPeripheral> SlotBus::unplug(int slot)
+{
+    if (slot < 0 || slot >= kSlotCount) return nullptr;
+    if (!slots[slot]) return nullptr;
+    slots[slot]->onUnplug();
+    slots[slot]->detachFromBus();
+    if (activeExpansionSlot == slot) activeExpansionSlot = -1;
+    auto owned = std::move(slots[slot]);   // slots[slot] is now empty
+    rebuildActiveCache();                  // ...so rebuild BEFORE returning
+    return owned;
+}
+
+uint8_t SlotBus::deviceSelectRead(uint16_t addr)
+{
+    // $C080-$C0FF — 16 bytes per slot. Slot N starts at $C080 + N*16.
+    if (addr < 0xC080 || addr > 0xC0FF) return 0xFF;
+    // A snooper that CONSUMES the access takes it off the bus: the card in
+    // the slot must not see it either (`SlotPeripheral::busSnoop`'s own
+    // contract, which `Memory::softSwitchAccess` honours and these four
+    // sites dropped until 2026-09-12).
+    if (busSnooper_ && busSnooper_->busSnoop(addr, false, 0)) return openBus();
+    const int slot = (addr - 0xC080) >> 4;
+    const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
+    // Empty slot: MAME `apple2e.cpp:2883-2918` `c080_r` falls through every
+    // per-slot branch to `return read_floatingbus();`.
+    const uint8_t v = slots[slot] ? slots[slot]->deviceSelectRead(low4) : openBus();
+    logAccess(slot, addr, v, false);
+    return v;
+}
+
+void SlotBus::deviceSelectWrite(uint16_t addr, uint8_t v)
+{
+    if (busSnooper_ && busSnooper_->busSnoop(addr, true, v)) return;
+    if (addr < 0xC080 || addr > 0xC0FF) return;
+    const int slot = (addr - 0xC080) >> 4;
+    const uint8_t low4 = static_cast<uint8_t>(addr & 0x0F);
+    logAccess(slot, addr, v, true);
+    if (auto* p = slots[slot].get()) p->deviceSelectWrite(low4, v);
+}
+
+uint8_t SlotBus::slotRomRead(uint16_t addr)
+{
+    // $C100-$C7FF — slot N at $C(N)00-$C(N)FF, N=1..7.
+    if (addr < 0xC100 || addr > 0xC7FF) return 0xFF;
+    if (busSnooper_ && busSnooper_->busSnoop(addr, false, 0)) return openBus();
+    const int slot = (addr >> 8) & 0x07;     // $CN00 → N
+    if (slot < 1 || slot > 7) return openBus();
+
+    // MAME `apple2e.cpp:2970-2987` `read_slot_rom`, verbatim: the claim is
+    // `(m_cnxx_slot == CNXX_UNCLAIMED) && m_slotdevice[slotnum]->take_c800()`
+    // — first-one-wins, but ONLY among cards that actually drive /IOSTB
+    // (`a2bus.h:145`, default false). A card with no expansion ROM used to
+    // latch the window here and hand $FF to the card that has one.
+    uint8_t v;
+    if (auto* p = slots[slot].get()) {
+        if (p->takesC800()) claimExpansion(slot);
+        v = p->slotRomRead(static_cast<uint8_t>(addr & 0xFF));
+    } else {
+        v = openBus();
+    }
+    logAccess(slot, addr, v, false);
+    return v;
+}
+
+void SlotBus::slotRomWrite(uint16_t addr, uint8_t v)
+{
+    if (busSnooper_ && busSnooper_->busSnoop(addr, true, v)) return;
+    // Mirror of slotRomRead's address decode. Forwards to the card's
+    // `slotRomWrite` (default no-op for ROM-only cards) and latches the
+    // slot as the active expansion-ROM owner — same Apple II semantics
+    // as a read into the slot ROM window.
+    if (addr < 0xC100 || addr > 0xC7FF) return;
+    const int slot = (addr >> 8) & 0x07;
+    if (slot < 1 || slot > 7) return;
+
+    // MAME `apple2e.cpp:2989-3025` `write_slot_rom`: same first-one-wins
+    // claim as the read, and likewise gated on `take_c800()` (`a2bus.h:145`)
+    // — a populated slot is not enough, the card must serve /IOSTB.
+    logAccess(slot, addr, v, true);
+    if (auto* p = slots[slot].get()) {
+        if (p->takesC800()) claimExpansion(slot);
+        p->slotRomWrite(static_cast<uint8_t>(addr & 0xFF), v);
+    }
+}
+
+uint8_t SlotBus::expansionRomRead(uint16_t addr)
+{
+    if (addr < 0xC800 || addr > 0xCFFF) return openBus();
+    const int      owner  = activeExpansionSlot;
+    const uint16_t offset = static_cast<uint16_t>(addr - 0xC800);
+    const bool     owned  = owner >= 1 && owner <= 7 && slots[owner];
+    // $CFFF lets go of the window whoever owns it; the owner may let go on
+    // more than that (SlotPeripheral::releasesC800At — the SSC on all of
+    // $CFxx).
+    if (addr == 0xCFFF || (owned && slots[owner]->releasesC800At(offset))) {
+        // Read or write to $CFFF deactivates the expansion ROM — but the
+        // access itself still belongs to the card that owned the window:
+        // MAME `apple2e.cpp:3137-3152` and `apple2.cpp:563-578` `c800_r`
+        // save `m_cnxx_slot` before clearing it and return that card's
+        // `read_c800(0x7ff)`. Only an unowned window reads the floating bus.
+        deactivateExpansion();
+        if (!owned) return openBus();
+        const uint8_t v = slots[owner]->expansionRomRead(offset);
+        logAccess(owner, addr, v, false);
+        return v;
+    }
+    if (owner < 1 || owner > 7) return openBus();
+    const uint8_t v = slots[owner] ? slots[owner]->expansionRomRead(offset) : openBus();
+    logAccess(owner, addr, v, false);
+    return v;
+}
+
+void SlotBus::expansionRomWrite(uint16_t addr, uint8_t v)
+{
+    if (addr < 0xC800 || addr > 0xCFFF) return;
+    const int      owner  = activeExpansionSlot;
+    const uint16_t offset = static_cast<uint16_t>(addr - 0xC800);
+    const bool     owned  = owner >= 1 && owner <= 7 && slots[owner];
+    if (addr == 0xCFFF || (owned && slots[owner]->releasesC800At(offset))) {
+        // The owner sees the write, then lets go (MAME `c800_w`: write_c800
+        // first, CNXX_UNCLAIMED after, in both apple2.cpp and apple2e.cpp).
+        if (owner >= 1 && owner <= 7) {
+            logAccess(owner, addr, v, true);
+            if (auto* p = slots[owner].get()) p->expansionRomWrite(offset, v);
+        }
+        deactivateExpansion();
+        return;
+    }
+    if (owner < 1 || owner > 7) return;
+    logAccess(owner, addr, v, true);
+    if (auto* p = slots[owner].get()) p->expansionRomWrite(offset, v);
+}
+
+void SlotBus::enableAccessLog(int slot, std::size_t capacity)
+{
+    if (slot < 1 || slot >= kSlotCount) return;
+    auto& log = accessLogs_[static_cast<std::size_t>(slot)];
+    log.entries.clear();
+    log.capacity = capacity ? capacity : 1;
+    log.dropped = 0;
+    accessLogMask_ = static_cast<uint8_t>(accessLogMask_ | (1u << slot));
+}
+
+void SlotBus::disableAccessLog(int slot)
+{
+    if (slot < 1 || slot >= kSlotCount) return;
+    accessLogMask_ = static_cast<uint8_t>(accessLogMask_ & ~(1u << slot));
+}
+
+std::vector<SlotBus::SlotAccess> SlotBus::takeAccessLog(int slot)
+{
+    if (slot < 1 || slot >= kSlotCount) return {};
+    auto& log = accessLogs_[static_cast<std::size_t>(slot)];
+    std::vector<SlotAccess> out(log.entries.begin(), log.entries.end());
+    log.entries.clear();
+    return out;
+}
+
+std::uint64_t SlotBus::accessLogDropped(int slot) const
+{
+    if (slot < 1 || slot >= kSlotCount) return 0;
+    return accessLogs_[static_cast<std::size_t>(slot)].dropped;
+}
+
+void SlotBus::recordAccess(int slot, uint16_t addr, uint8_t value, bool write)
+{
+    auto& log = accessLogs_[static_cast<std::size_t>(slot)];
+    if (log.entries.size() >= log.capacity) {
+        log.entries.pop_front();
+        ++log.dropped;
+    }
+    log.entries.push_back({ cycleSource_ ? cycleSource_() : 0, addr, value, write });
+}
+
+void SlotBus::rebuildActiveCache()
+{
+    activeCount_ = 0;
+    for (auto& s : slots)
+        if (s) activeCards_[static_cast<size_t>(activeCount_++)] = s.get();
+    busSnooper_ = nullptr;
+    for (auto& s : slots)
+        if (s && s->snoopsBus()) { busSnooper_ = s.get(); break; }
+}
+
+void SlotBus::advanceCycles(int cycles)
+{
+    if (cycles <= 0) return;
+#ifndef NDEBUG
+    // The cache is raw pointers into `slots`; if a mutation ever forgets to
+    // rebuild it, the failure would be a skipped card or a freed pointer, both
+    // near-impossible to trace back here. Fail loudly in debug instead.
+    {
+        int n = 0;
+        for (auto& s : slots) {
+            if (!s) continue;
+            assert(n < activeCount_ && activeCards_[static_cast<size_t>(n)] == s.get()
+                   && "SlotBus active-card cache is stale — a mutation of slots[] "
+                      "did not call rebuildActiveCache()");
+            ++n;
+        }
+        assert(n == activeCount_ && "SlotBus active-card cache has extra entries");
+    }
+#endif
+    for (int i = 0; i < activeCount_; ++i)
+        activeCards_[static_cast<size_t>(i)]->advanceCycles(cycles);
+}
+
+void SlotBus::broadcastVideoSwitch(uint16_t addr)
+{
+    for (auto& s : slots) if (s) s->onVideoSoftSwitch(addr);
+}
+
+void SlotBus::broadcastVideoSwitchWrite(uint16_t addr, uint8_t value)
+{
+    for (auto& s : slots) if (s) s->onVideoSoftSwitchWrite(addr, value);
+}
+
+void SlotBus::reset(bool powerCycle)
+{
+    for (auto& s : slots) {
+        if (!s) continue;
+        if (powerCycle) s->onPowerCycle();
+        else s->onReset();
+    }
+    // Removing slot power clears every card's $C800 enable. RESET clears it
+    // only on a card whose latch has a RESET input, and that is a per-card
+    // fact (SlotPeripheral::releasesC800OnReset has the table).
+    // [B] The default — RESET keeps the enable — is the circuit Apple
+    //     recommends: Apple II Reference Manual (1979) p. 85, Fig. 8, a latch
+    //     with S = I/O SELECT, R = $CFFF and no RESET input. It stood here
+    //     until 2026-11-06 as a rule with no source.
+    // [B] Cards that add the input say so: SSC manual p. 45 — the latch "is
+    //     reset by access to the $CFxx space or by a reset".
+    // [D] MAME `reset_w` leaves `m_cnxx_slot` alone (mame0287), for every card.
+    const int owner = activeExpansionSlot;
+    if (powerCycle ||
+        (owner >= 1 && owner <= 7 && slots[owner] && slots[owner]->releasesC800OnReset()))
+        activeExpansionSlot = -1;
+}
+
+void SlotBus::clear()
+{
+    for (auto& s : slots) {
+        if (s) {
+            s->onUnplug();
+            s->detachFromBus();
+            s.reset();
+        }
+    }
+    activeExpansionSlot = -1;
+    rebuildActiveCache();
+}

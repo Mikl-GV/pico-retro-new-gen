@@ -502,29 +502,29 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.frodo_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1351, точные адреса из `nm build/h3_bare.elf`)
+## Карта памяти (актуально r1408; источник истины по адресам — `docs/MEMORY.md`, ниже только краткая сводка)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
 объектов) и не использовалась. Согласованно удалён и её блок обнуления из
-`startup.S` (без меток `_ring_buf_*` он игнорировался).
+`startup.S` (без меток `_ring_buf_*` он игнорировался). С r1357 кольцо звука
+расширено до 8192 пар: L=0x1000..0x4FFF, R=0x5000..0x8FFF.
 
 | Адрес | Назначение |
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40BBFFF8 | `.text` + init_array (≈ 14.7 МБ, r1351); векторы `_vectors`=0x40000000 |
-| 0x40B2FD04..0x4106A4A0 | свободно (линкер перераспределил: .data сразу после .text) |
-| 0x4106A4A0..0x415A4F3C | `.data` (≈ 5.22 МБ, копируется из образа; внутри вшиты Kickstart 1.3 и Workbench 1.3 — `puae_kick13_rom` 0x413AC4C4, `puae_wb13_adf` 0x413EC4C4) |
-| 0x41353000..0x449BD5A0 | `.bss` (`_bstart1.._bend1`, ≈ 54.3 МБ, обнуляется в `startup.S`; r1351) |
-| 0x4A400000..0x4A402FC0 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
+| 0x40000000..0x4100D020 | `.text` + init_array (≈ 14.7 МБ, r1408); векторы `_vectors`=0x40000000 |
+| 0x4100D020..0x414BA000 | `.data` (≈ 4.7 МБ, копируется из образа; внутри вшиты Kickstart 1.3 и Workbench 1.3 — `puae_kick13_rom`, `puae_wb13_adf`) |
+| 0x414BA000..0x44BA3BD8 | `.bss` (`_bstart1.._bend1`, ≈ 55.9 МБ, обнуляется в `startup.S`; r1408) |
+| 0x4A400000..0x4A402E40 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
 | 0x4BF00000..0x4EF00000 | **sbrk-арена** (`_sbrk`, 48 МБ) — newlib (r1243: PUAE-аллокатора больше нет); `SBRK_LIMIT=0x4EF00000` |
 | 0x4F000000 | `_menu_arena` (512 слотов + имена); граница `_sbrk` |
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер браузера ROM (24 МБ). Аркады используют этот же адрес как 92-МБ zip-буфер (`cps1_host.cpp:112`), поэтому «24 МБ» — граница только для `rom_browser.c`, не физическая |
 | 0x52000000..0x524A78A0 | `.frodo_bss` (≈ 4.65 МБ, NOLOAD, r1284/r1347) — BSS C64 (Frodo, `Retro_Screen` 4 МБ); обнуляется в `startup.S` (до r1284 — `.vice_bss`, VICE, ~31 МБ) |
-| 0x53E00000..0x53E002DC | `.fs_bss` (r1010, NOLOAD) — ЕДИНЫЙ файловый слой прошивки `cores/fs_layer.c` (r1014: вынесен из `atari800/a8_fs.c`; глобальные `fopen/fread/open/stat` + слоты `g_files`/`g_rom_*`/`g_fd_*`); слоты валидируются magic `0xA85A5A5A` (r1011), `setvbuf`/`setbuf` перехвачены как no-op; `atari800/a8_fs.c` — мост `a8_fs_register`→`fs_register`; обнуляется в `startup.S` |
+| 0x53E00000..0x53E00CE4 | `.fs_bss` (r1010/r1354, NOLOAD) — ЕДИНЫЙ файловый слой прошивки `cores/fs_layer.c` (r1014: вынесен из `atari800/a8_fs.c`; глобальные `fopen/fread/open/stat` + слоты `g_files`/`g_rom_*`/`g_fd_*` + доп. файлы образа r1354); слоты валидируются magic `0xA85A5A5A` (r1011), `setvbuf`/`setbuf` перехвачены как no-op; `atari800/a8_fs.c` — мост `a8_fs_register`→`fs_register`; обнуляется в `startup.S` |
 | **0x54000000..0x5A000000** | **`.noinit_fbn` (NOLOAD, 96 МБ, r1191)** — bump-пул FBNeo (`pool_mem`), НЕ обнуляется при старте; блоки обнуляются при выдаче в `_BurnMalloc`; `_hend`=0x5A000000; ASSERT ≤0x5C000000 |
 | 0x5F000000..0x5F1D7310 | `.a8_bss` (r778, ≈ 1.84 МБ, NOLOAD) — BSS Atari 800; обнуляется в `startup.S` |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
@@ -538,15 +538,16 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 
-**Числа-размеры (r1243, `arm-none-eabi-readelf -SW`):** `.text` ≈11.2 МБ
-(0x40000000..0x40B2FD04), `.data` ≈5.22 МБ (0x4106A4A0..0x415A4F3C),
-`.bss` ≈55.6 МБ (0x415A5000..0x44B40850),
+**Числа-размеры (r1408, `arm-none-eabi-readelf -SW`):** `.text` ≈10.9 МБ
+(0x40000000..0x4100D020),
+`.bss` ≈55.9 МБ (0x414BA000..0x44BA3BD8),
 `.noinit_fbn` 0x6000000 (96 МБ, пул FBNeo, NOLOAD, 0x54000000..0x5A000000),
-`.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` 12224 Б,
-`.fs_bss` 0x2DC (r1010, файловый слой fs_layer.c; 0x53E00000..0x53E002DC),
-`.frodo_bss` — 0x4A77B8 (≈4.65 МБ), 0x52000000..0x524A77B8, NOLOAD (r1284;
+`.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` ≈11.6 КБ
+(0x4A400000..0x4A402E40),
+`.fs_bss` 0xCE4 (файловый слой fs_layer.c; 0x53E00000..0x53E00CE4, r1354),
+`.frodo_bss` — 0x4A78A0 (≈4.65 МБ), 0x52000000..0x524A78A0, NOLOAD (r1284;
 до r1284 — `.vice_bss`, ≈29.6 МБ, r974).
-Образ `h3_bare.bin` = 20 261 548 Б (r1351; r1241 было ≈34.6 МБ — PUAE удалён).
+Образ `h3_bare.bin` = 21 731 444 Б (r1408).
 
 ## Загрузочная карта памяти (r502)
 
@@ -631,27 +632,30 @@ A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останав�
   (r1362): host выбирает main-файл (`start.com`/`start`, имя каталога,
   первый `.com`/`.bas`), вызывает `ep_set_rom_dir()` и грузит остальные файлы
   каталога.
-- **Apple II+** (`h3_bare/cores/agat_host.c`, r1360) — то же ядро Agat
-  Emulator, тип `SYSTEM_P` (в `init_system_state` сходится к `SYSTEM_A`):
-  6502 1.0205 МГц, NTSC 60 Гц, 64K (48K + 16K языковая карта в слоте 0,
-  `DEV_MEMORY_XRAMA`, r1364), кадр видео 560×384 (PIX_W*280 ×
-  PIX_H*192), аспект 4:3. Вшиты (`.incbin` в `agat_roms.S`): Applesoft/монитор
-  12 КБ (`apple2p.rom`, байт в байт с `Apple2_Plus.rom` AppleWin), знакогенератор
-  (`apple2.fnt`), ПЗУ Disk II 16 секторов (`shugarta.rom`, = `DISK2.rom`).
-  Палитра — 16 цветов эталонного `PALETTE\APPLE2.PAL` (`agat_set_apple2_palette`).
-  Диск: Shugart/Disk II, образы `.dsk/.do/.po` (143360), `.nib` (6656×N) и
-  `.woz` (1.0/2.0, r1361: сырой битпоток → nibble-поток с ресинхронизацией
-  по единичному биту, как `LDA $C0EC / BPL` в Disk II ROM); TEAC-контроллер
-  Apple II не нужен и отключён. Клавиатура — ASCII (`$C000`, бит 7 — строб),
-  пад — порт джойстика `$C061/$C062/$C064/$C065`.
+- **Apple II+ / Apple II** (`h3_bare/cores/pom2_host.c` + `h3_bare/ports/pom2/`,
+  r1388) — отдельное ядро **POM2** (GPL-3.0, `ports/pom2/COPYING`), не Agat.
+  Срез порта собирается целью `make pom2-port` в `build/libpom2port.a`
+  (`-std=gnu++17`, RTTI включён, `-fno-exceptions -fno-threadsafe-statics`;
+  `-ffreestanding` для файлов порта запрещён) и линкуется в прошивку после
+  `$(OBJ)`. Платформенный слой `pom2_h3.cpp`: ПЗУ и образ диска приходят
+  БАЙТАМИ (`Memory::loadAppleIIRom`, `DiskImage::loadBuffer` +
+  `DiskIICard::installDisk`) — файловой системы на железе нет; кадр
+  `Apple2Display` → RGBA `uint32_t` (до 560×320, `pom2_h3_pixels`) → напрямую в
+  HDMI-фреймбуфер (`emu_show_rgba_int`), звук
+  `SpeakerDevice` → `i2s_push_block` парами 48 кГц, клавиатура
+  `setKeyHeld`/`queueKey` (`$C000`/`$C010`), джойстик
+  `setPaddle`/`setPaddleButton` (`$C061-$C067`/`$C070`). ПЗУ Apple II+ 12 КБ
+  вшито (`agat_rom_apple2p`, `apple2p.rom`, грузится на `$D000`); формат
+  образа определяется по расширению (`.dsk .do .po .nib .woz`). Агат-9
+  остаётся на Agat Emulator (`agat_host.c`, `SYSTEM_9`).
 - **Hot-swap дискет (F12, r1363)** — `cores/disk_swap.c`. Хост регистрирует
   `emu_disk_ops_t` (число приводов, расширения, `in_memory`, callback вставки)
   и зовёт `emu_disk_poll()` в начале кадра до чтения клавиатуры. F12 открывает
   список образов каталога, где запущена игра (`emu_disk_set_dir` из
   `rom_browser.c`). Файл читается в `.swap_buf`
   и передаётся callback-вставки; клавиши после оверлея
-  дожидаются отпускания. Подключены: Apple II+/Агат (Agat FDD, 2/1 привода,
-  свой буфер на привод — r1368), Fuse (disk
+  дожидаются отпускания. Подключены: Apple II+ (POM2, 2 привода, r1396),
+  Агат (Agat FDD, 1 привод), Fuse (disk
   control API), C64/Frodo (`IEC::SwapDrive`, 2), CPC (`cpc_dsk_load`, 2),
   Amiga/ UAE4All
   (`amiga_swap_disk`, 1), Atari 800 (`SIO_Mount`, 1), MSX (r1369: fMSX WD1793 +

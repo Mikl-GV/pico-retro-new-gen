@@ -1,0 +1,453 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// SlotPeripheral — abstract interface for cards plugged into the Apple II
+// expansion bus (slots 0-7). Each card sees three address windows:
+//
+//   $C0(8+N)X        16-byte device-select per slot
+//                    (slot 1 = $C090-$C09F, ..., slot 7 = $C0F0-$C0FF.
+//                     slot 0 = $C080-$C08F = language card slot.)
+//   $C(N)XX          256-byte slot ROM (slots 1-7 only — slot 0 has no
+//                    slot ROM space; $C000-$C0FF is the I/O page).
+//   $C800-$CFFF      2 KB expansion ROM, shared between all slots —
+//                    one slot active at a time, switched by the SlotBus
+//                    based on which slot's ROM was last touched.
+//
+// All callbacks are invoked from the CPU thread under EmulationController's
+// stateMutex; cards don't need to lock state for those. Lifecycle hooks
+// (onPlug / onUnplug / onReset) are also called under that lock so card
+// initialisation can mutate the bus freely.
+//
+// Default implementations match an empty/inactive socket (read = $FF "open
+// bus", writes silently dropped). Override only the methods your card
+// actually implements.
+
+#ifndef POM2_SLOT_PERIPHERAL_H
+#define POM2_SLOT_PERIPHERAL_H
+
+#include "CardTraceSink.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+#include <vector>
+
+namespace pom2 { class Z80; class SmartPortBusUnit; class Block512Backing; class AutosavedMedium;
+                 class CentronicsPrinter; }
+
+class SlotBus;
+
+class SlotPeripheral
+{
+public:
+    // Host persistence service; vector indices are media bay numbers.
+    virtual std::vector<pom2::Block512Backing*> blockBackings() { return {}; }
+    // The same service for whole-image media — floppies, 5.25" and 3.5"
+    // (MediaAutosave.h). Indices are drives / bays; entries may be null.
+    virtual std::vector<pom2::AutosavedMedium*> autosavedMedia() { return {}; }
+    // The printer on a parallel card's cable (CentronicsPrinter.h): its
+    // lines for PrinterPortControl, its paper for the host ImageWriter.
+    virtual pom2::CentronicsPrinter* centronicsPrinter() { return nullptr; }
+    /// A printer spool reached without a cast (the AI server's /printer/spool
+    /// must not link-depend on every card): true when this card has one, with
+    /// `next` set as by PrinterCard::drainSpoolFrom. The FujiNet printer unit.
+    virtual bool drainPrinterSpool(std::size_t /*from*/, std::vector<uint8_t>& /*out*/,
+                                   std::size_t& /*next*/) const { return false; }
+    virtual ~SlotPeripheral() = default;
+
+    /// Short human-readable name (e.g. "Disk II", "Language Card", "80col").
+    /// Surfaced in the Hardware menu / status bar.
+    virtual std::string_view name() const = 0;
+    // A reconstruction must never join a host worker under the state lock.
+    virtual bool sessionReplacementReady() const { return true; }
+
+    /// $C0(8+N)X — 16-byte device-select range. `low4` is the low nibble
+    /// of the address (0..15). Reads and writes are dispatched separately
+    /// so a card can implement asymmetric semantics (e.g. Disk II's $C0nE
+    /// is "read mode" on read, "set Q6" on write — both legal accesses).
+    /// A card that decodes no read here drives nothing: the floating bus,
+    /// as MAME's base `read_c0nx` (`a2bus.cpp`, `return get_open_bus();`)
+    /// and an empty slot. It used to be a hard $FF (bug hunt 2026-11-01);
+    /// a bus with no floating-bus source still answers $FF.
+    virtual uint8_t deviceSelectRead (uint8_t /*low4*/)              { return openBus(); }
+    virtual void    deviceSelectWrite(uint8_t /*low4*/, uint8_t /*v*/) {}
+
+    /// $C(N)XX — 256-byte slot ROM. `low8` is the low byte of the address
+    /// (0..255). On real hardware most cards leave this read-only, but a
+    /// handful (notably the Sweet Microsystems Mockingboard, which decodes
+    /// its 6522 VIAs at $Cn00 / $Cn80 instead of in the 16-byte device-
+    /// select range) treat $CnXX as memory-mapped I/O. The SlotBus
+    /// forwards both reads and writes; cards that don't override
+    /// `slotRomWrite` get the default no-op (matching ROM behaviour).
+    /// A card with no slot ROM drives nothing there: the floating bus
+    /// (AppleWin's empty-page read; the SoftCard II's CP/M loader counts on
+    /// it — sbabcoc's SoftCard2 HARDWARE-REFERENCE.md). It used to be $FF.
+    virtual uint8_t slotRomRead (uint8_t /*low8*/)              { return openBus(); }
+    virtual void    slotRomWrite(uint8_t /*low8*/, uint8_t /*v*/) {}
+
+    /// $C800-$CFFF — 2 KB expansion ROM. `offset` is the byte offset into
+    /// the 2 KB window (0..0x7FE; 0x7FF is intercepted by SlotBus as the
+    /// "$CFFF disable" switch and never reaches the card). Expansion ROM
+    /// is conventionally read-only, but we forward writes anyway so cards
+    /// that hide soft switches in this window (rare) keep working.
+    virtual uint8_t expansionRomRead (uint16_t /*offset*/) { return 0xFF; }
+    virtual void    expansionRomWrite(uint16_t /*offset*/, uint8_t /*v*/) {}
+
+    /// Side-effect-free twins of `slotRomRead` / `expansionRomRead`, for the
+    /// debugger and memory viewer (`Memory::peekCpuView`): the byte the CPU
+    /// would fetch, with nothing latched or clocked. False = this card cannot
+    /// answer without an action (MMIO in the page) — the viewer then shows
+    /// its flat mirror. Only cards whose ROM a //c punches through its forced
+    /// INTCXROM need them today (`exposesIicOnboardRom`).
+    virtual bool peekSlotRom(uint8_t /*low8*/, uint8_t& /*out*/) const { return false; }
+    virtual bool peekExpansionRom(uint16_t /*offset*/, uint8_t& /*out*/) const { return false; }
+    /// If this card temporarily replaced motherboard ROM in Memory's flat
+    /// mirror, return the displaced byte without changing the mapping.
+    /// Used only for durable snapshot identity, never on the CPU bus path.
+    virtual bool peekDisplacedRom(uint16_t /*addr*/, uint8_t& /*out*/) const { return false; }
+
+    /// Does this card drive the shared $C800-$CFFF (/IOSTB) window at all?
+    /// MAME `a2bus.h:145`: `virtual bool take_c800() const { return false; }`
+    /// — "override and return true if your card can take over the /IOSTB
+    /// space". `apple2e.cpp` read_slot_rom / write_slot_rom claim the window
+    /// only when the touched slot's device says yes, so a card with no
+    /// expansion ROM (Disk II, Mockingboard, mouse, 4play, Le Chat Mauve…)
+    /// must NOT steal it from the card that has one. Cards that override
+    /// `expansionRomRead` override this too.
+    virtual bool takesC800() const { return false; }
+
+    /// Does an access at `offset` (0-$7FF, from $C800) clear THIS card's
+    /// $C800 enable latch? The Apple II convention is one address, $CFFF,
+    /// and that is the default.
+    ///
+    /// [B] Apple II Reference Manual (1979) pp. 84-85: every card "should
+    ///     recognize" $CFFF "as a signal to turn their flip-flops off", and
+    ///     Fig. 9 "$CFXX Decoding" allows a card to save circuitry "by not
+    ///     fully decoding the special location address" — at the price of
+    ///     the ROM bytes it then cannot use. So the WIDTH of the decode is a
+    ///     per-card fact, read off each card's schematic:
+    ///         Super Serial Card            all of $CFxx   (its manual, p. 45)
+    ///         Grappler, Grappler+          $CFF0-$CFFF    (A4-A10)
+    ///         Liron                        $CFFE-$CFFF    (A1-A10)
+    ///         CFFA 2.0                     $CFEF, $CFFF   (A4 not wired)
+    ///     Each override cites its own source. A card not listed keeps the
+    ///     default, which for it is [F]: nobody read its schematic.
+    virtual bool releasesC800At(uint16_t offset) const { return offset == 0x7FF; }
+
+    /// Does RESET clear this card's $C800 enable latch? By default, no.
+    ///
+    /// [B] Apple II Reference Manual (1979) p. 85, Fig. 8 "Expansion ROM
+    ///     Enable Circuit": the latch Apple recommends has two inputs —
+    ///     S = I/O SELECT, R = $CFFF — and no RESET. The //e manuals repeat
+    ///     the figure (Fig. 6-1). A card built to it keeps its enable across
+    ///     a RESET, and so do [D] MAME (`reset_w` leaves `m_cnxx_slot`,
+    ///     mame0287) and AppleWin (4a43bcdb).
+    /// There is no general rule beyond that — a card may add the input, and
+    /// some did, so this too is read off each schematic:
+    ///         clears on RESET:  Super Serial Card, Liron
+    ///         does not:         Grappler, Grappler+, CFFA 2.0
+    /// [F] Not read: ThunderClock+, Memory Expansion (Slinky), Workstation
+    ///     Card, Videoterm, UltraTerm — they keep the default.
+    virtual bool releasesC800OnReset() const { return false; }
+
+    /// Lifecycle. `onPlug` / `onUnplug` flank a card insertion; `onReset`
+    /// fires on Apple II hardware reset (Ctrl-Reset).
+    virtual void onPlug()   {}
+    virtual void onUnplug() {}
+    virtual void onReset()  {}
+    /// Loss and restoration of slot power. Most cards share their reset
+    /// path; cards with chips disconnected from RESET distinguish it.
+    virtual void onPowerCycle() { onReset(); }
+    /// The CPU/RAM just jumped in time (rewind, snapshot load). A card that
+    /// queues cycle-stamped output and has no snapshot state drops it here.
+    virtual void onTimeJump() {}
+
+    /// The motherboard ROM is about to be rewritten (`Memory::loadAppleIIRom`,
+    /// e.g. Reload ROM) and has just been. A card that maps something OVER
+    /// that ROM — the TransWarp's $F000 shadow — lets go before and takes hold
+    /// again after, so what it keeps as "the Apple's own bytes" is the NEW
+    /// ROM, not the one that was replaced. Without it the reload landed
+    /// underneath the shadow, the card went on believing it was mapped, and a
+    /// later $C072 put the OLD $F000 page back over the new firmware
+    /// (bug hunt 2026-09-16).
+    virtual void beforeMainRomReload() {}
+    virtual void afterMainRomReload()  {}
+
+    /// Motherboard //c IOU mouse decode. A lifecycle owner in slot 4 may
+    /// implement it without supplying any slot firmware or PIA registers.
+    virtual bool iicMouseAccess(uint8_t, bool, bool, uint8_t, uint8_t&) { return false; }
+    // On-board IOU state belongs in Memory's file snapshots as well as
+    // rewind. Ordinary expansion cards leave these hooks empty.
+    virtual void saveIicMouseState(std::vector<uint8_t>&) const {}
+    virtual bool validateIicMouseState(const uint8_t*, size_t) const { return true; }
+    virtual bool loadIicMouseState(const uint8_t*, size_t) { return true; }
+
+    /// Rewind / snapshot hooks. `appendSnapshotState` serializes the card's
+    /// volatile runtime state — NOT its ROMs or mounted media — by appending
+    /// to `out`; `loadSnapshotState` restores from a blob a previous
+    /// `appendSnapshotState` produced. Cards with no rewindable state keep
+    /// the default no-ops (and write no per-slot section). A card MUST tag
+    /// its blob with its own magic/version and ignore foreign/old data on
+    /// load, because the slot it lands in might hold a different card than
+    /// when the snapshot was taken. The rewind ring buffer and the
+    /// AI-control /snapshot API drive these via per-slot "SLOTn" sections
+    /// (see MachineSnapshot). Restoring drive position keeps an in-progress
+    /// disk read from corrupting after a rewind.
+    /// Emulated CPU clock changed (NTSC ↔ PAL profile switch). Cards whose
+    /// internal timebase is a REAL-TIME reference expressed in CPU cycles
+    /// must re-derive it here — otherwise they run 0.7 % off under PAL.
+    /// Default: no-op (most cards count guest cycles, which is already
+    /// standard-correct). Implemented by MockingboardCard (the audio
+    /// thread's emuCycles replay cursor), PhasorCard (same body),
+    /// ClockCard (uPD1990AC TP) and WorkstationCard (its own 65C02 and
+    /// SCC timebases). Since 2026-09-07 `setVideoStandard` fans this out to
+    /// EVERY plugged card plus the speaker and the cassette, not only the
+    /// Mockingboard: a card plugged later via Slot Config used to keep the
+    /// NTSC constant under PAL.
+    virtual void setCpuClock(double /*hz*/) {}
+    /// The MACHINE's own CPU clock: the standard's crystal times any
+    /// accelerator, never the speed menu's pacing. The menu's x2 / x4 / MAX
+    /// fast-forward the whole machine, so nothing that keeps the machine's
+    /// own time may see them (STORAGE-015, 2026-11-08: the Disk II took the
+    /// paced setCpuClock value as a 4 MHz CPU against its 1 MHz bus, turned
+    /// at a quarter of the program's pace under x4, and DOS 3.3 read
+    /// nothing). setCpuClock keeps the paced value for what maps cycles to
+    /// host time (audio replay cursors). EmulationController calls this
+    /// right AFTER setCpuClock; a host that never does keeps setCpuClock's
+    /// behaviour. Default: no-op; phase-0 devices override this separately from
+    /// the paced audio replay clock.
+    virtual void setMachineCpuClock(double /*hz*/) {}
+    /// The video STANDARD's nominal clock (1 022 727 NTSC / 1 015 625 PAL),
+    /// never scaled by an accelerator. For a timebase that is MECHANICAL —
+    /// a platter's RPM is real time, but the IWM that reads it counts ticks
+    /// of the machine's crystal, which an accelerator does not speed up.
+    /// Handing such a device the accelerated `setCpuClock` value would make
+    /// a //c+-at-4× revolution four times too long. The slot bus's phase 0
+    /// is the same kind of clock: MockingboardCard and PhasorCard take it
+    /// for their AYs' pin-22 CLOCK and their 6522 timers (MAME clocks both
+    /// from the a2bus), so a TransWarp no longer raises the pitch or the
+    /// tempo. Default: no-op; implemented by LironCard (its Sony
+    /// mechanisms), MockingboardCard and PhasorCard.
+    virtual void setStandardClock(double /*hz*/) {}
+
+    virtual void appendSnapshotState(std::vector<uint8_t>& /*out*/) const {}
+    virtual void loadSnapshotState(const uint8_t* /*data*/, std::size_t /*len*/) {}
+
+    /// Cycle pacing — for cycle-driven peripherals (Disk II's stepper, a
+    /// future serial card's UART, …). Forwarded by SlotBus from
+    /// Memory::advanceCycles().
+    virtual void advanceCycles(int /*cycles*/) {}
+
+    /// System soft-switch broadcast — fires for switches outside the
+    /// per-slot device-select range that some cards still need to observe
+    /// (Le Chat Mauve / Video-7 sniff $C00C/$C00D 80COL and $C05E/$C05F
+    /// AN3 to clock their 2-bit FIFO mode register). Forwarded by
+    /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
+    virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
+    /// The WRITE side of the same broadcast, with the data byte — for a card
+    /// that latches data off a shared window (the Chat Mauve Eve loads its
+    /// CPREG from every write to $C0B0-$C0BF). Defaults to the address-only
+    /// hook so cards that only decode addresses see both R and W as before.
+    virtual void onVideoSoftSwitchWrite(uint16_t addr, uint8_t /*value*/) { onVideoSoftSwitch(addr); }
+
+    /// DMA bus mastery — for cards that halt the 6502 and drive the bus
+    /// with their own processor (Microsoft SoftCard's Z80; MAME models
+    /// this as the a2bus DMA daisy chain). While `dmaActive()` returns
+    /// true, EmulationController's frame loop hands each CPU budget
+    /// slice to `dmaRun(cycles)` instead of `M6502::run` — `cycles` is
+    /// in **6502 cycles** and the card must keep `Memory::advanceCycles`
+    /// fed in that same domain (emuCycles never leaves the 6502 clock).
+    /// Return the cycles actually consumed (overshoot allowed, same
+    /// contract as M6502::run). At most one card should claim DMA;
+    /// SlotBus::dmaClaimant() picks the lowest slot if several do.
+    ///
+    /// Hand-over latency contract: the claimant scan happens once per
+    /// ~4096-cycle chunk. For an instruction-precise grant a claiming
+    /// card must ALSO end the 6502's in-flight run() chunk by calling
+    /// M6502::stop() from the access that claims the bus (SoftCardZ80
+    /// does; see its slotRomWrite) — a card that only flips dmaActive()
+    /// gets chunk-granular arbitration, up to 4096 cycles late.
+    /// CPU clock multiplier this card imposes on the host 6502 — for
+    /// ACCELERATORS (Applied Engineering TransWarp, Zip Chip, …), which
+    /// speed up the machine's own processor rather than adding one of
+    /// their own. EmulationController multiplies its per-frame cycle
+    /// budget by this once per frame, so a card may vary it freely; see
+    /// TranswarpCard.h for why frame-rate sampling of a sub-frame duty
+    /// cycle is exact in aggregate. 1.0 = stock speed, and any value
+    /// <= 0 is ignored. SlotBus takes the lowest slot that is not 1.0.
+    virtual double cpuSpeedMultiplier() const { return 1.0; }
+
+    /// Bus snooping — for cards that watch addresses OUTSIDE their own slot
+    /// windows. On real hardware every card sees every cycle; POM2 only
+    /// forwards to cards that ask, because the snoop sites sit on the path
+    /// of every $C0xx and slot-ROM access. `snoopsBus()` is read at plug
+    /// time and cached by SlotBus, so it must not change over a card's life.
+    ///
+    /// Return true from `busSnoop` to CONSUME the access — the machine then
+    /// skips its own handling of it. Only a card that genuinely takes the
+    /// address off the bus should do that (the TransWarp does, for its
+    /// $C074 speed register, which never reaches the Apple).
+    virtual bool snoopsBus() const { return false; }
+    virtual bool busSnoop(uint16_t /*addr*/, bool /*isWrite*/, uint8_t /*value*/)
+    {
+        return false;
+    }
+
+    virtual bool dmaActive() const { return false; }
+    virtual int  dmaRun(int /*cycles6502*/) { return 0; }
+
+    /// On //c-class machines the forced INTCXROM masks ALL slot ROM
+    /// ($C100-$CFFF). POM2 punches a single hole for a built-in SmartPort
+    /// whose $Cn00 firmware substitutes for the machine's own — on the 16 KB
+    /// //c, which has no 3.5" firmware, and for the //c+'s host-served HDV.
+    /// Only while the card actually holds bootable media, so an empty
+    /// SmartPort never presents a half-working bootable signature to the
+    /// //c autostart (which would JMP $0801 into garbage). The 32 KB //c
+    /// does not use this at all: its real firmware serves the port through
+    /// `smartPortBusUnit()` below. Default: ROM stays masked. See
+    /// Memory::memRead + SmartPortCard.
+    virtual bool exposesIicOnboardRom() const { return false; }
+
+    /// A //c-class machine has no slots, but it does have an internal
+    /// expansion connector, and a card on it answers at a FIXED page of the
+    /// $Cn00 window — not at "its slot", which on a //c is a POM2 fiction.
+    /// Return that page (1-7) to be routed there through the forced
+    /// INTCXROM mask, reads and writes alike; -1 (the default) means the
+    /// card has no such window.
+    ///
+    /// The Mockingboard 4c is the case this exists for: it plugs into the
+    /// //c's internal connector and answers at $C400-$C4FF like a slot-4
+    /// Mockingboard, while POM2's slot 4 on that profile is held by the
+    /// native IOU mouse — which is not a card at all on real hardware.
+    virtual int iicRomWindowPage() const { return -1; }
+
+    /// This card's audio output, or null if it makes no sound. On the base
+    /// since 2026-09-12 so a mixer can WALK the bus instead of knowing three
+    /// card names: `Pom2Core::pullAudio` knew about one Mockingboard and
+    /// nothing else, so an embedder heard silence from a Phasor, an Echo+ or
+    /// a second Mockingboard that the GUI played fine. The sound cards
+    /// already declare exactly this signature.
+    virtual class AudioSource* audioSource() { return nullptr; }
+
+    /// SmartPort **bus** units this card can put on a //c's external disk
+    /// port. The 32 KB //c's own firmware talks to its 3.5" drive as an
+    /// intelligent device over the IWM (`SmartPortBusDevice`); a card that
+    /// answers here is what that firmware finds, enumerates and boots from,
+    /// with no ROM substitution at all. Default: nothing on the port.
+    /// The card's Z80, for a card that carries one (SoftCard, SoftCard II,
+    /// Applicard, Premium SoftCard, ALS). `SlotBus::setZ80Observer` hangs
+    /// the OS-call trace on it, at plug time too.
+    virtual pom2::Z80* z80Core() { return nullptr; }
+
+    /// The OS-call trace's line sink, hung by `SlotBus::setCardTrace` (at
+    /// plug time too) while a card trace is on; null otherwise. A card that
+    /// has something to say tests it and calls `onCardLine`.
+    void setCardTrace(pom2::CardTraceSink* sink) { cardTrace_ = sink; }
+    pom2::CardTraceSink* cardTrace() const { return cardTrace_; }
+
+    virtual int smartPortBusUnitCount() const { return 0; }
+    virtual pom2::SmartPortBusUnit* smartPortBusUnit(int /*index*/) { return nullptr; }
+
+    /// Slot number assigned by the bus at plug-time (1..7), or -1 before
+    /// `SlotBus::plug()` adopts the card. Concrete cards may still carry
+    /// their own constructor-time slot field for ROM addressing reasons
+    /// (the SSC bakes slot into its PR# trampolines), but `busSlot()` is
+    /// the authoritative source once attached.
+    int busSlot() const { return busSlot_; }
+
+    /// Whether this slot's contribution to the wire-OR'd CPU IRQ line is
+    /// currently asserted. Mirrors what `assertIrq()` last published to
+    /// the bus — useful for debug panels and tests.
+    bool slotIrqAsserted() const { return irqAsserted_; }
+
+    /// Whether this slot is pulling the bus /NMI line (pin 29) low. Mirrors
+    /// what `assertNmi()` last published.
+    bool slotNmiAsserted() const { return nmiAsserted_; }
+
+protected:
+    /// Assert (true) or release (false) this slot's contribution to the
+    /// CPU's wire-OR'd IRQ line. Idempotent — repeated true→true or
+    /// false→false calls are no-ops, so cards don't need their own edge
+    /// tracking. Safe to call before plug (becomes a no-op until SlotBus
+    /// attaches the card). `SlotBus::plug()` and `SlotBus::unplug()`
+    /// auto-release any still-asserted bit before letting the card go,
+    /// so cards rarely need to clear in `onUnplug()` themselves.
+    void assertIrq(bool asserted);
+
+    /// Pull (true) or release (false) the bus /NMI line, pin 29. Every slot
+    /// shares it, wire-OR'd like /IRQ, but the 6502 takes an NMI on the
+    /// FALLING EDGE of the line, not on its level: SlotBus raises one NMI when
+    /// the first card pulls it low, none while it stays low (a second card
+    /// joining, or this one re-asserting), and another only after every card
+    /// has let go. Idempotent; auto-released on unplug, as `assertIrq`.
+    /// [B] Apple II Reference Manual (1979), Table 33 — pin 29 /NMI;
+    /// [B] MCS6500 hardware manual — NMI is edge-sensitive.
+    void assertNmi(bool asserted);
+
+    /// Set this slot's /NMI contribution from a RESTORED state (a snapshot or
+    /// session load) with no edge: the restored machine had already seen
+    /// that edge. Releasing through it is the same as `assertNmi(false)`.
+    void restoreNmiLevel(bool asserted);
+
+    /// What this card should return from a decoded address it does NOT
+    /// drive — MAME's `get_open_bus()` tail, which several a2bus cards end
+    /// their `read_c0nx` switch on (`a2cffa.cpp`, `a2mockingboard.cpp`, …).
+    /// `SlotBus::openBus()` forwards to the source `Memory` installed with
+    /// `setFloatingBusSource` (hunt #3); a card that is not plugged, or a
+    /// bus with no source (several test harnesses), gets $FF — the constant
+    /// that was hard-coded everywhere before.
+    uint8_t openBus() const;
+
+    /// The machine's CPU cycle counter (`Memory::cycleCounter`), for a card
+    /// that must phase an event to the BEAM rather than to its own reset —
+    /// the frame is `counter % (lines * 65)`, exactly how Memory places VBL.
+    /// nullptr when the card is not plugged, or its bus has no Memory behind
+    /// it (standalone test harnesses). Read the pointer once at plug/reset;
+    /// dereferencing it per instruction is one load, no call.
+    const uint64_t* busCycleCounter() const;
+    /// How far into the in-flight instruction the current bus access is
+    /// (SlotBus::accessCycle - the machine's counter); 0 when unplugged or
+    /// standalone. Add it to a card clock that only advances per instruction.
+    uint64_t busAccessOffset() const;
+    /// SlotBus::nextVblCpuCycle for this card's bus; 0 when unplugged.
+    uint64_t busNextVblCycle(uint64_t cpuNow) const;
+
+    /// The //e's auxiliary 64 KB as the CPU currently sees it — the bank
+    /// RAMWRT / 80STORE write, i.e. the selected RamWorks bank
+    /// (`Memory::auxData`). For a card that OBSERVES aux RAM the way a
+    /// video card watches the bus go by (VidHD's Super Hi-Res, VidHDCard.h).
+    /// Read-only; nullptr when the card is not plugged or its bus has no
+    /// Memory behind it. Stable for the Memory's lifetime.
+    const uint8_t* busAuxRam() const;
+
+private:
+    friend class SlotBus;
+    /// Called by SlotBus::plug() right after onPlug(). Wires the card to
+    /// its bus + slot number so `assertIrq()` can fan out.
+    void attachToBus(SlotBus* bus, int slot);
+    /// Called by SlotBus::plug()/unplug() right before onUnplug(). Drops
+    /// any pending IRQ contribution and clears the bus pointer so a
+    /// post-unplug stray assertIrq() is a no-op.
+    void detachFromBus();
+
+    SlotBus* bus_       = nullptr;
+    int      busSlot_   = -1;
+    bool     irqAsserted_ = false;
+    bool     nmiAsserted_ = false;
+    pom2::CardTraceSink* cardTrace_ = nullptr;
+};
+
+#endif // POM2_SLOT_PERIPHERAL_H

@@ -193,6 +193,8 @@ while (written < total) {
 
 Итоговая скорость/формат: BCLK 3.071 МГц, LRCK 47 991 Гц (PLL 24.571 МГц),
 16-бит данные в 32-бит слоте (SR=3, WSS=7), FIFO 128 слов, кольцо 4096 пар.
+> r1357: кольцо расширено до **8192 пар** (SRAM A1: L=0x1000..0x4FFF, R=0x5000..0x8FFF) —
+> данные по-прежнему в SRAM A1, см. `docs/MEMORY.md`.
 6. **NES (FCEUmm): канальные громкости = 0 после инициализации.** FCEUI_Initialize()
    обнуляет FSettings и ставит только SoundVolume/ExpVolume; SquareVolume[2],
    TriangleVolume, NoiseVolume, PCMVolume остаются нулями, а микшер умножает

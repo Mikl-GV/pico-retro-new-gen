@@ -121,6 +121,65 @@ static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
     }
 }
 
+// r1401/r1403: прямой вывод RGBA-кадра (0x00RRGGBB) в HDMI FB.
+// Два режима, чтобы ][+-кадр оставался хрустящим, а 80-колоночный //e-кадр
+// (560×192) не был «маркой в углу»:
+//   * целый множитель, если он занимает хотя бы 3/4 ширины экрана
+//     (280×192 → ×3 = 840×576, пиксель копируется mul раз, дробных шагов нет);
+//   * иначе — 4:3 на всю высоту (560×192 → 800×600) с nearest-шагом.
+// Раньше 560×192 шёл ×1 (560×192 из 1024×600) — изображение было мелким.
+void emu_show_rgba_int(const uint32_t* src, int sw, int sh, int stride_px) {
+    if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
+    if (sw > FB_W || sh > FB_H) return;   // не наш случай: кадр больше экрана
+
+    int mul = FB_W / sw;
+    int mh  = FB_H / sh;
+    if (mh < mul) mul = mh;
+
+    int dst_w, dst_h;
+    if (mul >= 1 && sw * mul >= (FB_W * 3) / 4) {
+        dst_w = sw * mul;
+        dst_h = sh * mul;
+    } else {
+        // Apple II: и 280×192, и 560×192 — один и тот же экран 4:3.
+        dst_h = FB_H;
+        dst_w = (FB_H * 4) / 3;
+        if (dst_w > FB_W) { dst_w = FB_W; dst_h = (FB_W * 3) / 4; }
+    }
+    const int dst_x = (FB_W - dst_w) / 2;
+    const int dst_y = (FB_H - dst_h) / 2;
+
+    fb_dirty_all();
+    fb_frame_scaled();
+
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
+    const uint32_t border = g_border_color ? g_border_color : 0x00000000u;
+    const uint32_t step_x = ((uint32_t)sw << 16) / (uint32_t)dst_w;
+    const uint32_t step_y = ((uint32_t)sh << 16) / (uint32_t)dst_h;
+
+    for (int y = 0; y < FB_H; y++) {
+        uint32_t* row = dst + (size_t)y * FB_W;
+        if (y < dst_y || y >= dst_y + dst_h) {
+            for (int x = 0; x < FB_W; x++) row[x] = border;
+            continue;
+        }
+        int sy = (int)(((uint32_t)(y - dst_y) * step_y) >> 16);
+        if (sy >= sh) sy = sh - 1;
+        const uint32_t* s = src + (size_t)sy * (size_t)stride_px;
+        for (int x = 0; x < dst_x; x++) row[x] = border;
+        uint32_t* d = row + dst_x;
+        uint32_t acc = step_x >> 1;
+        for (int dx = 0; dx < dst_w; dx++) {
+            int sx = (int)(acc >> 16);
+            if (sx >= sw) sx = sw - 1;
+            d[dx] = s[sx];
+            acc += step_x;
+            if (acc >= ((uint32_t)sw << 16)) acc -= (uint32_t)sw << 16;
+        }
+        for (int x = dst_x + dst_w; x < FB_W; x++) row[x] = border;
+    }
+}
+
 // r1236: прямой вывод кадра «пиксель в пиксель». Amiga отдаёт 720×574, это
 // влезает в HDMI 1024×600 без масштабирования: раньше кадр резался до 640×512
 // и растягивался на 750×600 — по горизонтали пропадали края растра.

@@ -1,0 +1,335 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// MountableMediaCard — host-side capability mix-in for any slot card that
+// exposes one or more *mountable media bays* (a hard-disk image, a 3.5"
+// volume, a SmartPort unit, …). It lets the GUI — chiefly the consolidated
+// Slot Manager panel — render and drive media on ANY such card generically,
+// without a per-card-type `if (cardKey == "...")` ladder.
+//
+// This is the same "orthogonal host-side mix-in, not a bus concern" pattern
+// as ProDOSBlockCard.h: implementers are also SlotPeripherals, but the bus
+// dispatch path never touches this interface.
+//
+// Relationship to ProDOSBlockCard: ProDOSBlockCard already exposes a full
+// single-image API (loadImage / ejectImage / getBlockCount / write-back …),
+// so it *implements* MountableMediaCard here as a single fixed bay. The two
+// HDV-class cards (ProDOSHardDiskCard, CffaCard) therefore gain the bay
+// interface for free. SmartPortCard implements it directly over its 2 units,
+// advertising per-bay type selection (empty / 3.5" / HDV).
+
+#ifndef POM2_MOUNTABLE_MEDIA_CARD_H
+#define POM2_MOUNTABLE_MEDIA_CARD_H
+
+#include <cstdint>
+#include "Block512Backing.h"
+#include "MediaAutosave.h"
+#include "MediaWritePolicy.h"
+
+#include <array>
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace pom2 {
+
+struct Disk35Bitstream;
+
+/// Read-only view of one media bay, built by the card for the GUI snapshot.
+struct MediaBayInfo
+{
+    std::string kindLabel;        // media kind in this bay ("3.5\" 800K",
+                                  // "ProDOS HDV", …); empty = use card label
+    std::string path;             // mounted image path ("" = nothing mounted)
+    /// The host directory a synthesised ProDOS volume is served from, as the
+    /// backing holds it ("" = not a host folder). `path` is only the label
+    /// ("[host folder] /work") and cannot be compared as a file: the "one
+    /// folder, one bay" rule (`pom2::hostFolderMountedElsewhereAt`) reads this.
+    std::string hostFolder;
+    std::string lastError;        // last mount/load error ("" = none)
+    uint32_t    blockCount       = 0;
+    bool        loaded           = false;
+    /// Recent block activity, for an access LED. Hysteretic (a few frames),
+    /// not a single-frame edge, so a transfer reads as a lit lamp rather
+    /// than a flicker. False on cards that expose no activity signal.
+    bool        busy             = false;
+    bool        writeProtected   = false;
+    /// Disk/header protection, without the process write-back policy.
+    /// The notch button edits the disk, rather than that policy.
+    bool        fileWriteProtected = false;
+    bool        writeBackEnabled  = pom2::mediaWritableByDefault();
+    bool        supportsWriteBack = true;
+    /// Guest writes are held in memory and not yet on disk. With write-back
+    /// OFF they are DROPPED at eject, which is the one thing a user needs
+    /// warning about before pulling a bay — so the status bar's eject menu
+    /// asks for it. Cards whose backing cannot report it leave it false.
+    bool        hasUnsavedChanges = false;
+    /// How many 512-byte blocks `hasUnsavedChanges` stands for, on a bay
+    /// with a block backing (0 elsewhere): the size of the payload
+    /// `prepareEjectBay` will capture. An UNLOCKED phase 0 sizes and
+    /// touches that buffer from it (`pom2::prefaultCaptureBuffer`), so the
+    /// locked capture allocates nothing.
+    uint32_t    unsavedBlocks     = 0;
+    std::string persistenceState, persistenceError;
+    // True when the user may CHOOSE the media kind for this bay (SmartPort
+    // units: empty / 3.5" / HDV). Block cards have a fixed kind → false.
+    bool        supportsTypeSelect = false;
+    std::string typeKey;          // current bay type key ("" / "35" / "hdv")
+    // An EMPTY bay that takes a 3.5" or a ProDOS HDV, chosen by the file
+    // (a Liron unit). The Drives rack used to infer the kind from
+    // `kindLabel`, read "…SmartPort HD" as hard-disk only, and refused 800K.
+    bool        acceptsSony35OrHdv = false;
+    // Process-unique identity of the mounted medium (0 = none or unknown).
+    // A new load draws a new one even for the same file, so an unlocked
+    // phase 2 can tell its disk from one mounted while it ran.
+    uint64_t    mountId = 0;
+};
+
+class MountableMediaCard
+{
+public:
+    virtual ~MountableMediaCard() = default;
+
+    /// Number of mountable bays. HDV/CFFA = 1, SmartPort = its unit count.
+    virtual int bayCount() const = 0;
+
+    /// A guest-driven eject (SmartPort CONTROL code 4 on a UniDisk 3.5): the
+    /// CPU thread records it here under `stateMutex`, and the UI thread
+    /// takes the requests, also under the lock, then runs the normal
+    /// three-phase eject (`StorageCoordinator::ejectMediaBay`) — so the disk
+    /// leaves the drive the way the eject button takes it out, with the
+    /// write-back off the lock.
+    ///
+    /// The request names the MEDIUM (`mediaId`, the mount's identity), not
+    /// only the bay: a disk mounted there before the UI gets to it is not the
+    /// one the guest ejected. And from the call on, the guest sees the drive
+    /// empty (`guestDoorOpen`), as a real UniDisk's is when EJECT returns —
+    /// until the eject lands, or is refused (`cancelGuestEject`).
+    struct GuestEject { int bay; uint64_t mediaId; };
+    void requestGuestEject(int bay, uint64_t mediaId)
+    {
+        if (bay < 0 || bay >= kGuestEjectBays || mediaId == 0) return;
+        doorOpen_[static_cast<std::size_t>(bay)] = mediaId;
+        guestEjects_ |= 1u << bay;
+    }
+    std::vector<GuestEject> takeGuestEjectRequests()
+    {
+        std::vector<GuestEject> out;
+        for (int bay = 0; bay < kGuestEjectBays; ++bay)
+            if (guestEjects_ & (1u << bay))
+                out.push_back({bay, doorOpen_[static_cast<std::size_t>(bay)]});
+        guestEjects_ = 0;
+        return out;
+    }
+    void cancelGuestEject(int bay)
+    {
+        if (bay >= 0 && bay < kGuestEjectBays) doorOpen_[static_cast<std::size_t>(bay)] = 0;
+    }
+    /// The medium `mediaId` in `bay` was ejected by the guest and is only
+    /// waiting for the UI thread to take it out: report the drive empty.
+    bool guestDoorOpen(int bay, uint64_t mediaId) const
+    {
+        return bay >= 0 && bay < kGuestEjectBays && mediaId != 0 &&
+               doorOpen_[static_cast<std::size_t>(bay)] == mediaId;
+    }
+    /// Cheap pre-test for the per-byte paths: no guest eject pending here.
+    bool guestDoorArmed(int bay) const
+    {
+        return bay >= 0 && bay < kGuestEjectBays &&
+               doorOpen_[static_cast<std::size_t>(bay)] != 0;
+    }
+    /// The mount identity in `bay` (0 = empty or unknown), for checking a
+    /// guest eject against the disk now there.
+    virtual uint64_t bayMediaIdentity(int /*bay*/) const { return 0; }
+
+    /// Cards whose chain length is the user's to pick — today the Liron,
+    /// whose SmartPort bus carries 2, 4, 6 or 8 units. Empty = fixed.
+    /// (`SmartPortCard` has its own count, its own keyspace and its own
+    /// panel, and does not advertise it here.)
+    virtual std::vector<int> bayCountChoices() const { return {}; }
+    /// Only meaningful when `bayCountChoices()` is non-empty; callers hold
+    /// `stateMutex` and refuse to shrink over a loaded bay first.
+    virtual void setBayCount(int /*n*/) {}
+
+    /// Re-apply the notch (MediaNotch.h) on the medium mounted in `bay`
+    /// after the user flipped its file's read-only bit — what
+    /// `ProDOSBlockCard::setHostWriteProtected` is for drive 1, per bay.
+    /// Default: the card has no per-bay notch to update.
+    virtual void setBayHostWriteProtected(int /*bay*/, bool /*on*/) {}
+
+    /// Snapshot of bay `bay` (0-based). Out-of-range → default-constructed.
+    virtual MediaBayInfo bayInfo(int bay) const = 0;
+
+    /// Mount `path` into `bay`. On failure returns false and fills `errOut`.
+    ///
+    /// This is the ONE-PHASE form: it reads the file itself, so a caller
+    /// holding `stateMutex` blocks the CPU worker and the UI for the whole
+    /// read — 25.8 ms for a 32 MiB HDV before v0.8.5 split that path. Prefer
+    /// `prepareBay` + `adoptBay` from any locked context; this stays for
+    /// bays with no block backing, which cannot be prepared off the lock.
+    virtual bool mountBay(int bay, const std::string& path,
+                          std::string& errOut) = 0;
+
+    /// Phase 2 of a two-phase mount: adopt an image `Block512Backing::
+    /// readImageFile` produced with no lock held.
+    ///
+    /// Returns false with an **empty** `errOut` when this bay has no block
+    /// backing and therefore cannot adopt — the 3.5" SmartPort unit is the
+    /// case that exists. That is not an error: the caller falls back to
+    /// `mountBay`, exactly as `MediaMount.cpp`'s `mountBlockLike` does. A real
+    /// failure fills `errOut`.
+    ///
+    /// The default says "unsupported", so a card that has not opted in keeps
+    /// working through the fallback.
+    virtual bool adoptBay(int /*bay*/,
+                          Block512Backing::PreparedImage&& /*prepared*/,
+                          std::string& errOut)
+    {
+        errOut.clear();
+        return false;
+    }
+
+    /// Eject `bay` (saves dirty blocks first when write-back is on).
+    ///
+    /// ONE-PHASE, like `mountBay`: the save-on-eject rewrite happens inline,
+    /// so a caller holding `stateMutex` freezes the machine for a whole
+    /// read-modify-write + rename. Prefer the three-step form below from a
+    /// locked context.
+    virtual bool ejectBay(int bay) = 0;
+
+    /// Write this bay's pending changes back to its file WITHOUT ejecting.
+    ///
+    /// This is what a shutdown / profile-switch flush needs
+    /// (`StorageCoordinator::flushAll`): the machine is about to be torn down
+    /// and rebuilt, and a bay whose writes only reach the file on eject loses
+    /// everything the guest wrote since the mount — silently, because the
+    /// remount reads the unchanged file back.
+    ///
+    /// The default is deliberately NOT a silent no-op: a bay with nothing
+    /// outstanding succeeds, but a bay that HAS unsaved changes and no flush
+    /// path reports failure, so a MountableMediaCard added later cannot
+    /// quietly drop a user's data at quit the way `LironCard` did.
+    virtual bool flushBay(int bay, std::string& errOut)
+    {
+        errOut.clear();
+        if (!bayInfo(bay).hasUnsavedChanges) return true;
+        errOut = "this bay has unsaved changes and no flush path";
+        return false;
+    }
+
+    /// What a two-phase FLUSH lifted out of one bay: the complete file, ready
+    /// to be written with no lock held and nothing more asked of the card.
+    /// Deliberately not `Block512Backing::PendingWriteBack` — that one is a
+    /// dirty-block set, and the bays this serves (a `Disk35Image`) rewrite the
+    /// whole image.
+    struct PendingBayFlush {
+        bool                 valid = false;   ///< false → phase 2 no-ops
+        std::string          path;
+        std::vector<uint8_t> bytes;
+        uint64_t             seq = 0;         ///< capture order (MediaAutosave.h)
+        uint64_t             lineage = 0;     ///< …within this mount
+        /// WOZ/MOOF 3.5": the track capture phase 2 serialises into `bytes`
+        /// (Disk35Image::PendingWriteBack::bitstream).
+        std::shared_ptr<const Disk35Bitstream> bitstream;
+        /// The file as the mount read it (MediaAutosave.h, "External change").
+        pom2::MediaFileStamp mounted{};
+    };
+
+    /// Phase 1 of a two-phase FLUSH (no eject), with `stateMutex` held: lift
+    /// out what `flushBay` would write and retire the bay's dirty flag,
+    /// atomically with the capture.
+    ///
+    /// `flushBay` itself writes INLINE, and `StorageCoordinator::flushAll`
+    /// calls it under the machine lock on every quit, profile switch and slot
+    /// rebuild — 800 KB plus two fsyncs there froze the CPU worker and the
+    /// window together, which is the one thing CLAUDE.md forbids outright.
+    ///
+    /// Same opt-in convention as `prepareEjectBay`: false with an EMPTY
+    /// `errOut` means "this bay flushes inline", and the caller falls back to
+    /// `flushBay`. A real failure fills `errOut`.
+    virtual bool prepareFlushBay(int /*bay*/, PendingBayFlush& /*out*/,
+                                 std::string& errOut)
+    {
+        errOut.clear();
+        return false;
+    }
+
+    /// Phase-2 FAILURE undo for `prepareFlushBay`, `stateMutex` held: re-mark
+    /// the bay dirty so the medium (still mounted — a flush never ejects) is
+    /// saved again on the next attempt. Only when the bay still holds the
+    /// mount `lineage` names (`PendingBayFlush::lineage`): phase 2 runs
+    /// unlocked, and a disk swapped in meanwhile must not take the undo — it
+    /// used to, marking the NEWCOMER dirty while the captured disk's writes,
+    /// whose flag the capture had retired, were gone with it.
+    virtual void restoreFlushBayDirty(int /*bay*/, uint64_t /*lineage*/) {}
+
+    /// Successful deferred flush: report a diverted target to the same mount.
+    /// Caller holds stateMutex; a replacement medium must remain untouched.
+    virtual void noteFlushBayDiversion(int /*bay*/, uint64_t /*lineage*/,
+                                       const std::string& /*path*/) {}
+
+    /// Phase 1 of a two-phase EJECT, with `stateMutex` held: lift out what
+    /// the save-on-eject would write, WITHOUT touching the medium. Leaving it
+    /// mounted is the point — phase 2 can fail (disk full, read-only parent),
+    /// and the pre-split behaviour kept the medium so the user could retry.
+    ///
+    /// Same opt-in convention as `adoptBay`: false with an EMPTY `errOut`
+    /// means "this bay has no block backing", and the caller falls back to
+    /// `ejectBay`. A real failure fills `errOut`.
+    virtual bool prepareEjectBay(int /*bay*/,
+                                 Block512Backing::PendingWriteBack& /*out*/,
+                                 std::string& errOut)
+    {
+        errOut.clear();
+        return false;
+    }
+
+    /// Phase-2 FAILURE undo, with `stateMutex` held: re-mark the blocks
+    /// `prepareEjectBay` lifted out (phase 1 retires their flags as it
+    /// captures them) so the still-mounted medium is dirty again and a retry
+    /// re-captures them. On phase-2 SUCCESS there is no phase-3 bookkeeping:
+    /// the captured flags are already retired, and any block the guest
+    /// dirtied while the commit ran unlocked kept its flag — the caller's
+    /// `ejectBay` flushes that (normally empty) remainder inline, so a
+    /// write racing the commit is never dropped.
+    virtual void restoreBayDirty(int /*bay*/,
+                                 const std::vector<uint32_t>& /*indices*/) {}
+
+    /// Toggle per-bay write-back (save-on-eject).
+    virtual void setBayWriteBack(int bay, bool on) = 0;
+
+    /// Type-select bays only: the (key,label) options the user may pick
+    /// (e.g. {{"","(empty)"},{"35","3.5\" 800K"},{"hdv","ProDOS HDV"}}).
+    /// Default: none (fixed-kind card).
+    virtual std::vector<std::pair<std::string, std::string>>
+    bayTypeOptions(int /*bay*/) const { return {}; }
+
+    /// Type-select bays only: swap the media kind in `bay` to `kindKey`
+    /// (drops any currently-mounted media). No-op for fixed-kind cards.
+    virtual void setBayType(int /*bay*/, const std::string& /*kindKey*/) {}
+
+private:
+    static constexpr int kGuestEjectBays = 32;
+    // requestGuestEject; guarded by stateMutex.
+    unsigned guestEjects_ = 0;
+    std::array<uint64_t, kGuestEjectBays> doorOpen_{};
+};
+
+} // namespace pom2
+
+#endif // POM2_MOUNTABLE_MEDIA_CARD_H

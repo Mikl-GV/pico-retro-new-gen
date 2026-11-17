@@ -1,0 +1,899 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Software framebuffer for the Apple II video subsystem. Renders into an
+// RGBA buffer that the UI uploads as an OpenGL texture each frame. Three
+// modes follow the soft-switch state held by Memory:
+//   - Text  (40×24, char ROM glyphs, normal / inverse / flashing)
+//   - Lo-res (40×48, 16 colours, same screen memory as text)
+//   - Hi-res (280×192, NTSC artifact decoded by a 7-bit sliding window over
+//             a linearised 560-sub-pixel bit stream — MSB-driven half-dot
+//             delay applied at the stream level so byte-boundary fringing
+//             emerges naturally)
+// Mixed mode shows hi-res in the top 160 pixels and four text rows below.
+//
+// IIe extension. When 80COL + TEXT are on the renderer emits at the native
+// 80-col resolution (560×192) by interleaving aux RAM (even columns) and
+// main RAM (odd columns) text bytes. Mixed-mode bottom-4-rows-text follows
+// the same path, with the top 20 HGR rows horizontally doubled into the
+// 560-wide buffer. width()/height() reflect whichever buffer is live.
+//
+// The display owns no GL state — the MainWindow uploads `pixels()` to a
+// texture it manages. Keeping this class GL-free makes it trivial to unit
+// test and lets a future WASM build reuse the exact same renderer.
+
+#ifndef POM2_APPLE2_DISPLAY_H
+#define POM2_APPLE2_DISPLAY_H
+
+#include "CardVideoSource.h"
+#include "LeChatMauveCard.h"
+#include "Memory.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <vector>
+
+class Apple2Display
+{
+public:
+    // Address of the first byte of text/lo-res row `y` in the active page —
+    // PUBLIC since 2026-11-01 so `text_screen_capture` can assert that
+    // `TextScreenCapture.cpp`'s copy of the interleave agrees with the
+    // renderer's. The renderer is the oracle for what is on screen, and a
+    // formula written twice is a formula that drifts.
+    static uint16_t textRowAddress(int y, bool page2);
+
+public:
+    static constexpr int kWidth   = 280;
+    static constexpr int kHeight  = 192;
+    static constexpr int kWidth80 = 560;
+
+    // Hi-res rendering style. ColorNTSC is the "real Apple II on a colour TV"
+    // experience — bit-stream artifact colour with authentic byte-boundary
+    // fringing. ChatMauveRGB is the French Péritel-RGB experience (clean
+    // 16-color decode, two distinct grays, no fringing) — only available
+    // when a LeChatMauveCard is plugged on the slot bus, and its FIFO
+    // mode (BW560 / Mixed / Chunky / COL140) selects the sub-variant.
+    // The three Mono variants render the same bit stream as luminance
+    // through a phosphor tint: White is a reference monitor, Green
+    // approximates a P31 phosphor ([E] the tint and its CIE values in
+    // Apple2Display.cpp have no source; settled by JEDEC TEP116 or a
+    // colorimeter on a Monitor II), Amber adds long persistence
+    // (history-buffer lerp) on top of an amber tint.
+    enum class HiResMode {
+        ColorNTSC,              // MAME composite_color_mode=0, LUT row 0
+        ColorCompMedium,        // MAME composite_color_mode=1, LUT row 1
+                                //   (4n medium-color runs; uglier 40-col
+                                //    text but cleaner mid-tones)
+        ColorComp4Bit,          // MAME composite_color_mode=2, no artifact —
+                                //   each 4-dot nibble maps directly to one
+                                //   palette index. The sharp / hard-edge
+                                //   variant.
+        ChatMauveRGB,
+        // True NTSC composite simulation à la OpenEmulator: the display
+        // emits a 1-bit luminance bitstream at 14.318 MHz (560 samples ×
+        // 192 lines) instead of pre-decoded RGB; MainWindow runs that
+        // through a GLSL shader that demodulates Y/I/Q on the subcarrier,
+        // applies low-pass filtering, persistence, scanlines and barrel.
+        // Falls back to ColorNTSC framebuffer when the signal can't be
+        // produced (lo-res mode, no GL context, etc.).
+        ColorCompositeOE,
+        // Same OpenEmulator composite demodulation, but run on the CPU into
+        // the RGBA framebuffer (no GLSL) — selectable so the composite look
+        // is available without a GL shader path and so users can compare the
+        // two. render() demodulates signalBuf into frame80 here, exactly like
+        // ColorAppleWin; MainWindow then presents it as a normal framebuffer
+        // (the shared CrtEffectStack still applies if "CRT effects on all
+        // modes" is on). The demod honours the same knobs as the GPU shader
+        // (hue, chroma-bandwidth sharpness, PAL line-phase alternation,
+        // textSharp) via setOeDemodParams — pinned pixel-identical by
+        // oe_demod_gpu_cpu_parity.
+        ColorCompositeOECpu,
+        MonoWhite,
+        MonoGreen,
+        MonoAmber,
+        // AppleWin-style NTSC: CPU-only cascaded-IIR composite signal
+        // simulation + 4-phase × 12-bit-history LUT (chromaLut[4][4096]).
+        // Distinct from MAME's static 7-bit-window LUT and from
+        // OpenEmulator's full subcarrier shader — see DEV.md § AppleWin
+        // NTSC. Three sub-modes selected via setAppleWinSubMode():
+        // Monitor (sharp), Tv (comb luma + AppleWin's in-between line blend),
+        // Idealized (Monitor luma WITH the IIR filters, chroma boosted
+        // 1.6× — POM2-only, see AppleWinNtsc.cpp buildPhaseTables).
+        // Enum order no longer matters: the mono phosphor tint is picked
+        // by an explicit switch (phosphorFor() in Apple2Display.cpp),
+        // not by indexing a table with the enum value.
+        ColorAppleWin,
+    };
+
+    // Variant selector for the ColorAppleWin path. Mirrors AppleWin's
+    // VT_COLOR_MONITOR_NTSC / VT_COLOR_TV / VT_COLOR_IDEALIZED entries.
+    enum class AppleWinSubMode {
+        Monitor,        // sharp, IIR-filtered NTSC artifact decode
+        Tv,             // comb luma + 50 % blend with the line above (AppleWin TV)
+        Idealized,      // Monitor luma (same IIR filters) with 1.6× boosted
+                        // chroma — saturated, flat-panel-friendly look
+                        // (POM2-only; see AppleWinNtsc.cpp:193-197)
+    };
+
+    Apple2Display();
+
+    // Renders the current frame into the internal RGBA buffer based on
+    // the soft-switch state read from `mem`. Frame-counter advances the
+    // 2 Hz flash phase used by the text mode.
+    void render(Memory& mem);
+
+    /// Drops the static-text frame-skip key, forcing the next render() to
+    /// repaint even if nothing the key covers has changed. Every mutation of
+    /// the framebuffer this class performs itself already invalidates (see
+    /// `framebufferMutated()`), so this exists for OUTSIDE callers that reach
+    /// past pixels() — and for `display_dirty_skip_test`, which runs a
+    /// forced-full-repaint reference display alongside a skipping one.
+    void invalidateTextFrameCache() { framebufferMutated(); }
+
+    // Runs the OE-CPU composite demod render() deferred (it only consumes
+    // display-owned buffers, so it must NOT hold the caller's stateMutex —
+    // ~1-2 ms of FP FIR that used to stall the CPU worker every UI frame).
+    // Call after releasing the lock, before pixels(). No-op when nothing
+    // is pending.
+    void finishPendingCpuDemod();
+
+    // Lazily completes any deferred OE-CPU demod so every consumer (tests,
+    // screenshot paths) that does render() → pixels() stays correct without
+    // knowing about the deferral; MainWindow calls finishPendingCpuDemod()
+    // explicitly after releasing stateMutex, making this a no-op there.
+    const uint32_t* pixels() const {
+        const_cast<Apple2Display*>(this)->finishPendingCpuDemod();
+        if (useCardPicture_) return frameCard_.data();
+        return useFrame80_ ? frame80.data() : frame.data();
+    }
+
+    /// Serializes the post-stateMutex demod/pixels phase between the UI
+    /// thread and the AI control server's /screen handler. The demod
+    /// deliberately runs OUTSIDE stateMutex (it costs ~1-2 ms and reads
+    /// only display-owned buffers), which left frame80/signalBuf/
+    /// pendingCpuDemodRows_ shared between two threads with no lock at
+    /// all. Lock order: stateMutex → demodMutex, never nested the other
+    /// way.
+    std::mutex& demodMutex() { return demodMutex_; }
+    int             width()  const
+    {
+        if (useCardPicture_) return cardPictureW_;
+        return useFrame80_ ? kWidth80 : kWidth;
+    }
+    /// 192 for every Apple picture; a card picture has its own height (the
+    /// Videx Videoterm's is 216 — 24 rows of 9 rasters).
+    int             height() const { return useCardPicture_ ? cardPictureH_ : kHeight; }
+    /// True when the last render() presented a card's own picture (a Videx
+    /// Videoterm's 80 columns, a VidHD's Super Hi-Res) instead of the
+    /// Apple's video.
+    bool            showingCardPicture() const { return useCardPicture_; }
+
+    /// Raster position (visible scanline + 40-byte column index) of a CPU
+    /// cycle within the current frame. Used by the beam-racing replay to map
+    /// a video soft-switch's `VideoEvent::emuCycle` to *where on the screen*
+    /// the beam was — `scanline` (vertical band) and `byteCol` (the new
+    /// horizontal mid-scanline split). Public + static so it can be unit
+    /// tested in isolation.
+    struct RasterPos { int scanline; int byteCol; };
+    static RasterPos frameCycleToPos(uint64_t emuCycle,
+                                     VideoStandard std = VideoStandard::NTSC);
+
+    /// Auxiliary 64 KB RAM pointer for IIe 80-column rendering. Set by
+    /// MainWindow once the IIe ROM is detected and Memory::setIIEMode(true)
+    /// has been called. Pointer is non-owning. May be nullptr; the 80-col
+    /// path then falls back to reading main RAM in both halves of each pair
+    /// (still produces 80 character cells, just without aux content).
+    void setAuxMemory(const uint8_t* aux) { auxRam = aux; auxRamSource_ = aux; }
+
+    /// Hi-res rendering mode. Switching modes resets the persistence buffer
+    /// so an amber afterglow doesn't bleed into a freshly-selected green
+    /// phosphor.
+    void      setHiResMode(HiResMode m);
+    HiResMode getHiResMode() const { return hiResMode; }
+
+    /// What a PROFILE SWITCH does to the render path, and what it has to
+    /// remember to undo it. Pure, because the decision used to be two lines
+    /// inside an ImGui-bound lambda where no test could reach it.
+    ///
+    /// A profile that SHIPS an on-board Le Chat Mauve (the //c PAL's soldered
+    /// Adaptateur IIc) must come up in its RGB mode. Nothing used to put the
+    /// user's pipeline back on the way out, and the live mode is persisted at
+    /// quit — so a single visit to the //c PAL profile permanently rewrote
+    /// `hi_res_mode`: back on the //e the RGB decode kept rendering (the
+    /// fresh-install map also puts `chatmauve` in slot 7), artifact colour was
+    /// gone, the CRT Settings sliders did nothing, and every later launch came
+    /// up that way. A profile switch is a MACHINE change; the colour pipeline
+    /// is a render-path choice the machine never sees
+    /// (`MainWindow_MiscPanels.cpp`, the CompositeVideo toggle).
+    ///
+    /// `remembered` travels across calls: absent means "RGB is the user's own
+    /// choice, leave it alone", which is why a View-menu pick of RGB on a //e
+    /// survives a profile switch untouched.
+    struct ProfileModeSwitch {
+        HiResMode mode;             ///< what the display should show now
+        bool      hasRemembered;    ///< whether `remembered` is meaningful
+        HiResMode remembered;       ///< the mode to restore on the way out
+    };
+    static ProfileModeSwitch modeForProfileSwitch(HiResMode current,
+                                                  bool builtinRgb,
+                                                  bool hasRemembered,
+                                                  HiResMode remembered);
+
+    /// Demod-stage knobs for the OE composite CPU path — the same subset the
+    /// GPU shader consumes (NtscPostProcessor uHue / uSharpness / uPalMode +
+    /// the textSharp bypass). MainWindow mirrors the live NtscParams here
+    /// every frame so ColorCompositeOECpu (and the OE-GPU mixed-frame CPU
+    /// demod) track the CRT-Settings sliders exactly like the GPU shader —
+    /// they used to silently ignore hue/sharpness/PAL/textSharp. Defaults are
+    /// the shader's neutral values, keeping headless consumers (tests, tools)
+    /// byte-identical when they never call setOeDemodParams.
+    struct OeDemodParams {
+        float hue       = 0.0f;   // -0.5..+0.5 → ±π U/V rotation
+        float sharpness = 0.5f;   // 0.5 = neutral OE 0.6 MHz chroma kernel
+        bool  palMode   = false;  // line-phase alternation (V sign per line)
+        bool  textSharp = true;   // true = crisp framebuffer TEXT (no demod)
+    };
+    void setOeDemodParams(const OeDemodParams& p) { oeDemod_ = p; }
+    /// The controller's run state, told by the host each render. A RUNNING
+    /// machine is never "idle", even when the worker sits between two bursts
+    /// and the counter has not moved since the last render — it runs a
+    /// frame's budget in a few ms and sleeps to the next tick, so on a 60 Hz
+    /// (and more so a 120/144 Hz) monitor many renders land inside a sleep.
+    /// Inferring "stopped" from an unchanged counter painted those renders
+    /// from live RAM instead of beam-time RAM: a flicker the video write log
+    /// exists to remove (bug hunt 2026-11-07). Default false: a host that
+    /// never says keeps the inference (tests, the SDK).
+    void setMachineRunning(bool running) { machineRunning_ = running; }
+    const OeDemodParams& getOeDemodParams() const { return oeDemod_; }
+
+    /// Display state consumed by the most recent render() — the *published*
+    /// frame's soft-switch snapshot, captured under the caller's stateMutex.
+    /// MainWindow's present-path decisions (sharp-text bypass, demod routing)
+    /// read this instead of re-polling Memory::getDisplayState(), which the
+    /// CPU worker may have advanced past the rendered frame in the meantime
+    /// (a text↔graphics switch in that window flashed one LUT-fallback frame).
+    const Memory::DisplayState& lastRenderState() const { return lastRenderState_; }
+
+    /// Capture helper for the ColorCompositeOE (GPU) mode: schedules the CPU
+    /// demod of signalBuf into frame80 so pixels() returns the composite
+    /// image the shader shows on screen instead of the LUT fallback
+    /// framebuffer (AI /screen, headless captures). No-op unless the last
+    /// render() produced a signal that the GPU path would demodulate (mixed
+    /// frames and sharp-text frames already present the framebuffer). Call
+    /// after render(); the demod itself runs lazily in pixels() /
+    /// finishPendingCpuDemod(). When it does schedule, it rewrites the whole
+    /// framebuffer behind render()'s back and drops the static-text skip key
+    /// with it, so the next render() rebuilds the on-screen image instead of
+    /// leaving the capture's demodulated pixels on display.
+    void demodCompositeForCapture();
+
+    /// AppleWin sub-mode selector. Only consulted when hiResMode ==
+    /// ColorAppleWin; ignored otherwise. Switching to Tv clears the
+    /// line-blur history so the previous Monitor frame doesn't bleed.
+    void            setAppleWinSubMode(AppleWinSubMode m);
+    AppleWinSubMode getAppleWinSubMode() const { return appleWinSubMode; }
+
+    /// Le Chat Mauve / Video-7 RGB card. When non-null AND its render mode
+    /// is anything other than NTSC-passthrough, the hi-res renderer takes
+    /// the clean-RGB path: 4-bit-window palette decode (no artifact LUT,
+    /// no inter-byte fringing, two distinct grays for the $5/$A patterns).
+    /// The pointer is non-owning; the card lifetime is managed by the
+    /// SlotBus that holds it.
+    void setChatMauveCard(LeChatMauveCard* c) { chatMauve = c; }
+
+    /// A card with its own picture (CardVideoSource.h): the Videx Videoterm
+    /// on a ][ / ][+, the VidHD on a //e — never both, the Videoterm is
+    /// dropped from every //e-class plan and the VidHD from every other one.
+    /// When non-null and the card's rule holds for the published frame
+    /// (TEXT + AN0 for the Videoterm, NEWVIDEO SHR for the VidHD), render()
+    /// presents the card's picture, at the card's own geometry, instead of
+    /// the Apple's. Non-owning, like the Chat Mauve pointer; MainWindow
+    /// clears it before a slot rebuild.
+    void setCardVideoSource(pom2::CardVideoSource* c)
+    {
+        cardVideo_ = c;
+        framebufferMutated();
+    }
+    pom2::CardVideoSource* cardVideoSource() const { return cardVideo_; }
+    /// What reaches the monitor when a card has its own picture. `Auto` is
+    /// the card's rule (the Videoterm's Soft Video Switch: TEXT + AN0);
+    /// `Apple` and `Card` hold the monitor on one source, as a manual
+    /// switch or a second monitor would — for software that leaves the
+    /// 80 columns without turning AN0 off (Merlin's VID 0). sbabcoc's
+    /// ReplicApple2Plus offers the same positions.
+    enum class CardMonitor : uint8_t { Auto = 0, Apple = 1, Card = 2 };
+    void setCardMonitor(CardMonitor m) { cardMonitor_ = m; framebufferMutated(); }
+    CardMonitor cardMonitor() const { return cardMonitor_; }
+    /// The card's picture is on the monitor this frame.
+    bool cardOwnsMonitor(bool textMode, bool an0) const
+    {
+        if (!cardVideo_ || cardMonitor_ == CardMonitor::Apple) return false;
+        return cardMonitor_ == CardMonitor::Card || cardVideo_->ownsScreen(textMode, an0);
+    }
+    /// The card's border colour (a VidHD's $C034) as of the last render(),
+    /// 0xAABBGGRR, 0 = none. Latched under stateMutex by whichever render()
+    /// ran last (the UI's or the AI server's /screen), atomic so the screen
+    /// window can paint it without the lock; a monochrome monitor shows none.
+    uint32_t cardBorderColour() const
+    { return cardBorder_.load(std::memory_order_relaxed); }
+
+    /// Composite signal buffer for the ColorCompositeOE mode. 8-bit
+    /// per-sample luminance at 14.318 MHz (560 samples per scanline,
+    /// 192 scanlines, one byte per sample = 0 or 255). The MainWindow
+    /// uploads this as an R8 texture and feeds it to a GLSL shader that
+    /// demodulates the NTSC subcarrier. The buffer is filled by render()
+    /// whenever ColorCompositeOE (or ColorAppleWin) is selected, for every
+    /// Apple II video mode: HGR, DHGR, 40/80-col text AND lo-res (lo-res
+    /// emits each 4-bit colour nibble as its repeating 4×-fsc bit pattern
+    /// (paintLoRes40 for GR, paintLoResDouble for DLGR). fillCompositeSignal
+    /// produces a signal for all supported modes, so signalProduced() is
+    /// true whenever one of those two modes is active.
+    static constexpr int kSignalWidth  = kWidth80;   // 560
+    static constexpr int kSignalHeight = kHeight;    // 192
+    const uint8_t* signal() const { return signalBuf.data(); }
+    int signalWidth () const { return kSignalWidth;  }
+    int signalHeight() const { return kSignalHeight; }
+    /// True when the last render() filled signalBuf with a valid composite
+    /// waveform — i.e. whenever the selected mode is ColorCompositeOE or
+    /// ColorAppleWin (all video modes serialise, lo-res included). False for
+    /// every other hi-res mode.
+    bool signalProduced() const { return signalProducedFlag; }
+    /// NTSC subcarrier phase offset (0 = HGR/text, 1 = DHGR) applied by
+    /// OE CPU/GPU demod and ColorAppleWin — matches MAME rotl4(absX+1).
+    int signalPhaseOffset() const { return signalPhaseOffset_; }
+    int signalPhaseAt(int y) const { return (y >= 0 && y < 192) ? signalPhaseRow_[static_cast<std::size_t>(y)] : signalPhaseOffset_; }
+    /// True when mixed-mode composite output was assembled in frame80
+    /// (demod top + crisp text band) — MainWindow should present
+    /// screenTexture instead of the GPU demod texture.
+    bool mixedCompositeUsesFramebuffer() const { return mixedCompositeUsesFb_; }
+
+private:
+    std::mutex demodMutex_;          // see demodMutex()
+    std::vector<uint32_t> frame;     // kWidth   * kHeight RGBA pixels
+    std::vector<uint32_t> frame80;   // kWidth80 * kHeight RGBA: native 560-dot paths
+    // Which buffer pixels()/width() publish. Write it ONLY through
+    // setUseFrame80() / scheduleCpuDemodInto80() — the trailing underscore is
+    // there so a plain `useFrame80 = true` no longer compiles: flipping the
+    // published buffer is a framebuffer mutation, and the static-text skip is
+    // only sound while every such mutation announces itself.
+    bool useFrame80_    = false;     // true when the current picture is 560 dots wide
+    // A card's own picture (Videx Videoterm) is published instead of either
+    // Apple buffer. Cleared by setUseFrame80() / scheduleCpuDemodInto80(), the
+    // two doors every Apple frame goes through, and set only by
+    // renderCardPicture().
+    bool useCardPicture_ = false;
+    std::vector<uint32_t> frameCard_;   // cardPictureW_ × cardPictureH_
+    int  cardPictureW_ = 0;
+    int  cardPictureH_ = 0;
+    pom2::CardVideoSource* cardVideo_ = nullptr;   // non-owning, owned by SlotBus
+    CardMonitor cardMonitor_ = CardMonitor::Auto;
+    std::atomic<uint32_t> cardBorder_{0};                     // cardBorderColour()
+    uint32_t monitorLitColor() const;   // the Apple text painters' lit colour
+    /// Paints the card's picture and publishes it when the card's rule holds
+    /// for `state` (TEXT + AN0 for the Videoterm, SHR for the VidHD).
+    /// Defined here rather than in Apple2Display.cpp to keep that file under
+    /// its size budget.
+    ///
+    /// A card frame produces nothing of the Apple's video: no composite
+    /// waveform (signalProduced() false, so every present path — OE GPU,
+    /// OE CPU, AppleWin — shows this framebuffer), no mixed band, no deferred
+    /// demod. It publishes no static-text key either (nextTextFrameKey_ stays
+    /// invalid), so the next Apple frame always repaints whichever way AN0 or
+    /// TEXT moved. The lit colour is the text painters', so a green or amber
+    /// monitor shows the 80 columns in its phosphor. Returns false when the
+    /// rule does not hold, after taking the card's buffer off the screen.
+    bool renderCardPicture(Memory& mem, const Memory::DisplayState& state)
+    {
+        if (!cardOwnsMonitor(state.textMode, state.an0) ||
+            cardVideo_->pictureWidth() <= 0 || cardVideo_->pictureHeight() <= 0) {
+            if (useCardPicture_) { useCardPicture_ = false; framebufferMutated(); }
+            return false;
+        }
+        cardPictureW_ = cardVideo_->pictureWidth();
+        cardPictureH_ = cardVideo_->pictureHeight();
+        frameCard_.resize(static_cast<std::size_t>(cardPictureW_) *
+                          static_cast<std::size_t>(cardPictureH_));
+        cardVideo_->paintPicture(frameCard_.data(), monitorLitColor(), 0xFF000000u,
+                             mem.videoNow(),
+                             pom2VideoTiming(mem.videoStandard()).cpuClockHz);
+        useCardPicture_ = true;
+        framebufferMutated();
+        signalProducedFlag    = false;
+        mixedBandLeftBlack_   = false;
+        mixedCompositeUsesFb_ = false;
+        pendingCpuDemodRows_  = 0;
+        return true;
+    }
+    const uint8_t* auxRam = nullptr; // IIe auxiliary RAM (non-owning)
+    /// What setAuxMemory() was handed. When it is the rendered Memory's own
+    /// aux (`auxData()`), render() swaps in `videoAuxData()` for the frame:
+    /// the scanner reads RamWorks bank 0, not the CPU's bank, and that
+    /// pointer moves on a bank switch.
+    const uint8_t* auxRamSource_ = nullptr;
+    HiResMode hiResMode = HiResMode::ColorNTSC;
+    AppleWinSubMode appleWinSubMode = AppleWinSubMode::Tv;
+    LeChatMauveCard* chatMauve = nullptr;   // non-owning, owned by SlotBus
+    // Native 560-dot monochrome graphics share one phosphor history.
+    // One byte per dot (0..255); mode changes clear it.
+    std::vector<uint8_t> persistenceL80;
+    // OpenEmulator-style composite signal: one byte per 14.318 MHz sample
+    // (0x00 = black, 0xFF = white). 560 samples × 192 lines = 105 600 bytes.
+    // Populated alongside `frame` / `frame80` when hiResMode ==
+    // ColorCompositeOE. The shader path in MainWindow only consumes this
+    // when `signalProducedFlag` is true.
+    std::vector<uint8_t> signalBuf;
+    bool signalProducedFlag = false;
+    int  signalPhaseOffset_ = 0;
+    // The same, per scanline: a frame that switches HGR <-> DHGR (or 40 <->
+    // 80 columns) mid-picture demodulates each band with its own phase, as
+    // MAME's per-line render_line does. signalPhaseOffset_ is the last band's,
+    // for the GPU shader's single uniform; a non-uniform frame goes to the
+    // CPU demod instead (DISPLAY-004).
+    std::array<std::uint8_t, 192> signalPhaseRow_{};
+    bool signalPhaseUniform_ = true;
+    void setSignalPhase(int phase, int scanY0, int scanY1)
+    {
+        signalPhaseOffset_ = phase;
+        for (int y = std::max(scanY0, 0); y < std::min(scanY1, 192); ++y)
+            signalPhaseRow_[static_cast<std::size_t>(y)] = static_cast<std::uint8_t>(phase);
+    }
+    bool mixedCompositeUsesFb_ = false;
+    // Set by fillCompositeSignal for every band that is mixed GRAPHICS and
+    // reaches into scanlines [160,192): those rows are deliberately left
+    // black in signalBuf for patchMixedTextBand to fill after demod. It is
+    // the exact gate for that patch — the frame's final state is not (a
+    // frame that leaves mixed mode inside the band ends non-mixed and still
+    // has blanked rows).
+    bool mixedBandLeftBlack_ = false;
+    OeDemodParams oeDemod_{};
+    Memory::DisplayState lastRenderState_{};
+
+    // ── Stopped-machine soft switches ───────────────────────────────────
+    // Memory publishes a frame-start DisplayState (and the beam-racing event
+    // log) as the CPU crosses video-frame boundaries. A stopped machine —
+    // debugger breakpoint, single-step, pause — crosses none, so the
+    // published snapshot freezes while the live one still moves under pokes
+    // from the debugger, the AI control server or the paint editor: the
+    // screen showed the new CONTENT (RAM is read live) in the OLD MODE for as
+    // long as the machine stayed stopped.
+    //
+    // `cpuIdle_` is "the CPU burned no cycles since the previous render",
+    // which makes any live-state change unambiguously one of those host-side
+    // pokes — a running machine always advances the counter between two UI
+    // frames. `liveStateAtRun_` is the live state as of the last render where
+    // it did advance, so the fields differing from it are exactly the ones
+    // moved while stopped, and only those are folded onto the published
+    // state (applyIdleSwitchOverride). Beam-raced frozen frames keep their
+    // per-band replay for every field the user did not touch.
+    //
+    // A single Step is the exception the cycle counter alone gets wrong: it
+    // burns 2-7 cycles and publishes NO new frame, so the published snapshot
+    // this override exists to patch is every bit as stale as it was while
+    // paused — yet the counter moved, so the override switched off and the
+    // poked mode reverted until the machine ran a whole frame again. Once
+    // idle we therefore STAY idle until Memory actually publishes a frame,
+    // which `frameCounter` (the emulated video-frame index) counts exactly.
+    // `lastRenderFrame_` is its value at the previous render.
+    uint64_t lastRenderCycle_ = 0;
+    uint32_t lastRenderFrame_ = 0;
+    bool     renderedOnce_    = false;
+    bool     cpuIdle_         = false;
+    bool     machineRunning_  = false;   // setMachineRunning
+    Memory::DisplayState liveStateAtRun_{};
+    // Only allocated after beam racing starts. Compare live input bytes,
+    // never the RAM temporarily rewound by BeamTimeRam. A pause preserves
+    // the published picture; host edits and single steps use live RAM.
+    std::vector<uint8_t> liveVideoRamAtRun_;
+    bool idleVideoRamEdited_ = true;
+    void updateIdleVideoRam(Memory& mem, bool cycleMoved);
+    // Fold host switch edits onto `s`; true if any override was applied.
+    bool applyIdleSwitchOverride(Memory::DisplayState& s, Memory& mem) const;
+
+    // ── Static-text frame skip ──────────────────────────────────────────
+    // A Callgrind profile (2026-07-30) put ~30 % of POM2's total work in the
+    // display, and 98 % of THAT in text: renderText + glyphRows7, ~887 host
+    // instructions per character cell, re-decoding all 960 cells every frame
+    // even on a screen that had not changed a byte since the last one — which
+    // is most of the time under DOS, BASIC or a text app.
+    //
+    // The skip is deliberately narrow, because the general case is not safe:
+    //   * BEAM RACING — a frame carrying video events is painted as several
+    //     bands with different DisplayStates (and, on the 560-wide path, with
+    //     a column-bounded save/restore). Never skipped: `render()` only
+    //     consults this on the `events.empty()` branch.
+    //   * PERSISTENCE — the graphics painters implement a phosphor rule
+    //     (`max(target, prev x decay)` into persistenceL80), so
+    //     their output legitimately changes every frame from identical inputs.
+    //     Only FULL-SCREEN TEXT is skipped; renderText/renderText80 write no
+    //     persistence at all (verified), making their output a pure function.
+    //   * FLASH — the blinking-glyph phase is
+    //     `frameCounter / kFlashHalfPeriodFrames & 1`, so it is part of the
+    //     key. frameCounter is the EMULATED frame index and is already
+    //     standard-aware (cycleCounter / (65 * scanlinesPerFrame)), so PAL's
+    //     312-line/50 Hz frame and NTSC's 262-line/60 Hz frame both advance it
+    //     at their own rate and the key follows automatically.
+    //
+    // The key is a byte-exact copy of the source, not a hash: at 4 KB of video
+    // RAM against ~850 K instructions of glyph decoding, a memcmp is ~200x
+    // cheaper and cannot collide.
+    //
+    // The card fields below exist because `Memory::DisplayState` is NOT the
+    // whole picture: a Le Chat Mauve "Eve" writes its own $C0B8-$C0BB
+    // registers, which select the colour-TEXT renderer (and with it the
+    // 560-wide frame80), reach the card through SlotBus::broadcastVideoSwitch,
+    // and — unlike $C05E/$C05F — push NO video event. So a frame right after
+    // `STA $C0B9` has an empty event log and an unchanged DisplayState: every
+    // other term of the key agrees, and without these the skip served a stale
+    // screen at the wrong geometry. That card is the //c PAL profile's
+    // built-in slot 7, i.e. the French Touch / DIX target hardware.
+    //
+    // `textSharp` is in the key for the same reason: unchecking "Sharp text"
+    // makes the OE-CPU path demodulate full-screen TEXT instead of painting it
+    // crisp (`oeDemodsText` in render()), and on the OE-GPU path it decides
+    // whether MainWindow presents this framebuffer at all. It is a host-side
+    // knob — no guest write, no video event — so like the colour mode it is
+    // invisible to every other term.
+    struct TextFrameKey {
+        bool                 valid = false;
+        Memory::DisplayState state{};        // POD of bools — compared wholesale
+        bool                 iie = false;
+        bool                 flashPhase = false;
+        bool                 textSharp = true;
+        int                  hiResModeId = -1;
+        const void*          charRom = nullptr;
+        size_t               charRomSize = 0;
+        const void*          chatMauve = nullptr;   // card identity (may be unplugged)
+        int                  chatMauveState = -1;   // mode + Eve toggles
+        uint64_t             cardTextColours = 0;   // a VidHD's $C022, 0 = none
+        std::vector<uint8_t> vram;           // $0400-$0BFF, main + aux
+    };
+    // The key describes the pixels that are in the framebuffer RIGHT NOW, so
+    // it is published (`commitTextFrameKey`) at the very END of render() and
+    // torn down by every framebuffer mutation. Two slots, not one:
+    //   * `textFrameKey_`      — what the framebuffer currently holds. Any
+    //                            mutation clears it, whoever performs it and
+    //                            whenever: render()'s own painters (harmless,
+    //                            they are about to republish) or a caller
+    //                            poking the buffer AFTER render() returned
+    //                            (demodCompositeForCapture on the AI /screen
+    //                            path), which is the case a single well-placed
+    //                            invalidate call kept getting wrong.
+    //   * `nextTextFrameKey_`  — this frame's candidate, filled by
+    //                            staticTextFrameUnchanged() iff the frame is a
+    //                            skippable full-screen text frame. Everything
+    //                            else (beam-raced frames, CPU demods, graphics)
+    //                            leaves it invalid, so "those frames never
+    //                            enable a skip" falls out of the commit rather
+    //                            than out of scattered invalidations.
+    TextFrameKey textFrameKey_;
+    TextFrameKey nextTextFrameKey_;
+
+    // Per-scanline decode cache for the NTSC-LUT hi-res path (renderHiRes).
+    // The 280 output pixels of a row are a pure function of its 40 doubled
+    // words (bit7Mask already folded in) and the decode flavour (`key` =
+    // LUT row | square-filter); so the decode is skipped when both match
+    // the previous call and the cached pixels are copied instead. It caches
+    // INPUT → OUTPUT, never "the framebuffer already holds this", so it is
+    // correct no matter who else painted the row since (mixed-mode text,
+    // beam-raced column splits, a capture demod): the copy is made every
+    // time, only the decode is elided. Lode Runner's attract screen
+    // measured renderHiRes at a third of the whole disk-boot profile; with
+    // the cache a static row costs an 80-byte compare and a 1 KB memcpy.
+    struct HgrRowCache {
+        uint16_t words[40];
+        uint8_t  key   = 0;
+        bool     valid = false;
+        std::array<uint32_t, 280> out;
+    };
+    std::array<HgrRowCache, 192> hgrRowCache_{};
+    /// Publishes this frame's candidate key. Called on every exit from
+    /// render() (RAII), so a future early return cannot leave the previous
+    /// frame's key describing pixels that have since been repainted.
+    void commitTextFrameKey() {
+        textFrameKey_ = std::move(nextTextFrameKey_);
+        nextTextFrameKey_.valid = false;   // moved-from: `valid` was copied
+    }
+    /// Announces that the published framebuffer (its pixels, or which of the
+    /// two buffers is published) no longer matches what render() last painted.
+    /// EVERY such mutation must funnel through here — that is what the private
+    /// `useFrame80_` name and the two helpers below enforce.
+    void framebufferMutated() { textFrameKey_.valid = false; }
+    void setUseFrame80(bool v)
+    {
+        useFrame80_ = v;
+        useCardPicture_ = false;
+        framebufferMutated();
+    }
+    /// Arms the deferred OE-CPU demod over rows [0, rows) and routes the UI to
+    /// frame80 — the single door to `pendingCpuDemodRows_`, so a demod
+    /// scheduled from outside render() (screen capture) can never be forgotten
+    /// by the skip. The demod itself runs in finishPendingCpuDemod().
+    void scheduleCpuDemodInto80(int rows) {
+        useFrame80_          = true;
+        useCardPicture_      = false;
+        pendingCpuDemodRows_ = rows;
+        framebufferMutated();
+    }
+    /// True when this frame's full-screen text is byte-identical to the one
+    /// already in the framebuffer, so painting it again would be a no-op.
+    /// Fills `nextTextFrameKey_` as a side effect.
+    bool staticTextFrameUnchanged(Memory& mem, const Memory::DisplayState& state);
+    static constexpr int kMixedTextFirstScanline = 160;
+
+    /// Repaint the bottom text band of a mixed frame over a demodulated
+    /// picture. `state` MUST be the published frame's state (render()'s
+    /// `state` local), never `mem.getDisplayState()` — see the definition.
+    void patchMixedTextBand(Memory& mem, const Memory::DisplayState& state,
+                            const std::vector<Memory::VideoEvent>& events);
+    // Frame counter — drives the FLASH attribute animation for screen
+    // bytes in the $40-$7F range (the Apple II Monitor's blinking cursor
+    // and inverse-blinking spaces). Wraps freely; only the parity of
+    // (frameCounter / kFlashHalfPeriodFrames) is read. Set from the
+    // EMULATED frame index each render() (cycleCounter / 65·scanlines) so
+    // flash runs at the machine's own 50/60 Hz, not the host monitor's.
+    uint32_t frameCounter = 0;
+    // Emulated-frame bookkeeping for render-rate-independent pacing:
+    // delta = emu frames elapsed since the previous render() call (0 when
+    // the same frame is re-rendered on a >60 Hz host, clamped at 8 across
+    // stalls, 0 on backwards jumps). Drives phosphor decay + Tv blur.
+    uint64_t lastEmuFrame_  = 0;
+    uint32_t emuFrameDelta_ = 0;
+    // Half-period of the inverse-flashing animation. 16 frames @ 60 Hz →
+    // 32-frame cycle ≈ 1.875 Hz, matching MAME IIe's `frame_number() & 0x10`
+    // (toggles every 16 frames) and AppleWin's `(++counter & 0xF)==0`. (Was 15
+    // — ~6.7% too fast and inconsistent with the cited & 0x10 model.)
+    static constexpr uint32_t kFlashHalfPeriodFrames = 16;
+    /// Set each render(): the //e from frameCounter, the ][/][+ from its
+    /// 555 timer (2 Hz in emulated time).
+    bool flashPhase_ = false;
+
+    // `col0`/`col1` bound rendering to the 40-byte column window [col0, col1)
+    // for the beam-racing horizontal (mid-scanline) split; default (0, 40) is
+    // the full width and leaves every existing caller byte-identical. text/
+    // lo-res restrict their per-column write loop; hi-res still decodes the
+    // whole scanline (so the NTSC artifact window keeps its neighbour context)
+    // and only the write-back + persistence update are clipped to the window.
+    // `state` is passed in (not re-read from mem) so beam-raced bands paint
+    // with the display state active for THAT band — page select (PAGE1/PAGE2),
+    // 80STORE base and ALTCHAR all switch mid-frame, not just the mode. The
+    // full-frame path passes render()'s published `state` down too.
+    //
+    // `clipY0`/`clipY1` clip the row/block painters to exact scanlines for
+    // non-row-aligned beam splits: bandRows() hands a straddled text row (or
+    // lo-res block row) to BOTH adjacent bands, and each band paints only the
+    // scanlines inside its own [clipY0, clipY1) window. Defaults cover the
+    // full frame, leaving every existing caller byte-identical.
+    void renderText  (Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40,
+                      int clipY0 = 0, int clipY1 = kHeight);
+    void renderLoRes (Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow, int col0 = 0, int col1 = 40,
+                      int clipY0 = 0, int clipY1 = kHeight);
+    void renderLoResDouble(Memory& mem, const Memory::DisplayState& state,
+                           int firstRow, int lastRow,           // DLGR (80-col)
+                           int clipY0 = 0, int clipY1 = kHeight);
+    void renderHiRes (Memory& mem, const Memory::DisplayState& state,
+                      int firstScanline, int lastScanline, int col0 = 0, int col1 = 40);
+    // Single HGR under a Le Chat Mauve / Video-7 card, at the card's native
+    // 560-dot output (each HGR dot = 2 frame80 dots). `hm` is what the card
+    // makes of the switches (LeChatMauveCard::hgrMode): the LCM colour rule
+    // (2-bit cell colour, 3-bit window — docs/chatmauve_plan.md § 3.2, pixel
+    // for pixel AppleWin `UpdateHiResRGBCell`), plain monochrome, or the
+    // Eve's SPEC1/SPEC2 variants. FgBg is not handled here (see
+    // renderHgrDuochrome).
+    void renderHiResChatMauve80(Memory& mem, const Memory::DisplayState& state,
+                                int firstScanline, int lastScanline,
+                                LeChatMauveCard::HgrMode hm);
+    // Foreground/background HGR: the bitmap in MAIN $2000-$3FFF, and at the
+    // same address in AUX one byte of colours per 7-dot block. Two cards
+    // have it with the nibbles the other way round — the Video-7's F/B mode
+    // (AN3 off, 80COL off; hi nibble = foreground) and the Eve's CP280
+    // (table IX-1; hi nibble = background) — hence `auxHiIsForeground`.
+    // Each HGR dot becomes 2 dots in frame80. Callers gate on `auxRam`.
+    void renderHgrDuochrome(Memory& mem, const Memory::DisplayState& state,
+                            int firstScanline, int lastScanline,
+                            bool auxHiIsForeground);
+    // Eve COL280A/B (table IX-1): the 560-dot stream (aux then main per
+    // column, bit 0 first) in 2-dot cells, code = dot + 2 × next dot, through
+    // one of two fixed 4-colour palettes — read off Purplesoft's `& PLOT`
+    // (see the definition). Each cell = 2 dots in frame80.
+    void renderDhgrCol280(Memory& mem, const Memory::DisplayState& state,
+                          int firstScanline, int lastScanline, bool paletteB);
+    // RVB Graph single HGR: C0-C3 / B0-B3 by dot position and the S options
+    // (dotted lines, four-colour system) — see the definition for the
+    // manual's rules. Each HGR dot = 2 dots in frame80.
+    void renderHiResRvbGraph(Memory& mem, const Memory::DisplayState& state,
+                             int firstScanline, int lastScanline);
+    // One-colour text: the text rows of a band, white → `colour`, in
+    // whichever framebuffer the band was painted into — Eve TXTGREEN (P31
+    // green) and the RVB Graph's CT. Text is black and white before this
+    // pass, so the remap is exact.
+    // [x0, x1) bounds the tint to the columns a clipped beam segment painted,
+    // in the current buffer's dots; x1 < 0 = the whole line.
+    void textTintPass(const Memory::DisplayState& state, int scanY0, int scanY1,
+                      int x0 = 0, int x1 = -1);
+    bool renderChatMauveGrMixed(Memory& mem, const Memory::DisplayState& state,
+                                int scanY0, int scanY1);
+    void tintText(const Memory::DisplayState& state, int scanY0, int scanY1,
+                  uint32_t colour, uint32_t background = 0, int x0 = 0, int x1 = -1);
+    // The RGB-card pipeline is selected AND a card is plugged. Without the
+    // card ChatMauveRGB silently renders as ColorNTSC (a real machine pulled
+    // out of its adapter still has composite on the wire).
+    bool chatMauveActive() const {
+        return hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+    }
+    void renderInternalBandImpl(Memory& mem, const Memory::DisplayState& state,
+                                int scanY0, int scanY1);
+    void renderMonoGraphics(Memory& mem, const Memory::DisplayState& state,
+                            int firstScanline, int lastScanline);
+    bool isMonochrome() const {
+        return hiResMode == HiResMode::MonoWhite || hiResMode == HiResMode::MonoGreen ||
+               hiResMode == HiResMode::MonoAmber;
+    }
+    // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
+    // 560×192. Reads aux RAM for even columns and main RAM for odd
+    // columns (per AppleWin's scanner). `altCharSet` toggles flashing
+    // inverse vs. mousetext+non-flashing inverse (the IIe ALTCHAR switch).
+    void renderText80(Memory& mem, const Memory::DisplayState& state,
+                      int firstRow, int lastRow,
+                      int clipY0 = 0, int clipY1 = kHeight);
+    // IIe-only. Renders DHGR scanlines [firstScanline, lastScanline) into
+    // `frame80`. Reads main + aux HGR pages: aux byte at offset c
+    // contributes 7 bits to dots [c*14 .. c*14+6], main byte contributes
+    // dots [c*14+7 .. c*14+13]. Color: each 4 consecutive dots form a
+    // 4-bit lo-res palette index (560 dots → 140 color cells per line).
+    // Monochrome HiResModes render dot-by-dot luminance through the
+    // selected phosphor.
+    void renderDhgr  (Memory& mem, const Memory::DisplayState& state,
+                      int firstScanline, int lastScanline);
+    // Colour TEXT with an RGB card: 40 columns, char code from main RAM, the
+    // aux byte at the same text address holds the cell's two lo-res colours.
+    // Video-7 F/B text (AN3 on, 80COL off) has the foreground in the high
+    // nibble; the Eve's TXT16 ($C0B9, 80COL off) has the BACKGROUND there
+    // (manual IV-2.2: `POKE -16199,16*F+C`... F = fond) — `auxHiIsForeground`.
+    // The 7-bit glyph row is doubled to 14 dots, each dot painted fg/bg.
+    // Renders rows [firstRow, lastRow) into `frame80` at 560 wide. Port of
+    // MAME `apple2video.cpp` text_update (:788-791) + render_line_color_array
+    // (:571-583).
+    void renderTextChatMauveFgBg(Memory& mem, const Memory::DisplayState& state,
+                                 int firstRow, int lastRow,
+                                 int clipY0, int clipY1, bool auxHiIsForeground);
+    // The MIXED text window under the card's HGR when the card says colour
+    // text (Video-7 F/B, Eve TXT16): MAME renders mixed rows through
+    // text_update, whose RGB branch ignores the upper part. False = not that
+    // case, nothing painted. (The window came out white on black.)
+    bool renderChatMauveMixedColourText(Memory& mem, const Memory::DisplayState& state,
+                                        int scanY0, int scanY1);
+    // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
+    // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
+    void upscaleFrameToFrame80(int firstScanline, int lastScanline);
+
+    // Populate signalBuf from RAM for the active display state. Returns
+    // true on success (HGR / DHGR / 40-col text / lo-res / DLGR).
+    // Always called from render() when hiResMode == ColorCompositeOE.
+    // `events` is the mid-frame video soft-switch log: when non-empty the
+    // signal is recomposed band-by-band (beam-racing) so mid-scanline mode
+    // switches land in the composite waveform; when empty the whole frame is
+    // painted from the single end-of-frame display state (fast path).
+    bool fillCompositeSignal(Memory& mem,
+                             const std::vector<Memory::VideoEvent>& events);
+
+    // CPU OpenEmulator demod: demodulate signalBuf (560×192 R8) rows
+    // [0, rows) into frame80 (560×192 RGBA) — the same Y/I/Q math as the
+    // GLSL demod shader, run on the CPU (per-row 1D FIR, so a row limit is
+    // exact). Used by HiResMode::ColorCompositeOECpu and mixed OE frames;
+    // scheduled via pendingCpuDemodRows_ + finishPendingCpuDemod().
+    void renderCompositeOeCpu(int rows);
+    // 0 = none; else demod rows [0, n). Armed only by scheduleCpuDemodInto80();
+    // cleared by render() (a demod armed against the previous frame's signal
+    // must never fire onto this frame's pixels) and by finishPendingCpuDemod().
+    int  pendingCpuDemodRows_ = 0;
+
+    // The actual frame dispatch (text / hires / dhgr / mixed). render()
+    // is a thin wrapper that calls this then optionally fills signalBuf.
+    /// Full-frame repaint of the PUBLISHED frame — `state` is render()'s,
+    /// not the live one (see the definition).
+    void renderInternal(Memory& mem, const Memory::DisplayState& state);
+    void renderInternalBand(Memory& mem, const Memory::DisplayState& state,
+                            int scanY0, int scanY1);
+    // Column-bounded variant of renderInternalBand: paints the rectangle
+    // [scanY0, scanY1) × [col0, col1). The legacy 280-wide path (text /
+    // hi-res / lo-res) threads the column window into its painters; the
+    // 560-wide IIe / Le Chat Mauve modes (80-col, DHGR, DLGR, Chat Mauve)
+    // paint full width into frame80 then save/restore the columns outside the
+    // window (their painters carry cross-column context). Mixing a 280-wide
+    // and a 560-wide segment on one scanline targets different buffers and is
+    // a documented v1 scope-out.
+    void renderInternalSegment(Memory& mem, const Memory::DisplayState& state,
+                               int scanY0, int scanY1, int col0, int col1);
+    // True when `state` renders through the legacy 280-wide path (so a
+    // mid-scanline column split is meaningful). Mirrors the branch
+    // conditions at the top of renderInternalBand.
+    bool usesLegacyPath(Memory& mem, const Memory::DisplayState& state) const;
+    // Shared beam-race decomposition: sorts `events` into raster order, builds
+    // per-scanline column segments [col0, col1), merges vertically-identical
+    // scanlines into bands, and invokes `paint(state, y0, y1, col0, col1)` for
+    // each band × column segment. Both renderBeamRacing (RGBA) and
+    // fillCompositeSignal (composite signal) drive their painters through it,
+    // so the two horizontal-split replays can never diverge.
+    // `startLatch` + the per-segment latch: the Chat Mauve mode latch is
+    // walked in parallel with DisplayState from the same event log ($C05E/F
+    // rising edges clock the $C00C/D level), so a mid-frame latch change
+    // paints each band with the value of ITS moment. Callers without a card
+    // pass 0b11 (COL140) and ignore the parameter.
+    // `beforeBand`, when set, is called with each band's first line before
+    // its segments paint: render() points it at Memory::videoRewindTo, so
+    // the painters read the RAM that band was fetched from. It also means
+    // RAM is beam-exact, so the one-way page-flip shortcut stands down.
+    static void forEachBeamSegment(
+        const Memory::DisplayState& frameStart,
+        std::vector<Memory::VideoEvent> events,
+        VideoStandard std,
+        uint8_t startLatch,
+        const std::function<void(const Memory::DisplayState&,
+                                 int y0, int y1, int col0, int col1,
+                                 uint8_t latch)>& paint,
+        const std::function<void(int)>* beforeBand = nullptr);
+    // Set by render() for the length of one paint while the video write log
+    // describes the published frame (Memory::videoRewindBegin); empty
+    // otherwise. Every forEachBeamSegment call in this class passes it.
+    std::function<void(int)> bandHook_;
+    // One paint's beam-time RAM: rewinds video RAM to the published frame's
+    // start, adds a Cut event per line where a logged write changes what the
+    // beam fetched, arms bandHook_, and puts RAM back on every way out.
+    // Cut lines for a frame with NO soft-switch event: the full-frame paths
+    // paint in these bands instead (renderInternalBeamTime, the composite
+    // full-frame band), so they keep their own buffer domain. Frames with
+    // events get Cut events instead.
+    std::vector<uint16_t> beamCuts_;
+    void renderInternalBeamTime(Memory& mem, const Memory::DisplayState& state);
+    bool patchMixedTextByCuts(Memory& mem, const Memory::DisplayState& state);
+    struct BeamTimeRam {
+        BeamTimeRam(Apple2Display& d, Memory& m, std::vector<Memory::VideoEvent>& events);
+        ~BeamTimeRam();
+        Apple2Display& display; Memory& mem; bool on;
+    };
+    const std::function<void(int)>* bandHook() const { return bandHook_ ? &bandHook_ : nullptr; }
+    void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);
+    // The Chat Mauve latch for the band being painted by the beam-raced
+    // replay (renderDhgr consumes it); < 0 outside a replay = ask the card.
+    int bandLatch_ = -1;
+    // Set for the duration of a beam-raced frame whose segments do NOT all
+    // live in the same buffer (a mid-frame 80-col ⇄ 40-col switch). See
+    // renderBeamRacing.
+    bool force560_ = false;
+
+    static void applyVideoEvent(Memory::DisplayState& state, Memory::VideoEventKind kind,
+                                bool value);
+
+    // Address of the first byte of HGR scanline `y` in the active page.
+    static uint16_t hgrRowAddress(int y, bool page2);
+
+    // Apple II lo-res palette (16 colours) — [D] MAME apple2_palette[] @
+    // mame0287, from the "Apple II Video Display Theory" spreadsheet.
+    static const uint32_t kLoResPalette[16];
+    // Le Chat Mauve / Video-7 lo-res palette — 16 distinct colours with
+    // visually distinct grays at indices 5 and 10 (the "Chat Mauve
+    // trademark" actually surfaces in lo-res, not HGR — see Apple2Display.cpp).
+    static const uint32_t kChatMauveLoResPalette[16];
+};
+
+#endif // POM2_APPLE2_DISPLAY_H
