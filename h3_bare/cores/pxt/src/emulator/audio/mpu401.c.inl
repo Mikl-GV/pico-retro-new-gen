@@ -1,0 +1,194 @@
+// https://www.recordingblogs.com/wiki/midi-voice-messages
+// https://midi.org/summary-of-midi-1-0-messages
+// https://www.blitter.com/~russtopia/MIDI/~jglatt/tech/midispec/messages.htm
+// https://newt.phys.unsw.edu.au/jw/notes.html
+// https://massimo-nazaria.github.io/midi-synth.html
+#include <math.h>
+#include <emulator/emulator.h>
+
+#if !defined(MIDI_WINMM)
+#define EMULATED_MIDI
+#endif
+
+// #define DEBUG_MPU401 1
+
+enum { STATUS_READY = 0, STATUS_OUTPUT_NOT_READY = 0x40, STATUS_INPUT_NOT_READY = 0x80 };
+
+uint8_t mpu_status = STATUS_INPUT_NOT_READY;
+uint8_t mpu_rx_data = 0;
+
+static int midi_pos, midi_len;
+static uint32_t midi_command;
+static int midi_lengths[8] = {3, 3, 3, 3, 2, 2, 3, 1};
+static int midi_insysex;
+
+
+#if defined(EMULATED_MIDI)
+#if defined(MIDI_GM_DLS)
+#include "general-midi-dls.c.inl"
+#else
+#include <emulator/audio/general-midi.c.inl>
+#endif
+#else
+
+static HMIDIOUT midi_out_device = NULL;
+
+static INLINE void midi_init_once() {
+    if (midi_out_device != NULL) return;
+
+    MMRESULT hr = midiOutOpen(&midi_out_device, MIDI_MAPPER, 0, 0, CALLBACK_NULL);
+    if (hr != MMSYSERR_NOERROR) {
+#ifdef DEBUG_MPU401
+        printf("midiOutOpen error - %08X\n", hr);
+#endif
+        return;
+    }
+    midiOutReset(midi_out_device);
+}
+
+static INLINE void midi_close() {
+    if (midi_out_device != NULL) {
+        midiOutReset(midi_out_device);
+        midiOutClose(midi_out_device);
+        midi_out_device = NULL;
+    }
+}
+
+static uint8_t midi_sysex_data[4096 + 2];
+static INLINE void midi_send_sysex() {
+    midi_init_once();
+    MIDIHDR hdr = {
+        .lpData = (LPSTR) midi_sysex_data,
+        .dwBufferLength = midi_pos,
+        .dwFlags = 0
+    };
+    // Prepare the MIDI header for sending
+    MMRESULT result = midiOutPrepareHeader(midi_out_device, &hdr, sizeof(MIDIHDR));
+    if (result != MMSYSERR_NOERROR) {
+#ifdef DEBUG_MPU401
+        printf("Error preparing SysEx header: %08X\n", result);
+#endif
+        return;
+    }
+
+    // Send the SysEx message
+    result = midiOutLongMsg(midi_out_device, &hdr, sizeof(MIDIHDR));
+    if (result != MMSYSERR_NOERROR) {
+#ifdef DEBUG_MPU401
+        printf("Error sending SysEx message: %08X\n", result);
+#endif
+        midiOutUnprepareHeader(midi_out_device, &hdr, sizeof(MIDIHDR));
+        return;
+    }
+
+    // Wait for the message to be sent
+    while (!(hdr.dwFlags & MHDR_DONE)) {
+        Sleep(1); // Allow time for the message to finish sending
+    }
+
+    // Unprepare the header after sending
+    result = midiOutUnprepareHeader(midi_out_device, &hdr, sizeof(MIDIHDR));
+    if (result != MMSYSERR_NOERROR) {
+#ifdef DEBUG_MPU401
+        printf("Error unpreparing SysEx header: %08X\n", result);
+#endif
+    }
+
+    // Reset the SysEx state
+    midi_insysex = 0;
+}
+int16_t midi_sample() { return 0; }
+#endif
+
+static INLINE void midi_send(uint32_t message) {
+#if defined(EMULATED_MIDI)
+    parse_midi((const midi_command_t *) &message);
+#else
+    midi_init_once();
+    midiOutShortMsg(midi_out_device, message);
+#endif
+}
+
+
+static INLINE uint8_t mpu401_read(uint16_t portnum) {
+    if (portnum & 1) {
+        return mpu_status;
+    }
+
+    mpu_status = STATUS_INPUT_NOT_READY;
+    return mpu_rx_data;
+}
+
+static INLINE void mpu401_write(uint16_t portnum, uint8_t value) {
+    if (portnum & 1) {
+        switch (value) {
+            case 0xDF:
+                mpu_rx_data = 0xFE; // Ack
+                break;
+            case 0xD0: // Enter UART Mode
+                mpu_rx_data = 0xFF; // ???
+                break;
+            case 0x3F: // Enter UART mode
+                mpu_rx_data = 0xFE; // Ack
+                break;
+            default:
+#ifdef DEBUG_MPU401
+                printf("[MIDI] Unknown %x %x\n", portnum, value);
+#endif
+            case 0xFF: // Reset
+#if defined(MIDI_GM_DLS)
+                parse_midi(&(const midi_command_t){.command = 0xff});
+#endif
+                midi_pos = midi_len = midi_insysex = 0;
+                midi_command = 0;
+                mpu_rx_data = 0xFE; // Ack
+                break;
+        }
+
+        mpu_status = STATUS_READY;
+        return;
+    }
+
+    if (value >= 0xF8) { // real-time: one byte, keeps the message in progress
+        midi_send(value);
+        return;
+    }
+
+    if (value & 0x80 && !(value == 0xF7 && midi_insysex)) {
+        midi_pos = 0;
+        midi_len = midi_lengths[value >> 4 & 7];
+        midi_command = 0;
+
+        if (value == 0xF0) {
+            midi_insysex = 1;
+            midi_len = 0;
+        }
+    }
+
+    if (midi_insysex) {
+#if !defined(EMULATED_MIDI)
+        midi_sysex_data[midi_pos++] = value;
+
+        if (value == 0xF7 || midi_pos >= sizeof(midi_sysex_data)) {
+            midi_send_sysex();
+        }
+#endif
+        if (value == 0xF7) {
+            midi_insysex = 0;
+        }
+        return;
+    }
+
+    if (midi_len) {
+        midi_command |= value << midi_pos * 8;
+        if (++midi_pos == midi_len) {
+            midi_send(midi_command);
+            if ((uint8_t) midi_command < 0xF0) { // a channel message: next data bytes reuse its status
+                midi_pos = 1;
+                midi_command &= 0xFF;
+            } else {
+                midi_len = 0;
+            }
+        }
+    }
+}

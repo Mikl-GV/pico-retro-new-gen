@@ -522,6 +522,38 @@ $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 	$(TOP)h3_bare/cores/ms1504_rename.sh $(MS1504_OBJS)
 	touch $@
 
+# ---- IBM PC/XT-286 (ядро pico-286: 8086/80286) ----
+# Vendored src/emulator/*.c (чистый C). Платформенно-зависимые .inl заменены
+# на H3-варианты: disks-h3.c.inl (RAM-образы, как у MS1504) и network-h3.c.inl
+# (заглушка). PSRAM/swap/FATFS не используются (RAM — DRAM 640К), AdLib/OPL
+# отключён (emu8950 не портирован). Host — pxt_host.c. Сборка локально под H3.
+PXT := $(TOP)h3_bare/cores/pxt
+PXT_INC := -I$(PXT)/src -I$(PXT)/src/printf -I$(PXT)/src/emu8950
+PXT_CFLAGS := $(CFLAGS) -DPICO_ON_DEVICE=0 -DH3_BARE_METAL $(PXT_INC)
+# объекты ядра (C) + видео + host; rename батчем pxt_*.
+# printf_ (printf4/mpaland) — ядро x86 ссылается на printf_, сборка не имеет
+# его (проект использует свой h3_bare/src/printf.c). Компилируем отдельно.
+PXT_BONES  := cpu fpu i8253 i8259 memory mouse swap xms ports video/cga video/tga video/vga
+PXT_PRINTF := $(BUILD)/pxt_printf.o
+OBJ += $(addprefix $(BUILD)/pxt_,$(addsuffix .o,$(PXT_BONES)))
+OBJ += $(BUILD)/pxt_host.o
+OBJ += $(PXT_PRINTF)
+
+$(BUILD)/pxt_%.o: $(PXT)/src/emulator/%.c | $(BUILD)
+	@mkdir -p $(@D)
+	$(CC) $(PXT_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pxt_host.o: $(PXT)/src/pxt_host.c | $(BUILD)
+	$(CC) $(PXT_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/pxt_printf.o: $(PXT)/src/printf/printf.c | $(BUILD)
+	$(CC) $(PXT_CFLAGS) $(INCLUDES) -c -o $@ $<
+# после сборки ВСЕХ объектов набора один батч-ренеимёр добавляет префикс
+# pxt_ ко всем глобальным символам (согласованно: определения И ссылки во
+# всех объектах), снимая коллизии с другим C-ядром (RAM/exec86/portin/...).
+PXT_OBJS := $(addprefix $(BUILD)/pxt_,$(addsuffix .o,$(PXT_BONES))) $(BUILD)/pxt_host.o $(BUILD)/pxt_printf.o
+$(BUILD)/pxt_renamed.stamp: $(PXT_OBJS)
+	$(TOP)h3_bare/cores/pxt_rename.sh $(PXT_OBJS)
+	touch $@
+
 # ---- Радио-86РК (порт RK8266: i8080 + ВГ75/ВВ55 + вшитый монитор) ----
 # r1185: CPU — i8080.c (Alexander Demin, GPL-2+), машина/порты — rk86_machine.c,
 # рендер — rk86_video.c, образы монитора 2К и знакогенератора — rk86_data.c.
@@ -1789,7 +1821,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp $(BUILD)/libpom2port.a
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/pxt_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp $(BUILD)/libpom2port.a
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(BUILD)/libpom2port.a))

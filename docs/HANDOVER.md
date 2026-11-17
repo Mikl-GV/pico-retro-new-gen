@@ -8,6 +8,26 @@
 
 ## 0. Последние правки
 
+- **r1412 (2026-11-17): PC/XT-286 — встроено ядро pico-286 (`cores/pxt`).**
+  - Ядро — чистое C (fake86/dos486 → pico-286 `src/emulator`), vendored в
+    `h3_bare/cores/pxt` (LICENSE внутри). Host — `pxt_host.c`.
+  - Сборка: `Makefile` — `PXT_BONES` (cpu/fpu/i8253/i8259/memory/mouse/swap/
+    xms/ports/video/{cga,tga,vga}) + `pxt_host.o` + `pxt_printf.o` (ядро x86
+    требует собственный printf, его в проекте нет). Ренейм глобалов `pxt_*`
+    батчем `pxt_rename.sh` (по образцу ms1504_rename.sh), снимает коллизии.
+  - Память: `RAM/UMB/HMA/VIDEORAM/SRAM` (memory.c) и `XMS` (xms.c, 4 МБ) —
+    убраны из `.psram`/общего `.bss` в переиспользуемый пул аркад
+    `.noinit_fbn` (0x54000000, единый владелец времени) под `H3_BARE_METAL`,
+    как делает МС1504; иначе `.bss` переполнял CPS ZIP_BUF_BIG (0x44C00000).
+    `pxt_screen` (1.2 МБ) — тоже в `.noinit_fbn`.
+  - BIOS/VBIOS вшиты (includes/bios.h, const). Диски — RAM-образы (флоппи A:
+    и HDD 0x80/0x81, INT13 через disks-h3.c.inl). Звук PC-spkr/Covox/DSS/SB/
+    Sn76489/CMS; AdLib/OPL на H3 отключён.
+  - `emu.h`: `emu_run_pxt()`; `systems.h`: `SYS("pxt","PC/XT-286",COMPUTER)`;
+    `rom_browser.c`: папка `/roms/pxt` → загрузочный диск (флоппи или HDD).
+  - Убраны несуществующие `init8253/init8259/init_umb/vga_init/i8237_reset` из
+    host-вызовов — `reset86()` сам инициализирует UMB/vga/DMA.
+
 - **r1411 (2026-11-17): МС1504 — сборка игрового образа из папки + автозапуск.**
   - Новый `cores/ms1504/ms1504_build.c`: сборка образа игры в RAM-пуле аркад
     (0x54000000). Малые игры (≤720К) — FAT12-дискета из копии `mc1504BOOT.IMA`

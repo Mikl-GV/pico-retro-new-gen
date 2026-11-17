@@ -121,6 +121,7 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_cps1(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_pxt(const uint8_t* rom, uint32_t size, const char* rom_name);       // r1412: IBM PC/XT-286
 /* Сборка игрового образа МС1504 из папки (ms1504_build.c). Малые игры —
  * FAT12-дискета (активирует g_ms1504_active_img), большие — флоппи A: +
  * FAT16 HDD 0x80 (активирует ещё g_ms1504_hdd_img). Возвращают 0 при успехе. */

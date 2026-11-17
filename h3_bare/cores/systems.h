@@ -83,6 +83,12 @@ static const system_entry_t systems[] = {
     SYS_BUILTIN("bk0010", "BK-0010/0011M",       COMPUTER, READY),
     SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
     SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),
+    // r1412: IBM PC/XT-286 — ядро pico-286 (h3_bare/cores/pxt, чистый C).
+    // Папка /roms/pxt. BIOS и VBIOS вшиты (includes/bios.h, const-массив);
+    // диски — RAM-образы (флоппи A: и HDD C:) из аркадного пула, INT13 через
+    // disks-h3.c.inl. Видео CGA/HGC/EGA/VGA 640x480, звук
+    // PC-spkr/Covox/DSS/SB/Sn76489/CMS (AdLib/OPL на H3 отключён).
+    SYS("pxt",        "PC/XT-286",                 COMPUTER, READY),
     SYS("cpc",        "Amstrad CPC",              COMPUTER, READY),
     // r1284: Commodore 64 — ядро Frodo (h3_bare/cores/frodo, PAL-only: VIC-II
     // 312 строк/50 Гц зашиты const в VIC.h, runtime-выбора региона нет).

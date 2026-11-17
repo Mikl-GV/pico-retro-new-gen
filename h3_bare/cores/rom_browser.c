@@ -190,6 +190,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_rk86(rom, size, sel_name);      // Радио-86РК — /roms/radio86rk (r1185)
     else if (strcmp(sys_id, "enterprise") == 0)
         emu_run_ep(rom, size, sel_name);        // Enterprise 64/128 — /roms/enterprise (r135x)
+    else if (strcmp(sys_id, "pxt") == 0)
+        emu_run_pxt(rom, size, sel_name);       // IBM PC/XT-286 — /roms/pxt (r1412)
     else {
         fb_clear();
         fb_text_center("System not implemented yet", 200, 2, 0x00FFAA00);
