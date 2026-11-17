@@ -24,6 +24,7 @@ extern "C" {
 #include "fb_text.h"
 #include "i2s.h"
 #include "emu.h"
+#include "emulog.h"
 #include "h3_hs_timer.h"
 #include "fat.h"
 }
@@ -209,14 +210,19 @@ extern "C" void coleco_stop(void) {
 
 // ---- точка входа из emu.c ----
 extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
     emu_prepare();
+    emulog_begin("Coleco");
+    emulog_field("Coleco", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("coleco", "sn76489");
     memset(g_col_fb, 0, sizeof(g_col_fb));   // свой кадр-буфер не чистится emu_prepare
     if (coleco_init_game(rom, size) != 1) {
         printf("Coleco: init failed\n");
+        emulog_field("Coleco", "init", "FAILED");
+        emulog_end("Coleco");
         return;
     }
+    emulog_field("Coleco", "video", "%dx%d", COL_W, COL_H);
+    emulog_field("Coleco", "init", "OK");
     emu_set_border_color(0x00081814);   // тёмно-оливковый (картридж Coleco)
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -235,4 +241,5 @@ exit:
     // вызывался (в следующей системе/меню DE2 мог остаться на back-буфере).
     emu_audio_stop();
     fb_clear(); fb_flush();
+    emulog_end("Coleco");
 }

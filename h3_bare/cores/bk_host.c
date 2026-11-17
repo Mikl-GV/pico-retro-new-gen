@@ -17,6 +17,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -313,6 +314,8 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    emulog_begin("BK");
+    emulog_field("BK", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "?") : "baked ROM", (unsigned)size);
     // r1183: BK пишет HDMI-кадр напрямую (host_video) — штатный буфер.
     fb_flip_set(0);
     snd_manifest("bk0010", "psg covox");
@@ -344,12 +347,16 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!bk_retro_load_game(&info)) {
         printf("BK: load failed\n");
+        emulog_field("BK", "init", "FAILED: load");
+        emulog_end("BK");
         bk_retro_deinit();
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     printf("BK: %s [%s]: %s (%u bytes)\n", g_model, bk_rom_label(g_model),
            (rom && size) ? (rom_name ? rom_name : "?") : "baked ROM", (unsigned)size);
+    emulog_field("BK", "machine", "%s (%s)", g_model, bk_rom_label(g_model));
+    emulog_field("BK", "init", "OK");
 
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
@@ -369,4 +376,5 @@ void emu_run_bk(const uint8_t* rom, uint32_t size, const char* rom_name)
     bk_retro_deinit();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("BK");
 }

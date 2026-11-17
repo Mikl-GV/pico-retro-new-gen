@@ -27,6 +27,7 @@
 #include "../remap.h"
 #include "../fb_text.h"
 #include "../emu.h"
+#include "../emulog.h"
 #include "../i2s.h"
 #include "../../include/h3_hs_timer.h"
 
@@ -204,57 +205,6 @@ static void picodrive_poll_input(void) {
     PicoIn.pad[3] = 0;
 }
 
-// ---- r1165: диагностика деградации 32X (стенд) ----
-// Владелец: старт нормальный, с началом графики «тормозит и чем дальше, тем
-// сильнее». Разделяем вклад по времени: ядро (PicoFrame, включая ожидание
-// звукового кольца), emu_scale (рендер в HDMI) и fb_flush (clean D-cache).
-// Строка раз в 600 кадров (~10 с) — не горячий путь; сводка печатается на
-// выходе. По ней видно, ЧТО растёт: core, scale, flush или fill кольца.
-#define DIAG_EVERY 600u
-static uint32_t g_diag_frames = 0;
-static uint32_t g_diag_ts = 0;
-static uint32_t g_diag_core_sum = 0, g_diag_core_max = 0;
-static uint32_t g_diag_scale_sum = 0, g_diag_scale_max = 0;
-static uint32_t g_diag_flush_sum = 0, g_diag_flush_max = 0;
-static uint32_t g_diag_fill_min = 0xFFFFFFFFu, g_diag_fill_max = 0;
-
-static void diag_reset(uint32_t now) {
-    g_diag_frames = 0;
-    g_diag_ts = now;
-    g_diag_core_sum = g_diag_core_max = 0;
-    g_diag_scale_sum = g_diag_scale_max = 0;
-    g_diag_flush_sum = g_diag_flush_max = 0;
-    g_diag_fill_min = 0xFFFFFFFFu;
-    g_diag_fill_max = 0;
-}
-
-static void diag_frame(uint32_t now, uint32_t core_us, uint32_t scale_us, uint32_t flush_us) {
-    uint32_t fill = i2s_ring_fill();
-    if (fill < g_diag_fill_min) g_diag_fill_min = fill;
-    if (fill > g_diag_fill_max) g_diag_fill_max = fill;
-    g_diag_core_sum += core_us;
-    if (core_us > g_diag_core_max) g_diag_core_max = core_us;
-    g_diag_scale_sum += scale_us;
-    if (scale_us > g_diag_scale_max) g_diag_scale_max = scale_us;
-    g_diag_flush_sum += flush_us;
-    if (flush_us > g_diag_flush_max) g_diag_flush_max = flush_us;
-    g_diag_frames++;
-    if (g_diag_frames >= DIAG_EVERY) {
-        uint32_t dt = now - g_diag_ts;
-        // r1173: 600 кадров × 10 × 10^6 = 6·10^9 переполняло uint32 (предел
-        // 4.29·10^9) — строка печатала 17.0 fps при реальных 60. Считаем в uint64.
-        uint32_t fps10 = dt ? (uint32_t)(((uint64_t)g_diag_frames * 10000000u) / dt) : 0;
-        uint32_t n = g_diag_frames;
-        printf("32X diag: fps=%u.%u core=%u/%u scale=%u/%u flush=%u/%u fill=%u..%u\n",
-               (unsigned)(fps10 / 10u), (unsigned)(fps10 % 10u),
-               (unsigned)(g_diag_core_sum / n), (unsigned)g_diag_core_max,
-               (unsigned)(g_diag_scale_sum / n), (unsigned)g_diag_scale_max,
-               (unsigned)(g_diag_flush_sum / n), (unsigned)g_diag_flush_max,
-               (unsigned)g_diag_fill_min, (unsigned)g_diag_fill_max);
-        diag_reset(now);
-    }
-}
-
 // ---- точка входа ----
 int sega32x_init_game(const uint8_t* rom, uint32_t size) {
     printf("32X: init size=%u\n", (unsigned)size);
@@ -372,48 +322,36 @@ void sega32x_stop(void) {
 
 // ---- точка входа emu.c для Sega 32X (по паттерну emu_run_megadrive) ----
 void emu_run_32x(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
     emu_prepare();
+    emulog_begin("32X");
+    emulog_field("32X", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("32x", "ym2612 pwm psg");
     if (sega32x_init_game(rom, size) != 1) {
         printf("32X: init failed\n");
+        emulog_field("32X", "init", "FAILED");
+        emulog_end("32X");
         return;
     }
+    emulog_field("32X", "video", "320x%d", g_frame_h);
+    emulog_field("32X", "machine", "%s", Pico.m.pal ? "PAL" : "NTSC");
+    emulog_field("32X", "init", "OK");
     emu_set_border_color(0x0014161E);   // тёмно-графитовый (32X)
     emu_throttle_reset();
     emu_esc_hold_reset();
-    diag_reset(h3_hs_timer_lo_us());
     for (;;) {
-        uint32_t t0 = h3_hs_timer_lo_us();
         sega32x_run_frame();
-        uint32_t t1 = h3_hs_timer_lo_us();
         emu_throttle();
-        uint32_t t2 = h3_hs_timer_lo_us();
         // r1177: дробный скейл разрешён владельцем при условии, что не бьёт по
         // темпу: кадр вписывается по высоте с сохранением пропорций
         // (320×224 → 857×600), поля по краям. Целочисленный путь (640×448)
         // остаётся в emu_scale_int для портативок — при просадке вернуть вызов.
         emu_scale(EMU_W, g_frame_h);
-        uint32_t t3 = h3_hs_timer_lo_us();
         fb_flush();
-        uint32_t t4 = h3_hs_timer_lo_us();
-        diag_frame(t4, t1 - t0, t3 - t2, t4 - t3);
         if (emu_esc_hold()) goto exit;
     }
 exit:
-    if (g_diag_frames) {
-        uint32_t dt = h3_hs_timer_lo_us() - g_diag_ts;
-        // r1173: см. diag_frame — в uint64, иначе переполнение на 600+ кадрах.
-        uint32_t fps10 = dt ? (uint32_t)(((uint64_t)g_diag_frames * 10000000u) / dt) : 0;
-        uint32_t n = g_diag_frames;
-        printf("32X diag(end): frames=%u fps=%u.%u core=%u/%u scale=%u/%u flush=%u/%u fill=%u..%u\n",
-               (unsigned)n, (unsigned)(fps10 / 10u), (unsigned)(fps10 % 10u),
-               (unsigned)(g_diag_core_sum / n), (unsigned)g_diag_core_max,
-               (unsigned)(g_diag_scale_sum / n), (unsigned)g_diag_scale_max,
-               (unsigned)(g_diag_flush_sum / n), (unsigned)g_diag_flush_max,
-               (unsigned)g_diag_fill_min, (unsigned)g_diag_fill_max);
-    }
     sega32x_stop();
     emu_audio_stop();
     fb_clear(); fb_flush();
+    emulog_end("32X");
 }

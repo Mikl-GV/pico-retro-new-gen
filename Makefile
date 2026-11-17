@@ -1354,6 +1354,11 @@ POM2_PORT_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPF
 # чтобы новые байты .text не сдвигали раскладку USB на стенде.
 POM2_ROM_APPLE2E := $(TOP)h3_bare/cores/agat/rom/apple2e.rom
 OBJ += $(BUILD)/pom2_roms.o
+# r1410: единый каркас лога сессий. Автономный объект линкуется ПОСЛЕДНИМ —
+# правки emulog.c не сдвигают адреса .text остальных ядер (USB-чувствительность).
+OBJ += $(BUILD)/emulog.o
+$(BUILD)/emulog.o: $(TOP)h3_bare/cores/emulog.c $(TOP)h3_bare/cores/emulog.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BUILD)/pom2_roms.o: $(POM2_PORT_DIR)/pom2_roms.S $(POM2_ROM_APPLE2E) | $(BUILD)
 	$(CC) -mcpu=cortex-a7 -marm -I$(TOP) -c -o $@ $<

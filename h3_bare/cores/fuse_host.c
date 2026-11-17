@@ -22,6 +22,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -387,6 +388,8 @@ static uint32_t fuse_model_ram(const char* model)
 void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    emulog_begin("ZX");
+    emulog_field("ZX", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "?") : "BASIC", (unsigned)size);
     snd_manifest("zxspectrum", "ay8912");
 
     g_rom = rom; g_rom_size = size;
@@ -409,6 +412,8 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fb_flush();
         udelay(2500000);
         fb_clear(); fb_flush();
+        emulog_field("ZX", "init", "FAILED: unsupported format");
+        emulog_end("ZX");
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
@@ -467,10 +472,15 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!fuse_retro_load_game(&info)) {
         printf("FUSE: load failed\n");
+        emulog_field("ZX", "init", "FAILED: load");
+        emulog_end("ZX");
         fuse_retro_deinit();
         emu_audio_stop();   /* r1278 */
         return;
     }
+    emulog_field("ZX", "machine", "%s", g_model);
+    emulog_field("ZX", "video", "%dx%d", EMU_FB_W, EMU_FB_H);
+    emulog_field("ZX", "init", "OK");
     i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     // r0.392: ядро могло «успешно» стартовать в пустой BASIC, не распознав
@@ -487,6 +497,8 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         fb_flush();
         udelay(2000000);
         fb_clear(); fb_flush();
+        emulog_field("ZX", "init", "FAILED: content not loaded");
+        emulog_end("ZX");
         emu_audio_stop();   /* r1278 */
         return;
     }
@@ -511,4 +523,5 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     fuse_retro_deinit();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("ZX");
 }

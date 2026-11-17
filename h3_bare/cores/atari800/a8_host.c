@@ -23,6 +23,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -305,6 +306,8 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     g_emu_keep_heap = 1;
     emu_prepare();
     g_emu_keep_heap = 0;
+    emulog_begin("A8");
+    emulog_field("A8", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "?") : "BASIC", (unsigned)size);
     snd_manifest("atari800", "pokey");
 
     // BASIC-режим: rom==NULL → запускаем ядро без картриджа (вшитый OS+Basic).
@@ -345,6 +348,8 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!a8_retro_load_game(&info)) {
         printf("A8: load failed\n");
+        emulog_field("A8", "init", "FAILED: load");
+        emulog_end("A8");
         a8_retro_deinit();
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
@@ -358,6 +363,13 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     a8_pauseg = 0;
     a8_SHOWKEY = -1;
     printf("A8: started (%s, %u bytes)\n", g_path[0] ? g_path : "BASIC", (unsigned)size);
+    // Регион ядра — CURRENT_TV враппера (platform.c), в прошивке переименован
+    // в a8_CURRENT_TV (Makefile-вариант символов ядра); PAL = 312.
+    extern int a8_CURRENT_TV;
+    #define A8_TV_PAL 312
+    emulog_field("A8", "video", "320x240");
+    emulog_field("A8", "machine", "%s", (a8_CURRENT_TV == A8_TV_PAL) ? "PAL" : "NTSC");
+    emulog_field("A8", "init", "OK");
 
     emu_set_border_color(0x00061428);   // тёмно-синий (A8)
     emu_throttle_reset();
@@ -388,6 +400,7 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     a8_Screen_atari = 0;
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("A8");
 }
 
 // rom_browser вызывает emu_run_atari800 (объявлен в emu.h)

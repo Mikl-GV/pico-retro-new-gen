@@ -25,6 +25,7 @@ extern "C" {
 #include "usb_kbd.h"
 #include "remap.h"
 #include "emu.h"
+#include "emulog.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
 #include "cheatdb.h"
@@ -325,19 +326,23 @@ extern "C" void snes_stop(void) {
     S9xDeinitAPU();
     S9xDeinitMemory();
     g_loaded = 0;
-    printf("SNES: stopped\n");
 }
 
 // ---- точка входа для emu.c ----
 extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
-    printf("SNES: starting...\n");
     emu_prepare();
+    emulog_begin("SNES");
+    emulog_field("SNES", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("snes", "spc700 dsp");
     if (snes_init_game(rom, size) != 1) {
         printf("SNES: init failed\n");
+        emulog_field("SNES", "init", "FAILED");
+        emulog_end("SNES");
         return;
     }
+    emulog_field("SNES", "video", "%dx%d", 256, (int)(Settings.PAL ? 239 : 224));
+    emulog_field("SNES", "machine", "%s", Settings.PAL ? "PAL" : "NTSC");
+    emulog_field("SNES", "init", "OK");
     emu_set_border_color(0x000B0C18);   // тёмно-синеватый (SNES)
     // r1181: Snes9x сам определяет регион по заголовку (Settings.PAL); звук уже
     // считался от 50 Гц, а throttle держал 60 — PAL-игры шли быстрее и картинка
@@ -360,4 +365,5 @@ exit:
                         // выхода (доезды/«звук ниоткуда»); теперь чистый сброс
                         // + честный AUDIO-END для диагностики.
     fb_clear(); fb_flush();
+    emulog_end("SNES");
 }

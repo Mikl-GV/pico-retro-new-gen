@@ -48,6 +48,8 @@ int  i2s_test_tone_freq(int hz, int ms);
 int  i2s_test_tone_cpu2(int hz, int ms);
 void i2s_dc_shift_set(int shift);       // α=2^-shift для ФВЧ CPU2 (дефолт 6)
 void i2s_dc_bypass(int on);             // r956: 1 = тест без DC-фильтра, 0 = штатный ФВЧ
+int  i2s_dc_shift(void);                // r1410: текущий сдвиг ФВЧ (для лога железа)
+int  i2s_dc_is_bypassed(void);          // r1410: текущее состояние bypass DC
 void i2s_volume(int percent);           // громкость 0..100; 0% = PA10(SD)=0 (мьют усилителя)
 int  i2s_volume_pct(void);
 void i2s_emulators_audio(int on);       // S.0: 1 = host-слои пишут в ring (по умолч. 0)

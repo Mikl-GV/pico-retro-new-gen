@@ -24,6 +24,7 @@
 #include "fake86_src/audio.h"   // r735: audbuf для звука PC-спикера
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
@@ -461,8 +462,17 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
 
 void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("MS1504");
+    emulog_field("MS1504", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("ms1504", "spkr");
-    if (!ms1504_init_game(rom, size)) return;
+    if (!ms1504_init_game(rom, size)) {
+        emulog_field("MS1504", "init", "FAILED");
+        emulog_end("MS1504");
+        return;
+    }
+    emulog_field("MS1504", "video", "640x400");
+    emulog_field("MS1504", "machine", "1801BM1 / 8086-compat");
+    emulog_field("MS1504", "init", "OK");
     emu_set_border_color(0x00000000);
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -485,5 +495,5 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // «идёт игра» оставались включёнными, DE2 не возвращался на штатный буфер.
     emu_audio_stop();
     fb_clear(); fb_flush();
-    printf("MS1504: exit\n");
+    emulog_end("MS1504");
 }

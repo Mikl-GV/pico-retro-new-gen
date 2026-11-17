@@ -37,6 +37,19 @@ static uint32_t g_lynx_aud_sum = 0, g_lynx_aud_n = 0;
 extern "C" uint32_t lynx_last_pairs(void) { return g_lynx_pairs; }
 static ULONG g_lynx_next_cycle = 0;   // r516: стaтик, сбрасывается в lynx_init_game
 
+// r1409: выгрузка ядра при выходе из игры. Раньше CSystem* g_lynx переживал
+// сессию, а следующая emu_prepare() сбрасывала bump-пул (gb_heap_reset): на
+// повторном входе delete g_lynx (lynx_init_game) шёл по переиспользованной
+// памяти (vtable-мусор) → data abort 0x00369E9D сразу после «[lynx] header».
+// Объект обязан удаляться ЗДЕСЬ, пока память пула ещё валидна (до сброса).
+extern "C" void lynx_shutdown(void) {
+    if (g_lynx) {
+        delete g_lynx;
+        g_lynx = NULL;
+    }
+    g_lynx_next_cycle = 0;
+}
+
 // Callback — вызывается Mikie в конце каждого кадра
 static UBYTE* display_callback(ULONG objref) {
     (void)objref;

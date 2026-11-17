@@ -11,6 +11,7 @@
 #include "led.h"
 #include "settings.h"
 #include "i2s.h"
+#include "emulog.h"
 
 extern int printf(const char* fmt, ...);
 
@@ -436,6 +437,13 @@ void emu_prepare(void) {
     // включённый в GBA/MD bypass «протёк» бы в остальные системы (NES/SNES/Lynx).
     // Хосты GBA/MD включают i2s_dc_bypass(1) уже ПОСЛЕ этой точки (в *_init_game).
     i2s_dc_bypass(0);
+    // r1410: сводка инициализации железа/звука перед входом в эмулятор.
+    // Печатается раз на сессию: период кадра (после сброса в дефолт),
+    // DC-ФВЧ (сдвиг + bypass) и ёмкость/заполнение кольца I2S (SRAM A1).
+    if (g_emulog)
+        printf("HW: period=%u us  i2s dc_shift=%d bypass=%d ring=%u pairs fill=%u\n",
+               (unsigned)emu_period_us, i2s_dc_shift(), i2s_dc_is_bypassed(),
+               (unsigned)AUDIO_RING_SIZE, (unsigned)i2s_ring_fill());
     emu_clear_fb();
     fb_clear();
     fb_flush();
@@ -757,20 +765,26 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // r1184: развертка из меню (NTSC / PAL / Auto) — до init, ядро читает
     // region_type в region_Reset(); эффективный режим известен после init.
     a7800_set_tv_mode(a7800_tv_mode);
+    emu_prepare();
+    emulog_begin("A7800");
+    emulog_field("A7800", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (a7800_init_game(rom, size) != 1) {
-        printf("A7800: init failed\n"); return;
+        emulog_field("A7800", "init", "FAILED");
+        emulog_end("A7800");
+        return;
     }
-    printf("A7800: \"%s\" size=%d (%s)\n", rom_name ? rom_name : "?", (int)size,
-           a7800_region_pal() ? "PAL" : "NTSC");
     emu_set_border_color(0x00281206);   // тёмно-бордовый
     emu_set_period_us(a7800_region_pal() ? 20000u : 16667u);
+    emulog_field("A7800", "video", "320x240");
+    emulog_field("A7800", "machine", "%s", a7800_region_pal() ? "PAL" : "NTSC");
+    emulog_field("A7800", "init", "OK");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A7800");
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -780,13 +794,19 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // r1184: развертка из меню — до init (ядро берёт tv_mode как длину кадра
     // и для GTIA/коллизий). Дефолт NTSC: 5200-картриджи в основном NTSC.
     a5200_set_tv_pal(a5200_tv_pal);
+    emu_prepare();
+    emulog_begin("A5200");
+    emulog_field("A5200", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (a5200_init_game(rom, size) != 1) {
-        printf("A5200: init failed\n"); return;
+        emulog_field("A5200", "init", "FAILED");
+        emulog_end("A5200");
+        return;
     }
-    printf("A5200: \"%s\" size=%d (%s)\n", rom_name ? rom_name : "?", (int)size,
-           a5200_tv_pal ? "PAL" : "NTSC");
     emu_set_border_color(0x00061428);   // тёмно-синий
     emu_set_period_us(a5200_tv_pal ? 20000u : 16667u);
+    emulog_field("A5200", "video", "320x240");
+    emulog_field("A5200", "machine", "%s", a5200_tv_pal ? "PAL" : "NTSC");
+    emulog_field("A5200", "init", "OK");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -796,21 +816,26 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A5200");
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
+    emulog_begin("SMS");
+    emulog_field("SMS", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (sms_init_game(rom, size) != 1) {
-        printf("SMS: init failed\n"); return;
+        emulog_field("SMS", "init", "FAILED");
+        emulog_end("SMS");
+        return;
     }
-    printf("SMS: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("SMS", "init", "OK");
     emu_set_border_color(0x00081430);   // тёмно-синий (SMS)
     // r1180: PAL-версии SMS идут 50 Гц (иначе ~20% быстрее и звук уплывает).
     // r1350: период — из реального mclk ядра (16688/20120 мкс), иначе звук
     // копится в кольце I2S: ровные 16667/20000 не совпадают с 59.9229/49.7015 Гц.
     emu_set_period_us_ex(gpgx_frame_us_q16());
+    emulog_field("SMS", "video", "256x192");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -830,19 +855,39 @@ exit:
         gpgx_stop();
     }
     emu_audio_stop(); fb_clear(); fb_flush();
+    emulog_end("SMS");
 }
 
 void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
+    emulog_begin("GG");
+    emulog_field("GG", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (gg_init_game(rom, size) != 1) {
-        printf("GG: init failed\n"); return;
+        emulog_field("GG", "init", "FAILED");
+        emulog_end("GG");
+        return;
     }
-    printf("GG: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00082030);   // тёмно-синий (GG)
     // r1350: период НЕ выставлялся вовсе — наследовался от предыдущей системы
     // (60/50 Гц от NTSC/PAL-игры или 20 мс от Amiga) → звук GG уезжал по темпу.
     emu_set_period_us_ex(gpgx_frame_us_q16());
+    // r1410: GG-игры чаще объявляют разрешение больше настоящего растра.
+    // Реальный viewport 160x144 (gg_extra=0); то, что просит ROM, ядро режет
+    // этим растром — поле video показывает требуемое/view против реального.
+    {
+        extern int gpgx_viewport_w(void);
+        extern int gpgx_viewport_h(void);
+        int vw = gpgx_viewport_w();
+        int vh = gpgx_viewport_h();
+        if (vw == 160 && vh == 144)
+            emulog_field("GG", "video", "160x144 (native)");
+        else
+            emulog_field("GG", "video", "rom=%dx%d view=160x144%s",
+                         vw, vh,
+                         (vw > 160 || vh > 144) ? " [cropped]" : "");
+    }
+    emulog_field("GG", "init", "OK");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -858,18 +903,24 @@ exit:
         gpgx_stop();
     }
     emu_audio_stop(); fb_clear(); fb_flush();
+    emulog_end("GG");
 }
 
 void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // r1190: SG-1000 — отдельный слой на ядре gpgx (TMS99xx VDP, 2 кнопки).
     extern uint32_t gpgx_frame_us_q16(void);   // r1350: точный период кадра ядра
     emu_prepare();
+    emulog_begin("SG1000");
+    emulog_field("SG1000", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (sg_init_game(rom, size) != 1) {
-        printf("SG1000: init failed\n"); return;
+        emulog_field("SG1000", "init", "FAILED");
+        emulog_end("SG1000");
+        return;
     }
-    printf("SG1000: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
     emu_set_border_color(0x00141830);   // тёмно-синий (SG-1000)
     emu_set_period_us_ex(gpgx_frame_us_q16());
+    emulog_field("SG1000", "video", "256x192");
+    emulog_field("SG1000", "init", "OK");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -885,14 +936,18 @@ exit:
         gpgx_stop();
     }
     emu_audio_stop(); fb_clear(); fb_flush();
+    emulog_end("SG1000");
 }
 
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("A2600");
+    emulog_field("A2600", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     atari2600_init(rom, size);
     atari2600_set_difficulty(a2600_diff_expert);
-    printf("MCUME: \"%s\" size=%d diff=%s\n", rom_name ? rom_name : "?", (int)size,
-           a2600_diff_expert ? "Expert" : "Novice");
+    emulog_field("A2600", "machine", "diff=%s", a2600_diff_expert ? "Expert" : "Novice");
+    emulog_field("A2600", "video", "160x192");
+    emulog_field("A2600", "init", "OK");
     emu_set_border_color(0x00201A08);   // тёмно-янтарный (woodgrain A2600)
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -900,15 +955,19 @@ void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name
         atari2600_run_frame(); emu_throttle(); emu_scale(160, 192); fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A2600");
 }
 
 void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("Portfolio");
+    emulog_field("Portfolio", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (portfolio_init_game(rom, size) != 1) {
-        printf("Portfolio: init failed\n"); return;
+        emulog_field("Portfolio", "init", "FAILED");
+        emulog_end("Portfolio");
+        return;
     }
-    printf("Portfolio: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("Portfolio", "init", "OK");
     emu_set_border_color(0x00101816);   // тёмно-оливковый
     uint32_t fc = 0;
     emu_throttle_reset();
@@ -922,14 +981,20 @@ void emu_run_portfolio(const uint8_t* rom, uint32_t size, const char* rom_name) 
     }
     fb_clear(); fb_flush();
     emu_audio_stop();
+    emulog_end("Portfolio");
 }
 
 void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("GameBoy");
+    emulog_field("GameBoy", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (gb_init_game(rom, size) != 1) {
-        printf("GameBoy: init failed\n"); return;
+        emulog_field("GameBoy", "init", "FAILED");
+        emulog_end("GameBoy");
+        return;
     }
-    printf("GameBoy: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("GameBoy", "video", "160x144");
+    emulog_field("GameBoy", "init", "OK");
     emu_set_border_color(0x000E1A0E);   // тёмно-зелёный (DMG)
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -941,7 +1006,7 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush();
+exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("GameBoy");
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -950,10 +1015,14 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // после любой другой игры. Снимаем на ВЫХОДЕ (память ещё валидна), а
     // страховка в gba_init_game лишь обнуляет непредвиденный остаток.
     emu_prepare();
+    emulog_begin("GBA");
+    emulog_field("GBA", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (gba_init_game(rom, size) != 1) {
-        printf("GBA: init failed\n"); return;
+        emulog_field("GBA", "init", "FAILED");
+        emulog_end("GBA");
+        return;
     }
-    printf("GBA: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("GBA", "video", "240x160");
     emu_set_border_color(0x000E1A2E);   // тёмно-синий (GBA)
     // r892: жёсткий период кадра 16743 мкс = 59.727 Гц (16.777216 МГц /
     // 280896 тактов GBA). Раньше период считался EMA от числа пар звука
@@ -964,6 +1033,8 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // игры «улетают вперёд»; жёсткий период не даёт обогнать GBA.
     uint16_t saved_period = emu_period_us;
     emu_period_us = 16743;   // 59.727 Гц (GBA), не 60
+    emulog_field("GBA", "machine", "59.73 Hz (period 16743 us)");
+    emulog_field("GBA", "init", "OK");
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
@@ -982,14 +1053,19 @@ exit:
         gba_release_core();
     }
     emu_period_us = saved_period; emu_audio_stop(); fb_clear(); fb_flush();
+    emulog_end("GBA");
 }
 
 void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("Lynx");
+    emulog_field("Lynx", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (lynx_init_game(rom, size) != 1) {
-        printf("Lynx: init failed\n"); return;
+        emulog_field("Lynx", "init", "FAILED");
+        emulog_end("Lynx");
+        return;
     }
-    printf("Lynx: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("Lynx", "video", "160x102");
     emu_set_border_color(0x000E0D26);   // тёмно-фиолетовый (Lynx)
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -1000,6 +1076,8 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // пустело (продюсер медленнее железа) и CPU2 заливал тишину, затем
     // переполнялось — стартовый дрейф/плавание задержки в первые секунды.
     emu_period_us = 13333;   // 75 Гц (48000/640 пар)
+    emulog_field("Lynx", "machine", "75 Hz");
+    emulog_field("Lynx", "init", "OK");
     for (;;) {
         lynx_run_frame();
         // r645: период кадра от ФАКТИЧЕСКОГО числа пар звука за кадр
@@ -1025,16 +1103,25 @@ exit: {
         // emu_audio_stop, чтобы drop был ещё «за сессию».
         extern void lynx_audio_report(void);
         lynx_audio_report();
+        // r1409: выгрузить объект ядра ДО сброса bump-пула след. emu_prepare —
+        // иначе старый g_lynx гниёт в переиспользованной памяти и delete висит.
+        extern void lynx_shutdown(void);
+        lynx_shutdown();
     }
     emu_period_us = 16667; emu_audio_stop(); fb_clear(); fb_flush();
+    emulog_end("Lynx");
 }
 
 void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    emulog_begin("NGP");
+    emulog_field("NGP", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     if (ngp_init_game(rom, size) != 1) {
-        printf("NGP: init failed\n"); return;
+        emulog_field("NGP", "init", "FAILED");
+        emulog_end("NGP");
+        return;
     }
-    printf("NGP: \"%s\" size=%d\n", rom_name ? rom_name : "?", (int)size);
+    emulog_field("NGP", "video", "160x152");
     emu_set_border_color(0x000E1A2B);   // тёмно-синий (NGP)
     emu_throttle_reset();
     emu_esc_hold_reset();
@@ -1043,6 +1130,8 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // на ~2.8% медленнее. Подстраиваем период под ядро; возвращаем общий 60 Гц
     // на выходе (паттерн из CPS, r0.390).
     emu_period_us = 16200;   // 61.7 Гц
+    emulog_field("NGP", "machine", "61.7 Hz (period 16200 us)");
+    emulog_field("NGP", "init", "OK");
     for (;;) {
         ngp_run_frame();
         emu_throttle();
@@ -1054,4 +1143,5 @@ exit:
     emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
     emu_audio_stop();
     fb_clear(); fb_flush();
+    emulog_end("NGP");
 }

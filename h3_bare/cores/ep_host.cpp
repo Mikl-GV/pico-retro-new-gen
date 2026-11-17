@@ -25,6 +25,7 @@
 
 extern "C" {
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -746,6 +747,9 @@ static void ep_load_dir_files(const char* entry_name, uint32_t entry_size)
 
 extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
+  emu_prepare();
+  emulog_begin("EP");
+  emulog_field("EP", "rom", "%s, %u B", rom_name ? rom_name : "BASIC", (unsigned)size);
   printf("EP: %s (model %s, %u bytes)\n", rom_name ? rom_name : "BASIC",
          g_ep128 ? "128" : "64", (unsigned)size);
 
@@ -850,6 +854,9 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   // — fb_flush() переключал бы DE2 на back-буфер, а мы пишем во фронт.
   fb_flip_set(0);
 
+  emulog_field("EP", "video", "672x576");
+  emulog_field("EP", "machine", "Enterprise %s (Z80N)", g_ep128 ? "128" : "64");
+  emulog_field("EP", "init", "OK");
   emu_set_border_color(0x00060812);   // тёмно-синий (как CPC/Frodo) — поля меню не видны
   emu_set_period_us(20000);   // PAL 50 Гц (20 мс на кадр)
   emu_throttle_reset();
@@ -889,4 +896,5 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   emu_audio_stop();
   fb_clear(); fb_flush();
   g_ep_dir[0] = 0;               // каталог игры не наследуется следующей сессией
+  emulog_end("EP");
 }

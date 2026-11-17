@@ -26,6 +26,7 @@
 #include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "emulog.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
 
@@ -310,20 +311,25 @@ void vecx_render_frame(void) {
 
 // ---- точка входа emu.c ----
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
     // r1143-история: Vectrex был ЕДИНСТВЕННЫМ host БЕЗ emu_prepare() (не сбрасывал
     // ring I2S/кучу/активность между входами) и БЕЗ emu_audio_stop() на выходе.
     // С r1143 добавлен единый сброс на входе — иначе повторный вход шёл с хвостом
     // прошлой сессии (залипшая активность/неразряженное кольцо). Вызов ниже активен.
     emu_prepare();
+    emulog_begin("Vectrex");
+    emulog_field("Vectrex", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     // r1183: Vectrex рисует в FB_ADDR напрямую (vx_render_hdmi) — штатный буфер.
     fb_flip_set(0);
     snd_manifest("vectrex", "psg dac");
     if (vecx_init_game(rom, size) != 1) {
         printf("Vectrex: init failed\n");
+        emulog_field("Vectrex", "init", "FAILED");
+        emulog_end("Vectrex");
         emu_audio_stop();
         return;
     }
+    emulog_field("Vectrex", "video", "330x410 (native)");
+    emulog_field("Vectrex", "init", "OK");
     emu_set_border_color(0x00000B14);   // тёмно-синий
     uint32_t border = 0x000B1430;       // XRGB − тёмно-синий для полей Vectrex
     emu_throttle_reset();
@@ -341,4 +347,5 @@ exit:
     g_loaded = 0;
     emu_audio_stop();
     fb_clear(); fb_flush();
+    emulog_end("Vectrex");
 }

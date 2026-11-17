@@ -32,6 +32,7 @@
 
 extern "C" {
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -349,6 +350,7 @@ static int check_romset(const char* game)
     if (total == 0) return 1;
     s_prog_total = total;
     printf("RS %s: %d ok / %d total (%d missing, %d bad size)\n", game, total - missing - bad, total, missing, bad);
+    emulog_field("ARC", "roms", "%d/%d ok (%d missing, %d bad)", total - missing - bad, total, missing, bad);
     return (missing || bad) ? 1 : 0;
 }
 
@@ -720,11 +722,15 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
 {
     (void)rom; (void)size;
     emu_prepare();
+    emulog_begin("ARC");
+    emulog_field("ARC", "sys", "%s", root);
+    emulog_field("ARC", "rom", "%s", rom_name ? rom_name : "?");
     // r1183: CPS1 пишет в FB_ADDR напрямую — двойная буферизация не участвует.
     fb_flip_set(0);
 
     if (!rom_name || !rom_name[0]) {
-        printf("CPS: no game name\n");
+        emulog_field("ARC", "init", "FAILED: no game name");
+        emulog_end("ARC");
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
@@ -758,6 +764,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_text_center("CPS-1: unknown game", 200, 2, 0x00FF4444);
         fb_text_center(game, 240, 2, 0x00FFFFFF);
         fb_flush();
+        emulog_field("ARC", "init", "FAILED: no driver");
+        emulog_end("ARC");
         emu_audio_stop();   /* r1278 */
         return;
     }
@@ -823,6 +831,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         fb_text_center("CPS: ROM set incomplete", 210, 2, 0x00FF4444);
         fb_text_center(game, 250, 2, 0x00FFFFFF);
         fb_flush();
+        emulog_field("ARC", "init", "FAILED: romset");
+        emulog_end("ARC");
         return;
     }
 
@@ -870,6 +880,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         /* r1278 (A-02): провал BurnDrvInit оставлял частично выделенные
            ресурсы и инициализированные чипы до следующего запуска. */
         BurnDrvExit();
+        emulog_field("ARC", "init", "FAILED: BurnDrvInit");
+        emulog_end("ARC");
         emu_audio_stop();
         return;
     }
@@ -919,6 +931,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
             emu_audio_stop();   /* r1278 */
             return;
         }
@@ -943,6 +957,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
             emu_audio_stop();   /* r1278 */
             return;
         }
@@ -966,6 +982,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             fb_text_center(game, 250, 2, 0x00FFFFFF);
             fb_flush();
             BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
             emu_audio_stop();   /* r1278 */
             return;
         }
@@ -989,17 +1007,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
 
-    printf("CPS: %s started (%s%s)\n", game,
-           g_zip_data ? "zip" : "folder",
-           g_zip_parent_data ? "+parent" : "");
-    // r0.385: манифест звуковых ядер сборки (звук НЕ задействован — только
-    // инвентаризация чипов для дальнейшего послойного подключения).
     printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=stub)\n",
            game);
-    // Отладочная строка для проверки ядер: платформа (корень) + короткое имя
-    // рома + название системы драйвера из FBNeo.
-    printf("EMU: SYS=%s ROM=%s HW=%s\n", root + 1, game,
-           BurnDrvGetTextA(DRV_SYSTEM));
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
     } else if (g_toa) {
@@ -1011,6 +1020,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
+
+    emulog_field("ARC", "video", "%dx%d", g_frame_w, g_frame_h);
+    emulog_field("ARC", "machine", "%s", BurnDrvGetTextA(DRV_SYSTEM));
+    emulog_field("ARC", "init", "OK");
 
     // r0.390 (Sega 16 «подтормаживает»): ядро тикает на частоте ДРАЙВЕРА
     // (nBurnFPS, напр. S16 59.6 Гц / CPS 60.00), а throttle стоял на общих
@@ -1052,6 +1065,7 @@ for (;;) {
     emu_period_us = saved_period;   // r0.390: вернуть общий период (60 Гц)
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("ARC");
 }
 
 // ---- обёртки для rom_browser (emu.h) ----

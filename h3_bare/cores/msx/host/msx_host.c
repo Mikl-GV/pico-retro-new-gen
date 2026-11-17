@@ -59,6 +59,7 @@ static char g_cart_name[48];   // r0.392: имя ROM для сообщений (
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "emulog.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
 
@@ -616,25 +617,25 @@ void msx_stop(void) {
     if (g_loaded) {
         TrashMSX();
         g_loaded = 0;
-        printf("MSX: stopped\n");
     }
 }
 
 // ---- точка входа из emu.c ----
 void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    if (rom_name && rom_name[0]) {
-        snprintf(g_cart_name, sizeof(g_cart_name), "%s", rom_name);
-    } else {
-        snprintf(g_cart_name, sizeof(g_cart_name), "MSX cart");
-    }
     emu_prepare();
+    emulog_begin("MSX");
+    emulog_field("MSX", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("msx", "psg ay8910 scc");
     memset(image_buffer, 0, sizeof(image_buffer));   // свой кадр-буфер не чистится emu_prepare
     if (!msx_init_game(rom, size)) {
         printf("MSX: init failed\n");
+        emulog_field("MSX", "init", "FAILED");
+        emulog_end("MSX");
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
+    emulog_field("MSX", "machine", "model=%d PAL", g_msx_model);
+    emulog_field("MSX", "init", "OK");
     emu_set_border_color(0x00000000);
     /* r0.210: MSX у нас PAL (YIS-503II, 50 Гц). emu_throttle гнал 60 Гц →
      * гость шёл 1.2× и «рывками» (смена кадров 50↔60). Держим 50 Гц. */
@@ -673,4 +674,5 @@ exit:
     msx_stop();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("MSX");
 }

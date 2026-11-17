@@ -234,8 +234,14 @@ extern "C" void pom2_h3_shutdown(void)
     if (g_cpu) { g_cpu->stop(); }
 
     g_disk = nullptr;               // владелец — SlotBus, он ниже
-    g_mem->slotBus().plug(6, nullptr);
-    g_mem->setSpeakerDevice(nullptr);
+    // Cold start: pom2_h3_boot() вызывает shutdown() первым же действием,
+    // чтобы освободить прошлую сессию, когда g_mem ещё никогда не был
+    // создан (статические нули). Без guard это было чтение метода через
+    // нулевой указатель — UB на bare-metal (мусор из SRAM, hard-fault).
+    if (g_mem) {
+        g_mem->slotBus().plug(6, nullptr);
+        g_mem->setSpeakerDevice(nullptr);
+    }
     g_speaker.reset();
 
     delete g_display; g_display = nullptr;

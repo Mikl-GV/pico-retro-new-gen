@@ -26,6 +26,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -338,6 +339,8 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     extern int g_core_log_min;
     emu_prepare();
+    emulog_begin("C64");
+    emulog_field("C64", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "game.d64") : "BIOS/BASIC", (unsigned)size);
     fb_flip_set(0);
     snd_manifest("c64", "sid");
 
@@ -407,12 +410,16 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!loaded) {
         printf("FRODO: load failed (core not built)\n");
+        emulog_field("C64", "init", "FAILED: load");
+        emulog_end("C64");
         frodo_retro_unload_game();
         frodo_retro_deinit();
         emu_audio_stop();
         return;
     }
     printf("FRODO: started (%s, %u bytes)\n", g_path[0] ? g_path : "BIOS/BASIC", (unsigned)size);
+    emulog_field("C64", "machine", "PAL C64 (SID)");
+    emulog_field("C64", "init", "OK");
 
     emu_set_border_color(0x00060812);
     emu_set_period_us(20000);   // 50 Гц PAL (C64)
@@ -450,4 +457,5 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
     frodo_retro_deinit();
     emu_audio_stop();
     fb_clear(); fb_flush();
+    emulog_end("C64");
 }

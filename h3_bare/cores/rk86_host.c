@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "emu.h"
+#include "emulog.h"
 #include "fb_text.h"
 #include "usb_kbd.h"
 #include "btn_pad.h"
@@ -137,6 +138,8 @@ static void rk86_input_update(uint8_t* prev, int* prev_n, int* rus, int* caps_pr
 void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    emulog_begin("RK86");
+    emulog_field("RK86", "rom", "%s, %u B", rom_name ? rom_name : "monitor", (unsigned)size);
     fb_flip_set(0);
     snd_manifest("rk86", "none");
 
@@ -158,6 +161,9 @@ void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name)
         printf("RK86: \"%s\" size=%d (ROM/monitor)\n",
                rom_name ? rom_name : "monitor", (int)size);
     }
+    emulog_field("RK86", "video", "768x300 (VGT-71)");
+    emulog_field("RK86", "machine", "KR580VM80A");
+    emulog_field("RK86", "init", "OK");
 
     emu_set_border_color(0x00000000);
     emu_set_period_us(RK86_FRAME_US);
@@ -188,4 +194,5 @@ void emu_run_rk86(const uint8_t* rom, uint32_t size, const char* rom_name)
     emu_audio_stop();
     fb_clear();
     fb_flush();
+    emulog_end("RK86");
 }

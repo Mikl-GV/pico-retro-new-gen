@@ -21,6 +21,7 @@
 #include "libretro_inc/libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -190,10 +191,14 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    emulog_begin("PCE");
+    emulog_field("PCE", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("pce", "psg");
 
     if (!rom || size == 0 || size > 4096u * 1024u) {
         printf("PCE: no rom\n");
+        emulog_field("PCE", "init", "FAILED: no/bad rom");
+        emulog_end("PCE");
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
@@ -220,11 +225,16 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!retro_load_game(&info)) {
         printf("PCE: load failed\n");
+        emulog_field("PCE", "init", "FAILED: load");
+        emulog_end("PCE");
         retro_deinit();
         emu_audio_stop();   /* r1278 */
         return;
     }
     printf("PCE: started (%u bytes)\n", (unsigned)size);
+    emulog_field("PCE", "video", "%dx%d", PCE_SCALE_W, PCE_SCALE_H);
+    emulog_field("PCE", "machine", "HuC6280 PC-Engine");
+    emulog_field("PCE", "init", "OK");
     i2s_dc_shift_set(6);   // r942: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
 
     emu_set_border_color(0x000A0F18);   // тёмно-синий (PCE)
@@ -243,4 +253,5 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
     retro_deinit();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("PCE");
 }

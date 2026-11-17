@@ -27,6 +27,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "fb_text.h"
 #include "h3.h"
 #include "h3_hs_timer.h"
@@ -396,6 +397,9 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
     g_emu_keep_sbrk = 0;   // sbrk можно сбрасывать (ядро не держит кучи)
 
     emu_prepare();          // gb_heap_reset + i2s_ring_reset + период 16667
+    emulog_begin("Amiga");
+    emulog_field("Amiga", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "df0") : "wb13.adf", (unsigned)size);
+    snd_manifest("amiga", "paula");
 
     // --- регистрация колбэков libretro ДО инициализации ядра ---
     u4a_retro_set_environment(u4a_environment);
@@ -445,6 +449,9 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
         printf("Amiga: UAE4All init ('%s')\n", path);
         u4a_retro_load_game(&gi);
     }
+    emulog_field("Amiga", "video", "720x576");
+    emulog_field("Amiga", "machine", "A500 OCS/Kickstart 1.3, PAL");
+    emulog_field("Amiga", "init", "OK");
 
     // --- кадровый цикл: retro_run (внутри: PollEvent -> m68k_go -> video) ---
     emu_throttle_reset();
@@ -476,6 +483,7 @@ exit:
     emu_audio_stop();
     fb_clear();
     fb_flush();
+    emulog_end("Amiga");
 }
 
 // ---- Workbench 1.3 (вшитый системный диск) ----

@@ -315,6 +315,11 @@ void i2s_dc_bypass(int on) {
     __asm volatile("dsb" ::: "memory");
 }
 
+// r1410: состояние DC-тракта для лога инициализации (emu_prepare печатает
+// сводку железа). Геттер отдельный от set — эмуляторы задают, emu.c читает.
+int i2s_dc_shift(void) { return (int)s_dc_shift; }
+int i2s_dc_is_bypassed(void) { return (int)s_dc_bypass; }
+
 // ---- Ring: продюсер (core0) ----
 // r942 (аудит r918, P1): бэкпрессура. Продюсер (host) за кадр пушит пачку без
 // учёта темпа CPU2; если средний темп чуть выше 48000 пар/с, ring накапливается

@@ -26,6 +26,7 @@ extern "C" {
 #include "usb_kbd.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "emulog.h"
 #include "cheatdb.h"
 #include "cheat.h"
 #include "sega_pad.h"
@@ -331,13 +332,19 @@ extern "C" void nes_audio_report(void) {
 
 // ---- точка входа emu.c (совместима со старым emu_run_nes) ----
 extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
     emu_prepare();
+    emulog_begin("NES");
+    emulog_field("NES", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("nes", "apu 2a03");
     if (fceumm_init_game(rom, size) != 1) {
         printf("NES(FCEUmm): init failed\n");
+        emulog_field("NES", "init", "FAILED");
+        emulog_end("NES");
         return;
     }
+    emulog_field("NES", "video", "256x240");
+    emulog_field("NES", "machine", "%s", FSettings.PAL ? "PAL/Dendy" : "NTSC");
+    emulog_field("NES", "init", "OK");
     emu_set_border_color(0x00140612);   // тёмно-бордовый (Dendy/NES)
     // r1182: fceumm сам разбирает iNES/NES2.0 и зовёт FCEUI_SetVidSystem
     // (ines.c:1441) — регион лежит в FSettings.PAL. Раньше throttle всегда
@@ -361,4 +368,5 @@ exit:
     emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
                         // выхода (доезды/«звук ниоткуда»).
     fb_clear(); fb_flush();
+    emulog_end("NES");
 }

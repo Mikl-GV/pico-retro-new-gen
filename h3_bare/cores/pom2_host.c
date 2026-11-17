@@ -12,6 +12,7 @@
 
 #include "btn_pad.h"
 #include "emu.h"
+#include "emulog.h"
 #include "fb_text.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
@@ -77,8 +78,12 @@ void emu_run_apple2_pom2(const uint8_t* disk, uint32_t disk_size,
 	   запуск терял несколько МБ и на пятом `new Memory()` падал в аборт),
 	   сбрасывает кольцо I2S и состояние ESC. */
 	emu_prepare();
-
 	const int iie = s_apple2_model;
+	emulog_begin(iie ? "A2E" : "A2P");
+	emulog_field(iie ? "A2E" : "A2P", "rom",
+	             "%s, %u B", (disk && disk_size) ? (name ? name : "?") : "BASIC",
+	             (unsigned)disk_size);
+
 	const uint8_t* rom = iie ? pom2_rom_apple2e : agat_rom_apple2p;
 	const unsigned rom_size = iie ? APPLE2E_ROM_SIZE : APPLE2P_ROM_SIZE;
 
@@ -93,8 +98,13 @@ void emu_run_apple2_pom2(const uint8_t* disk, uint32_t disk_size,
 		printf("pom2: boot failed rc=%d model=%d rom=%u disk=%u name=%s\n",
 		       rc, iie, rom_size, (unsigned)disk_size,
 		       name ? name : "-");
+		emulog_field(iie ? "A2E" : "A2P", "init", "FAILED: boot");
+		emulog_end(iie ? "A2E" : "A2P");
 		return;
 	}
+	emulog_field(iie ? "A2E" : "A2P", "video", "280x192");
+	emulog_field(iie ? "A2E" : "A2P", "machine", "%s", iie ? "Apple IIe (65C02)" : "Apple II+ (6502)");
+	emulog_field(iie ? "A2E" : "A2P", "init", "OK");
 
 	emu_esc_hold_reset();
 	s_codes_n = 0;
@@ -175,4 +185,5 @@ void emu_run_apple2_pom2(const uint8_t* disk, uint32_t disk_size,
 	emu_audio_stop();
 	fb_clear();
 	fb_flush();
+	emulog_end(iie ? "A2E" : "A2P");
 }

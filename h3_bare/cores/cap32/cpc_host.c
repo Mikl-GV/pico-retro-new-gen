@@ -22,6 +22,7 @@
 #include "libretro.h"
 
 #include "emu.h"
+#include "emulog.h"
 #include "usb_kbd.h"
 #include "sega_pad.h"
 #include "btn_pad.h"
@@ -374,6 +375,8 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
     // выхода; следующий запуск Atari 800 падал «Fatal error: out of memory»
     // (Util_malloc → malloc NULL), хотя файл читался нормально.
     emu_prepare();
+    emulog_begin("CPC");
+    emulog_field("CPC", "rom", "%s, %u B", (rom && size) ? (rom_name ? rom_name : "game.dsk") : "BIOS/BASIC", (unsigned)size);
     snd_manifest("cpc", "ay-3-8912");
 
     // BASIC/ROM: rom==NULL -> вшитый BIOS + BASIC (нет файла).
@@ -408,11 +411,15 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     if (!cpc_retro_load_game(&info)) {
         printf("CPC: load failed\n");
+        emulog_field("CPC", "init", "FAILED: load");
+        emulog_end("CPC");
         cpc_retro_deinit();
         emu_audio_stop();   /* r1278: emu_prepare уже включил кольцо/замер */
         return;
     }
     printf("CPC: started (%s, %u bytes)\n", g_path[0] ? g_path : "BIOS/BASIC", (unsigned)size);
+    emulog_field("CPC", "machine", "CPC 6128, PAL");
+    emulog_field("CPC", "init", "OK");
 
     // r970: aspect_ratio ядра (cap32 задаёт 24/17) — по нему считается ширина
     // картинки. Без этого кадр 768x272 растягивался по горизонтали.
@@ -443,4 +450,5 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
     cpc_retro_deinit();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
+    emulog_end("CPC");
 }

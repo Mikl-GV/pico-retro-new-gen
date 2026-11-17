@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "emu.h"
+#include "emulog.h"
 #include "fb_text.h"
 #include "usb_kbd.h"
 #include "btn_pad.h"
@@ -354,6 +355,10 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	uint32_t frame_us = apple2 ? APPLE2_FRAME_US : AGAT_FRAME_US;
 
 	emu_prepare();
+	emulog_begin(apple2 ? "A2" : "AGAT");
+	emulog_field(apple2 ? "A2" : "AGAT", "rom",
+	             "%s, %u B", (rom && size) ? (rom_name ? rom_name : "?") : "BAKED/BASIC",
+	             (unsigned)size);
 	snd_manifest(label, "beeper");
 
 	agat_reset_config(&cfg, systype);
@@ -512,7 +517,8 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	}
 	sr = agat_init_system_state(&cfg, NULL, label);
 	if (!sr) {
-		printf("%s: init failed\n", label);
+		emulog_field(apple2 ? "A2" : "AGAT", "init", "FAILED");
+		emulog_end(apple2 ? "A2" : "AGAT");
 		return;
 	}
 
@@ -520,6 +526,8 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	vs = get_video_state(sr);
 	if (!cs || !vs) {
 		printf("%s: cpu/video state missing\n", label);
+		emulog_field(apple2 ? "A2" : "AGAT", "init", "FAILED: cpu/video");
+		emulog_end(apple2 ? "A2" : "AGAT");
 		agat_free_system_state(sr);
 		return;
 	}
@@ -557,7 +565,9 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	/* r1340: канарейка за образом ПЗУ — только при ошибке (переполнение
 	   буфера ПЗУ ломало загрузку молча). */
 	if (agat_rom_canary_bad() > 0) printf("%s: ROM canary BAD\n", label);
-	printf("%s: init ok\n", label);
+	emulog_field(apple2 ? "A2" : "AGAT", "video", "%dx%d", AGAT_FRAME_W, AGAT_FRAME_H);
+	emulog_field(apple2 ? "A2" : "AGAT", "machine", "%s", apple2 ? "Apple II+ (6502)" : "Agat-9 (580ВМ80А)");
+	emulog_field(apple2 ? "A2" : "AGAT", "init", "OK");
 
 	g_disk_sr = sr;
 	g_disk_drives = apple2 ? 2 : 1;
@@ -609,6 +619,7 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	emu_audio_stop();
 	fb_clear();
 	fb_flush();
+	emulog_end(apple2 ? "A2" : "AGAT");
 }
 
 void emu_run_agat(const uint8_t* rom, uint32_t size, const char* rom_name)

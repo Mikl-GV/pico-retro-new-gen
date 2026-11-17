@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include "emu.h"
+#include "emulog.h"
 #include "fat.h"
 #include "fb_text.h"
 #include "usb_kbd.h"
@@ -254,6 +255,8 @@ static int swap_run(void)
                     return 0;
                 }
                 if (g_ops->insert(drive, path, dst, f.size, name) == 0) {
+                    emulog_field("DISK", "swap", "insert drv%d '%s' %u B",
+                                 drive, name, (unsigned)f.size);
                     msg_wait(name);
                     return 1;
                 }
@@ -261,6 +264,8 @@ static int swap_run(void)
                 return 0;
             }
             if (g_ops->insert(drive, path, 0, 0, name) == 0) {
+                emulog_field("DISK", "swap", "insert drv%d '%s' (mem)",
+                             drive, name);
                 msg_wait(name);
                 return 1;
             }

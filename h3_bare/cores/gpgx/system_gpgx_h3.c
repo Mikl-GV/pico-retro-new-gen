@@ -27,6 +27,7 @@
 #include "remap.h"
 #include "fb_text.h"
 #include "emu.h"
+#include "emulog.h"
 #include "cheatdb.h"
 #include "gp_cheats.h"
 #include "i2s.h"
@@ -359,12 +360,17 @@ void gpgx_stop(void) {
     extern void audio_shutdown(void);
     audio_shutdown();
     g_loaded = 0;
-    printf("GPGX: stopped\n");
 }
 
 // r1180: регион для раннера SMS (emu.c) — vdp_pal выставляется gpgx по
 // заголовку картриджа (core/loadrom.c:1161), снаружи поля не видно.
 int gpgx_pal(void) { return vdp_pal ? 1 : 0; }
+
+// r1410: эффективный viewport ядра на последнем кадре (GG: 160x144 при
+// gg_extra=0). Берётся до emu_scale-обрезки — то, что игра реально рисует
+// внутри растра.
+int gpgx_viewport_w(void) { return g_vp_w; }
+int gpgx_viewport_h(void) { return g_vp_h; }
 
 // r1350: точный период кадра для throttle. С r1346 звук синтезируется по
 // реальному региональному mclk (audio_init(48000, 0) → system_clock), поэтому
@@ -389,13 +395,19 @@ uint32_t gpgx_frame_us_q16(void) {
 
 // ---- точка входа emu.c для Sega Mega Drive ----
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) {
-    (void)rom_name;
     emu_prepare();
+    emulog_begin("MD");
+    emulog_field("MD", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("megadrive", "ym2612 sn76496");
     if (gpgx_init_game(rom, size) != 1) {
         printf("GPGX: init failed\n");
+        emulog_field("MD", "init", "FAILED");
+        emulog_end("MD");
         return;
     }
+    emulog_field("MD", "video", "%dx%d", g_vp_w > 0 ? g_vp_w : 320, g_vp_h > 0 ? g_vp_h : 224);
+    emulog_field("MD", "machine", vdp_pal ? "PAL" : "NTSC");
+    emulog_field("MD", "init", "OK");
     emu_set_border_color(0x000B1618);   // темно-синий (Mega Drive)
     // r1179: регион — из заголовка ROM. gpgx сам выставляет vdp_pal
     // (core/loadrom.c:1161, бит PAL в регионе), но throttle раньше всегда
@@ -417,6 +429,7 @@ exit:
     emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
                         // выхода (доезды/«звук ниоткуда»).
     fb_clear(); fb_flush();
+    emulog_end("MD");
 }
 
 // ---- интерфейс для emu.c: SMS через GPGX (замена smsplus) ----
