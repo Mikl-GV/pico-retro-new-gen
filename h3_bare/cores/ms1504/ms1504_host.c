@@ -404,14 +404,15 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
     reset86();
     printf("MS1504: cpu reset (4.77 МГц КР1834ВМ86), boot\n");
 
-    // r1027: монтируем вшитый загрузочный диск (mc1504BOOT.IMA, 720 КБ)
-    // как A: — BIOS PK300 на INT 19h грузит с него МС1504-DOS (TBIOS/SYSTDOS)
-    // вместо «Non-System disk»/зависания. hostfs (ms1504_shim.c) отдаёт
-    // образ из ROM-массива (readonly). bootdrive=0 → fake86 INT19h-путь.
+    // r1027: монтируем загрузочный диск (mc1504BOOT.IMA) как A: и как привод 1.
+    // Если rom_browser собрал игровой образ (m15_build_floppy/hdd), hostfs
+    // отдаёт уже собранную дискету; иначе — вшитый системный. Для больших
+    // игр (m15_build_hdd) дополнительно монтируем HDD (диск 0x80) с игрой.
     // (имена с m15_: глобалы fake86-набора после rename-скрипта)
     extern uint8_t m15_insertdisk(uint8_t, const char*);
     extern uint8_t m15_bootdrive;
     extern const unsigned int  ms1504_boot_ima_len;
+    extern uint8_t m15_hdd_present(void);   // есть ли активный HDD-образ
     // r1028: загрузчик МС1504 (0x7C71-0x7C7A) определяет привод по BPB-типу
     // из BDA[0x43F] (ищет установленный бит; для типа 1 получает DL=1) и
     // читает диск с DL=1. Без инициализации [0x43F]=0 загрузчик висит в
@@ -428,6 +429,16 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
         printf("MS1504: boot disk A: inserted (mc1504BOOT.IMA, %u Б)\n",
                (unsigned)ms1504_boot_ima_len);
     }
+    /* Большая игра: диск 0x80 (HDD) с игрой. fake86 insertdisk(0x80, ...)
+       строит CHS-геометрию; наш HDD-образ 4 МБ даст 8×16×63. Имя фиксированное,
+       shim (ms1504_shim.c) отдаёт по нему g_ms1504_hdd_img. */
+    if (m15_hdd_present()) {
+        if (m15_insertdisk(0x80, "MS1504HDD.IMA")) {
+            printf("MS1504: WARNING: HDD (unit 0x80) not inserted\n");
+        } else {
+            printf("MS1504: HDD C: (0x80) inserted (MS1504HDD.IMA, 4 МБ)\n");
+        }
+    }
     return 1;
 }
 
@@ -440,7 +451,6 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
         extern void m15_tick_audio(int n);
         extern int8_t m15_audbuf[96000];
         extern int32_t m15_audbufptr;
-        static uint32_t rs_phase = 0;
         m15_tick_audio(735);   // 44100/60 ≈ 735 сэмплов за кадр
         int n = m15_audbufptr;
         if (n > 2048) n = 2048;
@@ -452,9 +462,9 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
            rs44fs_mono (непрерывная фаза между кадрами) */
         {
             static uint32_t rs_phase = 0;
-            static int16_t  rs_tail = 0;
+            static int16_t  rs_hist[RS44_HIST] = { 0 };   // RS44_HIST моно-сэмплов прошлых кадров
             static int16_t  st[2048 * 2];
-            uint32_t o = rs44fs_mono(&rs_phase, &rs_tail, out, (uint32_t)n, st, 2048);
+            uint32_t o = rs44fs_mono(&rs_phase, rs_hist, out, (uint32_t)n, st, 2048);
             if (o) i2s_push_block(st, o);
         }
         m15_audbufptr = 0;

@@ -149,33 +149,71 @@ void timing ( void )
     }
 }
 
-/* ---- hostfs: диск A: = вшитый загрузочный образ mc1504BOOT.IMA ---- */
-int hostfs_was_fallback_mode = 1;   /* диск только для чтения */
+/* ---- hostfs: диски МС1504 ----
+ * Обычный путь — вшитый загрузочный образ mc1504BOOT.IMA (системная дискета
+ * MS-DOS, 720К). Когда host собрал игровой образ (ms1504_build.c) — длина/
+ * содержимое переключаются на активный RAM-образ (дискета A: или HDD C:),
+ * а имя «mc1504BOOT.IMA» продолжает открываться и отдаёт уже собранный диск.
+ * Единый шлюз read/seek поверх активного буфера. */
+int hostfs_was_fallback_mode = 1;   /* диски только для чтения */
 
 /* i8259.c ссылается на keyboardwaitack (был в input.c — у нас без SDL) */
 uint8_t keyboardwaitack = 0;
 
-struct hh_file { int64_t pos; };
+/* Дескриптор hostfs-файла: каждый дескриптор хранит указатель на конкретный
+ * образ (флоппи или HDD) и его длину — чтобы диск A: и диск C: (0x80) могли
+ * быть смонтированы одновременно и отдавать разные данные. */
+struct hh_file { int64_t pos; const uint8_t* base; uint32_t len; };
 
 /* Вшитый загрузочный диск (см. ms1504_boot_ima.c, генерится из /MS1504) */
 extern const unsigned char ms1504_boot_ima[];
 extern const unsigned int  ms1504_boot_ima_len;
+
+/* Активный собранный флоппи-образ (ms1504_build.c). По умолчанию пуст →
+ * hostfs отдаёт вшитый. Имя открываемого флоппи всегда одно (mc1504BOOT.IMA). */
+const uint8_t* g_ms1504_active_img   = 0;
+uint32_t       g_ms1504_active_img_len = 0;
 static const char* const g_boot_path = "mc1504BOOT.IMA";
+
+/* Активный HDD-образ (диск 0x80) — только для больших игр (ms1504_build.c).
+ * Имя HDD-файла — MS1504HDD.IMA (fake86 insertdisk(0x80, ...)). */
+extern const uint8_t* g_ms1504_hdd_img;
+extern uint32_t       g_ms1504_hdd_img_len;
+static const char* const g_hdd_path = "MS1504HDD.IMA";
 
 int hostfs_init ( void ) { return 0; }
 
+/* Разрешить имя файла в каталог-образ (base,len). Возвращает 0, если файла
+ * нет. Имена от вставки дисков host передаёт те же, что заданы здесь. */
+static int fs_resolve(const char* fn, const uint8_t** base, uint32_t* len)
+{
+    if (!fn) return 0;
+    size_t l = strlen(fn);
+    /* HDD-образ первым (фиксированное имя). */
+    size_t hl = strlen(g_hdd_path);
+    if (l >= hl && strcmp(fn + (l - hl), g_hdd_path) == 0) {
+        if (g_ms1504_hdd_img && g_ms1504_hdd_img_len) {
+            *base = g_ms1504_hdd_img; *len = g_ms1504_hdd_img_len;
+            return 1;
+        }
+        return 0;   /* HDD не собран — файла нет */
+    }
+    /* Флоппи: вшитый или перекрытый собранным. */
+    size_t bl = strlen(g_boot_path);
+    if (l < bl) return 0;
+    if (strcmp(fn + (l - bl), g_boot_path)) return 0;
+    *base = g_ms1504_active_img ? g_ms1504_active_img : ms1504_boot_ima;
+    *len  = g_ms1504_active_img ? g_ms1504_active_img_len : ms1504_boot_ima_len;
+    return 1;
+}
+
 static HOSTFS_FILE* fs_find(const char* fn)
 {
-    /* hostfs_open приходит из insertdisk(0, ...) с именем файла,
-       которое host передал при вставке; сравниваем по концу пути. */
-    if (!fn) return 0;
-    size_t l = strlen(fn), bl = strlen(g_boot_path);
-    if (l < bl) return 0;
-    const char* tail = fn + (l - bl);
-    if (strcmp(tail, g_boot_path)) return 0;
+    const uint8_t* base; uint32_t len;
+    if (!fs_resolve(fn, &base, &len)) return 0;
     HOSTFS_FILE* f = (HOSTFS_FILE*)malloc(sizeof(struct hh_file));
     if (!f) return 0;
-    f->pos = 0;
+    f->pos = 0; f->base = base; f->len = len;
     return f;
 }
 
@@ -190,10 +228,10 @@ size_t ms1504_hfs_read  ( HOSTFS_FILE *f, void *p, size_t size, size_t nmemb )
 {
     if (!f) return 0;
     uint64_t want = (uint64_t)size * nmemb;
-    if ((uint64_t)f->pos >= ms1504_boot_ima_len) return 0;
-    if (want > ms1504_boot_ima_len - (uint64_t)f->pos)
-        want = ms1504_boot_ima_len - (uint64_t)f->pos;
-    memcpy(p, ms1504_boot_ima + f->pos, (size_t)want);
+    if ((uint64_t)f->pos >= f->len) return 0;
+    if (want > (uint64_t)f->len - (uint64_t)f->pos)
+        want = (uint64_t)f->len - (uint64_t)f->pos;
+    memcpy(p, f->base + f->pos, (size_t)want);
     f->pos += (int64_t)want;
     return (size_t)(want / (size ? size : 1));
 }
@@ -201,14 +239,14 @@ size_t ms1504_hfs_write ( HOSTFS_FILE *f, const void *p, size_t size, size_t nme
 { (void)f; (void)p; (void)size; (void)nmemb; return 0; }   /* диск RO */
 int    ms1504_hfs_close ( HOSTFS_FILE *f ) { if (f) free(f); return 0; }
 int64_t ms1504_hfs_size ( HOSTFS_FILE *f )
-{ (void)f; return ms1504_boot_ima_len; }
+{ (void)f; return f ? f->len : 0; }
 int64_t ms1504_hfs_seek ( HOSTFS_FILE *f, int64_t offset, int whence )
 {
     if (!f) return -1;
     switch (whence) {
     case 0: f->pos = offset; break;
     case 1: f->pos += offset; break;
-    case 2: f->pos = ms1504_boot_ima_len + offset; break;
+    case 2: f->pos = (int64_t)f->len + offset; break;
     }
     return f->pos;
 }

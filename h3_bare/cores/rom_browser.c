@@ -427,7 +427,8 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     // Enterprise папка — это игра, показываем её как файл без '/'.
                     int is_dir = (list[i].attr & 0x10) ? 1 : 0;
                     int slash = is_dir && !is_arcade_sys(sys_id) &&
-                                strcmp(sys_id, "enterprise") != 0;
+                                strcmp(sys_id, "enterprise") != 0 &&
+                                strcmp(sys_id, "ms1504") != 0;
                     if (len > (54 - (slash ? 1 : 0))) len = 54 - (slash ? 1 : 0);
                     memcpy(buf, list[i].name, len);
                     if (slash) buf[len++] = '/';
@@ -493,8 +494,9 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                 int is_dir = (list[cursor].attr & 0x10) ? 1 : 0;
                 int is_arc = is_arcade_sys(sys_id);
                 int is_ep = (strcmp(sys_id, "enterprise") == 0);
+                int is_ms = (strcmp(sys_id, "ms1504") == 0);   // папка = игра
 
-                // Аркада: Enter на папке = запуск игры (host читает папку/zip).
+                // Arkada: Enter на папке = запуск игры (host читает папку/zip).
                 if (is_dir && is_arc) {
                     cheats_reset();
                     emu_clear_fb();
@@ -520,6 +522,28 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     }
                     // Нет главного файла — ниже войдём в каталог как раньше
                     // (доступ к коллекциям не теряем); sel_name уже скопирован.
+                }
+
+                // МС1504: папка = игра. Собираем игровой образ (дискета FAT12 или HDD
+                // FAT16 0x80 для больших игр) и запускаем с вшитой BIOS PK300.
+                if (is_dir && is_ms) {
+                    char dirpath[256];
+                    char main_name[FAT_NAME_LEN];
+                    snprintf(dirpath, sizeof(dirpath), "%s/%s", path, sel_name);
+                    if (m15_find_main(dirpath, sel_name, main_name,
+                                      (int)sizeof(main_name)) == 0) {
+                        int built = m15_build_floppy(dirpath, main_name);
+                        if (built != 0) built = m15_build_hdd(dirpath, main_name);
+                        if (built == 0) {
+                            cheats_reset();
+                            emu_clear_fb();
+                            /* rom=NULL: вшитая BIOS PK300, образы дисков
+                             * активны (host смонтирует A:/C:). */
+                            run_emulator(sys_id, NULL, 0, main_name);
+                            goto reload_list;
+                        }
+                    }
+                    // Ошибка сборки — ниже войдём в каталог (как раньше).
                 }
 
                 // Enter на каталоге — входим в него (обновляем path)

@@ -495,6 +495,7 @@ MS1504_INC := -I$(MS1504)/fake86_src -I$(MS1504)
 MS1504_CFLAGS := $(CFLAGS) $(MS1504_INC)
 MS1504_BONES  := cpu bios i8237 i8253 i8259 video ports disk bindata sermouse com shim host bios_data boot_ima font_comb
 OBJ += $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES)))
+OBJ += $(BUILD)/ms1504_build.o
 
 $(BUILD)/ms1504_%.o: $(MS1504)/fake86_src/%.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
@@ -510,11 +511,13 @@ $(BUILD)/ms1504_font_comb.o: $(MS1504)/ms1504_font_comb.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
 $(BUILD)/ms1504_host.o: $(MS1504)/ms1504_host.c | $(BUILD)
 	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
+$(BUILD)/ms1504_build.o: $(MS1504)/ms1504_build.c | $(BUILD)
+	$(CC) $(MS1504_CFLAGS) $(INCLUDES) -c -o $@ $<
 # После сборки ВСЕХ объектов набора один батч-переименователь добавляет
 # префикс m15_ ко всем глобальным символам (согласованно: определения И
 # ссылки во всех объектах). Снимает коллизии с другими ядрами
 # (--allow-multiple-definition), напр. timing из BK.
-MS1504_OBJS := $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES)))
+MS1504_OBJS := $(addprefix $(BUILD)/ms1504_,$(addsuffix .o,$(MS1504_BONES))) $(BUILD)/ms1504_build.o
 $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 	$(TOP)h3_bare/cores/ms1504_rename.sh $(MS1504_OBJS)
 	touch $@

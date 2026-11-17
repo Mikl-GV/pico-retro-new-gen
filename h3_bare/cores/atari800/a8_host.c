@@ -190,9 +190,9 @@ static size_t host_audio_sample_batch(const int16_t* data, size_t frames)
 {
     if (!data || frames == 0) return frames;
     static uint32_t rs_phase = 0;
-    static int16_t  rs_tail[2] = { 0, 0 };
+    static int16_t  rs_hist[RS44_HIST * 2] = { 0 };   // RS44_HIST пар прошлых кадров
     static int16_t  out[2048 * 2];
-    uint32_t o = rs44fs_stereo(&rs_phase, rs_tail, data, (uint32_t)frames, out, 2048);
+    uint32_t o = rs44fs_stereo(&rs_phase, rs_hist, data, (uint32_t)frames, out, 2048);
     if (o) i2s_push_block(out, o);
     return frames;
 }
