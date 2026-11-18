@@ -1413,3 +1413,53 @@ int fat_read_file(const fat_entry_t* f, uint32_t offset, uint8_t* buf, uint32_t 
     int r = read_chain(f->first_cluster, offset, buf, len);
     return (r == (int)len) ? r : -1;
 }
+
+// r1425/r1430: потоковое чтение с сохранением кластера (как f_lseek+f_read FATFS).
+// Возвращено после отката r1427: без него HDD-сектор читался от первого кластера
+// и BIOS/DOS не успевал к тику таймера (Divide overflow у LTEMM).
+void fat_stream_init(fat_stream_t* s, const fat_entry_t* f) {
+    s->f = f;
+    s->cl = f ? f->first_cluster : 0;
+    s->cl_off = 0;
+}
+
+int fat_stream_read(fat_stream_t* s, uint32_t offset, uint8_t* buf, uint32_t len) {
+    if (!s || !s->f || s->f->size == 0 || offset >= s->f->size) return 0;
+    if (offset + len > s->f->size) len = s->f->size - offset;
+    if (g_sec_per_cluster == 0) return -1;
+    const uint32_t cl_size = g_sec_per_cluster * 512u;
+    // r1444: назад — только от первого кластера (FAT не ходит назад), вперёд —
+    // шаг от ТЕКУЩЕГО кластера. Раньше на каждой границе кластера цепочка
+    // пересобиралась с нуля: для 268-МБ образа это O(n^2) по секторам FAT,
+    // чтение сектора занимало секунды и DOS получал Divide overflow по тику.
+    if (offset < s->cl_off) {
+        s->cl = s->f->first_cluster;
+        s->cl_off = 0;
+    }
+    {
+        uint32_t guard = 0, clim = chain_guard_limit();
+        while (s->cl_off + cl_size <= offset) {
+            if (s->cl < 2 || s->cl >= 0x0FFFFFF8 || guard++ >= clim) return -1;
+            s->cl = fat_next_cluster(s->cl);
+            s->cl_off += cl_size;
+        }
+    }
+    uint32_t done = 0;
+    while (done < len) {
+        if (s->cl < 2 || s->cl >= 0x0FFFFFF8) break;
+        uint32_t in_cl = offset + done - s->cl_off;
+        if (in_cl >= cl_size) {
+            s->cl = fat_next_cluster(s->cl);
+            s->cl_off += cl_size;
+            continue;
+        }
+        const uint32_t sec = cluster_to_sector(s->cl) + in_cl / 512u;
+        const uint32_t in_sec = in_cl % 512u;
+        uint32_t n = 512u - in_sec;
+        if (n > len - done) n = len - done;
+        if (blk_read(sec, g_sector) < 0) break;
+        memcpy(buf + done, g_sector + in_sec, n);
+        done += n;
+    }
+    return (done == len) ? (int)done : -1;
+}

@@ -81,9 +81,15 @@ int32_t m15_audbufptr;
 void m15_tick_audio(int n) {
     /* заполнить n сэмплов квадратом по текущей частоте (44100 Гц) */
     extern struct i8253_s i8253;
+    extern uint8_t portram[0x10000];
     uint16_t div = (uint16_t)(i8253.chandata[2] ? i8253.chandata[2] : 1);
+    // r1413: GATE2 (порт 0x61 бит 0) выключает тактирование канала 2 —
+    // на реальном PC OUT2 остаётся высоким и тона нет. Раньше бит игнорировался
+    // и спикер продолжал пищать при выключенном канале.
+    const int gate = (portram[0x61] & 1) != 0;
     if (n > 96000) n = 96000;
     for (int i = 0; i < n; i++) {
+        if (!gate) { m15_audbuf[i] = 0; continue; }
         speaker_acc += div;
         if (speaker_acc >= 1193182) {
             speaker_acc -= 1193182;

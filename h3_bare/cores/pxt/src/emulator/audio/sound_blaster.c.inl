@@ -127,6 +127,12 @@ static INLINE uint8_t blaster_read_buffer() {
 
 INLINE void blaster_reset() {
     memset(&sound_blaster, 0, sizeof(sound_blaster_s));
+    // r1413: состояние вне структуры (time constant и микшер) не должно
+    // переживать выход из игры — иначе второй запуск стартует с чужим темпом
+    // DMA и чужими громкостями.
+    timeconst = 22;
+    mixer_index = 0;
+    memcpy(mixer_registers, mixer_defaults, sizeof(mixer_registers));
     blaster_write_buffer(0xAA);
 }
 

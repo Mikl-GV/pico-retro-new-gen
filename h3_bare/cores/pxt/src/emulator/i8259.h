@@ -14,6 +14,18 @@ typedef struct {
 
 extern i8259_s i8259;
 
+// r1413: полный сброс PIC между сессиями. Раньше второй запуск наследовал
+// маску/ISR/ICW-шаг прошлой игры и мог не получать IRQ0/IRQ1.
+static inline void i8259_reset(void) {
+    i8259.interrupt_mask_register = 0xFF;
+    i8259.interrupt_request_register = 0;
+    i8259.in_service_register = 0;
+    i8259.initialization_command_word_step = 0;
+    i8259.initialization_command_words_1 = 0;
+    i8259.interrupt_vector_offset = 0x08;
+    i8259.register_read_mode = 0;
+}
+
 static inline uint8_t i8259_read(const uint16_t port_number) {
     switch (port_number) {
         case 0x20:

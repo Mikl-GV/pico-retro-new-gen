@@ -529,7 +529,8 @@ $(BUILD)/ms1504_renamed.stamp: $(MS1504_OBJS)
 # отключён (emu8950 не портирован). Host — pxt_host.c. Сборка локально под H3.
 PXT := $(TOP)h3_bare/cores/pxt
 PXT_INC := -I$(PXT)/src -I$(PXT)/src/printf -I$(PXT)/src/emu8950
-PXT_CFLAGS := $(CFLAGS) -DPICO_ON_DEVICE=0 -DH3_BARE_METAL $(PXT_INC)
+PXT_CFLAGS := $(CFLAGS) -DPICO_ON_DEVICE=0 -DH3_BARE_METAL $(PXT_INC) \
+              -fno-strict-aliasing -fwrapv
 # объекты ядра (C) + видео + host; rename батчем pxt_*.
 # printf_ (printf4/mpaland) — ядро x86 ссылается на printf_, сборка не имеет
 # его (проект использует свой h3_bare/src/printf.c). Компилируем отдельно.
@@ -1255,6 +1256,9 @@ OBJ += $(PICO_OBJ)
 # literal pools/адреса .text и на стенде совпала с отказом USB-энумерации
 # (r1376/r1377). Новый объект в конце не сдвигает существующие адреса.
 OBJ += $(BUILD)/apple2_dialog.o
+# r1427: меню PC/XT-286 — тоже в конец: вставка в main.c сдвигала .text и
+# ломала USB-клавиатуру (как r1378 для Apple II).
+OBJ += $(BUILD)/pxt_dialog.o
 # r1388: слой Apple II на ядре POM2. Объект добавляется В КОНЕЦ списка:
 # вставка в середину сдвигает .text и ломает USB-клавиатуру на стенде.
 OBJ += $(BUILD)/pom2_host.o

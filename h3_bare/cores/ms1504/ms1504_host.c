@@ -80,6 +80,7 @@ static int ms1504_hid_to_pc(uint8_t h) {
     case 0x37: return 0x34;   /* . */
     case 0x38: return 0x35;   /* / */
     case 0x39: return 0x3A;   /* CapsLock */
+    case 0x53: return 0x45;   /* NumLock (HID 0x53) */
     case 0x3A: return 0x3B; case 0x3B: return 0x3C; case 0x3C: return 0x3D;
     case 0x3D: return 0x3E; case 0x3E: return 0x3F; case 0x3F: return 0x40;
     case 0x40: return 0x41; case 0x41: return 0x42; case 0x42: return 0x43;
@@ -135,7 +136,9 @@ static void feed_pc_key(uint8_t scan, int down) {
     if (down) {
         ms1504_kbd_feed(scan);
     } else if (scan == 0x2A || scan == 0x36 || scan == 0x1D || scan == 0x38 ||
-               scan == 0x45 || scan == 0x46 || scan == 0x52) {
+               scan == 0x52) {
+        // r1413: 0x45/0x46 (Num/Scroll) — защёлки, отпускание их не снимает;
+        // 0x3A (Caps) в BDA тоже не трогаем.
         ms1504_kbd_feed((uint8_t)(scan | 0x80));
     }
     // r1030: НЕ заявляем IRQ1 (doirq(1)) при нажатиях. BIOS PK300 тест PIC
@@ -148,13 +151,12 @@ static void feed_pc_key(uint8_t scan, int down) {
 static void ms1504_kbd_update(void) {
     uint8_t raw[8];
     int n = usb_kbd_get_raw(raw, 8);
-    // r1050: Ctrl+F10 — переключатель «ширины линий» (жирный/тонкий) как
-    // Fn+→ на железе МС1504. F10 = HID 0x44; Ctrl нажат — биты 0x01/0x10.
+    // r1413: F10 = HID 0x43 (0x44 — это F11); Ctrl+F10 = «ширина линий».
     {
         uint8_t mk = usb_kbd_get_mods();
         if (mk & (0x01 | 0x10)) {
             for (int i = 0; i < n; i++)
-                if (raw[i] == 0x44) {
+                if (raw[i] == 0x43) {
                     extern volatile uint8_t m15_ms1504_bold;
                     if (!g_bold_prev) {
                         g_bold_prev = 1;
@@ -168,19 +170,21 @@ static void ms1504_kbd_update(void) {
     // r1016: тот же отчёт клавиатуры идёт в COM1-монитор (ALFA-DEBUG).
     extern void m15_feed_kbd_report(const uint8_t*, int, uint8_t);
     m15_feed_kbd_report(raw, n, usb_kbd_get_mods());
-    // r1054: CapsLock — защёлка по фронту HID 0x39 (toggle бита 0x40 в BDA).
-    // Поддерживается host'ом, т.к. BIOS обрабатывает CapsLock только как
-    // модификатор (зажатие), а аппаратный CapsLock — переключатель.
+    // r1413: CapsLock/NumLock/ScrollLock — защёлки по фронту (как на железе).
+    // Бит в BDA[0x417] переключает host; ms1504_kbd_feed эти сканкоды больше
+    // не трогает (иначе нажатие ставило бит, отпускание снимало — защёлки нет).
     {
-        static uint8_t g_caps_prev = 0;
-        int caps_now = 0;
-        for (int i = 0; i < n; i++)
-            if (raw[i] == 0x39) { caps_now = 1; break; }
-        if (caps_now && !g_caps_prev) {
-            extern uint8_t RAM[];
-            RAM[0x417] ^= 0x40;
+        static uint8_t g_lock_prev[3] = {0, 0, 0};
+        static const uint8_t lock_hid[3] = {0x39, 0x47, 0x53};
+        static const uint8_t lock_bit[3] = {0x40, 0x10, 0x20};
+        extern uint8_t RAM[];
+        for (int l = 0; l < 3; l++) {
+            int now = 0;
+            for (int i = 0; i < n; i++)
+                if (raw[i] == lock_hid[l]) { now = 1; break; }
+            if (now && !g_lock_prev[l]) RAM[0x417] ^= lock_bit[l];
+            g_lock_prev[l] = (uint8_t)now;
         }
-        g_caps_prev = (uint8_t)(caps_now ? 1 : 0);
     }
     // r1067: модификаторы из g_mods подаём ДО обычных клавиш. BIOS в
     // ms1504_kbd_feed решает регистр по BDA (scan2ascii: буквы/знаки
@@ -271,20 +275,34 @@ static void ms1504_render_into(uint16_t* dst, int dw, int dh) {
     const uint8_t* text = RAM + vb;
     uint16_t ncols = cols ? cols : 80;
     uint16_t nrows = rows ? rows : 25;
+    // r1413: blink — аппаратный бит 7 атрибута, фаза ~2 Гц по HSTMR.
+    // 3D8 bit5=0 — blink включён (по умолчанию CGA), bit5=1 — яркий фон.
+    static uint32_t blink_t;
+    static uint8_t blink_on = 1;
+    uint32_t now = h3_hs_timer_lo_us();
+    if (now - blink_t >= 250000u) { blink_t = now; blink_on ^= 1; }
+    const int blink_en = !(portram[0x3D8] & 0x20);
+    const int wide40 = (ncols == 40);
     for (int y = 0; y < dh; y++) {
         uint16_t cy = (uint16_t)(y >> 4);
         uint16_t fy = (uint16_t)(y & 15);
-        if (cy >= nrows) break;
+        if (cy >= nrows) {
+            // r1413: ниже текстовой области — чёрное поле, а не прошлый кадр.
+            for (int x = 0; x < dw; x++)
+                dst[y * (uint32_t)dw + x] = (uint16_t)ms1504_rgb565(palettecga[0]);
+            continue;
+        }
         const uint8_t* row = text + ((size_t)cy * ncols) * 2;
         // предвычисляем строку шрифта со сдвигом bold (уширенные линии)
         for (int x = 0; x < dw; x++) {
-            uint16_t cx = (uint16_t)(x >> 3);
-            uint16_t fx = (uint16_t)(x & 7);
-            if (cx >= ncols) break;
+            uint16_t cx, fx;
+            if (wide40) { cx = (uint16_t)(x >> 4); fx = (uint16_t)((x >> 1) & 7); }
+            else        { cx = (uint16_t)(x >> 3); fx = (uint16_t)(x & 7); }
             uint8_t ch = row[cx * 2];
             uint8_t at = row[cx * 2 + 1];
             uint32_t fg = palettecga[at & 15];
-            uint32_t bg = palettecga[(at >> 4) & 7];
+            uint32_t bg = palettecga[((at >> 4) & 7) | ((!blink_en && (at & 0x80)) ? 8 : 0)];
+            if (blink_en && (at & 0x80) && !blink_on) fg = bg;
             uint8_t dat = fontcga ? fontcga[(size_t)ch * 16 + fy] : 0;
             // bold: к текущему пикселю добавляем соседний слева (толще линии)
             if (m15_ms1504_bold && fx > 0 && (dat & (0x80 >> (fx - 1))))
@@ -362,15 +380,14 @@ extern const unsigned char ms1504_hdd_bios[];
 extern const unsigned int  ms1504_hdd_bios_len;
 
 int ms1504_init_game(const uint8_t* rom, uint32_t size) {
-    printf("MS1504: init size=%u\n", (unsigned)size);
+    emulog_field("MS1504", "load", "size=%u", (unsigned)size);
     if (!rom || size == 0) {
         // r0.399: режим «Встроенное ПО» — родной BIOS (PK300) вшит в прошивку
         rom = ms1504_bios_pk300;
         size = ms1504_bios_pk300_len;
-        printf("MS1504: builtin BIOS (PK300, вшит, %u Б)\n", (unsigned)size);
+        emulog_field("MS1504", "bios", "builtin PK300, %u B", (unsigned)size);
     } else if (size > 0x10000) {
-        printf("MS1504: файл %u Б слишком большой — это не образ ПЗУ МС-1504 (нужен ≤64К)\n",
-               (unsigned)size);
+        emulog_field("MS1504", "init", "FAILED: file %u B > 64K", (unsigned)size);
         return 0;
     }
 
@@ -381,8 +398,8 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
     // BIOS вверх RAM: F0000-FFFFF (как loadbios в main.c)
     memcpy(RAM + 0x100000 - size, rom, size);
     memset(readonly + 0x100000 - size, 1, size);
-    printf("MS1504: BIOS %u Б -> 0x%05X, readonly\n", (unsigned)size,
-           (unsigned)(0x100000 - size));
+    emulog_field("MS1504", "bios", "%u B -> 0x%05X (readonly)", (unsigned)size,
+                 (unsigned)(0x100000 - size));
 
     // r1021: BIOS PK300 в начале self-test ждёт, что BDA [0x40:0x72] == 0x1234
     // (маркер «warm boot»). См. дизассемблер: F618B MOV SI,[72];
@@ -402,7 +419,7 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
 
     running = 1;
     reset86();
-    printf("MS1504: cpu reset (4.77 МГц КР1834ВМ86), boot\n");
+    emulog_field("MS1504", "cpu", "reset 4.77 MHz, boot");
 
     // r1027: монтируем загрузочный диск (mc1504BOOT.IMA) как A: и как привод 1.
     // Если rom_browser собрал игровой образ (m15_build_floppy/hdd), hostfs
@@ -420,23 +437,23 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
     // вставляем образ и как привод 1 (загрузочный) и как привод 0.
     RAM[0x43F] = 0x01;
     if (m15_insertdisk(0, "mc1504BOOT.IMA")) {
-        printf("MS1504: WARNING: boot disk (unit 0) not inserted\n");
+        emulog_field("MS1504", "disk", "WARNING: boot unit 0 not inserted");
     }
     if (m15_insertdisk(1, "mc1504BOOT.IMA")) {
-        printf("MS1504: WARNING: boot disk (unit 1) not inserted\n");
+        emulog_field("MS1504", "disk", "WARNING: boot unit 1 not inserted");
     } else {
         m15_bootdrive = 1;
-        printf("MS1504: boot disk A: inserted (mc1504BOOT.IMA, %u Б)\n",
-               (unsigned)ms1504_boot_ima_len);
+        emulog_field("MS1504", "disk", "A: mc1504BOOT.IMA, %u B",
+                     (unsigned)ms1504_boot_ima_len);
     }
     /* Большая игра: диск 0x80 (HDD) с игрой. fake86 insertdisk(0x80, ...)
        строит CHS-геометрию; наш HDD-образ 4 МБ даст 8×16×63. Имя фиксированное,
        shim (ms1504_shim.c) отдаёт по нему g_ms1504_hdd_img. */
     if (m15_hdd_present()) {
         if (m15_insertdisk(0x80, "MS1504HDD.IMA")) {
-            printf("MS1504: WARNING: HDD (unit 0x80) not inserted\n");
+            emulog_field("MS1504", "disk", "WARNING: HDD 0x80 not inserted");
         } else {
-            printf("MS1504: HDD C: (0x80) inserted (MS1504HDD.IMA, 4 МБ)\n");
+            emulog_field("MS1504", "disk", "C: MS1504HDD.IMA, 4 MiB");
         }
     }
     return 1;
@@ -451,7 +468,16 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
         extern void m15_tick_audio(int n);
         extern int8_t m15_audbuf[96000];
         extern int32_t m15_audbufptr;
-        m15_tick_audio(735);   // 44100/60 ≈ 735 сэмплов за кадр
+        // r1413: генерируем по фактическому времени кадра, а не фиксированные
+        // 735 сэмплов: при задержке кадра звук больше не отстаёт и не дёргается.
+        static uint32_t last_us;
+        uint32_t now = h3_hs_timer_lo_us();
+        uint32_t dt = last_us ? (now - last_us) : (1000000u / 60u);
+        last_us = now;
+        if (dt > 100000u) dt = 1000000u / 60u;
+        int gen = (int)(((uint64_t)dt * 44100u) / 1000000u);
+        if (gen > 2048) gen = 2048;
+        m15_tick_audio(gen);
         int n = m15_audbufptr;
         if (n > 2048) n = 2048;
         static int16_t out[2048];
@@ -488,7 +514,7 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     memset(g_kbd_prev, 0, sizeof(g_kbd_prev));
 
-    printf("MS1504: \"%s\" (%u Б) — execute\n", rom_name ? rom_name : "?", (unsigned)size);
+    emulog_field("MS1504", "run", "\"%s\" (%u B)", rom_name ? rom_name : "?", (unsigned)size);
     for (;;) {
         ms1504_kbd_update();
         exec86(120000);

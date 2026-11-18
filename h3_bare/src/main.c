@@ -1,4 +1,4 @@
-#include <stdint.h>
+﻿#include <stdint.h>
 #include <string.h>
 #include "h3.h"
 #include "uart.h"
@@ -522,7 +522,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1412";
+const char g_fw_version[] = "r1459";
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
@@ -1086,6 +1086,14 @@ void main(void) {
                 }
                 sega_pad_init();
             }
+            continue;
+        }
+
+        // PC/XT-286: диалог в отдельном объекте (pxt_dialog.c, линкуется
+        // последним) — вставка в main.c ломала USB-клавиатуру (r1378/r1426).
+        if (strcmp(id, "pxt") == 0) {
+            extern void pxt_menu_run(const char* name);
+            pxt_menu_run(name);
             continue;
         }
 

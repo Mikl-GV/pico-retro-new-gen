@@ -74,11 +74,12 @@ static void com_tx(uint8_t v)
 static uint8_t com_in(uint16_t port)
 {
     port &= 7;   /* 0x3F8..0x3FF */
-    if ((c_lcr & 0x80)) {          /* DLAB: DLL/DLM на позициях RBR/THR */
+    // r1413: DLAB перенаправляет только DLL/DLM (порты 0/1); LSR/IIR/LCR и
+    // остальные регистры читаются как обычно. Раньше при DLAB=1 все они
+    // возвращали 0, и BIOS/монитор, поллящий LSR, зависал.
+    if ((c_lcr & 0x80)) {
         if (port == 0) return c_dlab_low;
         if (port == 1) return c_dlab_high;
-        /* при DLAB остальные не определены — 0 */
-        return 0;
     }
     switch (port) {
     case 0: return rx_avail() ? rx_byte() : 0;
@@ -96,10 +97,10 @@ static uint8_t com_in(uint16_t port)
 static void com_out(uint16_t port, uint8_t value)
 {
     port &= 7;
+    // r1413: DLAB перенаправляет только DLL/DLM; LCR/MCR пишутся всегда.
     if ((c_lcr & 0x80)) {
         if (port == 0) { c_dlab_low  = value; return; }
         if (port == 1) { c_dlab_high = value; return; }
-        return;
     }
     switch (port) {
     case 0: com_tx(value); return;          /* THR */

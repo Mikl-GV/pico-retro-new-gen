@@ -50,8 +50,13 @@ static int do_printf(const char* fmt, va_list ap) {
         // ширину только после '0', поэтому '%5d' печатался как литерал.
         int width = 0;
         char pad = ' ';
+        // r1413: '%-8s' и '%*s' — выравнивание логов (emulog). Для чисел
+        // left-align не нужен и игнорируется.
+        int left = 0;
+        if (*fmt == '-') { left = 1; fmt++; }
         if (*fmt == '0') { pad = '0'; fmt++; }
-        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        if (*fmt == '*') { width = va_arg(ap, int); fmt++; }
+        else while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
         int lng = 0;
         while (*fmt == 'l') { lng++; fmt++; }
         switch (*fmt) {
@@ -60,13 +65,24 @@ static int do_printf(const char* fmt, va_list ap) {
                     // r582 (F8): '%5s' — паддинг пробелами до/после строки.
                     int len = 0; { const char* p = s; while (*p++) len++; }
                     if (width > 31) width = 31;
-                    for (int sp = width - len; sp > 0; sp--) pputc(' ');   // right-align
-                    while (*s) pputc(*s++);
+                    if (left) {
+                        while (*s) pputc(*s++);
+                        for (int sp = width - len; sp > 0; sp--) pputc(' ');
+                    } else {
+                        for (int sp = width - len; sp > 0; sp--) pputc(' ');   // right-align
+                        while (*s) pputc(*s++);
+                    }
                     break; }
         case 'c': { char c = (char)va_arg(ap, int);
                     if (width > 31) width = 31;
-                    for (int sp = width - 1; sp > 0; sp--) pputc(' ');
-                    pputc(c); break; }
+                    if (left) {
+                        pputc(c);
+                        for (int sp = width - 1; sp > 0; sp--) pputc(' ');
+                    } else {
+                        for (int sp = width - 1; sp > 0; sp--) pputc(' ');
+                        pputc(c);
+                    }
+                    break; }
         case 'd': case 'i':
             print_int(lng ? va_arg(ap, long) : (long)va_arg(ap, int), width, pad);
             break;

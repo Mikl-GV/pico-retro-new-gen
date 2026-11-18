@@ -14,9 +14,21 @@ extern int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
 // Для отладки: выставить 0 в одном месте (или поставить брейк и поменять).
 int g_emulog = 1;
 
-// <field> выравнивается до 8 символов пробелом. Поле длиннее 8 — печатаем как есть.
+// r1413: ширина ТЕГА тоже фиксирована (MS1504=5, PXT=3, Portfolio=9 — раньше
+// тело уезжало). Паддинг — вручную: printf проекта не обязан поддерживать '*'.
+#define EMULOG_TAG_W   8
+#define EMULOG_FIELD_W 8
+static void pad_copy(char* dst, const char* src, int width) {
+    int n = 0;
+    while (src[n] && n < width) { dst[n] = src[n]; n++; }
+    while (n < width) dst[n++] = ' ';
+    dst[n] = 0;
+}
 static void print_field(const char* tag, const char* field, const char* body) {
-    printf("%s: %-8s %s\n", tag, field, body);
+    char t[EMULOG_TAG_W + 1], f[EMULOG_FIELD_W + 1];
+    pad_copy(t, tag, EMULOG_TAG_W);
+    pad_copy(f, field, EMULOG_FIELD_W);
+    printf("%s: %s %s\n", t, f, body);
 }
 
 void emulog_begin(const char* tag) {
@@ -27,7 +39,9 @@ void emulog_begin(const char* tag) {
 void emulog_end(const char* tag) {
     if (!g_emulog) return;
     printf("==== %s: exit ====\n", tag);
-    printf("%s: done\n", tag);
+    char t[EMULOG_TAG_W + 1];
+    pad_copy(t, tag, EMULOG_TAG_W);
+    printf("%s: done\n", t);
 }
 
 void emulog_field(const char* tag, const char* field, const char* fmt, ...) {

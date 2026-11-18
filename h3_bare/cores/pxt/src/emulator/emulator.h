@@ -271,6 +271,7 @@ void blaster_reset();
 // uint8_t blaster_read(uint16_t portnum);
 // void blaster_write(uint16_t portnum, uint8_t value);
 void blaster_tick(void);
+void blaster_advance(uint32_t us);   // r1413: такт DMA SB по времени (H3)
 
 void outadlib(uint16_t portnum, uint8_t value);
 
@@ -334,6 +335,10 @@ static INLINE int16_t speaker_sample() {
 }
 
 extern void get_sound_sample(int16_t other_sample, int16_t *samples);
+// r1413: HDD-образ PXT читается с носителя (SD/USB) по требованию (не влезает в RAM-пул).
+void pxt_disk_set_stream(uint8_t drivenum,
+                         int (*read_cb)(uint32_t offset, uint8_t* buf, uint32_t len),
+                         uint32_t len);
 #if defined(MIDI_GM_DLS)
 extern void midi_dls_init(void);
 #endif

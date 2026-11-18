@@ -187,8 +187,16 @@ void cga_portout(uint16_t portnum, uint16_t value) {
 }
 
 uint16_t cga_portin(uint16_t portnum) {
-     // port3DA ^= 1;
-     // if (!(port3DA & 1)) port3DA ^= 8;
-     // return port3DA;
-     return hercules_mode ? 0xFF : port3DA;
+    (void)portnum;
+    if (hercules_mode) return 0xFF;
+    // r1457: биты статуса 0x3DA двигаем по счётчику ОБРАЩЕНИЙ, а не по стенным
+    // часам. BIOS (F000:F2B2: `IN AL,DX / TEST AL,8 / JZ`) и VC ждут смены бита
+    // внутри одного кванта exec86(); при привязке к i8253_now_us() бит мог не
+    // смениться за весь опрос, и гость висел. Счётчик гарантирует прогресс.
+    static uint32_t rd;
+    rd++;
+    uint8_t st = (rd & 1u) ? 1u : 0u;          // display enable: каждый опрос
+    if ((rd & 0x3Fu) == 0u) st |= 8u;          // вертикальное гашение: раз в 64
+    port3DA = st;
+    return port3DA;
 }

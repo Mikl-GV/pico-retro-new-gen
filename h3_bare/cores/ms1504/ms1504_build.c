@@ -169,6 +169,14 @@ static int m15_write_file_into_floppy(uint8_t* img, const fat_entry_t* f,
     memset(e, 0, 32);
     char n83[12];
     m15_name83(f->name, n83);
+    // r1413: два длинных имени могут схлопнуться в одно 8.3 — не затираем
+    // существующую запись, а сообщаем об ошибке сборки.
+    for (int i = 0; i < M15_ROOTENT; i++) {
+        uint8_t* e2 = root + (size_t)i * 32;
+        if (e2[0] == 0) break;
+        if (e2[0] == 0xE5) continue;
+        if (memcmp(e2, n83, 11) == 0) return -1;
+    }
     for (int i = 0; i < 11; i++) e[i] = (uint8_t)n83[i];
     e[11] = 0x20;                                  /* archive */
     e[26] = (uint8_t)(first & 0xFF);               /* first cluster LE */
@@ -188,28 +196,33 @@ static int m15_rewrite_autoexec(uint8_t* img, uint16_t clu, const char* text)
     size_t len = strlen(text);
     if (len > M15_CLUSZ) return -1;
     uint8_t* fat1 = img + M15_FAT_OFF;
-    if (m15_fat_get(fat1, clu) == 0xFFF || m15_fat_get(fat1, clu) == 0) {
+    uint8_t* root = img + M15_ROOT_OFF;
+    // r1413: кластер AUTOEXEC.BAT берём из его корневой записи, а не хардкодом
+    // 70 — иначе на нестандартном системном образе портится чужой кластер.
+    uint8_t* ent = 0;
+    for (int i = 0; i < M15_ROOTENT; i++) {
+        uint8_t* e = root + (size_t)i * 32;
+        if (e[0] == 0) break;
+        if (memcmp(e, "AUTOEXECBAT", 11) == 0) { ent = e; break; }
+    }
+    if (ent) {
+        uint16_t fc = (uint16_t)(ent[26] | ((uint16_t)ent[27] << 8));
+        if (fc >= 2) clu = fc;
+    }
+    if (clu < 2 || m15_fat_get(fat1, clu) == 0xFFF || m15_fat_get(fat1, clu) == 0) {
         /* цепочки нет — выделяем один кластер */
         int c = m15_fat_next_free(fat1, 2);
         if (c < 0) return -1;
         clu = (uint16_t)c;
         m15_fat_set(fat1, clu, 0xFFF);
         memcpy(img + M15_FAT_OFF + M15_SPF * M15_BPS, fat1, M15_SPF * M15_BPS);
-        /* обновим корневую запись AUTOEXEC.BAT */
-        uint8_t* root = img + M15_ROOT_OFF;
-        for (int i = 0; i < M15_ROOTENT; i++) {
-            uint8_t* e = root + (size_t)i * 32;
-            if (e[0] == 0) break;
-            char nm[12]; memcpy(nm, e, 11); nm[11] = 0;
-            if (strncmp(nm, "AUTOEXECBAT", 11) == 0) {
-                e[26] = (uint8_t)(clu & 0xFF);
-                e[27] = (uint8_t)((clu >> 8) & 0xFF);
-                e[28] = (uint8_t)(len & 0xFF);
-                e[29] = (uint8_t)((len >> 8) & 0xFF);
-                e[30] = 0; e[31] = 0;
-                break;
-            }
-        }
+    }
+    if (ent) {
+        ent[26] = (uint8_t)(clu & 0xFF);
+        ent[27] = (uint8_t)((clu >> 8) & 0xFF);
+        ent[28] = (uint8_t)(len & 0xFF);
+        ent[29] = (uint8_t)((len >> 8) & 0xFF);
+        ent[30] = 0; ent[31] = 0;
     }
     uint8_t* dst = img + M15_DATA_OFF + (uint32_t)(clu - 2) * M15_CLUSZ;
     memset(dst, 0, M15_CLUSZ);
@@ -338,6 +351,9 @@ int m15_build_floppy(const char* dir, const char* main)
     for (int i = 0; i < n; i++) {
         if (list[i].attr & 0x10) continue;
         if (list[i].size == 0) continue;
+        // r1413: свой AUTOEXEC.BAT из папки не копируем — его пишем сами
+        // (иначе коллизия 8.3 с системным AUTOEXEC.BAT).
+        if (m15_ci_eq(list[i].name, "autoexec.bat")) continue;
         /* Строго: если файл не влез — это ошибка (вызывающий перейдёт на
          * HDD-путь), а не потерянный тихо файл игры. */
         if (m15_write_file_into_floppy(img, &list[i], &used_from) != 0)
@@ -431,13 +447,14 @@ int m15_build_hdd(const char* dir, const char* main)
     if (n <= 0) return -1;
     uint32_t cur = 2;
     int wrote = 0;
+    int oom = 0;   // r1413: нехватка места не должна давать «успешный» обрезанный образ
     uint8_t* root = img + root_off;
     int slot = 0;
     for (int i = 0; i < n; i++) {
         if (list[i].attr & 0x10) continue;
         if (list[i].size == 0) continue;
         uint32_t need = (list[i].size + (M16_SPC * M16_BPS) - 1) / (M16_SPC * M16_BPS);
-        if (cur + need > clusters + 2) break;      /* не влезло */
+        if (cur + need > clusters + 2) { oom = 1; break; }
         /* записываем данные */
         uint32_t first = cur;
         uint32_t off = 0, left = list[i].size;
@@ -445,7 +462,8 @@ int m15_build_hdd(const char* dir, const char* main)
             uint8_t* dst = img + data_off + (uint32_t)(cur - 2) * M16_SPC * M16_BPS;
             uint32_t chunk = left < (M16_SPC * M16_BPS) ? left : (M16_SPC * M16_BPS);
             uint8_t buf[4096];
-            if (fat_read_file(&list[i], off, buf, chunk) != (int)chunk) break;
+            if (fat_read_file(&list[i], off, buf, chunk) != (int)chunk)
+                return -1;   // r1413: недопрочитанный файл — ошибка сборки
             memcpy(dst, buf, chunk);
             off += chunk; left -= chunk;
             /* проставить FAT16 */
@@ -475,7 +493,7 @@ int m15_build_hdd(const char* dir, const char* main)
         wrote++;
         if (slot >= M16_ROOTENT) break;
     }
-    if (!wrote) return -1;
+    if (!wrote || oom) return -1;   // r1413: нехватка места — не «успех»
 
     /* Флоппи A: — системная дискета MS-DOS с AUTOEXEC: переход на C: и запуск
      * main. Берём из вшитой копии, перезаписываем AUTOEXEC.BAT. */

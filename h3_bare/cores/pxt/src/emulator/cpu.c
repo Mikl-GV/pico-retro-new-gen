@@ -35,6 +35,8 @@
 #endif
 
 int videomode = 3;
+// r1413: прототипы текстового вывода INT 10h (определения ниже exec86).
+static void pxt_text_putc(uint8_t ch, uint8_t attr);
 uint8_t segoverride, reptype;
 uint32_t segregs32[6];
 uint16_t useseg, oldsp;
@@ -485,6 +487,18 @@ void intcall86(uint8_t intnum) {
     switch (intnum) {
         case 0x10: {
             switch (CPU_AH) {
+                case 0x02: /* set cursor position */
+                    CURSOR_Y = CPU_DH;
+                    CURSOR_X = CPU_DL;
+                    return;
+                case 0x03: /* get cursor position */
+                    CPU_DH = CURSOR_Y;
+                    CPU_DL = CURSOR_X;
+                    CPU_CX = (uint16_t)((cursor_start << 8) | cursor_end);
+                    return;
+                case 0x0e: /* teletype output */
+                    pxt_text_putc(CPU_AL, 0x07);
+                    return;
                 case 0x09:
                 case 0x0a:
                     if (videomode >= 8 && videomode <= 0x13) {
@@ -493,13 +507,23 @@ void intcall86(uint8_t intnum) {
                         printf("%c", CPU_AL);
                         return;
                     }
-                    break;
+                    pxt_text_putc(CPU_AL, (uint8_t)(CPU_BL & 0x0F));
+                    return;
                 case 0x0f:
-                    if (videomode < 8) break;
-                    CPU_AL = videomode;
+                    // r1422: get video mode — для ЛЮБОГО режима. Раньше при
+                    // videomode<8 выходили по break, BIOS/DOS получал мусор в AL
+                    // и делил на него (DIVIDE overflow).
+                    CPU_AL = (uint8_t)videomode;
                     CPU_AH = 80;
                     CPU_BH = 0;
                     return;
+                case 0x08: { /* read char/attr at cursor */
+                    const uint32_t idx = 0x8000u + (uint32_t)CURSOR_Y * 160u +
+                                         (uint32_t)CURSOR_X * 2u;
+                    CPU_AL = (uint8_t)(VIDEORAM[idx] & 0xFF);
+                    CPU_AH = (uint8_t)(VIDEORAM[idx + 1] & 0xFF);
+                    return;
+                }
                 case 0x00:
                     // http://www.techhelpmanual.com/114-video_modes.html
                     // http://www.techhelpmanual.com/89-video_memory_layouts.html
@@ -712,6 +736,26 @@ void intcall86(uint8_t intnum) {
             break;
         case 0x1A: /* Timer I/O RTC */
             switch (CPU_AH) {
+                // r1451: AH=00/01 раньше уходили в 8-КБ BIOS, и гость писал в
+                // BDA 0x46C мусор (0xFF10B158), после чего делил 5*ticks на
+                // 59659 и получал Divide overflow. Тики держим в сутках.
+                case 0x00: { /* 00H: Read System-Clock Count */
+                    const uint32_t t = readdw86(0x46C) % 0x1800B0u;
+                    CPU_CX = (uint16_t)(t >> 16);
+                    CPU_DX = (uint16_t)t;
+                    CPU_AL = 0;
+                    CPU_FL_CF = 0;
+                    return;
+                }
+                case 0x01: { /* 01H: Set System-Clock Count */
+                    uint32_t t = ((uint32_t)CPU_CX << 16) | (uint32_t)CPU_DX;
+                    t %= 0x1800B0u;
+                    writew86(0x46C, (uint16_t)t);
+                    writew86(0x46E, (uint16_t)(t >> 16));
+                    write86(0x470, 0);
+                    CPU_FL_CF = 0;
+                    return;
+                }
                 case 0x02: /* 02H: Read Time from Real-Time Clock */
                     CPU_CX = 0x2259;
                     CPU_DX = 0x0001;
@@ -1140,14 +1184,39 @@ static __not_in_flash() uint16_t op_grp2_16(uint8_t cnt) {
 static uint16_t firstip; // IP of the current instruction, with its prefixes
 
 // A 286 fault returns to the instruction that caused it
+// r1436: диагностика Divide overflow в UART (printf ядра уходит в DEBUG_VRAM,
+// который на экран не выводится). Печатаем точку и делимое — по ним видно,
+// DOS/LTEMM или эмуляция DIV виноваты.
+extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+
 static void cpu_fault(const uint8_t vector) {
+    // r1442: любой fault виден в UART (раньше логировался только DIV) — уход
+    // CPU в мусор ловится и по ud/стек-нарушениям, а не только по Divide overflow.
+    const uint32_t fa = ((uint32_t)(CPU_CS & 0xFFFF) << 4) + (firstip & 0xFFFF);
+    const uint8_t op = read86(fa);
+    emulog_field("PXT", "fault",
+                 "vec=%u at %04x:%04x ax=%04x dx=%04x ss:sp=%04x:%04x op=%02x a20=%d ph=%x",
+                 (unsigned)vector, (unsigned)(CPU_CS & 0xFFFF), (unsigned)firstip,
+                 (unsigned)CPU_AX, (unsigned)CPU_DX,
+                 (unsigned)(CPU_SS & 0xFFFF), (unsigned)CPU_SP, (unsigned)op,
+                 a20_enabled, (unsigned)fa);
+    {
+        // стек на момент fault — цепочка вызовов, по которой видно, кто прыгнул
+        const uint32_t sp = (((uint32_t)(CPU_SS & 0xFFFF)) << 4) + (CPU_SP & 0xFFFF);
+        uint32_t words[8];
+        for (int i = 0; i < 8; i++) words[i] = readw86(sp + (uint32_t)i * 2);
+        emulog_field("PXT", "stack", "%04x %04x %04x %04x %04x %04x %04x %04x",
+                     (unsigned)words[0], (unsigned)words[1], (unsigned)words[2],
+                     (unsigned)words[3], (unsigned)words[4], (unsigned)words[5],
+                     (unsigned)words[6], (unsigned)words[7]);
+    }
     ip = firstip;
     intcall86(vector);
 }
 
 static inline void op_div8(uint16_t valdiv, uint8_t divisor) {
     if (divisor == 0 || valdiv / divisor > 0xFF) {
-        printf("[op_div8] %d / %d\n", valdiv, divisor);
+        emulog_field("PXT", "divv", "d8 %u/%u", (unsigned)valdiv, (unsigned)divisor);
         cpu_fault(0);
         return;
     }
@@ -1158,7 +1227,7 @@ static inline void op_div8(uint16_t valdiv, uint8_t divisor) {
 
 static inline void op_idiv8(uint16_t valdiv, int8_t divisor) {
     if (divisor == 0) {
-        printf("[op_idiv8] %d / 0\n", valdiv);
+        emulog_field("PXT", "divv", "i8 %d/%d", (int)valdiv, (int)divisor);
         cpu_fault(0);
         return;
     }
@@ -1166,7 +1235,7 @@ static inline void op_idiv8(uint16_t valdiv, int8_t divisor) {
     int16_t quotient  = dividend / divisor;
     int16_t remainder = dividend % divisor;
     if (quotient < -128 || quotient > 127) {
-        printf("[op_idiv8] %d / %d overflow\n", dividend, divisor);
+        emulog_field("PXT", "divv", "i8o %d/%d", (int)dividend, (int)divisor);
         cpu_fault(0);
         return;
     }
@@ -1176,9 +1245,7 @@ static inline void op_idiv8(uint16_t valdiv, int8_t divisor) {
 
 static inline void op_div16(uint32_t valdiv, uint16_t divisor) {
     if (divisor == 0 || valdiv / divisor > 0xFFFF) {
-//        CPU_DX = 0;
-//        CPU_AX = 0xFFFF;
-//        printf("[op_div16] %d / %d\n", valdiv, divisor);
+        emulog_field("PXT", "divv", "d16 %u/%u", (unsigned)valdiv, (unsigned)divisor);
         cpu_fault(0);
         return;
     }
@@ -1191,14 +1258,14 @@ static inline void op_idiv16(uint32_t valdiv, uint16_t divisor) {
     int32_t dividend = (int32_t)valdiv;
     int16_t divisor_signed = (int16_t)divisor;
     if (divisor_signed == 0) {
-        printf("[op_idiv16] %d / 0\n", dividend);
+        emulog_field("PXT", "divv", "i16 %d/%d", (int)dividend, (int)divisor_signed);
         cpu_fault(0);
         return;
     }
     int32_t quotient  = dividend / divisor_signed;
     int32_t remainder = dividend % divisor_signed;
     if (quotient < -32768 || quotient > 32767) {
-        printf("[op_idiv16] %d / %d overflow\n", dividend, divisor_signed);
+        emulog_field("PXT", "divv", "i16o %d/%d", (int)dividend, (int)divisor_signed);
         cpu_fault(0);
         return;
     }
@@ -1358,7 +1425,7 @@ static __not_in_flash() void op_0f() {
             return;
         case 6: { // LMSW
             const uint16_t value = readrm16(rm);
-            if (value & 1) printf("[CPU] LMSW: protected mode is not emulated\r\n");
+            if (value & 1) printf("[CPU] LMSW: protected mode is not emulated\n");
             msw = 0xFFF0 | (value & 0x0E); // MP, EM, TS
             return;
         }
@@ -1400,6 +1467,32 @@ void reset86() {
 /// @brief  W/A for SWAP mode (avoid using core#1)
 extern volatile bool ask_to_blast;
 
+// r1413: текстовый вывод INT 10h (AH=0Eh/09h/0Ah). BIOS MURMULATOR пишет
+// через teletype; без этого в текстовом режиме экран оставался чёрным.
+// VIDEORAM — uint32 на адрес, текст лежит в МЛАДШЕМ байте (plane 0).
+static void pxt_text_scroll(void) {
+    for (int i = 0; i < 24 * 80 * 2; i++)
+        VIDEORAM[0x8000 + i] = VIDEORAM[0x8000 + i + 80 * 2];
+    for (int i = 24 * 80 * 2; i < 25 * 80 * 2; i++)
+        VIDEORAM[0x8000 + i] = (i & 1) ? 0x07u : 0x20u;
+}
+
+static void pxt_text_putc(uint8_t ch, uint8_t attr) {
+    if (ch == 0x0D) { CURSOR_X = 0; return; }
+    if (ch == 0x0A) { CURSOR_Y++; }
+    else if (ch == 0x08) { if (CURSOR_X) CURSOR_X--; return; }
+    else {
+        // r1416: прямая запись в plane 0. vga_mem_write зависит от текущих
+        // регистров VGA (BIOS мог оставить write mode/map mask иными), из-за
+        // чего текст не попадал в младший байт VIDEORAM (VRAM=0).
+        const uint32_t idx = 0x8000u + (uint32_t)CURSOR_Y * 160u + (uint32_t)CURSOR_X * 2u;
+        VIDEORAM[idx] = ch;
+        VIDEORAM[idx + 1] = attr;
+        if (++CURSOR_X >= 80) { CURSOR_X = 0; CURSOR_Y++; }
+    }
+    while (CURSOR_Y >= 25) { pxt_text_scroll(); CURSOR_Y--; }
+}
+
 void __not_in_flash() exec86(uint32_t execloops) {
     static bool was_TF;
 
@@ -1420,7 +1513,8 @@ void __not_in_flash() exec86(uint32_t execloops) {
         segoverride = 0;
         useseg = CPU_DS;
         uint8_t docontinue = 0;
-        firstip = CPU_IP;
+          firstip = CPU_IP;
+
         register uint8_t opcode;
 
         while (!docontinue) {
@@ -3773,7 +3867,7 @@ void __not_in_flash() exec86(uint32_t execloops) {
 #ifdef CPU_ALLOW_ILLEGAL_OP_EXCEPTION
                 intcall86(6); /* trip invalid opcode exception. this occurs on the 80186+, 8086/8088 CPUs treat them as NOPs. */
                 /* technically they aren't exactly like NOPs in most cases, but for our pursoses, that's accurate enough. */
-                printf("[CPU] Invalid opcode 0x%02x exception at %04X:%04X\r\n", opcode, CPU_CS, firstip);
+                printf("[CPU] Invalid opcode 0x%02x exception at %04X:%04X\n", opcode, CPU_CS, firstip);
 #endif
                 break;
         }

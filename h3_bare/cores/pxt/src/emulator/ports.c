@@ -71,23 +71,35 @@ static uint8_t adlibstatus = 0;
 
 static int8_t joystick_tick;
 static INLINE void joystick_out() {
-#if PICO_ON_DEVICE
-    joystick_tick = -127;
+#if PICO_ON_DEVICE || defined(H3_BARE_METAL)
+    joystick_tick = -127;   // r1413: на H3 OUT 0x201 тоже запускает разряд осей
 #endif
 }
 
 static INLINE uint8_t joystick_in() {
     uint8_t data = 0xF0;
-#if PICO_ON_DEVICE
+#if PICO_ON_DEVICE || defined(H3_BARE_METAL)
+#if defined(H3_BARE_METAL)
+    extern uint16_t pad_scan_combined(void);
+    const uint16_t pad = pad_scan_combined();
+    const int8_t axis_x = (pad & 0x04) ? -127 : (pad & 0x08) ? 127 : 0;
+    const int8_t axis_y = (pad & 0x01) ? -127 : (pad & 0x02) ? 127 : 0;
+#else
     nespad_read();
-    int8_t axis_x = nespad_state & DPAD_LEFT ? -127 : (nespad_state & DPAD_RIGHT) ? 127 : 0;
-    int8_t axis_y = nespad_state & DPAD_UP ? -127 : (nespad_state & DPAD_DOWN) ? 127 : 0;
+    const int8_t axis_x = nespad_state & DPAD_LEFT ? -127 : (nespad_state & DPAD_RIGHT) ? 127 : 0;
+    const int8_t axis_y = nespad_state & DPAD_UP ? -127 : (nespad_state & DPAD_DOWN) ? 127 : 0;
+#endif
     joystick_tick++;
 
     if (joystick_tick < axis_x) data |= 1;
     if (joystick_tick < axis_y) data |= 2;
+#if defined(H3_BARE_METAL)
+    if (pad & 0x10) data &= (uint8_t)~0x10;   // A (active low)
+    if (pad & 0x20) data &= (uint8_t)~0x20;   // B
+#else
     if (nespad_state & DPAD_A) data ^= 0x10;
     if (nespad_state & DPAD_B) data ^= 0x20;
+#endif
 #endif
     return data;
 }
@@ -95,12 +107,23 @@ static INLINE uint8_t joystick_in() {
 
 static INLINE uint8_t rtc_read(uint16_t addr) {
     uint8_t ret = 0xFF;
+#if defined(H3_BARE_METAL)
+    // r1449: на bare-metal newlib time()/localtime() не дают времени (нет
+    // _gettimeofday), а localtime() может вернуть NULL — гостевые DOS-часы
+    // получают мусор. Отдаём фиксированную корректную дату, дальше DOS ведёт
+    // время сам по тикам таймера.
+    static struct tm tfix;
+    struct tm *t = &tfix;
+    t->tm_sec = 0; t->tm_min = 0; t->tm_hour = 0;
+    t->tm_wday = 1; t->tm_mday = 1; t->tm_mon = 0; t->tm_year = 24;
+#else
     struct tm tdata;
 
     time((time_t*)&tdata);
     struct tm *t = localtime((const time_t*)&tdata);
 
     t->tm_year = 24;
+#endif
     addr &= 0x1F;
     switch (addr) {
         case 1:
@@ -188,10 +211,13 @@ void portout(uint16_t portnum, uint16_t value) {
             return i8237_writepage(portnum, value);
 
 // A20 Gate
-        case 0x92:
-            a20_enabled = value & 1;
-            printf("A20 W: %d\n", a20_enabled);
+        case 0x92: {
+            // r1447: бит 1 порта 0x92 — A20, бит 0 — fast reset (его не эмулируем).
+            // Раньше читался бит 0: гость, включая A20 (запись 0x02), оставался с
+            // выключенным A20, а fast reset (0x01) наоборот включал HMA.
+            a20_enabled = (value & 0x02) ? 1 : 0;
             return;
+        }
 // Tandy 3-Voice Sound
         case 0x1E0:
         case 0x2C0:
@@ -461,7 +487,7 @@ uint16_t portin(uint16_t portnum) {
             return i8237_readpage(portnum);
 // A20 Gate
         case 0x92:
-            printf("A20 R: %d\n", a20_enabled);
+            // r1413: без printf на каждый доступ (спам UART).
             return a20_enabled;
         case 0x201:
 // Joystick
@@ -580,6 +606,20 @@ uint16_t portin16(uint16_t portnum) {
 }
 
 
+// r1413: такт DMA Sound Blaster на H3. На pico-286 blaster_tick звал второй
+// ядро по таймеру; на H3 такого ядра нет, поэтому двигаем DMA по фактическому
+// времени кадра (timeconst — период одного байта SB).
+void blaster_advance(uint32_t us) {
+    static uint32_t acc;
+    const uint32_t tc = timeconst ? timeconst : 22;
+    acc += us;
+    if (acc > 1000000u) acc = 1000000u;
+    while (acc >= tc) {
+        acc -= tc;
+        blaster_tick();
+    }
+}
+
 void get_sound_sample(const int16_t other_sample, int16_t *samples) {
 #if HARDWARE_SOUND
     int16_t sb_samples[2] = { 0, 0 };
@@ -587,16 +627,27 @@ void get_sound_sample(const int16_t other_sample, int16_t *samples) {
     const int32_t sample = (speaker_sample() + other_sample + covox_sample + midi_sample() + (sb_samples[0] + sb_samples[1]) / 2);
     pwm_set_gpio_level(PCM_PIN, (uint16_t) ((int32_t) sample + 0x8000L) >> 4);
 #elif defined(H3_BARE_METAL)
-    samples[1] = samples[0] += (int32_t)(speaker_sample() + other_sample + covox_sample + sn76489_sample()
+    // r1413: samples[] на входе не инициализирован (OPL-ветки на H3 нет) —
+    // раньше mix прибавлялся к мусору. Сначала база, затем CMS/SB, затем
+    // насыщение до int16 (без wrap-щелчков на громкой сцене).
+    int32_t mix = (int32_t)(speaker_sample() + other_sample + covox_sample +
+                            sn76489_sample()
 #if !defined(MIDI_GM_DLS)
-            + midi_sample()
+                            + midi_sample()
 #endif
-    );
+                            );
+    if (mix > 32767) mix = 32767;
+    if (mix < -32768) mix = -32768;
+    samples[0] = samples[1] = (int16_t)mix;
 #if defined(MIDI_GM_DLS)
     midi_dls_mix(samples);
 #endif
     cms_samples(samples);
     blaster_samples(samples);
+    if (samples[0] > 32767) samples[0] = 32767;
+    if (samples[0] < -32768) samples[0] = -32768;
+    if (samples[1] > 32767) samples[1] = 32767;
+    if (samples[1] < -32768) samples[1] = -32768;
 #else
     OPL_calc_buffer_linear(emu8950_opl, (int32_t *)samples, 1);
 

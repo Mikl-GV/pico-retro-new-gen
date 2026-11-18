@@ -27,6 +27,17 @@ int  fat_find(const char* dir, const char* name, fat_entry_t* out);
 
 // Чтение файла по байтам. Возвращает количество прочитанных (или -1).
 int  fat_read_file(const fat_entry_t* f, uint32_t offset, uint8_t* buf, uint32_t len);
+
+// r1425/r1430: последовательное чтение с сохранением текущего кластера (аналог
+// FATFS f_lseek+f_read в эталоне pico-286). Без этого каждый сектор HDD
+// проходил цепочку FAT от первого кластера.
+typedef struct {
+    const fat_entry_t* f;
+    uint32_t cl;        // текущий кластер
+    uint32_t cl_off;    // файловое смещение начала кластера
+} fat_stream_t;
+void fat_stream_init(fat_stream_t* s, const fat_entry_t* f);
+int  fat_stream_read(fat_stream_t* s, uint32_t offset, uint8_t* buf, uint32_t len);
 int  fat_mkdir(const char* parent_path, const char* name);
 
 // Запись/перезапись файла (dir_path — например "/", name — "retro.cfg").

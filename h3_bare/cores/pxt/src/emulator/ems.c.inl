@@ -21,12 +21,22 @@ inline void out_ems(const uint16_t port, const uint8_t data) {
 
 static INLINE uint32_t physical_address(const uint32_t address) {
     const uint32_t page_addr = address & 0x3FFF;
-    const uint8_t selector = ems_pages[(address >> 14) & 3];
+    uint32_t selector = ems_pages[(address >> 14) & 3];
+    // r1437: драйвер может записать в порт номер страницы за пределами 2 МБ;
+    // без клампа physical_address уходил за EMS[] и затирал соседей в .noinit_fbn.
+    if (selector >= (EMS_MEMORY_SIZE / 0x4000u)) selector = 0;
     return selector * 0x4000 + page_addr;
 }
 
-static INLINE uint8_t ems_read(const uint32_t address) {
-    const uint32_t phys_addr = physical_address(address);
+// r1439: на H3 EMS[] лежит в .noinit_fbn (NOLOAD) и не обнуляется загрузчиком,
+// в отличие от host-сборки (.bss). LTEMM при установке читает страницы — мусор
+// прошлой сессии/загрузчика даёт неверное состояние. Чистим на входе.
+void ems_reset(void) {
+    for (uint32_t i = 0; i < sizeof(EMS); i++) EMS[i] = 0;
+    ems_pages[0] = ems_pages[1] = ems_pages[2] = ems_pages[3] = 0;
+}
+
+static INLINE uint8_t ems_read(const uint32_t address) {    const uint32_t phys_addr = physical_address(address);
 #if PICO_ON_DEVICE && !defined(ONBOARD_PSRAM)
     return butter_psram_size ? EMS[phys_addr] :
      (PSRAM_AVAILABLE ? read8psram(phys_addr + EMS_PSRAM_OFFSET) : swap_read(phys_addr + EMS_PSRAM_OFFSET));

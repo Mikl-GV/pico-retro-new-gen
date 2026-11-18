@@ -536,9 +536,9 @@ void ms1504_kbd_feed ( uint8_t scan )
 		case 0x2A: kbd_set_mod0(0x02, scan); return;	// lshift
 		case 0x1D: kbd_set_mod0(0x04, scan); return;	// ctrl
 		case 0x38: kbd_set_mod0(0x08, scan); return;	// alt
-		case 0x46: kbd_set_mod0(0x10, scan); return;	// scroll lock
-		case 0x45: kbd_set_mod0(0x20, scan); return;	// num lock
-		case 0x3A: kbd_set_mod0(0x40, scan); return;	// caps lock
+		// r1413: Caps/Num/Scroll — защёлки, ими владеет host (ms1504_host.c);
+		// здесь только не даём им превратиться в символ BDA-буфера.
+		case 0x46: case 0x45: case 0x3A: return;
 		case 0x52: kbd_set_mod0(0x80, scan); return;	// ins
 	}
 	uint16_t word = scan;	// AL = ASCII, AH = сканкод
@@ -575,7 +575,6 @@ void ms1504_kbd_feed ( uint8_t scan )
 // This is the IRQ handler for the keyboard interrupt of BIOS
 static void bios_irq1_handler ( void )
 {
-	puts("BIOS: IRQ1!");
 	// keyboard
 //	if ((portram[0x64] & 2)) {	// is input buffer full
 		//uint8_t scan = portram[0x60];	// read the scancode
@@ -584,7 +583,7 @@ static void bios_irq1_handler ( void )
 		portout(0x61, ctrlst | 0x80);
 		portout(0x61, ctrlst);
 		//portram[0x64] &= ~2;		// empty the buffer
-		printf("BIOS: scan got: %Xh\n", scan);
+		// r1413: debug-prints убраны из обработчика (рвали колонки лога).
 		switch (scan & 0x7F) {
 			case 0x36: kbd_set_mod0(0x01, scan); break;	// rshift
 			case 0x2A: kbd_set_mod0(0x02, scan); break;	// lshift
