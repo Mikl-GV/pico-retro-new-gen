@@ -93,11 +93,14 @@ void _putchar(char character) {
         memmove(DEBUG_VRAM, DEBUG_VRAM + 80, 80 * 9);
         memset(DEBUG_VRAM + 80 * 9, 0, 80);
     }
+    // r1482: перенос строки ДО записи — раньше при x==80 байт попадал
+    // в первый столбец следующей строки и затирал его (PX-11).
+    if (x >= 80) { x = 0; y++; }
     uint8_t *vidramptr = DEBUG_VRAM + y * 80 + x;
     if ((unsigned)character >= 32) {
         if (character >= 96) character -= 32;
         *vidramptr = (uint8_t)(((character - 32) & 63) | 0 << 6);
-        if (x == 80) { x = 0; y++; } else x++;
+        x++;
     } else if (character == '\n') { x = 0; y++; }
     else if (character == '\r') { x = 0; }
     else if (character == 8 && x > 0) { x--; *vidramptr = 0; }
@@ -172,10 +175,14 @@ static void renderer(void) {
                 }
                 case 0x04:
                 case 0x05: {
-                    uint8_t *cga_row = vidramptr + ((y / 2 >> 1) * 80 + (y / 2 & 1) * 8192);
+                    /* r1479: поэлементный доступ. VIDEORAM — uint32_t[65536],
+                       индекс = байтовый адрес окна; (uint8_t*)VIDEORAM + 0x8000
+                       давал элемент 0x2000 и читал чужую область (PX-01). */
+                    const uint32_t *cga_row = VIDEORAM + 0x8000 +
+                        (size_t)((y / 2 >> 1) * 80 + (y / 2 & 1) * 8192);
                     uint8_t *cpal = (uint8_t *)cga_gfxpal[cga_colorset][cga_intensity];
                     for (int x = 320 / 4; x--;) {
-                        uint8_t b = *cga_row++;
+                        uint8_t b = (uint8_t)(*cga_row++ & 0xFFu);
                         uint32_t c0 = cga_palette[(b >> 6) & 3 ? cpal[(b >> 6) & 3] : cga_foreground_color];
                         uint32_t c1 = cga_palette[(b >> 4) & 3 ? cpal[(b >> 4) & 3] : cga_foreground_color];
                         uint32_t c2 = cga_palette[(b >> 2) & 3 ? cpal[(b >> 2) & 3] : cga_foreground_color];
@@ -188,9 +195,11 @@ static void renderer(void) {
                     break;
                 }
                 case 0x06: {
-                    uint8_t *cga_row = vidramptr + (y / 2 >> 1) * 80 + (y / 2 & 1) * 8192;
+                    /* r1479: см. 0x04/0x05 — поэлементный доступ к VIDEORAM */
+                    const uint32_t *cga_row = VIDEORAM + 0x8000 +
+                        (size_t)((y / 2 >> 1) * 80 + (y / 2 & 1) * 8192);
                     for (int x = 640 / 8; x--;) {
-                        uint8_t b = *cga_row++;
+                        uint8_t b = (uint8_t)(*cga_row++ & 0xFFu);
                         *pixels++ = cga_palette[(b >> 7 & 1) * cga_foreground_color];
                         *pixels++ = cga_palette[(b >> 6 & 1) * cga_foreground_color];
                         *pixels++ = cga_palette[(b >> 5 & 1) * cga_foreground_color];
@@ -204,9 +213,11 @@ static void renderer(void) {
                 }
                 case 0x1e: cols = 90; start_off = 5; if (y >= 348) break;
                 case 0x07: {
-                    uint8_t *cga_row = (uint8_t *)((uint8_t *)VIDEORAM + start_off) + (y & 3) * 8192 + y / 4 * cols;
+                    /* r1479: поэлементный доступ; start_off — в элементах */
+                    const uint32_t *cga_row = VIDEORAM + (size_t)start_off +
+                        (size_t)((y & 3) * 8192 + y / 4 * cols);
                     for (int x = 640 / 8; x--;) {
-                        uint8_t b = *cga_row++;
+                        uint8_t b = (uint8_t)(*cga_row++ & 0xFFu);
                         *pixels++ = cga_palette[(b >> 7 & 1) * 15];
                         *pixels++ = cga_palette[(b >> 6 & 1) * 15];
                         *pixels++ = cga_palette[(b >> 5 & 1) * 15];
@@ -227,9 +238,11 @@ static void renderer(void) {
                         case 0x74: palette = cga_composite_palette[cga_intensity << 1]; break;
                         default:   palette = cga_composite_palette[0]; break;
                     }
-                    uint8_t *cga_row = (uint8_t *)((uint8_t *)VIDEORAM + tga_offset) + (y / 2 >> 1) * 80 + (y / 2 & 1) * 8192;
+                    /* r1480: поэлементный доступ (VIDEORAM — uint32_t[]) */
+                    const uint32_t *cga_row = VIDEORAM + (size_t)tga_offset +
+                        (size_t)((y / 2 >> 1) * 80 + (y / 2 & 1) * 8192);
                     for (int x = 640 / 8; x--;) {
-                        uint8_t b = *cga_row++;
+                        uint8_t b = (uint8_t)(*cga_row++ & 0xFFu);
                         uint8_t c1 = b >> 4 & 15, c2 = b & 15;
                         if (!c1 && videomode == 0x8) c1 = cga_foreground_color;
                         if (!c2 && videomode == 0x8) c2 = cga_foreground_color;
@@ -241,9 +254,11 @@ static void renderer(void) {
                     break;
                 }
                 case 0x09: {
-                    uint8_t *tga_row = (uint8_t *)((uint8_t *)VIDEORAM + tga_offset) + (y / 2 & 3) * 8192 + y / 8 * 160;
+                    /* r1480: поэлементный доступ, см. 0x08 */
+                    const uint32_t *tga_row = VIDEORAM + (size_t)tga_offset +
+                        (size_t)((y / 2 & 3) * 8192 + y / 8 * 160);
                     for (int x = 320 / 2; x--;) {
-                        uint8_t b = *tga_row++;
+                        uint8_t b = (uint8_t)(*tga_row++ & 0xFFu);
                         uint32_t c1 = tga_palette[tga_palette_map[b >> 4 & 15]];
                         uint32_t c2 = tga_palette[tga_palette_map[b & 15]];
                         pixels[0] = pixels[1] = c1; pixels += 2;
@@ -252,9 +267,10 @@ static void renderer(void) {
                     break;
                 }
                 case 0x0a: {
-                    uint8_t *tga_row = (uint8_t *)VIDEORAM + y / 2 * 320;
+                    /* r1480: поэлементный доступ, см. 0x08 */
+                    const uint32_t *tga_row = VIDEORAM + (size_t)(y / 2 * 320);
                     for (int x = 640 / 2; x--;) {
-                        uint8_t b = *tga_row++;
+                        uint8_t b = (uint8_t)(*tga_row++ & 0xFFu);
                         *pixels++ = tga_palette[tga_palette_map[b >> 4 & 15]];
                         *pixels++ = tga_palette[tga_palette_map[b & 15]];
                     }
@@ -289,9 +305,10 @@ static void renderer(void) {
                     break;
                 }
                 case 0x11: {
-                    uint8_t *cga_row = (uint8_t *)(VIDEORAM + y * 80);
+                    /* r1481: поэлементный доступ (база VIDEORAM — uint32_t[]) */
+                    const uint32_t *cga_row = VIDEORAM + (size_t)y * 80;
                     for (int x = 640 / 8; x--;) {
-                        uint8_t b = *cga_row++;
+                        uint8_t b = (uint8_t)(*cga_row++ & 0xFFu);
                         *pixels++ = cga_palette[(b >> 7 & 1) * 15];
                         *pixels++ = cga_palette[(b >> 6 & 1) * 15];
                         *pixels++ = cga_palette[(b >> 5 & 1) * 15];
@@ -327,9 +344,10 @@ static void renderer(void) {
                             pixels += 2;
                         }
                     } else {
-                        uint8_t *vga_row = (uint8_t *)VIDEORAM + (y >> 1) * 320;
+                        /* r1481: поэлементный доступ (база VIDEORAM — uint32_t[]) */
+                        const uint32_t *vga_row = VIDEORAM + (size_t)((y >> 1) * 320);
                         for (int x = 0; x < 320; x++) {
-                            uint32_t color = vga_palette[*vga_row++];
+                            uint32_t color = vga_palette[*vga_row++ & 0xFFu];
                             pixels[0] = pixels[1] = color;
                             pixels += 2;
                         }
@@ -378,7 +396,9 @@ static int pxt_hid_to_pc(uint8_t h) {
     case 0x3D: return 0x3E; case 0x3E: return 0x3F; case 0x3F: return 0x40;
     case 0x40: return 0x41; case 0x41: return 0x42; case 0x42: return 0x43;
     case 0x43: return 0x44; case 0x44: return 0x57; case 0x45: return 0x58;
-    case 0x46: return 0x37; case 0x47: return 0x46; case 0x49: return 0x52;
+    /* r1478: PrintScreen не отдаём — на XT без E0 тот же 0x37, что keypad «*»,
+       и отпускание одной клавиши снимало другую (PX-12). */
+    case 0x46: return -1; case 0x47: return 0x46; case 0x49: return 0x52;
     case 0x4A: return 0x47; case 0x4B: return 0x49; case 0x4C: return 0x53;
     case 0x4D: return 0x4F; case 0x4E: return 0x51; case 0x4F: return 0x4D;
     case 0x50: return 0x4B; case 0x51: return 0x50; case 0x52: return 0x48;
@@ -494,7 +514,11 @@ static void pxt_audio_flush(void) {
     last_us = now;
     if (dt > 100000u) dt = 1000000u / 60u;
     blaster_advance(dt);
-    int frames = SOUND_FREQUENCY / 60;   // ~735 на кадр 60 Гц
+    // r1476: число сэмплов — из фактического dt, а не фикс. 735 за кадр 60 Гц.
+    // При длинной паузе (чтение HDD по FAT, до сотен мс) кадр растягивался,
+    // а поток звука оставался 735 пар → недолив кольца и рывок после.
+    int frames = (int)(((uint64_t)SOUND_FREQUENCY * (uint64_t)dt) / 1000000ULL);
+    if (frames < 1) frames = 1;
     if (frames > 2048) frames = 2048;    // не более выходного rs-буфера
     for (int i = 0; i < frames; i++)
         get_sound_sample(0, &snd_buf[i * 2]);
@@ -559,7 +583,13 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
     // Индиск C:/D: (HDD) задаётся rom_browser заранее через pxt_disk_set.
     if (rom && size) {
         // drive 0 = A:
-        pxt_disk_clear(0);
+        // r1483: сброс видеосостояния прошлой сессии (PX-06): hercules_mode,
+    // cga_blinking/colorset/intensity, port3DA.
+    {
+        extern void cga_video_reset(void);
+        cga_video_reset();
+    }
+    pxt_disk_clear(0);
         pxt_disk_set(0, rom, size);
         emulog_field("PXT", "disk", "A: %u B", (unsigned)size);
     }
@@ -606,9 +636,16 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
                 pit_started = 1;
                 pit_last = now_us;
             }
-        } else if ((uint32_t)(now_us - pit_last) >= 54925u) {
-            pit_last += 54925u;
-            doirq(0);
+        } else {
+            // r1475: период — из запрограммированного делителя (`timer_period`
+            // обновляется в i8253.h при OUT 43h). Константа 54925 мкс
+            // игнорировала перепрограммирование PIT (DOS-игры, 100…1000 Гц).
+            extern int timer_period;
+            uint32_t period = (timer_period > 0) ? (uint32_t)timer_period : 54925u;
+            if ((uint32_t)(now_us - pit_last) >= period) {
+                pit_last += period;
+                doirq(0);
+            }
         }
         exec86(tormoz);
         renderer();
@@ -626,8 +663,8 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
                          (unsigned)HMA[0xF440], (unsigned)RAM[0xF440],
                          (unsigned)i8259.interrupt_mask_register, pit_started,
                          (unsigned)(segregs32[2] & 0xFFFF), (unsigned)(ip32 & 0xFFFF));
-        // r1413: кадр 640x480 RGB32 идёт в HDMI напрямую (4:3, поля по бокам),
-        // без промежуточного 320x240 RGB565 — нет двойного nearest-размытия.
+        // r1469: растр подтверждён стендом (r1468) — включаем масштабирование
+        // 4:3 по высоте экрана: 640×480 → 800×600 (nearest), без размытия.
         emu_show_rgba_int((const uint32_t *)pxt_screen, PXT_W, PXT_H, PXT_W);
         fb_flush();
         // r1433/r1435: POST Turbo XT BIOS проходит за 1-2 кадра и тут же
@@ -649,6 +686,14 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
         if (emu_esc_hold()) break;
     }
 
+    // r1463: слой DE2 вернуть на буфер меню (иначе после выхода экран держит
+    // последний кадр pxt и меню не видно).
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);   // r1466: бордюр обратно чёрный
+    }
     emu_audio_stop();
     fb_clear();
     fb_flush();

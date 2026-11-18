@@ -63,17 +63,6 @@ uint8_t speakerenabled = 0;
  * и буфер живут здесь (shim), host читает m15_audbuf. */
 static int16_t speaker_ph = 0;
 static int64_t speaker_acc = 0;
-int16_t speakergensample ( void ) {
-    extern struct i8253_s i8253;   // fake86_src/i8253.h
-    if (!speakerenabled) return 0;
-    uint16_t div = (uint16_t)(i8253.chandata[2] ? i8253.chandata[2] : 1);
-    speaker_acc += div;
-    if (speaker_acc >= 1193182) {   /* ~1 сек (округлённо по 1.19 МГц) */
-        speaker_acc -= 1193182;
-        speaker_ph = (int16_t)(speaker_ph ? 0 : 12000);
-    }
-    return speaker_ph;
-}
 
 /* r735: буфер PC-спикера (генерирует host-цикл, не audio.c) */
 int8_t m15_audbuf[96000];
@@ -82,7 +71,14 @@ void m15_tick_audio(int n) {
     /* заполнить n сэмплов квадратом по текущей частоте (44100 Гц) */
     extern struct i8253_s i8253;
     extern uint8_t portram[0x10000];
-    uint16_t div = (uint16_t)(i8253.chandata[2] ? i8253.chandata[2] : 1);
+    // r1471: тон = 1193182/div Гц. Считаем в тиках PIT: за один сэмпл набегает
+    // 1193182/44100 ≈ 27 тиков, переключение фазы на полупериоде div/2.
+    // Раньше acc += div при пороге 1193182 давал f ≈ 0.0185*div (при div=1000
+    // это 18 Гц вместо 1193 Гц — ошибка ~64x, «рокот» вместо писка).
+    uint16_t div = (uint16_t)(i8253.effectivedata[2] ? i8253.effectivedata[2] : 1);
+    const int64_t step = 1193182 / 44100;
+    int64_t half = (int64_t)div / 2;
+    if (half < 1) half = 1;
     // r1413: GATE2 (порт 0x61 бит 0) выключает тактирование канала 2 —
     // на реальном PC OUT2 остаётся высоким и тона нет. Раньше бит игнорировался
     // и спикер продолжал пищать при выключенном канале.
@@ -90,9 +86,9 @@ void m15_tick_audio(int n) {
     if (n > 96000) n = 96000;
     for (int i = 0; i < n; i++) {
         if (!gate) { m15_audbuf[i] = 0; continue; }
-        speaker_acc += div;
-        if (speaker_acc >= 1193182) {
-            speaker_acc -= 1193182;
+        speaker_acc += step;
+        if (speaker_acc >= half) {
+            speaker_acc -= half;
             speaker_ph = (int16_t)(speaker_ph ? 0 : 12000);
         }
         m15_audbuf[i] = (int8_t)((speakerenabled ? speaker_ph : 0) >> 8);
@@ -113,7 +109,6 @@ uint64_t lasttick      = 0;
 
 void inittiming ( void ) {}
 
-#define PIT_IRQ0_US 54925u       /* 1.19318 МГц / 65536 ≈ 18.2 Гц */
 #define VGA_RETRACE_US 8333u     /* ~120 Гц переключение H/V phase */
 
 void timing ( void )
@@ -131,8 +126,22 @@ void timing ( void )
     // → бесконечный повтор POST. На реальном XT PIT до загрузки счётчика
     // не тикает (mode 0, counter 0).
     if (i8253.active[0]) {
-        if ((ct - p_last) >= PIT_IRQ0_US) {
+        // r1474: период — из запрограммированного делителя канала 0, а не из
+        // константы 18.2 Гц. Программы, перепрограммирующие PIT (100…1000 Гц),
+        // получали 18.2 Гц: врали таймеры DOS-программ и звук по PIT-прерываниям.
+        uint32_t div0 = i8253.effectivedata[0] ? i8253.effectivedata[0] : 65536u;
+        // r1484: период в МИКРОСЕКУНДАХ = div * 1e6 / 1193182 (при 65536 → 54925).
+        // В r1474 стояло 1193182/div = 18 — это ГЕРЦЫ, а не мкс: IRQ0 шёл каждые
+        // 18 мкс, гость захлёбывался прерываниями и экран оставался чёрным.
+        uint32_t period = (uint32_t)(((uint64_t)div0 * 1000000ULL) / 1193182ULL);
+        if (period == 0) period = 1;
+        if ((uint32_t)(ct - p_last) >= period) {
             p_last = ct;
+            // счётчик канала 0 тикает в том же темпе (0 -> reload)
+            if (i8253.counter[0] == 0)
+                i8253.counter[0] = (uint16_t)i8253.effectivedata[0];
+            else
+                i8253.counter[0] = (uint16_t)(i8253.counter[0] - 1u);
             doirq(0);          // wake от HLT, тики BIOS-таймера
         }
     }

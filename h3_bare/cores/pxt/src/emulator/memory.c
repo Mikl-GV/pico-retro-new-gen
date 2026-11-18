@@ -11,8 +11,9 @@
 /* На H3 нет PSRAM и секции .psram. RAM+UMB+HMA+VIDEORAM+SRAM — большие
    (640К+176К+64К+256К+176К) и в общем .bss упёрлись бы в CPS ZIP_BUF_BIG
    (0x44C00000). Владелец времени один (одно ядро за раз), поэтому кладём
-   в переиспользуемый пул аркад .noinit_fbn (0x54000000, 96 МБ) — как делает
-   MS1504 для образов дисков. Обнуление вручную в emu_run_pxt. */
+   в переиспользуемый пул аркад .noinit_fbn (0x54000000, фактически ≈104 МБ,
+   0x6873FF0 — r1460) — как делает MS1504 для образов дисков.
+   Обнуление вручную в emu_run_pxt. */
 uint32_t __attribute__((aligned (4), section(".noinit_fbn")))  VIDEORAM[VIDEORAM_SIZE] = {0};
 uint8_t __attribute__((aligned (4), section(".noinit_fbn"))) RAM[RAM_SIZE] = {0};
 uint8_t __attribute__((aligned (4), section(".noinit_fbn"))) UMB[UMB_END - UMB_START] = {0};

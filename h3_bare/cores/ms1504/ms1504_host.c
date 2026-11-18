@@ -85,7 +85,10 @@ static int ms1504_hid_to_pc(uint8_t h) {
     case 0x3D: return 0x3E; case 0x3E: return 0x3F; case 0x3F: return 0x40;
     case 0x40: return 0x41; case 0x41: return 0x42; case 0x42: return 0x43;
     case 0x43: return 0x44; case 0x44: return 0x57; case 0x45: return 0x58;
-    case 0x46: return 0x37;   /* PrintScreen */
+    /* r1478: PrintScreen не отдаём: на XT без E0 он даёт тот же 0x37, что
+       keypad «*», и отпускание одной клавиши снимало другую (MS-08).
+       Печать экрана в DOS идёт через BIOS INT 5, отдельный сканкод не нужен. */
+    case 0x46: return -1;
     case 0x47: return 0x46;   /* ScrollLock */
     case 0x49: return 0x52;   /* Insert */
     case 0x4A: return 0x47;   /* Home */
@@ -240,6 +243,10 @@ static void ms1504_kbd_update(void) {
     }
     // отпущенные: сканкод, которого нет в текущем отчёте
     for (int pc2 = 1; pc2 < 0x59; pc2++) {
+        // r1467: модификаторы ведёт блок usb_kbd_get_mods() выше — в raw[] их нет,
+        // поэтому здесь они считались «отпущенными» в том же кадре, что и нажатие
+        // (Shift/Ctrl/Alt жили один кадр, Shift+A печатал «a»).
+        if (pc2 == 0x1D || pc2 == 0x2A || pc2 == 0x36 || pc2 == 0x38) continue;
         if (g_kbd_prev[pc2]) {
             int still = 0;
             for (int i = 0; i < n; i++)
@@ -264,10 +271,12 @@ static uint16_t ms1504_rgb565(uint32_t rgb888) {
 // (бордюры не проблема). ms1504_scr[640*400] рендерится 1:1, затем
 // nearest-масштабом в HDMI FB 1024×600. Bold (Ctrl+F10 / Fn+→) —
 // дублирование пикселей шрифта по горизонтали.
+// r1460: кадр — в .noinit_fbn (владелец один, 512 КБ из бюджета .bss).
 #define MS1504_SCR_W_640 640
 #define MS1504_SCR_H_400 400
 
-static uint16_t ms1504_scr[MS1504_SCR_W_640 * MS1504_SCR_H_400];
+static uint16_t ms1504_scr[MS1504_SCR_W_640 * MS1504_SCR_H_400]
+    __attribute__((section(".noinit_fbn"), aligned(4)));
 
 static void ms1504_render_into(uint16_t* dst, int dw, int dh) {
     uint32_t vb = videobase;
@@ -343,6 +352,8 @@ static void ms1504_scale_to_hdmi(void) {
 // показать: рендер 640×400 в ms1504_scr + прямой вывод на HDMI
 static void ms1504_video_flush(void) {
     ms1504_render_into(ms1504_scr, MS1504_SCR_W_640, MS1504_SCR_H_400);
+    // r1473: по просьбе владельца возвращён растровый масштаб 640×400 → 960×600.
+    // Вариант 1:1 (r1469) остался в emu_show_rgb565_1to1() — откат одной строкой.
     ms1504_scale_to_hdmi();
     fb_flush();
 }
@@ -392,8 +403,6 @@ int ms1504_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     ms1504_hardware_init();
-    memset(RAM, 0, RAM_SIZE);
-    memset(readonly, 0, RAM_SIZE);
 
     // BIOS вверх RAM: F0000-FFFFF (как loadbios в main.c)
     memcpy(RAM + 0x100000 - size, rom, size);
@@ -517,7 +526,9 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("MS1504", "run", "\"%s\" (%u B)", rom_name ? rom_name : "?", (unsigned)size);
     for (;;) {
         ms1504_kbd_update();
-        exec86(120000);
+        // r1472: бюджет кадра 4.77 МГц / 60 Гц ≈ 79 500 инструкций. Было 120000 —
+        // гость крутился ~1.5x быстрее собственных IRQ (таймеры DOS-программ врали).
+        exec86(79500);
         // r1050: video_flush рендерит 640×400 напрямую в HDMI FB и флашит
         ms1504_video_flush();
         ms1504_audio_flush();   // r735: PC-спикер → I2S

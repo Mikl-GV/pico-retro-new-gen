@@ -129,6 +129,65 @@ static void scale_rgb565_to_fb(const uint16_t* src, int sw, int sh, int stride,
 //     (280×192 → ×3 = 840×576, пиксель копируется mul раз, дробных шагов нет);
 //   * иначе — 4:3 на всю высоту (560×192 → 800×600) с nearest-шагом.
 // Раньше 560×192 шёл ×1 (560×192 из 1024×600) — изображение было мелким.
+// r1468: кадр КАК ЕСТЬ, 1:1, без масштаба (PXT 640×480 в центр 1024×600).
+// Отличие от emu_show_rgba_int: нет ни множителя, ни шага — построчное копирование,
+// поля — бордюр магента, чтобы растр и границы кадра были видны.
+void emu_show_rgba_1to1(const uint32_t* src, int sw, int sh, int stride_px,
+                        int dx, int dy) {
+    if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
+    if (dx < 0 || dy < 0 || dx + sw > FB_W || dy + sh > FB_H) return;
+
+    const uint32_t border = 0xFFFF00FFu;   // магента: бордюр вокруг кадра
+    fb_dirty_all();
+    fb_frame_scaled();
+
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
+    const size_t row_bytes = (size_t)sw * 4u;
+
+    for (int y = 0; y < FB_H; y++) {
+        uint32_t* row = dst + (size_t)y * FB_W;
+        if (y < dy || y >= dy + sh) {
+            for (int x = 0; x < FB_W; x++) row[x] = border;
+            continue;
+        }
+        for (int x = 0; x < dx; x++) row[x] = border;
+        memcpy(row + dx, src + (size_t)(y - dy) * (size_t)stride_px, row_bytes);
+        for (int x = dx + sw; x < FB_W; x++) row[x] = border;
+    }
+}
+
+// r1469: то же «как есть» 1:1, но источник — RGB565 (МС1504: 640×400).
+void emu_show_rgb565_1to1(const uint16_t* src, int sw, int sh, int stride_px,
+                          int dx, int dy) {
+    if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
+    if (dx < 0 || dy < 0 || dx + sw > FB_W || dy + sh > FB_H) return;
+
+    const uint32_t border = 0xFFFF00FFu;   // магента: бордюр вокруг кадра
+    fb_dirty_all();
+    fb_frame_scaled();
+
+    uint32_t* dst = (uint32_t*)(uintptr_t)fb_draw_addr();
+
+    for (int y = 0; y < FB_H; y++) {
+        uint32_t* row = dst + (size_t)y * FB_W;
+        if (y < dy || y >= dy + sh) {
+            for (int x = 0; x < FB_W; x++) row[x] = border;
+            continue;
+        }
+        for (int x = 0; x < dx; x++) row[x] = border;
+        const uint16_t* s = src + (size_t)(y - dy) * (size_t)stride_px;
+        uint32_t* d = row + dx;
+        for (int x = 0; x < sw; x++) {
+            uint16_t p = s[x];
+            uint32_t r = (uint32_t)((p >> 11) & 0x1F) << 3;
+            uint32_t g = (uint32_t)((p >> 5) & 0x3F) << 2;
+            uint32_t b = (uint32_t)(p & 0x1F) << 3;
+            d[x] = (r << 16) | (g << 8) | b;
+        }
+        for (int x = dx + sw; x < FB_W; x++) row[x] = border;
+    }
+}
+
 void emu_show_rgba_int(const uint32_t* src, int sw, int sh, int stride_px) {
     if (!src || sw <= 0 || sh <= 0 || stride_px < sw) return;
     if (sw > FB_W || sh > FB_H) return;   // не наш случай: кадр больше экрана

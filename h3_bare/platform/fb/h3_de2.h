@@ -181,6 +181,30 @@ typedef struct T_H3_DE2_CSC {
 
 #define H3_DE2_WH(w, h)				(((h - 1) << 16) | (w - 1))
 
+/* r1461: аппаратный UI-скейлер DE2 (Linux: sun8i_ui_scaler.c, BSP Allwinner).
+ * Блок скейлера UI-канала 1: VI-скейлер 0x20000 + unit 0x10000 = 0x30000
+ * от базы MUX0 (совпадает с H3_DE2_MUX0_GSU1_BASE). */
+#define H3_DE2_UI_SCALER_BASE		(H3_DE2_MUX0_BASE + 0x30000)
+	#define H3_UI_SCAL_CTRL				0x000
+	#define H3_UI_SCAL_OUTSIZE			0x040
+	#define H3_UI_SCAL_INSIZE			0x080
+	#define H3_UI_SCAL_HSTEP			0x088
+	#define H3_UI_SCAL_VSTEP			0x08c
+	#define H3_UI_SCAL_HPHASE			0x090
+	#define H3_UI_SCAL_VPHASE			0x098
+	#define H3_UI_SCAL_HCOEFF(i)		(0x200 + 4 * (i))
+	#define H3_UI_SCAL_CTRL_EN			(1U << 0)
+	#define H3_UI_SCAL_CTRL_COEFF_RDY	(1U << 4)
+	#define H3_UI_SCAL_SCALE_FRAC		20
+	#define H3_UI_SCAL_COEFF_COUNT		16
+	#define H3_UI_SCAL_SIZE(w, h)		(((uint32_t)((h) - 1) << 16) | (uint32_t)((w) - 1))
+
+int  h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_t bpp,
+			   uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh);
+void h3_de2_ui_scaler_off(void);
+void h3_de2_ui_restore(void);
+void h3_de2_set_bkcolor(uint32_t argb);
+
 #define H3_DE2_UI_CFG_ATTR_FMT(f)	((f & 0xf) << 8)
 #define H3_DE2_UI_CFG_ATTR_EN		(1U << 0)
 	#define H3_DE2_UI_FORMAT_XRGB_8888		4U

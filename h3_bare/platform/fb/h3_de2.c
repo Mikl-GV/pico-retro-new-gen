@@ -48,6 +48,12 @@
 #include "h3_ccu.h"
 
 #include "display_timing.h"
+#include "h3_ui_scaler_coef.h"
+
+/* r1461: размер выхода (режим HDMI), нужен UI-скейлеру как OUTSIZE. */
+static uint32_t g_out_w = 0, g_out_h = 0;
+/* r1462: база кадрового буфера меню (из de2_mode_set) — для восстановления слоя. */
+static uint32_t g_fb_base = 0;
 
 /*
  * Bits per pixel selector. Each value n is such that the bits-per-pixel is
@@ -109,6 +115,11 @@ void de2_mode_set(const struct display_timing *mode, const uint32_t bpp, uint32_
 	const uint32_t size = H3_DE2_WH(mode->hactive.typ, mode->vactive.typ);
 	uint32_t channel;
 	uint32_t format;
+
+	/* r1461: выход скейлера = размер режима */
+	g_out_w = mode->hactive.typ;
+	g_out_h = mode->vactive.typ;
+	g_fb_base = address;
 
 	H3_DE2->RST |= 1;
 	H3_DE2->GATE |= BIT(0);
@@ -190,3 +201,104 @@ int __attribute__((cold)) h3_de2_init(struct display_timing *timing, uint32_t fb
 	h3_hdmi_enable(1 << VIDEO_BPP32, timing);
 	return 0;
 }
+
+static inline void h3_ui_scal_wr(uint32_t off, uint32_t v) {
+	*(volatile uint32_t *)(H3_DE2_UI_SCALER_BASE + off) = v;
+}
+
+// r1462: слой UI показывает НАТИВНЫЙ кадр ядра, DE растягивает его в
+// прямоугольник (dx,dy,dw,dh) аппаратно. bpp = 16 (RGB565) или 32 (XRGB8888).
+// Возврат 0 — скейлер включён; -1 — размеры не годятся (зовём программный путь).
+int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_t bpp,
+			  uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh) {
+	uint32_t hstep, vstep, row, fmt;
+	const uint32_t *coef;
+
+	if (g_out_w == 0 || g_out_h == 0)
+		return -1;
+	if (src_w == 0 || src_h == 0 || dw == 0 || dh == 0)
+		return -1;
+	if (dx + dw > g_out_w || dy + dh > g_out_h)
+		return -1;
+
+	switch (bpp) {
+	case 16:
+		fmt = H3_DE2_UI_FORMAT_RGB_565;
+		break;
+	case 32:
+		fmt = H3_DE2_UI_FORMAT_XRGB_8888;
+		break;
+	default:
+		return -1;
+	}
+
+	H3_DE2_MUX0_UI->CFG[0].SIZE = H3_DE2_WH(src_w, src_h);
+	H3_DE2_MUX0_UI->CFG[0].COORD = (dy << 16) | dx;
+	H3_DE2_MUX0_UI->CFG[0].PITCH = (bpp / 8u) * src_w;
+	H3_DE2_MUX0_UI->CFG[0].TOP_LADDR = addr;
+	H3_DE2_MUX0_UI->CFG[0].ATTR = H3_DE2_UI_CFG_ATTR_EN | H3_DE2_UI_CFG_ATTR_FMT(fmt);
+	H3_DE2_MUX0_UI->OVL_SIZE = H3_DE2_WH(dw, dh);
+
+	/* r1466: 1:1 — скейлер НЕ включаем. На H3 его включение (CTRL=EN|COEFF_RDY)
+	 * гасило выход целиком; без масштаба он и не нужен. */
+	if (src_w == dw && src_h == dh) {
+		h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+		__asm volatile("dsb" ::: "memory");
+		return 0;
+	}
+
+	hstep = (uint32_t)(((uint64_t)src_w << H3_UI_SCAL_SCALE_FRAC) / dw);
+	vstep = (uint32_t)(((uint64_t)src_h << H3_UI_SCAL_SCALE_FRAC) / dh);
+
+	h3_ui_scal_wr(H3_UI_SCAL_OUTSIZE, H3_UI_SCAL_SIZE(dw, dh));
+	h3_ui_scal_wr(H3_UI_SCAL_INSIZE, H3_UI_SCAL_SIZE(src_w, src_h));
+	h3_ui_scal_wr(H3_UI_SCAL_HSTEP, hstep);
+	h3_ui_scal_wr(H3_UI_SCAL_VSTEP, vstep);
+	h3_ui_scal_wr(H3_UI_SCAL_HPHASE, 0);
+	h3_ui_scal_wr(H3_UI_SCAL_VPHASE, 0);
+
+	/* строка коэффициентов = целая часть коэффициента увеличения (1..15) */
+	row = hstep >> H3_UI_SCAL_SCALE_FRAC;
+	if (row == 0)
+		row = 1;
+	if (row > 15)
+		row = 15;
+	coef = &h3_ui_scaler_coef[(row - 1) * H3_UI_SCAL_COEFF_COUNT];
+	for (uint32_t i = 0; i < H3_UI_SCAL_COEFF_COUNT; i++)
+		h3_ui_scal_wr(H3_UI_SCAL_HCOEFF(i), coef[i]);
+
+	__asm volatile("dsb" ::: "memory");
+	h3_ui_scal_wr(H3_UI_SCAL_CTRL, H3_UI_SCAL_CTRL_EN | H3_UI_SCAL_CTRL_COEFF_RDY);
+	__asm volatile("dsb" ::: "memory");
+	return 0;
+}
+
+// r1462: вернуть слой 1:1 на экранный буфер меню (адрес запомнен в de2_mode_set).
+void h3_de2_ui_restore(void) {
+	if (g_out_w == 0 || g_out_h == 0)
+		return;
+	h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+	H3_DE2_MUX0_UI->CFG[0].SIZE = H3_DE2_WH(g_out_w, g_out_h);
+	H3_DE2_MUX0_UI->CFG[0].COORD = 0;
+	H3_DE2_MUX0_UI->CFG[0].PITCH = g_out_w * 4u;
+	H3_DE2_MUX0_UI->CFG[0].TOP_LADDR = g_fb_base;
+	H3_DE2_MUX0_UI->CFG[0].ATTR = H3_DE2_UI_CFG_ATTR_EN |
+		H3_DE2_UI_CFG_ATTR_FMT(H3_DE2_UI_FORMAT_XRGB_8888);
+	H3_DE2_MUX0_UI->OVL_SIZE = H3_DE2_WH(g_out_w, g_out_h);
+	__asm volatile("dsb" ::: "memory");
+}
+
+// r1466: цвет бордюра (поле вокруг нативного кадра). Пишем и BKCOLOR микшера,
+// и FCOLOR слоя 0 — иначе непокрытая область остаётся чёрной и «растр не виден».
+void h3_de2_set_bkcolor(uint32_t argb) {
+	H3_DE2_MUX0_BLD->BKCOLOR = argb;
+	H3_DE2_MUX0_BLD->ATTR[0].FCOLOR = argb;
+	__asm volatile("dsb" ::: "memory");
+}
+
+// r1461: выключить скейлер (без перестройки слоя).
+void h3_de2_ui_scaler_off(void) {
+	h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+	__asm volatile("dsb" ::: "memory");
+}
+

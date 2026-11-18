@@ -531,6 +531,21 @@ static const uint8_t scan2ascii[] = {
    знаки US-раскладки). */
 void ms1504_kbd_feed ( uint8_t scan )
 {
+	/* r1470: если гость повесил СВОЙ INT 9 (вектор 0x09 ушёл из ROM 0xF000)
+	   и IRQ1 размаскирован — отдаём сырой сканкод железным путём (0x60 + IRQ1).
+	   Иначе русский драйвер раскладки не видит ни модификаторов, ни защёлок:
+	   ASCII-путь ниже модификаторы в кольцо не кладёт вообще. */
+	{
+		extern void doirq ( uint8_t irq );
+		uint32_t ivt9 = (uint32_t)RAM[0x24] | ((uint32_t)RAM[0x25] << 8) |
+		                ((uint32_t)RAM[0x26] << 16) | ((uint32_t)RAM[0x27] << 24);
+		if ((ivt9 >> 16) != 0xF000u && !(portin(0x21) & 0x02)) {
+			portram[0x60] = scan;
+			portram[0x64] |= 0x01;      /* OBF: данные в 0x60 */
+			doirq(1);
+			return;
+		}
+	}
 	switch (scan & 0x7F) {
 		case 0x36: kbd_set_mod0(0x01, scan); return;	// rshift
 		case 0x2A: kbd_set_mod0(0x02, scan); return;	// lshift

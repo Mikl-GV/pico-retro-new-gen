@@ -7,6 +7,22 @@ uint8_t cga_intensity = 0, cga_colorset = 0, cga_foreground_color = 15, cga_blin
 static uint8_t hercules_mode = 0, hercules_enable = 0;
 volatile uint8_t port3DA = 8;
 
+/* r1483: сброс видеосостояния между сессиями (PX-06). Иначе после сессии в
+ * HGC/планарном VGA следующая начинается с чужими флагами: hercules_mode
+ * остаётся 1, и порт 3DA до первой записи 3BF отдаёт 0xFF (биос «висит» на
+ * ретрейсе), а cga_blinking/colorset/intensity красят текст по-старому. */
+void cga_video_reset(void) {
+    cga_intensity = 0;
+    cga_colorset = 0;
+    cga_foreground_color = 15;
+    cga_blinking = 0xFF;
+    cga_blinking_lock = 0;
+    cga_hires = 0;
+    hercules_mode = 0;
+    hercules_enable = 0;
+    port3DA = 8;
+}
+
 const uint32_t cga_palette[16] = {
         //R, G, B
         0x000000, // 0 black
