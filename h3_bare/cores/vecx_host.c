@@ -5,7 +5,8 @@
 //   vecx_init_game(rom, size) — BIOS (вшит) + ROM в cart, vecx_reset
 //   vecx_run_frame()           — vecx_emu() до нового кадра; ядро само
 //                                вызывает osint_render() (см. ниже)
-//   vx_render_hdmi()           — растеризация vx_fb[330×410] в HDMI 1024×600
+//   vecx_render_frame()        — r1511: конверсия vx_fb[330×410] RGB1555 → XRGB8888
+//                                + аппаратный DE2 GSU (482×600, портрет)
 //
 // Ввод: USB-клавиатура (ремап REMAP_PLAT_VECTREX) + Sega-геймпад
 //   (стик 4 направлений + 4 кнопки: A=1, B=2, X=3, Y=4).
@@ -117,63 +118,71 @@ static void vx_rasterize(void) {
     }
 }
 
-// ---- Прямой рендер в HDMI (портретный экран Vectrex: 330×410) ----
-// EMU_FB (320×240) слишком мал для 410 строк — emu_scale(330,410) читал бы
-// за пределы. Рендерим vx_fb[330×410] напрямую в FB_ADDR (1024×600 XRGB8888),
-// масштаб: высота 410 -> 600, ширина 330 -> ~483, центрировано, поля по бокам.
-#define VX_FB_ADDR 0x5F900000
-#define VX_FB_W    1024
-#define VX_FB_H    600
+// ---- r1511: аппаратный DE2 GSU (вместо программного vx_render_hdmi) ----
+// 32-битный DE2-буфер кадра Vectrex (330×410, как vx_fb). В vecx_render_frame
+// кадр RGB1555 из vx_fb конвертируется в XRGB8888 (строки по 330 слов,
+// DE2 PITCH = INSIZE — урок r1495), GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций (dst_w = 330×600/410 = 482, dx=271 по центру, dy=0 —
+// та же геометрия, что была у программного vx_render_hdmi).
+static uint32_t vecx_rgb32[VX_W * VX_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1511: активен ли аппаратный DE2 GSU (для vecx_render_frame). file-static —
+// переживает сессии, сбрасывается в emu_run_vectrex при входе (урок r1496).
+static int g_vecx_hw_scaler_active = 0;
 
-static void vx_render_hdmi(uint32_t border) {
-    uint32_t* dst = (uint32_t*)VX_FB_ADDR;
-    int dst_w = (VX_W * VX_FB_H) / VX_H;   // 330*600/410 = 482 (центр dst_x=271)
-    if (dst_w > VX_FB_W) dst_w = VX_FB_W;
-    int dst_x = (VX_FB_W - dst_w) / 2;
-
-    // поля слева/справа
-    if (border) {
-        for (int dy = 0; dy < VX_FB_H; dy++) {
-            for (int dx = 0; dx < dst_x; dx++) dst[dy * VX_FB_W + dx] = border;
-            int r = dst_x + dst_w;
-            for (int dx = r; dx < VX_FB_W; dx++) dst[dy * VX_FB_W + dx] = border;
+// r1511: рендер кадра Vectrex на DE2 GSU. К этому моменту vecx_run_frame уже
+// вызвал vecx_emu → osint_render → vx_rasterize: векторы нарисованы в vx_fb
+// (330×410 RGB1555 серый). Конвертируем кадр в XRGB8888 (vecx_rgb32,
+// упакован 330×410 — строки по 330 слов, PITCH = INSIZE, урок r1495), DE2
+// GSU растягивает на всю высоту FB_H=600 с сохранением пропорций
+// (dst_w = 330×600/410 = 482, dx по центру; бордюр — через h3_de2_set_bkcolor,
+// поля заполняет микшер). Fallback — программный emu_scale отсутствует
+// (EMU_FB 320×240 мал для 410 строк — не используется).
+void vecx_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_vecx_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций.
+        int dh = 600;   // FB_H
+        int dw = (VX_W * 600) / VX_H;   // 330*600/410 = 482
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;       // 271 по центру
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)vecx_rgb32,
+                                  (uint32_t)VX_W, (uint32_t)VX_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_vecx_hw_scaler_active = 1;
+            emulog_field("Vectrex", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", VX_W, VX_H, dw, dh);
+        } else {
+            emulog_field("Vectrex", "scaler", "fallback (программного пути нет)");
         }
     }
-
-    // построковый масштаб: источник vx_fb (RGB1555 серая), приёмник XRGB8888
-    uint32_t step_y = ((uint32_t)VX_H << 16) / (uint32_t)VX_FB_H;
-    uint32_t y_acc = step_y >> 1;
-    int sy = 0;
-    for (int dy = 0; dy < VX_FB_H; dy++) {
-        const uint16_t* src = vx_fb + sy * VX_W;
-        uint32_t* d = dst + (uint32_t)dy * VX_FB_W + (uint32_t)dst_x;
-        uint32_t step_x = ((uint32_t)VX_W << 16) / (uint32_t)dst_w;
-        uint32_t x_acc = step_x >> 1;
-        for (int dx = 0; dx < dst_w; dx++) {
-            uint32_t si = x_acc >> 16;
-            if (si >= VX_W) si = VX_W - 1;   // защита индекса от выхода за vx_fb
-            uint16_t p = src[si];
-            // RGB1555: R=бит14-10, G=9-5, B=4-0 (у нас серое c==R==G==B)
-            uint32_t g = ((p >> 5) & 0x1F) << 3;
-            d[dx] = (g << 16) | (g << 8) | g;
-            x_acc += step_x;
-            if (x_acc >= ((uint32_t)VX_W << 16)) x_acc -= (uint32_t)VX_W << 16;
+    if (g_vecx_hw_scaler_active) {
+        // RGB1555 -> XRGB8888, упакованно 330×410 (строки по 330 слов):
+        // DE2 PITCH = INSIZE (1320 Б), читает ровно 330 слов на строку.
+        const uint16_t* s = vx_fb;
+        uint32_t* d = vecx_rgb32;
+        for (int y = 0; y < VX_H; y++) {
+            const uint16_t* srow = s + (size_t)y * VX_W;
+            uint32_t* drow = d + (size_t)y * VX_W;
+            for (int x = 0; x < VX_W; x++) {
+                uint16_t p = srow[x];
+                // RGB1555 серый: все каналы равны (vx_rgb1555) — берём середину.
+                uint32_t g = ((p >> 5) & 0x1Fu) << 3;
+                drow[x] = (g << 16) | (g << 8) | g;
+            }
         }
-        y_acc += step_y;
-        int nsy = (int)(y_acc >> 16);
-        if (nsy > sy) { if (nsy >= VX_H) nsy = VX_H - 1; sy = nsy; }
+        usb_cache_clean((uint32_t)(uintptr_t)vecx_rgb32,
+                        (uint32_t)((size_t)VX_W * VX_H * 4u));
     }
-    // r1166 (E14): при border перерисовываются поля (весь экран), иначе — только
-    // центральная колонка картинки. Явная dirty-зона вместо фолбэка fb_flush.
-    if (border) fb_dirty_all();
-    else        fb_mark_dirty(dst_x, 0, dst_w, VX_FB_H);
-    fb_frame_scaled();
 }
 
 // ---- Реализация osint_render() и vecx_snd_push() (архитектура ядра) ----
 // Оба вызываются из vecx_emu() (см. vecx.c: osint_render на 1214, snd_push на 1230).
 // osint_render() — только растеризует векторы в vx_fb. Вывод в HDMI делает
-// vx_render_hdmi() в emu_run_vectrex (после полного кадра).
+// vecx_render_frame() в emu_run_vectrex (r1511: DE2 GSU, после полного кадра).
 void osint_render(void) {
     vx_rasterize();
 }
@@ -305,10 +314,6 @@ void vecx_run_frame(void) {
     vecx_emu(30000);
 }
 
-void vecx_render_frame(void) {
-    // уже сделано в vecx_run_frame (osint_render внутри vecx_emu)
-}
-
 // ---- точка входа emu.c ----
 void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // r1143-история: Vectrex был ЕДИНСТВЕННЫМ host БЕЗ emu_prepare() (не сбрасывал
@@ -316,10 +321,11 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     // С r1143 добавлен единый сброс на входе — иначе повторный вход шёл с хвостом
     // прошлой сессии (залипшая активность/неразряженное кольцо). Вызов ниже активен.
     emu_prepare();
+    // r1511: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_vecx_hw_scaler_active = 0;
     emulog_begin("Vectrex");
     emulog_field("Vectrex", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
-    // r1183: Vectrex рисует в FB_ADDR напрямую (vx_render_hdmi) — штатный буфер.
-    fb_flip_set(0);
     snd_manifest("vectrex", "psg dac");
     if (vecx_init_game(rom, size) != 1) {
         printf("Vectrex: init failed\n");
@@ -331,19 +337,28 @@ void emu_run_vectrex(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("Vectrex", "video", "330x410 (native)");
     emulog_field("Vectrex", "init", "OK");
     emu_set_border_color(0x00000B14);   // тёмно-синий
-    uint32_t border = 0x000B1430;       // XRGB − тёмно-синий для полей Vectrex
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         vecx_run_frame();                // osint_render внутри рисует в vx_fb
         emu_throttle();
-        vx_render_hdmi(border);          // vx_fb[330×410] → HDMI 1024×600 (портрет)
+        // r1511: аппаратный DE2 GSU — vx_fb[330×410] → GSU → 482×600 (портрет).
+        // Тёмно-синий бордюр вокруг кадра задаёт DE2 (bkcolor), поля рисует микшер.
+        vecx_render_frame();
         fb_flush();
         emu_hdmi_flip();   // r703: no-op при CONFIG_HDMI_DOUBLE_BUF=0
         // ESC удержание ~0.9с — выход
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1511: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр Vectrex и меню не видно) + бордюр обратно чёрный (как 32X r1493).
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     g_loaded = 0;
     emu_audio_stop();
     fb_clear(); fb_flush();

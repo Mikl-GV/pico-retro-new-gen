@@ -306,6 +306,130 @@ void md_render_frame(void) {
     }
 }
 
+// r1509: 32-битный DE2-буфер кадра SMS (фикс. 256×192, как col_rgb32 r1507).
+// В sms_render_frame кадр конвертируется в XRGB8888 (строки по 256 слов,
+// DE2 PITCH = INSIZE — урок r1495), GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций (dst_w = 256×600/192 = 800, dx по центру).
+static uint32_t sms_rgb32[256 * 192] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1509: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+// file-static — переживает сессии, сбрасывается в sms_init_game (урок r1496).
+static int g_sms_hw_scaler_active = 0;
+
+// r1509: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+int sms_hw_scaler_active(void) { return g_sms_hw_scaler_active; }
+
+// r1509: рендер кадра SMS на DE2 GSU. К этому моменту sms_run_frame уже
+// вызвал gpgx_render_emu(256, 192) — картинка 256×192 лежит в EMU_FB
+// (лево-верх, страйд 320). Конвертируем её в XRGB8888-буфер, упакованный
+// 256×192 (строки по 256 слов, DE2 PITCH = INSIZE — урок r1495), DE2 GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций (dst_w =
+// 256×600/192 = 800, dx=112 по центру, dy=0 — как Coleco r1507). Fallback —
+// программный emu_scale из самого EMU_FB (g_sms_hw_scaler_active=0).
+void sms_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_sms_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (256 * 600) / 192;   // = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)sms_rgb32,
+                                  256, 192, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_sms_hw_scaler_active = 1;
+            emulog_field("SMS", "scaler", "DE2 GSU 32bpp 256x192->%dx%d", dw, dh);
+        } else {
+            emulog_field("SMS", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_sms_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 256×192 (строки по 256 слов):
+        // DE2 PITCH = INSIZE (1024 Б), читает ровно 256 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (gpgx_render_emu уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = sms_rgb32;
+        for (int y = 0; y < 192; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * 256;
+            for (int x = 0; x < 256; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)sms_rgb32,
+                        (uint32_t)((size_t)256 * 192 * 4u));
+    }
+}
+
+// r1510: 32-битный DE2-буфер кадра SG-1000 (фикс. 256×192, как SMS r1509).
+// В sg_render_frame кадр конвертируется в XRGB8888 (строки по 256 слов,
+// DE2 PITCH = INSIZE — урок r1495), GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций (dst_w = 256×600/192 = 800, dx по центру).
+static uint32_t sg_rgb32[256 * 192] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1510: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+// file-static — переживает сессии, сбрасывается в sg_init_game (урок r1496).
+static int g_sg_hw_scaler_active = 0;
+
+// r1510: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+int sg_hw_scaler_active(void) { return g_sg_hw_scaler_active; }
+
+// r1510: рендер кадра SG-1000 на DE2 GSU. К этому моменту sg_run_frame уже
+// вызвал gpgx_render_emu(256, 192) — картинка 256×192 лежит в EMU_FB
+// (лево-верх, страйд 320). Конвертируем её в XRGB8888-буфер, упакованный
+// 256×192 (строки по 256 слов, DE2 PITCH = INSIZE — урок r1495), DE2 GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций (dst_w =
+// 256×600/192 = 800, dx=112 по центру, dy=0 — как SMS r1509). Fallback —
+// программный emu_scale из самого EMU_FB (g_sg_hw_scaler_active=0).
+void sg_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_sg_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (256 * 600) / 192;   // = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)sg_rgb32,
+                                  256, 192, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_sg_hw_scaler_active = 1;
+            emulog_field("SG1000", "scaler", "DE2 GSU 32bpp 256x192->%dx%d", dw, dh);
+        } else {
+            emulog_field("SG1000", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_sg_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 256×192 (строки по 256 слов):
+        // DE2 PITCH = INSIZE (1024 Б), читает ровно 256 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (gpgx_render_emu уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = sg_rgb32;
+        for (int y = 0; y < 192; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * 256;
+            for (int x = 0; x < 256; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)sg_rgb32,
+                        (uint32_t)((size_t)256 * 192 * 4u));
+    }
+}
+
 // ---- Public API ----
 int gpgx_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
@@ -597,6 +721,9 @@ exit:
 
 // ---- интерфейс для emu.c: SMS через GPGX (замена smsplus) ----
 int sms_init_game(const uint8_t* rom, uint32_t size) {
+    // r1509: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_sms_hw_scaler_active = 0;
     g_force_sms = 1;
     return gpgx_init_game(rom, size);
 }
@@ -723,6 +850,9 @@ void gg_run_frame(void) {
 // как у SG-1000 (1 КБ RAM + слот картриджа). Ввод — 2 кнопки (PAD2B),
 // ремап и рендер — как у SMS (REMAP_PLAT_SMS, system_frame_sms, 256x192).
 int sg_init_game(const uint8_t* rom, uint32_t size) {
+    // r1510: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_sg_hw_scaler_active = 0;
     g_force_sg = 1;
     return gpgx_init_game(rom, size);
 }

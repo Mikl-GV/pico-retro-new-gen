@@ -792,11 +792,15 @@ extern int a5200_init_game(const uint8_t* rom, uint32_t size);
 extern void a5200_run_frame(void);
 extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
+extern void sms_render_frame(void);   // r1509: DE2 GSU рендер кадра SMS (256×192 → 800×600)
+extern int sms_hw_scaler_active(void);   // r1509: DE2 GSU активен (пропустить emu_scale)
 extern int gg_init_game(const uint8_t* rom, uint32_t size);
 extern void gg_run_frame(void);
 extern int gg_hw_scaler_active(void);   // r1503: DE2 GSU активен (пропустить emu_scale_int)
 extern int sg_init_game(const uint8_t* rom, uint32_t size);
 extern void sg_run_frame(void);
+extern void sg_render_frame(void);   // r1510: DE2 GSU рендер кадра SG-1000 (256×192 → 800×600)
+extern int sg_hw_scaler_active(void);   // r1510: DE2 GSU активен (пропустить emu_scale)
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
 extern void portfolio_run_frame(void);
 extern int portfolio_exit_requested(void);
@@ -904,12 +908,25 @@ void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     for (;;) {
         sms_run_frame();
+        sms_render_frame();
         emu_throttle();
-        emu_scale(256, 192);
+        // r1509: при активном DE2 GSU кадр уже на экране (sms_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!sms_hw_scaler_active())
+            emu_scale(256, 192);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1509: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр SMS и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     // r1351: gpgx_stop() НЕ вызывался для SMS/GG/SG — blip-буферы ядра
     // переживали выход, следующий emu_prepare сбрасывал bump-пул, и
     // audio_init() новой сессии делал blip_delete/memset по переиспользованной
@@ -1001,12 +1018,25 @@ void emu_run_sg1000(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     for (;;) {
         sg_run_frame();
+        sg_render_frame();
         emu_throttle();
-        emu_scale(256, 192);
+        // r1510: при активном DE2 GSU кадр уже на экране (sg_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!sg_hw_scaler_active())
+            emu_scale(256, 192);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1510: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр SG-1000 и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     {
         extern void gpgx_stop(void);   // r1351: снять blip-буферы до сброса пула
         gpgx_stop();

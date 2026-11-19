@@ -191,8 +191,9 @@ USB).
 - `s32x_rgb32` (r1493, 32X), `gba_rgb32` (r1494, GBA), `lynx_rgb32` (r1497,
   Lynx), `snes_rgb32` (r1498, SNES), `gb_rgb32` (r1499, GB/GBC), `ngp_rgb32`
   (r1500, NGP/NGPC), `gg_rgb32` (r1503, Game Gear), `nes_rgb32` (r1504, NES),
-  `md_rgb32` (r1505, Mega Drive), `col_rgb32` (r1507, ColecoVision) и
-  `pce_rgb32` (r1508, PC Engine) —
+  `md_rgb32` (r1505, Mega Drive), `col_rgb32` (r1507, ColecoVision),
+  `pce_rgb32` (r1508, PC Engine), `sms_rgb32` (r1509, Sega Master System),
+  `sg_rgb32` (r1510, SG-1000) и `vecx_rgb32` (r1511, Vectrex) —
   32-битные DE2-буферы
   кадров, объявлены `static` в `.noinit_fbn`. DE2 GSU читает их по DMA
   (UI-слой PITCH = INSIZE); каждый кадр буфер перезаписывается конверсией в
@@ -230,7 +231,17 @@ USB).
   из `host_video`; геометрия GSU — stretch на всю высоту FB_H=600,
   dst_w=w×600/h, кламп 1024, dx по центру, r1508; **слой перекалибруется при
   смене w/h — `g_pce_gsu_w/h` (урок r1506)**, PCE в штате 256×240, бывает
-  224 строки);
+  224 строки); `sms_rgb32` — 256×192 (строки по 256 слов,
+  источник EMU_FB со страйдом 320 после `gpgx_render_emu(256,192)`
+  в `sms_run_frame`; геометрия GSU — stretch на всю высоту FB_H=600,
+  dst_w=256×600/192=800, dx=112, r1509); `sg_rgb32` — 256×192 (строки по 256
+  слов, источник EMU_FB со страйдом 320 после `gpgx_render_emu(256,192)`
+  в `sg_run_frame`; геометрия GSU — stretch на всю высоту FB_H=600,
+  dst_w=256×600/192=800, dx=112, r1510); `vecx_rgb32` — 330×410 (строки по
+  330 слов, источник vx_fb RGB1555 (серый, vx_rgb1555) — конверсия как была
+  в программном `vx_render_hdmi`; геометрия GSU — stretch на всю высоту
+  FB_H=600, dst_w=330×600/410=482, dx=271, r1511 — перевод Vectrex с
+  прямого писателя в FB_ADDR на аппаратный GSU);
 - флаг аппаратного скейлера GBA — file-static `g_hw_scaler_active`, сбрасывается
   в `gba_init_game()` при каждом входе (r1496: без сброса повторный запуск GBA =
   чёрный экран — слой не перенастраивается после `h3_de2_ui_restore`);
