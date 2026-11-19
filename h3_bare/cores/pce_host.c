@@ -57,6 +57,88 @@ static size_t      g_rom_size = 0;
 // ---- Input: маска RETRO_DEVICE_ID_JOYPAD ----
 static uint16_t g_joy = 0;
 
+// r1508: 32-битный DE2-буфер кадра PCE (как nes_rgb32 r1504). Ядро отдаёт
+// RGB565-кадр в host_video, который клампит w до PCE_SCALE_W (256) и кладёт
+// в EMU_FB (страйд 320); фактическая высота 240 (PCE всегда 240 в этом
+// ядре, бывает 224 — учтено). В pce_render_frame кадр конвертируется в
+// XRGB8888 (строки по w слов, DE2 PITCH = INSIZE — урок r1495), GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций (dst_w =
+// w×600/h, dx по центру — как NES r1504 / Coleco r1507).
+static uint32_t pce_rgb32[PCE_SCALE_W * PCE_SCALE_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1508: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+// file-static — переживает сессии, сбрасывается в emu_run_pce при входе
+// (урок r1496: без сброса повторный запуск = чёрный экран).
+static int g_pce_hw_scaler_active = 0;
+// r1508: размер источника, на который слой DE2 откалиброван (урок r1506 —
+// перекалибровка при смене w/h, чтобы не поймать «строки разъехались»,
+// если игра меняет высоту 240⇄224).
+static int g_pce_gsu_w = 0;
+static int g_pce_gsu_h = 0;
+// r1508: фактический размер кадра последнего video_refresh (обновляется в
+// host_video, читается pce_render_frame для упаковки/калибровки GSU).
+static int g_pce_frame_w = 0;
+static int g_pce_frame_h = 0;
+
+// r1508: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+int pce_hw_scaler_active(void) { return g_pce_hw_scaler_active; }
+
+// r1508: рендер кадра PCE на DE2 GSU. К этому моменту retro_run уже вызвал
+// host_video — кадр w×h RGB565 лежит в EMU_FB (лево-верх, страйд 320; поля
+// чёрные от emu_clear_fb). Конвертируем его в XRGB8888 (pce_rgb32, упакован
+// w×h — строки по w слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций (dst_w = w×600/h, кламп
+// 1024, dx по центру — как NES r1504). Слой перекалибруется при смене w/h
+// (урок r1506). Fallback — программный emu_scale (g_pce_hw_scaler_active=0).
+void pce_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    int w = g_pce_frame_w;
+    int h = g_pce_frame_h;
+    if (w <= 0 || w > PCE_SCALE_W) w = PCE_SCALE_W;
+    if (h <= 0 || h > PCE_SCALE_H) h = PCE_SCALE_H;
+    // r1508: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_pce_hw_scaler_active || w != g_pce_gsu_w || h != g_pce_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (w * 600) / h;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)pce_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_pce_hw_scaler_active = 1;
+            g_pce_gsu_w = w;
+            g_pce_gsu_h = h;
+            emulog_field("PCE", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("PCE", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_pce_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+        // Источник — EMU_FB со страйдом 320 (host_video уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB_ADDR;
+        uint32_t* d = pce_rgb32;
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = s + y * EMU_FB_W;
+            uint32_t* drow = d + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)pce_rgb32,
+                        (uint32_t)((size_t)w * h * 4u));
+    }
+}
+
 static void host_update_input(void)
 {
     uint8_t keys[6];
@@ -141,6 +223,12 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     unsigned h = height < PCE_SCALE_H ? height : PCE_SCALE_H;
     size_t sp = pitch >> 1;   // байты -> uint16
 
+    // r1508: фактический размер кадра — для pce_render_frame (упаковка w×h,
+    // калибровка GSU). В штатном PCE 256×240; если ядро отдаст 224 строки,
+    // слой перекалибруется (урок r1506).
+    g_pce_frame_w = (int)w;
+    g_pce_frame_h = (int)h;
+
     emu_clear_fb();           // чёрные поля справа/снизу
 
     for (unsigned y = 0; y < h; y++)
@@ -191,6 +279,11 @@ static bool host_environment(unsigned cmd, void* data)
 void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     emu_prepare();
+    // r1508: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_pce_hw_scaler_active = 0;
+    g_pce_gsu_w = 0;
+    g_pce_gsu_h = 0;
     emulog_begin("PCE");
     emulog_field("PCE", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("pce", "psg");
@@ -243,12 +336,25 @@ void emu_run_pce(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     for (;;) {
         retro_run();
+        pce_render_frame();
         emu_throttle();
-        emu_scale(PCE_SCALE_W, PCE_SCALE_H);
+        // r1508: при активном DE2 GSU кадр уже на экране (pce_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!pce_hw_scaler_active())
+            emu_scale(PCE_SCALE_W, PCE_SCALE_H);
         fb_flush();
         if (emu_esc_hold()) break;
     }
 
+    // r1508: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр PCE и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     retro_unload_game();
     retro_deinit();
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */

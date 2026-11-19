@@ -50,6 +50,70 @@ static int g_loaded = 0;
 // Рендерим в свой буфер, потом построчно в EMU_FB.
 static uint16_t g_col_fb[COL_W * COL_H] __attribute__((aligned(8)));
 
+// r1507: 32-битный DE2-буфер кадра ColecoVision (как nes_rgb32 r1504 — кадр
+// фикс. 256×192). В col_render_frame кадр конвертируется в XRGB8888 (строки
+// по 256 слов, DE2 PITCH = INSIZE — урок r1495), GSU растягивает на всю
+// высоту FB_H=600 с сохранением пропорций (dst_w = 256×600/192 = 800,
+// dx по центру — как NGP r1501 / GBA r1502).
+static uint32_t col_rgb32[COL_W * COL_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1507: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+// file-static — переживает сессии, сбрасывается в coleco_init_game (урок
+// r1496: без сброса повторный запуск = чёрный экран).
+static int g_col_hw_scaler_active = 0;
+
+// r1507: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+extern "C" int col_hw_scaler_active(void) { return g_col_hw_scaler_active; }
+
+// r1507: рендер кадра ColecoVision на DE2 GSU. К этому моменту coleco_run_frame
+// уже скопировал кадр 256×192 RGB565 из g_col_fb (pitch 256) в EMU_FB
+// (лево-верх, страйд 320). Конвертируем его в XRGB8888 (col_rgb32, упакован
+// 256×192 — строки по 256 слов, DE2 PITCH = INSIZE, урок r1495), DE2 GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций (dst_w =
+// 256×600/192 = 800, dx по центру, dy=0 — как NES r1504). Fallback —
+// программный emu_scale из самого EMU_FB (g_col_hw_scaler_active=0).
+extern "C" void col_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_col_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (COL_W * 600) / COL_H;   // 256×600/192 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)col_rgb32,
+                                  256, 192, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_col_hw_scaler_active = 1;
+            emulog_field("Coleco", "scaler", "DE2 GSU 32bpp 256x192->%dx%d", dw, dh);
+        } else {
+            emulog_field("Coleco", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_col_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 256×192 (строки по 256 слов):
+        // DE2 PITCH = INSIZE (1024 Б), читает ровно 256 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (coleco_run_frame уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = col_rgb32;
+        for (int y = 0; y < COL_H; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * COL_W;
+            for (int x = 0; x < COL_W; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)col_rgb32,
+                        (uint32_t)((size_t)COL_W * COL_H * 4u));
+    }
+}
+
 // ---- ввод: USB-клавиатура + Sega-геймпад -> кнопки ColecoVision ----
 // Кнопки Coleco: D-Pad + левая/правая кнопка (Fire 1/2) + Keypad 0-9 * #.
 // Sega-геймпад: крестовина = D-Pad, A = кнопка 1 (левая), B = кнопка 2
@@ -166,6 +230,9 @@ extern "C" int coleco_init_game(const uint8_t* rom, uint32_t size) {
     }
 
     g_loaded = 1;
+    // r1507: сброс флага аппаратного скейлера при КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_col_hw_scaler_active = 0;
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
     printf("Coleco: loaded %u bytes\n", (unsigned)size);
     return 1;
@@ -228,13 +295,26 @@ extern "C" void emu_run_coleco(const uint8_t* rom, uint32_t size, const char* ro
     emu_esc_hold_reset();
     for (;;) {
         coleco_run_frame();
+        col_render_frame();
         emu_throttle();
-        emu_scale(COL_W, COL_H);
+        // r1507: при активном DE2 GSU кадр уже на экране (col_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!col_hw_scaler_active())
+            emu_scale(COL_W, COL_H);
         fb_flush();
         // ESC — удержание ~0.9 с на выход (как NES/SNES)
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1507: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр Coleco и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     coleco_stop();
     // r1351: Coleco выходил БЕЗ emu_audio_stop() — кольцо I2S не сбрасывалось,
     // статистика/флаг «идёт игра» оставались включёнными, fb_flip_set(0) не
