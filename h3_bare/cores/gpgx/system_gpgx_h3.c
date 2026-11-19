@@ -51,6 +51,19 @@ static int g_force_sg  = 0;   // r1190: SG-1000 — форс SYSTEM_SG (TMS99xx)
 static int g_vp_w = 320;   // последний viewport width
 static int g_vp_h = 224;   // последний viewport height
 
+// r1503: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X/GBA/Lynx/SNES/GB/NGP: битый DE2-16бит,
+// CPU-копия чистая). Game Gear (GPGX) рендерит 160x144 RGB565 в EMU_FB
+// (viewport GG, strided 320); в gg_render_frame кадр конвертируется в
+// XRGB8888-буфер и отдаётся DE2 GSU, растягивающему на всю высоту FB_H=600
+// с сохранением пропорций (dst_w = 160×600/144 = 666, dx=179 по центру —
+// как NGP r1501 / GBA r1502). Буфер упакован 160×144 (строки по 160 слов) —
+// DE2 PITCH = INSIZE (урок r1495).
+static uint32_t gg_rgb32[160 * 144] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1503: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+// file-static — переживает сессии, сбрасывается в gg_init_game (урок r1496).
+static int g_gg_hw_scaler_active = 0;
+
 // Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576]).
 // 64-байтное выравнивание: построчный копипаст viewport в gpgx_render_emu
 // идёт без двойных cache-line (псевдонимов) на Cortex-A7.
@@ -156,6 +169,59 @@ static void gpgx_render_emu(int max_w, int max_h) {
             if (sx < 0 || sx >= bitmap.width) continue;
             EMU_FB[y * EMU_W + x] = src[(size_t)sy * bitmap.width + sx];
         }
+    }
+}
+
+// r1503: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+int gg_hw_scaler_active(void) { return g_gg_hw_scaler_active; }
+
+// r1503: рендер кадра Game Gear на DE2 GSU. К этому моменту gg_run_frame уже
+// вызвал gpgx_render_emu(160, 144) — картинка 160×144 лежит в EMU_FB (лево-
+// верх, страйд 320). Конвертируем её в XRGB8888-буфер, упакованный 160×144
+// (строки по 160 слов, DE2 PITCH = INSIZE — урок r1495), и DE2 GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций (dst_w = 160×600/144 = 666,
+// dx по центру — как NGP r1501 / GBA r1502). Fallback — программный
+// emu_scale_int из самого EMU_FB (g_gg_hw_scaler_active=0).
+void gg_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_gg_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (160 * 600) / 144;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)gg_rgb32,
+                                  160, 144, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_gg_hw_scaler_active = 1;
+            emulog_field("GG", "scaler", "DE2 GSU 32bpp 160x144->%dx%d", dw, dh);
+        } else {
+            emulog_field("GG", "scaler", "fallback CPU emu_scale_int");
+        }
+    }
+    if (g_gg_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 160×144 (строки по 160 слов):
+        // DE2 PITCH = INSIZE (640 Б), читает ровно 160 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (gpgx_render_emu уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = gg_rgb32;
+        for (int y = 0; y < 144; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * 160;
+            for (int x = 0; x < 160; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)gg_rgb32,
+                        (uint32_t)((size_t)160 * 144 * 4u));
     }
 }
 
@@ -451,6 +517,9 @@ void sms_run_frame(void) {
 int gg_init_game(const uint8_t* rom, uint32_t size) {
     g_loaded = 0;
     gb_heap_reset();
+    // r1503: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_gg_hw_scaler_active = 0;
     // r1145-продолжение: Game Gear — тот же путь синтеза PSG/FM, что MD/SMS.
     // Единый «вывод как у эталона» без DC-фильтра CPU2 (как gpgx_init_game).
     i2s_dc_bypass(1);

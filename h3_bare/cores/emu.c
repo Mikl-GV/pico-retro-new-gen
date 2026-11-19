@@ -794,6 +794,7 @@ extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
 extern int gg_init_game(const uint8_t* rom, uint32_t size);
 extern void gg_run_frame(void);
+extern int gg_hw_scaler_active(void);   // r1503: DE2 GSU активен (пропустить emu_scale_int)
 extern int sg_init_game(const uint8_t* rom, uint32_t size);
 extern void sg_run_frame(void);
 extern int portfolio_init_game(const uint8_t* rom, uint32_t size);
@@ -956,11 +957,23 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     for (;;) {
         gg_run_frame();
         emu_throttle();
-        emu_scale_int(160, 144);
+        // r1503: при активном DE2 GSU кадр уже на экране (gg_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale_int не нужен и наложился бы поверх аппаратного.
+        if (!gg_hw_scaler_active())
+            emu_scale_int(160, 144);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1503: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр GG и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     {
         extern void gpgx_stop(void);   // r1351: снять blip-буферы до сброса пула
         gpgx_stop();
