@@ -64,6 +64,24 @@ static uint32_t gg_rgb32[160 * 144] __attribute__((aligned(4), section(".noinit_
 // file-static — переживает сессии, сбрасывается в gg_init_game (урок r1496).
 static int g_gg_hw_scaler_active = 0;
 
+// r1505: 32-битный DE2-буфер кадра Mega Drive (аналог gg_rgb32 r1503, но
+// размер viewport переменный: 256/320 (H32/H40) x 192/224/240 — как SNES
+// snes_rgb32 r1498). Буфер на максимальный размер viewport (H40/PAL 320×240),
+// в md_render_frame пишется только активная область w×h, упакованная
+// построчно (строки по w слов, DE2 PITCH = INSIZE — урок r1495).
+static uint32_t md_rgb32[320 * 240] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1505: активен ли аппаратный DE2 GSU (для emu_run_megadrive — пропустить
+// emu_scale). file-static — переживает сессии, сбрасывается при входе в
+// emu_run_megadrive (урок r1496: без сброса повторный запуск = чёрный экран).
+static int g_md_hw_scaler_active = 0;
+// r1506: размер источника, на который слой DE2 откалиброван
+// (g_md_gsu_w/g_md_gsu_h). MD-игры меняют режим в рантайме (H32⇄H40,
+// NTSC⇄PAL): при смене w/h DE2 читал бы md_rgb32 со старым PITCH
+// (урок r1495), строки «разъезжались» (стенд r1505). Перекалибровка —
+// только при реальном изменении размера.
+static int g_md_gsu_w = 0;
+static int g_md_gsu_h = 0;
+
 // Глобальный буфер кадра (как в libretro.c: bitmap_data_[720*576]).
 // 64-байтное выравнивание: построчный копипаст viewport в gpgx_render_emu
 // идёт без двойных cache-line (псевдонимов) на Cortex-A7.
@@ -222,6 +240,69 @@ void gg_render_frame(void) {
         }
         usb_cache_clean((uint32_t)(uintptr_t)gg_rgb32,
                         (uint32_t)((size_t)160 * 144 * 4u));
+    }
+}
+
+// r1505: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+int md_hw_scaler_active(void) { return g_md_hw_scaler_active; }
+
+// r1505: рендер кадра Mega Drive на DE2 GSU. К этому моменту gpgx_run_frame
+// уже вызвал gpgx_render_emu(320, 240) — viewport 256/320×192/224/240 лежит
+// в EMU_FB (лево-верх, страйд 320). Размер кадра берём в ТОМ ЖЕ порядке, что
+// программный emu_scale(g_vp_w, g_vp_h) на строке вызова цикла: w = (vp_w<=0
+// ? 320 : vp_w), h = (vp_h<=0 ? 224 : vp_h) — переменный (H32⇄H40, NTSC⇄PAL).
+// Конвертируем активную область в XRGB8888 (md_rgb32, упакован w×h —
+// PITCH = INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций (dst_w = w×600/h, кламп 1024, dx по центру — как
+// SNES/GG). r1506: слой DE2 калибруется ПОВТОРНО при смене w/h (r1505:
+// «строки разъехались» — игры меняют режим в рантайме, DE2 читал md_rgb32
+// со старым PITCH). Fallback — программный emu_scale (g_md_hw_scaler_active=0).
+void md_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    int w = g_vp_w > 0 ? g_vp_w : 320;
+    int h = g_vp_h > 0 ? g_vp_h : 224;
+    if (w <= 0 || w > 320) w = 320;
+    if (h <= 0 || h > 240) h = 240;
+    // r1506: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_md_hw_scaler_active || w != g_md_gsu_w || h != g_md_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (w * 600) / h;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)md_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_md_hw_scaler_active = 1;
+            g_md_gsu_w = w;
+            g_md_gsu_h = h;
+            emulog_field("MD", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("MD", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_md_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+        // Источник — EMU_FB со страйдом 320 (gpgx_render_emu уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = md_rgb32;
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)md_rgb32,
+                        (uint32_t)((size_t)w * h * 4u));
     }
 }
 
@@ -462,6 +543,9 @@ uint32_t gpgx_frame_us_q16(void) {
 // ---- точка входа emu.c для Sega Mega Drive ----
 void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
+    // r1505: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_md_hw_scaler_active = 0;
     emulog_begin("MD");
     emulog_field("MD", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("megadrive", "ym2612 sn76496");
@@ -484,13 +568,26 @@ void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name) 
     emu_esc_hold_reset();
     for (;;) {
         gpgx_run_frame();
+        md_render_frame();
         emu_throttle();
-        // размер из viewport ядра: 256/320 (H32/H40) x 192/224/240
-        emu_scale(g_vp_w > 0 ? g_vp_w : 320, g_vp_h > 0 ? g_vp_h : 224);
+        // r1505: при активном DE2 GSU кадр уже на экране (md_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!md_hw_scaler_active())
+            // размер из viewport ядра: 256/320 (H32/H40) x 192/224/240
+            emu_scale(g_vp_w > 0 ? g_vp_w : 320, g_vp_h > 0 ? g_vp_h : 224);
         fb_flush();
         if (emu_esc_hold()) goto exit;   // ESC удержание — выход
     }
 exit:
+    // r1505: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр MD и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     gpgx_stop();
     emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
                         // выхода (доезды/«звук ниоткуда»).
