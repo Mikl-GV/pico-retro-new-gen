@@ -311,6 +311,78 @@ static void apple2_pad_keys(struct SYS_RUN_STATE*sr, uint16_t pad)
 #define APPLE2_CYCLES_PER_FRAME 17030
 #define APPLE2_FRAME_US 16667
 
+/* r1513: 32-битный DE2-буфер кадра Агат-9/Apple II. Кадр ядро разворачивает
+   В RGB565 в `frame` (в agat_run_common) — реальный размер по agat_video_size:
+   Агат-9 512×512, Apple II 560×384 (буфер 640×512 на максимум). agat_render_frame
+   конвертирует активную область в XRGB8888 (строки по fw слов, DE2 PITCH =
+   INSIZE — урок r1495), GSU растягивает на всю высоту FB_H=600 с сохранением
+   пропорций (dst_w = fw×600/fh, кламп 1024, dx по центру — как MD r1505).
+   r1513: слой DE2 калибруется ПОВТОРНО при смене w/h (урок r1506 —
+   «строки разъехались»), флаг сбрасывается в agat_run_common при входе
+   (урок r1496). Fallback — программный emu_scale_rgb565_src_aspect. */
+static uint32_t agat_rgb32[AGAT_FRAME_W * AGAT_FRAME_H] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_agat_hw_scaler_active = 0;
+static int g_agat_gsu_w = 0;
+static int g_agat_gsu_h = 0;
+
+/* r1513: активен ли аппаратный DE2 GSU (для agat_run_common — пропустить
+   программный масштаб). */
+int agat_hw_scaler_active(void) { return g_agat_hw_scaler_active; }
+
+/* r1513: рендер кадра Агат-9/Apple II на DE2 GSU. К этому моменту
+   agat_video_expand уже развернул кадр RGB565 в `frame` (fw×fh, строки по
+   fw слов). Конвертируем активную область в XRGB8888 (agat_rgb32, упакован
+   fw×fh — PITCH = INSIZE, урок r1495), DE2 GSU растягивает на всю высоту
+   FB_H=600 с сохранением пропорций (dst_w = fw×600/fh, кламп 1024, dx по
+   центру). Fallback — программный emu_scale_rgb565_src_aspect. */
+void agat_render_frame(const uint16_t* frame, int fw, int fh) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!frame || fw <= 0 || fh <= 0) return;
+    if (fw > AGAT_FRAME_W) fw = AGAT_FRAME_W;
+    if (fh > AGAT_FRAME_H) fh = AGAT_FRAME_H;
+    // r1513: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_agat_hw_scaler_active || fw != g_agat_gsu_w || fh != g_agat_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как
+        // emu_scale_rgb565_src_aspect, 4:3 при неквадратном пикселе).
+        int dh = 600;   // FB_H
+        int dw = (fw * 600) / fh;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)agat_rgb32,
+                                  (uint32_t)fw, (uint32_t)fh, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_agat_hw_scaler_active = 1;
+            g_agat_gsu_w = fw;
+            g_agat_gsu_h = fh;
+            emulog_field("AGAT", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", fw, fh, dw, dh);
+        } else {
+            emulog_field("AGAT", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_agat_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно fw×fh (строки по fw слов):
+        // DE2 PITCH = INSIZE, читает ровно fw слов на строку (урок r1495).
+        const uint16_t* s = frame;
+        uint32_t* d = agat_rgb32;
+        for (int y = 0; y < fh; y++) {
+            const uint16_t* srow = s + (size_t)y * fw;
+            uint32_t* drow = d + (size_t)y * fw;
+            for (int x = 0; x < fw; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)agat_rgb32,
+                        (uint32_t)((size_t)fw * fh * 4u));
+    }
+}
+
 /* r1363: hot-swap дискеты через fdd1 без сброса машины. */
 int agat_fdd1_swap(struct SYS_RUN_STATE* sr, int slot, int drive, const char* name);
 
@@ -573,6 +645,13 @@ static void agat_run_common(int systype, int apple2, const char *label,
 	g_disk_drives = apple2 ? 2 : 1;
 	emu_disk_register(apple2 ? &g_ops_apple2 : &g_ops_agat);
 
+	/* r1513: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+	   static переживает сессию, без сброса повторный запуск = чёрный экран. */
+	g_agat_hw_scaler_active = 0;
+	/* r1513: сброс калибровки размера GSU (урок r1506) — при входе. */
+	g_agat_gsu_w = 0;
+	g_agat_gsu_h = 0;
+
 	emu_set_period_us(frame_us);
 	emu_throttle_reset();
 	emu_esc_hold_reset();
@@ -609,12 +688,28 @@ static void agat_run_common(int systype, int apple2, const char *label,
 		if (fh > AGAT_FRAME_H) fh = AGAT_FRAME_H;
 		if (fw <= 0 || fh <= 0) { fw = AGAT_FRAME_W; fh = AGAT_FRAME_H; }
 		agat_video_expand(frame, fw, fh, 1);
-		emu_scale_rgb565_src_aspect(frame, fw, fh, fw, 4, 3);
+		/* r1513: при активном DE2 GSU кадр уже на экране (agat_render_frame
+		   конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+		   emu_scale_rgb565_src_aspect не нужен и наложился бы поверх
+		   аппаратного. */
+		if (!agat_hw_scaler_active())
+			emu_scale_rgb565_src_aspect(frame, fw, fh, fw, 4, 3);
+		else
+			agat_render_frame(frame, fw, fh);
 		fb_flush();
 		emu_throttle();
 		if (emu_esc_hold()) break;
 	}
 
+	/* r1513: вернуть DE2 слой на буфер меню (иначе экран держит последний
+	   кадр Агата и меню не видно) + бордюр обратно чёрный, как у 32X r1493. */
+	{
+		extern void h3_de2_ui_restore(void);
+		extern void h3_de2_set_bkcolor(uint32_t argb);
+
+		h3_de2_ui_restore();
+		h3_de2_set_bkcolor(0xFF000000u);
+	}
 	agat_free_system_state(sr);
 	emu_audio_stop();
 	fb_clear();

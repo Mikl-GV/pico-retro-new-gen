@@ -229,6 +229,73 @@ static void host_audio_sample(int16_t l, int16_t r) { (void)l; (void)r; }
 #define FB_H_C    600
 #define CPC_BG    0x00060812u   // цвет полей (тёмно-синий бордюр CPC)
 
+// ---- r1514: аппаратный DE2 GSU (вместо программного host_video) ----
+// Кадр CPC — RGB565 768×272 (HI, EMULATION_SCALE=2, crop off). В cpc_render_frame
+// кадр конвертируется в XRGB8888 (cpc_rgb32, упакован 768×272 — строки по
+// 768 слов, DE2 PITCH = INSIZE, урок r1495; источник host_video). GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций по аспекту ЯДРА (24/17,
+// пиксель CPC неквадратный; dst_w = 600×24/17 ≈ 847, dx = (1024-847)/2 ≈ 88,
+// dy=0 — та же геометрия, что была у программного host_video). Размер кадра
+// фиксированный (768×272), перекалибровка на каждый кадр не нужна (в отличие
+// от MD/A2600). Fallback — программный host_video (g_cpc_hw_scaler_active=0).
+static uint32_t cpc_rgb32[768 * 272] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1514: активен ли аппаратный DE2 GSU (для host_video — пропустить
+// программный путь). file-static — переживает сессии, сбрасывается при входе
+// (урок r1496). Размер кадра ядра фиксированный, поэтому смена w/h не
+// перекалибруется (урок r1506 не нужен).
+static int g_cpc_hw_scaler_active = 0;
+
+// r1514: рендер кадра CPC на DE2 GSU. К этому моменту ядро cap32 (cpc_retro_run)
+// вызвало host_video с кадром RGB565 768×272 (data, width, height, pitch).
+// Конвертируем кадр в XRGB8888 (cpc_rgb32, упакован w×h — строки по w слов,
+// PITCH = INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций по аспекту ядра 24/17 (dst_w = 600×24/17 ≈ 847, dx по
+// центру; бордюр — через h3_de2_set_bkcolor, поля заполняет микшер).
+void cpc_render_frame(const uint16_t* src, int w, int h, size_t sp) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!src || w <= 0 || h <= 0) return;
+    if (!g_cpc_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 по аспекту ядра (24/17) — пиксель
+        // CPC неквадратный, как в программном host_video.
+        int dh = 600;   // FB_H
+        int dw = (int)(((int64_t)dh * 24) / 17);   // 600×24/17 = 847
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 88 по центру
+        h3_de2_set_bkcolor(CPC_BG);   // поля — тёмно-синий бордюр CPC
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)cpc_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_cpc_hw_scaler_active = 1;
+            emulog_field("CPC", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("CPC", "scaler", "fallback CPU host_video");
+            g_cpc_hw_scaler_active = 0;
+            return;   // пусть пишет host_video (программный путь)
+        }
+    }
+    // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+    // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+    const uint16_t* s = src;
+    uint32_t* d = cpc_rgb32;
+    for (int y = 0; y < h; y++) {
+        const uint16_t* srow = s + (size_t)y * sp;
+        uint32_t* drow = d + (size_t)y * w;
+        for (int x = 0; x < w; x++) {
+            uint16_t p = srow[x];
+            drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                      (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                      (uint32_t)((p & 0x1Fu) << 3);
+        }
+    }
+    usb_cache_clean((uint32_t)(uintptr_t)cpc_rgb32,
+                    (uint32_t)((size_t)w * h * 4u));
+}
+
 static uint32_t* const g_fb = (uint32_t*)FB_ADDR_C;
 static int g_dw = 0, g_dh = 0, g_x0 = 0, g_y0 = 0;   // текущая геометрия кадра
 static float g_aspect = 24.0f / 17.0f;               // aspect_ratio ядра (см. emu_run_cpc)
@@ -238,6 +305,14 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     if (!data || width == 0 || height == 0) return;
     const uint16_t* src = (const uint16_t*)data;
     size_t sp = pitch >> 1;                 // байты -> uint16
+
+    // r1514: при активном DE2 GSU кадр уже на экране (cpc_render_frame
+    // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+    // путь не нужен и наложился бы поверх аппаратного.
+    if (g_cpc_hw_scaler_active) {
+        cpc_render_frame(src, (int)width, (int)height, sp);
+        return;
+    }
 
     // r970: картинка на всю высоту, ширина — по aspect_ratio ЯДРА (24/17),
     // а не по пикселям кадра. Пиксель CPC не квадратный, поэтому
@@ -434,6 +509,9 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 
     emu_set_border_color(0x00060812);
+    // r1514: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_cpc_hw_scaler_active = 0;
     emu_throttle_reset();
     emu_esc_hold_reset();
     emu_disk_register(&g_ops_cpc);
@@ -448,6 +526,17 @@ void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     cpc_retro_unload_game();
     cpc_retro_deinit();
+    /* r1514: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр CPC и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до h3_de2_ui_restore() — иначе DE2 продолжит читать
+       освобождённый cpc_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
     emulog_end("CPC");

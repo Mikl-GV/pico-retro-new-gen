@@ -220,6 +220,65 @@ static size_t host_audio_batch(const int16_t* data, size_t frames)
 #define FB_H_C    600
 #define C64_BG    0x00060812u   // цвет полей (тёмно-синий, как CPC-бордюр)
 
+// ---- r1516: аппаратный DE2 GSU (вместо программного host_video) ----
+// Кадр C64 — XRGB8888 384×288 фикс. (бордюр VIC-II; PAL 50 Гц). В
+// c64_render_frame кадр копируется в c64_rgb32 (упакован 384×288 — строки по
+// 384 слова, DE2 PITCH = INSIZE, урок r1495), GSU растягивает на всю высоту
+// FB_H=600 с сохранением пропорций по аспекту ядра 4:3 (dst_w = 600×4/3 =
+// 800, dx = (1024-800)/2 = 112 — та же геометрия, что была у host_video).
+// Размер фиксированный — перекалибровка при смене w/h не нужна (урок r1506
+// не применим). Fallback — программный host_video (g_c64_hw_scaler_active=0).
+static uint32_t c64_rgb32[384 * 288] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1516: активен ли аппаратный DE2 GSU (для host_video — пропустить
+// программный путь). file-static — переживает сессии, сбрасывается при входе
+// (урок r1496).
+static int g_c64_hw_scaler_active = 0;
+
+// r1516: рендер кадра C64 на DE2 GSU. К этому моменту ядро Frodo (frodo_retro_run)
+// вызвало host_video с кадром XRGB8888 384×288 (data, width, height, pitch).
+// Копируем кадр в c64_rgb32 (упакован w×h — строки по w слов, PITCH = INSIZE,
+// урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с сохранением
+// пропорций по аспекту ядра 4:3 (dst_w = 600×4/3 = 800, dx = 112 по центру;
+// бордюр — через h3_de2_set_bkcolor, поля заполняет микшер).
+void c64_render_frame(const uint32_t* src, int w, int h, size_t sp) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!src || w <= 0 || h <= 0) return;
+    if (!g_c64_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 по аспекту ядра (4:3).
+        int dh = 600;   // FB_H
+        int dw = (int)(((int64_t)dh * 4) / 3);   // 600×4/3 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        h3_de2_set_bkcolor(C64_BG);   // поля — тёмно-синий бордюр C64
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)c64_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_c64_hw_scaler_active = 1;
+            emulog_field("C64", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("C64", "scaler", "fallback CPU host_video");
+            g_c64_hw_scaler_active = 0;
+            return;   // пусть пишет host_video (программный путь)
+        }
+    }
+    // XRGB8888 -> c64_rgb32 (упакован w×h — строки по w слов):
+    // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+    const uint32_t* s = src;
+    uint32_t* d = c64_rgb32;
+    for (int y = 0; y < h; y++) {
+        const uint32_t* srow = s + (size_t)y * sp;
+        uint32_t* drow = d + (size_t)y * w;
+        memcpy(drow, srow, (size_t)w * sizeof(uint32_t));
+    }
+    usb_cache_clean((uint32_t)(uintptr_t)c64_rgb32,
+                    (uint32_t)((size_t)w * h * 4u));
+}
+
 static uint32_t* const g_fb = (uint32_t*)FB_ADDR_C;
 static int g_dw = 0, g_dh = 0, g_x0 = 0, g_y0 = 0;   // текущая геометрия кадра
 static float g_aspect = 4.0f / 3.0f;                 // aspect_ratio ядра
@@ -229,6 +288,14 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     if (!data || width == 0 || height == 0) return;
     const uint32_t* src = (const uint32_t*)data;
     size_t sp = pitch >> 2;                 // байты -> uint32
+
+    // r1516: при активном DE2 GSU кадр уже на экране (c64_render_frame
+    // копирует XRGB8888→c64_rgb32, GSU растягивает на 600) — программный
+    // путь не нужен и наложился бы поверх аппаратного.
+    if (g_c64_hw_scaler_active) {
+        c64_render_frame(src, (int)width, (int)height, sp);
+        return;
+    }
 
     // Картинка на всю высоту, ширина — по aspect_ratio ядра (4:3).
     int dh = FB_H_C;
@@ -423,6 +490,9 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     emu_set_border_color(0x00060812);
     emu_set_period_us(20000);   // 50 Гц PAL (C64)
+    // r1516: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_c64_hw_scaler_active = 0;
     emu_throttle_reset();
     emu_esc_hold_reset();
     emu_disk_register(&g_ops_frodo);
@@ -455,6 +525,17 @@ void emu_run_frodo(const uint8_t* rom, uint32_t size, const char* rom_name)
 
     frodo_retro_unload_game();
     frodo_retro_deinit();
+    /* r1516: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр C64 и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый
+       c64_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();
     fb_clear(); fb_flush();
     emulog_end("C64");

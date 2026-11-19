@@ -72,6 +72,75 @@ static const emu_disk_ops_t g_ops_a8 = {
 #define EMU_FB_W    320
 #define EMU_FB_H    240
 
+// ---- r1515: аппаратный DE2 GSU (вместо программного emu_scale) ----
+// Кадр A8 — RGB565 320×240 (ядро само центрирует ANTIC 384×240; разрешение
+// фиксированное). In a8_render_frame кадр конвертируется в XRGB8888
+// (a8_rgb32, упакован 320×240 — строки по 320 слов, DE2 PITCH = INSIZE,
+// урок r1495; источник EMU_FB страйд 320 после host_video), GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций (dst_w = 320×600/240 = 800,
+// dx = (1024-800)/2 = 112 — как col_rgb32 r1507). Размер фиксированный —
+// перекалибровка при смене w/h не нужна (урок r1506 не применим).
+// Fallback — программный emu_scale (g_a8_hw_scaler_active=0).
+static uint32_t a8_rgb32[EMU_FB_W * EMU_FB_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1515: активен ли аппаратный DE2 GSU (для цикла emu_run_a8 — пропустить
+// emu_scale). file-static — переживает сессии, сбрасывается при входе
+// (урок r1496).
+static int g_a8_hw_scaler_active = 0;
+
+// r1515: активен ли аппаратный DE2 GSU (для цикла emu_run_a8 — пропустить
+// программный emu_scale). file-static — переживает сессии, сбрасывается
+// в emu_run_a8 при входе (урок r1496).
+int a8_hw_scaler_active(void) { return g_a8_hw_scaler_active; }
+
+// r1515: рендер кадра Atari 8-bit на DE2 GSU. К этому моменту a8_retro_run
+// уже вызвал host_video: кадр RGB565 320×240 лежит в EMU_FB (лево-верх,
+// страйд 320). Конвертируем его в XRGB8888 (a8_rgb32, упакован 320×240 —
+// строки по 320 слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает на
+// всю высоту FB_H=600 с сохранением пропорций (dst_w = 320×600/240 = 800,
+// dx = 112 по центру — та же геометрия, что была у emu_scale 4:3).
+// Fallback — программный emu_scale из самого EMU_FB (g_a8_hw_scaler_active=0).
+void a8_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_a8_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (EMU_FB_W * 600) / EMU_FB_H;   // 320×600/240 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)a8_rgb32,
+                                  (uint32_t)EMU_FB_W, (uint32_t)EMU_FB_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_a8_hw_scaler_active = 1;
+            emulog_field("A8", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", EMU_FB_W, EMU_FB_H, dw, dh);
+        } else {
+            emulog_field("A8", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_a8_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 320×240 (строки по 320 слов):
+        // DE2 PITCH = INSIZE (1280 Б), читает ровно 320 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (host_video уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB_ADDR;
+        uint32_t* d = a8_rgb32;
+        for (int y = 0; y < EMU_FB_H; y++) {
+            const uint16_t* srow = s + y * EMU_FB_W;
+            uint32_t* drow = d + (size_t)y * EMU_FB_W;
+            for (int x = 0; x < EMU_FB_W; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)a8_rgb32,
+                        (uint32_t)((size_t)EMU_FB_W * EMU_FB_H * 4u));
+    }
+}
+
 // ---- ROM: путь из rom_browser (имя файла), буфер в ROM_BUF ----
 static char     g_path[128] = "game.xex";
 static uint16_t g_joy = 0;                    // биты RETRO_DEVICE_ID_JOYPAD
@@ -372,6 +441,9 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
     emulog_field("A8", "init", "OK");
 
     emu_set_border_color(0x00061428);   // тёмно-синий (A8)
+    // r1515: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_a8_hw_scaler_active = 0;
     emu_throttle_reset();
     emu_esc_hold_reset();
     emu_disk_register(&g_ops_a8);
@@ -380,13 +452,28 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
         emu_disk_poll();   /* r1363: F12 — до a8_retro_run, иначе уйдёт в машину */
         a8_retro_run();
         emu_throttle();
-        emu_scale(320, 240);
+        // r1515: при активном DE2 GSU кадр уже на экране (a8_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
+        // emu_scale не нужен и наложился бы поверх аппаратного.
+        if (!a8_hw_scaler_active())
+            emu_scale(320, 240);
+        else
+            a8_render_frame();
         fb_flush();
         if (emu_esc_hold()) break;
     }
 
     a8_retro_unload_game();
     a8_retro_deinit();
+    /* r1515: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр A8 и меню не видно) + бордюр обратно чёрный, как у 32X r1493. */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     // r783: на выходе сбрасываем кэшированные ядром указатели на bump-кучу.
     // emu_prepare() (gb_heap_reset) обнуляет позицию пула, но Screen_atari
     // (screen.c) и palette (platform.c) продолжают указывать в старые адреса,
