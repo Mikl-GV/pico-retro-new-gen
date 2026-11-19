@@ -55,6 +55,14 @@ void write86_ob(const uint32_t address, const uint8_t value) {
         } else {
             RAM[address - HMA_START] = value;
         }
+    } else if (address >= 0xFC000 && address < HMA_START) {
+        /* r1488 (K4): BIOS-зона 0xFC000..0xFFFFF — вшитый const BIOS[] (см.
+           read86_ob: 0xFC000 хардкодит 0x21 — сигнатура расширенного BIOS по
+           соглашению PC/XT, дальше читается BIOS[]). Запись сюда не должна
+           молча теряться: на реальной машине это ROM, запись игнорируется
+           железом. Оставляем no-op С ЯВНЫМ комментарием — не «молчаливая
+           дыра в switch», а документированное поведение ROM-зоны. */
+        (void)value;
     } else if (!a20_enabled && address >= HMA_END) {
         write86(address - HMA_START, value);
     }
@@ -80,6 +88,9 @@ void writew86_ob(const uint32_t address, const uint16_t value) {
             } else {
                 *(uint16_t *) &RAM[address - HMA_START] = value;
             }
+        } else if (address >= 0xFC000 && address < HMA_START) {
+            /* r1488 (K4): BIOS-зона — ROM, запись игнорируется (см. write86_ob). */
+            (void)value;
         } else if (!a20_enabled && address >= HMA_END) {
             writew86(address - HMA_START, value);
         }
@@ -110,6 +121,9 @@ void writedw86_ob(const uint32_t address, const uint32_t value) {
             } else {
                 *(uint32_t *) &RAM[address - HMA_START] = value;
             }
+        } else if (address >= 0xFC000 && address < HMA_START) {
+            /* r1488 (K4): BIOS-зона — ROM, запись игнорируется (см. write86_ob). */
+            (void)value;
         } else if (!a20_enabled && address >= HMA_END) {
             writedw86(address - HMA_START, value);
         }
@@ -134,6 +148,11 @@ uint8_t read86_ob(const uint32_t address) {
         return UMB[address - UMB_START];
     }
     if (address == 0xFC000) {
+        /* r1488 (K4): 0xFC000 — сигнатура расширенного BIOS по соглашению
+           PC/XT (0x21 = XLAT-трюк эталона/железа). Зона 0xFC001..0xFDFFF и
+           0xC0000..0xFDFFF на H3 — несуществующая память: чтение уходит в
+           return 0xFF ниже (как открытая шина), запись — задокументированный
+           no-op в write86_ob. Это конвенция, а не «дыра». */
         return 0x21;
     }
     if (address >= BIOS_START && address < HMA_START) {

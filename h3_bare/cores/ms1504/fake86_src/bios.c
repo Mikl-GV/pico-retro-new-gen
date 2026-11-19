@@ -529,16 +529,86 @@ static const uint8_t scan2ascii[] = {
    Верхний регистр: scan2ascii содержит только нижний; при Shift (биты
    0x01/0x02) или CapsLock (0x40) ascii поднимается в верхний (буквы и
    знаки US-раскладки). */
+/* r1486 (MS-10): режим русского алфавита. На реальной МС1504 отдельная
+   клавиша генерировала сканкод, BIOS (INT 09h) переключал им внутренний флаг
+   и в буфер клавиатуры событие не отдавал; при активном флаге BIOS подменял
+   латинские ASCII на коды кириллицы. У нас ASCII кладётся в BDA в обход
+   INT 09h, поэтому и переключение, и подмену делает host (этот файл). */
+volatile uint8_t m15_ru_mode = 0;
+
+/* Код кириллицы CP866 по сканкоду set-1; 0 — символ не в алфавите. */
+static uint8_t ms1504_ru_char ( uint8_t sc, int upper )
+{
+	switch (sc) {
+		case 0x10: return upper ? 0x89 : 0xA9;	/* Q й */
+		case 0x11: return upper ? 0x96 : 0xE6;	/* W ц */
+		case 0x12: return upper ? 0x93 : 0xE3;	/* E у */
+		case 0x13: return upper ? 0x8A : 0xAA;	/* R к */
+		case 0x14: return upper ? 0x85 : 0xA5;	/* T е */
+		case 0x15: return upper ? 0x8D : 0xAD;	/* Y н */
+		case 0x16: return upper ? 0x83 : 0xA3;	/* U г */
+		case 0x17: return upper ? 0x98 : 0xE8;	/* I ш */
+		case 0x18: return upper ? 0x99 : 0xE9;	/* O щ */
+		case 0x19: return upper ? 0x87 : 0xA7;	/* P з */
+		case 0x1A: return upper ? 0x95 : 0xE5;	/* [ х */
+		case 0x1B: return upper ? 0x9A : 0xEA;	/* ] ъ */
+		case 0x1E: return upper ? 0x94 : 0xE4;	/* A ф */
+		case 0x1F: return upper ? 0x9B : 0xEB;	/* S ы */
+		case 0x20: return upper ? 0x82 : 0xA2;	/* D в */
+		case 0x21: return upper ? 0x80 : 0xA0;	/* F а */
+		case 0x22: return upper ? 0x8F : 0xAF;	/* G п */
+		case 0x23: return upper ? 0x90 : 0xE0;	/* H р */
+		case 0x24: return upper ? 0x8E : 0xAE;	/* J о */
+		case 0x25: return upper ? 0x8B : 0xAB;	/* K л */
+		case 0x26: return upper ? 0x84 : 0xA4;	/* L д */
+		case 0x27: return upper ? 0x86 : 0xA6;	/* ; ж */
+		case 0x28: return upper ? 0x9D : 0xED;	/* ' э */
+		case 0x2C: return upper ? 0x9F : 0xEF;	/* Z я */
+		case 0x2D: return upper ? 0x97 : 0xE7;	/* X ч */
+		case 0x2E: return upper ? 0x91 : 0xE1;	/* C с */
+		case 0x2F: return upper ? 0x8C : 0xAC;	/* V м */
+		case 0x30: return upper ? 0x88 : 0xA8;	/* B и */
+		case 0x31: return upper ? 0x92 : 0xE2;	/* N т */
+		case 0x32: return upper ? 0x9C : 0xEC;	/* M ь */
+		case 0x33: return upper ? 0x81 : 0xA1;	/* , б */
+		case 0x34: return upper ? 0x9E : 0xEE;	/* . ю */
+		case 0x35: return '.';			/* / — точка */
+		default:   return 0;
+	}
+}
+
 void ms1504_kbd_feed ( uint8_t scan )
 {
+	/* r1486: F11 (сканкод 0x57) — переключение алфавита. Как аппаратная
+	   клавиша МС1504: событие в буфер клавиатуры не отдаётся. */
+	if ((scan & 0x7F) == 0x57) {
+		if (scan < 0x80)
+			m15_ru_mode ^= 1u;
+		return;
+	}
+
 	/* r1470: если гость повесил СВОЙ INT 9 (вектор 0x09 ушёл из ROM 0xF000)
 	   и IRQ1 размаскирован — отдаём сырой сканкод железным путём (0x60 + IRQ1).
 	   Иначе русский драйвер раскладки не видит ни модификаторов, ни защёлок:
 	   ASCII-путь ниже модификаторы в кольцо не кладёт вообще. */
 	{
 		extern void doirq ( uint8_t irq );
+		extern void emulog_field ( const char* tag, const char* field, const char* fmt, ... );
 		uint32_t ivt9 = (uint32_t)RAM[0x24] | ((uint32_t)RAM[0x25] << 8) |
 		                ((uint32_t)RAM[0x26] << 16) | ((uint32_t)RAM[0x27] << 24);
+		/* r1485-ДИАГ (MS-10): один раз показываем, куда указывает INT 9 и
+		   снят ли бит IRQ1 в маске PIC — от этого зависит выбор пути ввода. */
+		{
+			static int kbd_diag;
+			if (!kbd_diag) {
+				kbd_diag = 1;
+				emulog_field("MS1504", "kbd",
+				             "ivt9=%04x:%04x imr=%02x scan_ok=%d",
+				             (unsigned)(ivt9 >> 16), (unsigned)(ivt9 & 0xFFFFu),
+				             (unsigned)portin(0x21),
+				             ((ivt9 >> 16) != 0xF000u && !(portin(0x21) & 0x02)));
+			}
+		}
 		if ((ivt9 >> 16) != 0xF000u && !(portin(0x21) & 0x02)) {
 			portram[0x60] = scan;
 			portram[0x64] |= 0x01;      /* OBF: данные в 0x60 */
@@ -579,6 +649,14 @@ void ms1504_kbd_feed ( uint8_t scan )
 				case '.': ascii = '>'; break; case '/': ascii = '?'; break;
 				case '`': ascii = '~'; break;
 			}
+		}
+		/* r1486: при активном русском алфавите подменяем ASCII кириллицей
+		   (на реальной МС1504 это делал BIOS по своему внутреннему флагу). */
+		if (m15_ru_mode) {
+			uint8_t ru = ms1504_ru_char((uint8_t)(scan & 0x7F),
+			                            (RAM[0x417] & (0x03 | 0x40)) != 0);
+			if (ru)
+				ascii = ru;
 		}
 		word = (uint16_t)(ascii | (scan << 8));
 	}
@@ -760,25 +838,27 @@ static void bios_internal_trap ( unsigned int trap )
 					break;
 				case 0x02:	// read real-time clock
 					{
-					time_t uts = time(NULL);
-					struct tm *t = localtime(&uts);
-					CPU_DH = t->tm_sec;
-					CPU_CL = t->tm_min;
-					CPU_CH = t->tm_hour;
-					CPU_DL  = t->tm_isdst > 0;
-					printf("BIOS: RTC time requested, answer: %02u:%02u:%02u DST=%u\n", CPU_CH, CPU_CL, CPU_DH, CPU_DL);
+					/* r1487 (K3): не звать newlib time()/localtime() — на bare-metal
+					   _gettimeofday() даёт -1, localtime() может вернуть NULL и
+					   чтение t->tm_* уходит в мусор (см. docs/AUDIT_2026-11-18).
+					   Отдаём фиксированное время 10:00:00 (как в ms1504_com.c). */
+					CPU_DH = 0;	// seconds (BCD)
+					CPU_CL = 0;	// minutes
+					CPU_CH = 0x10;	// hours = 10
+					CPU_DL  = 0;	// DST flag off
+					printf("BIOS: RTC time requested, answer: 10:00:00\n");
 					}
 					CPU_FL_CF = 0;
 					break;
 				case 0x04:	// read real-time clock's date
 					{
-					time_t uts = time(NULL);
-					struct tm *t = localtime(&uts);
-					CPU_DL = t->tm_mday;
-					CPU_DH = t->tm_mon + 1;
-					CPU_CL = t->tm_year % 100;
-					CPU_CH = t->tm_year / 100 + 19;
-					printf("BIOS: RTC date requested, answer: %02u%02u.%02u.%02u\n", CPU_CH, CPU_CL, CPU_DH, CPU_DL);
+					/* r1487 (K3): фиксированная дата 01.01.2001 — как CMOS в
+					   ms1504_com.c (cmos_data_in: месяц=1, день=1, год=2001). */
+					CPU_DL = 0x01;	// day
+					CPU_DH = 0x01;	// month
+					CPU_CL = 0x01;	// year % 100
+					CPU_CH = 0x19;	// century 19+
+					printf("BIOS: RTC date requested, answer: 01.01.2001\n");
 					}
 					CPU_FL_CF = 0;
 					break;

@@ -108,7 +108,6 @@ void _putchar(char character) {
 
 static void renderer(void) {
     uint32_t start_off = vram_offset;   // r1413: не мутируем CRTC start address
-    uint8_t *vidramptr = (uint8_t *)VIDEORAM + 0x8000 + ((start_off & 0xffff) << 1);
     // r1413: VIDEORAM в pxt — uint32_t на адрес (4 плоскости). Текст BIOS
     // пишет через vga_mem_write: байт лежит в МЛАДШЕМ байте uint32, поэтому
     // читаем text_base[i] & 0xFF, а не байты подряд (раньше был чёрный экран).
@@ -212,6 +211,9 @@ static void renderer(void) {
                     break;
                 }
                 case 0x1e: cols = 90; start_off = 5; if (y >= 348) break;
+                /* r1487 (W2): fall-through 0x1e → 0x07 намеренный (HGC
+                   переиспользует графический рендер 0x07); start_off здесь —
+                   В ЭЛЕМЕНТАХ (а не байтах), как в 0x07 ниже. */
                 case 0x07: {
                     /* r1479: поэлементный доступ; start_off — в элементах */
                     const uint32_t *cga_row = VIDEORAM + (size_t)start_off +
@@ -618,6 +620,22 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
     uint32_t tormoz = 4096;
     int dbg_frames = 0;
     int boot_frames = 0, boot_pause_done = 0;
+    // r1489: аппаратный путь — DE2 GSU растягивает кадр PXT 640x480 в 800x600
+    // (4:3, как r1469 делал программный nearest). Настраиваем слой ОДИН РАЗ при
+    // входе в ядро; дальше каждый кадр DE2 читает pxt_screen напрямую (нужен
+    // только clean D-cache). При ошибке инициализации — fallback на программный
+    // emu_show_rgba_int в цикле ниже.
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    int hw_scaler_ok = (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)pxt_screen,
+                                              PXT_W, PXT_H, 32,
+                                              112, 0, 800, 600) == 0);
+    if (hw_scaler_ok)
+        emulog_field("PXT", "scaler", "DE2 GSU 640x480->800x600");
+    else
+        emulog_field("PXT", "scaler", "fallback CPU r1469");
     uint32_t pit_last = h3_hs_timer_lo_us();
     int pit_started = 0;
     for (;;) {
@@ -665,7 +683,12 @@ void emu_run_pxt(const uint8_t *rom, uint32_t size, const char *rom_name) {
                          (unsigned)(segregs32[2] & 0xFFFF), (unsigned)(ip32 & 0xFFFF));
         // r1469: растр подтверждён стендом (r1468) — включаем масштабирование
         // 4:3 по высоте экрана: 640×480 → 800×600 (nearest), без размытия.
-        emu_show_rgba_int((const uint32_t *)pxt_screen, PXT_W, PXT_H, PXT_W);
+        // r1489: аппаратно это делает DE2 GSU (слой настроен при входе), CPU
+        // только чистит D-cache кадра — DE2 читает память через DMA.
+        if (!hw_scaler_ok)
+            emu_show_rgba_int((const uint32_t *)pxt_screen, PXT_W, PXT_H, PXT_W);
+        else
+            usb_cache_clean((uint32_t)(uintptr_t)pxt_screen, (uint32_t)PXT_W * PXT_H * 4u);
         fb_flush();
         // r1433/r1435: POST Turbo XT BIOS проходит за 1-2 кадра и тут же
         // стирается INT 10h перед загрузкой. Держим 1 с тот кадр, где в

@@ -83,13 +83,21 @@ void m15_tick_audio(int n) {
     // на реальном PC OUT2 остаётся высоким и тона нет. Раньше бит игнорировался
     // и спикер продолжал пищать при выключенном канале.
     const int gate = (portram[0x61] & 1) != 0;
+    /* r1487 (W3): при выключенном GATE2 (бит 0 порта 0x61) фаза спикера
+       замирает; при повторном включении аккумулятор начинал с чужой фазы —
+       щелчок. Сбрасываем acc при фронте 0→1. */
+    static int gate_prev = 0;
+    if (gate && !gate_prev) speaker_acc = 0;
+    gate_prev = gate;
     if (n > 96000) n = 96000;
     for (int i = 0; i < n; i++) {
         if (!gate) { m15_audbuf[i] = 0; continue; }
         speaker_acc += step;
         if (speaker_acc >= half) {
             speaker_acc -= half;
-            speaker_ph = (int16_t)(speaker_ph ? 0 : 12000);
+            /* W3: полная амплитуда (было 12000 → (12000>>8)<<8 ≈ 11776 из
+               32767 — тихо). (32767>>8)<<8 = 32512 — «квадрат» на всю шкалу. */
+            speaker_ph = (int16_t)(speaker_ph ? 0 : 32767);
         }
         m15_audbuf[i] = (int8_t)((speakerenabled ? speaker_ph : 0) >> 8);
     }

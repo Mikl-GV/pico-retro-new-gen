@@ -119,6 +119,14 @@ void pxt_disk_set_stream(uint8_t drivenum, pxt_disk_read_t cb, uint32_t len) {
     hdd_geometry(&disk[drivenum].sects, &disk[drivenum].heads, len, 0, cb);
     disk[drivenum].cyls = (uint16_t)(len /
         ((size_t)disk[drivenum].sects * disk[drivenum].heads * 512));
+    /* r1487 (S5): cyls==0 (образ меньше геометрии) даёт DOS Divide overflow —
+       лог, чтобы не выглядело «зависанием». */
+    if (disk[drivenum].cyls == 0) {
+        extern void emulog_field(const char*, const char*, const char*, ...);
+        emulog_field("PXT", "disk", "WARNING: drive %u cyls=0 (len=%u sects=%u heads=%u)",
+                     (unsigned)drivenum, (unsigned)len,
+                     (unsigned)disk[drivenum].sects, (unsigned)disk[drivenum].heads);
+    }
     hdcount++;
 }
 

@@ -142,14 +142,14 @@ static inline void i8253_write(const uint16_t port_number, const uint8_t data) {
         if (channel_index == 0) {
             const uint32_t divisor = i8253_divisor(channel);
             __atomic_fetch_and(&i8259.interrupt_request_register, (uint8_t)~1u, __ATOMIC_RELAXED);
-#if PICO_ON_DEVICE
+            /* r1487 (K1): период IRQ0 — всегда в МИКРОСЕКУНДАХ.
+               Ветка #else (H3_BARE_METAL) считала ГЕРЦЫ (PIT_FREQUENCY/divisor)
+               и при div=65536 давала 18 вместо 54925 — IRQ0-шторм 55 кГц,
+               гость захлёбывался прерываниями (см. docs/AUDIT_2026-11-18). */
             timer_period = (int)(((uint64_t)divisor * 1000000ULL) / PIT_FREQUENCY);
             if (timer_period < 1) {
                 timer_period = 1;
             }
-#else
-            timer_period = (int)(PIT_FREQUENCY / divisor);
-#endif
         } else if (channel_index == 2) {
 #if SPEAKER_ON_PWM_PIN
             speaker_update();

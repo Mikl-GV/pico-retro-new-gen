@@ -38,6 +38,12 @@
 #define EMU_FB  ((uint16_t*)0x5F800000)
 #define EMU_W   320
 #define EMU_H   240
+// r1493: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено 1:1 и ×2.68: битый DE2-16бит, CPU-копия чистая).
+// Поэтому 32X рендерит RGB565 в EMU_FB, а в цикле кадр конвертируется в
+// XRGB8888-буфер (32-бит) и отдаётся DE2 GSU напрямую — CPU освобождён от
+// скейла, но формат для DE2 — проверенный 32-бит. Буфер — в пуле аркад.
+static uint32_t s32x_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".noinit_fbn")));
 
 extern int printf(const char *fmt, ...);
 extern int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
@@ -336,21 +342,69 @@ void emu_run_32x(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("32X", "machine", "%s", Pico.m.pal ? "PAL" : "NTSC");
     emulog_field("32X", "init", "OK");
     emu_set_border_color(0x0014161E);   // тёмно-графитовый (32X)
+    // r1493: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра на
+    // всю высоту 600 (как программный emu_scale r1177): 224 → 857×600,
+    // 240 → 800×600. Слой настраивается один раз, дальше DE2 читает
+    // s32x_rgb32 по DMA; CPU только конвертирует RGB565→XRGB8888 (дёшево,
+    // без интерполяции). Fallback — программный emu_scale из самого EMU_FB.
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    int hw_scaler_ok;
+    int diag_dx, diag_dy, diag_dw = 0, diag_dh = 0;
+    {
+        diag_dw = (EMU_W * 600) / g_frame_h;   // как emu_scale
+        if (diag_dw > 1024) diag_dw = 1024;
+        diag_dh = 600;
+        diag_dx = (1024 - diag_dw) / 2;
+        diag_dy = 0;
+        hw_scaler_ok = (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)s32x_rgb32,
+                                              EMU_W, g_frame_h, 32,
+                                              diag_dx, diag_dy, diag_dw, diag_dh) == 0);
+        if (hw_scaler_ok) {
+            h3_de2_set_bkcolor(0xFF14161Eu);   // бордюр, как emu_set_border_color
+            emulog_field("32X", "scaler", "DE2 GSU 32bpp 320x%d->%dx600",
+                         g_frame_h, diag_dw);
+        } else {
+            emulog_field("32X", "scaler", "fallback CPU r1177");
+        }
+    }
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         sega32x_run_frame();
         emu_throttle();
-        // r1177: дробный скейл разрешён владельцем при условии, что не бьёт по
-        // темпу: кадр вписывается по высоте с сохранением пропорций
-        // (320×224 → 857×600), поля по краям. Целочисленный путь (640×448)
-        // остаётся в emu_scale_int для портативок — при просадке вернуть вызов.
-        emu_scale(EMU_W, g_frame_h);
+        if (!hw_scaler_ok)
+            emu_scale(EMU_W, g_frame_h);
+        else {
+            // RGB565 -> XRGB8888 (аппаратный upscale делает DE2; тут только
+            // формат, без интерполяции). 320×240 = 76 800 пикселей ≈ 0.3 мс.
+            const uint16_t* s = EMU_FB;
+            uint32_t* d = s32x_rgb32;
+            for (int i = EMU_W * EMU_H; i > 0; i--, s++, d++) {
+                uint16_t p = *s;
+                *d = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                     (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                     (uint32_t)((p & 0x1Fu) << 3);
+            }
+            usb_cache_clean((uint32_t)(uintptr_t)s32x_rgb32,
+                            (uint32_t)EMU_W * EMU_H * 4u);
+        }
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
     sega32x_stop();
+    // r1491: слой DE2 вернуть на буфер меню (иначе экран держит последний
+    // кадр 32X и меню не видно) + бордюр обратно чёрный.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();
     fb_clear(); fb_flush();
     emulog_end("32X");

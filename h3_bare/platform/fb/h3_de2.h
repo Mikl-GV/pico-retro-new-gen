@@ -181,10 +181,21 @@ typedef struct T_H3_DE2_CSC {
 
 #define H3_DE2_WH(w, h)				(((h - 1) << 16) | (w - 1))
 
-/* r1461: аппаратный UI-скейлер DE2 (Linux: sun8i_ui_scaler.c, BSP Allwinner).
- * Блок скейлера UI-канала 1: VI-скейлер 0x20000 + unit 0x10000 = 0x30000
- * от базы MUX0 (совпадает с H3_DE2_MUX0_GSU1_BASE). */
-#define H3_DE2_UI_SCALER_BASE		(H3_DE2_MUX0_BASE + 0x30000)
+/* r1489: аппаратный UI-скейлер DE2 — это GSU, ПО ЯДРУ LINUX
+ * (drivers/gpu/drm/sun4i/sun8i_ui_scaler.c/.h, sun8i_mixer.c).
+ *
+ * Для H3 (sun8i_h3_mixer0_cfg: DE2, vi_scaler_num=1, ui_num=3, scaler_mask=0xf)
+ * база GSU для UI-канала СЧИТАЕТСЯ по формуле sun8i_ui_scaler_base():
+ *   base = DE2_VI_SCALER_UNIT_BASE + DE2_VI_SCALER_UNIT_SIZE * vi_scaler_num
+ *        + DE2_UI_SCALER_UNIT_SIZE * (channel - vi_scaler_num)
+ * DE2_VI_SCALER_UNIT_BASE=0x20000, UNIT_SIZE=0x20000, UI_UNIT_SIZE=0x10000.
+ * Для UI-канала channel=1 (первый UI после 1 VI): 0x20000+0x20000+0 = 0x40000
+ * относительно MUX0. ПРЕЖНЯЯ база 0x30000 (r1461) — НЕВЕРНА (это адрес
+ * GSU1 второго микшера/чужая область), из-за неё r1466 и получался чёрный
+ * экран: скейлер включался по несуществующему адресу.
+ * Регистры — те же, что в SUN8I_SCALER_GSU_* (LI-model и bare-metal расходятся
+ * только базой). */
+#define H3_DE2_UI_SCALER_BASE		(H3_DE2_MUX0_BASE + 0x40000)
 	#define H3_UI_SCAL_CTRL				0x000
 	#define H3_UI_SCAL_OUTSIZE			0x040
 	#define H3_UI_SCAL_INSIZE			0x080

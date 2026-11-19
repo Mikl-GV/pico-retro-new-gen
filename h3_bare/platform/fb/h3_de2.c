@@ -206,9 +206,16 @@ static inline void h3_ui_scal_wr(uint32_t off, uint32_t v) {
 	*(volatile uint32_t *)(H3_DE2_UI_SCALER_BASE + off) = v;
 }
 
-// r1462: слой UI показывает НАТИВНЫЙ кадр ядра, DE растягивает его в
-// прямоугольник (dx,dy,dw,dh) аппаратно. bpp = 16 (RGB565) или 32 (XRGB8888).
-// Возврат 0 — скейлер включён; -1 — размеры не годятся (зовём программный путь).
+// r1489: слой UI показывает кадр ядра, DE растягивает его аппаратно (GSU).
+// ПОРЯДОК ВЗЯТ ИЗ LINUX (sun8i_ui_scaler_setup + sun8i_ui_layer_atomic_update +
+// sun8i_mixer_commit для DE2):
+//   1) SRC/OUTSIZE, HSTEP/VSTEP (20 бит), HPHASE/VPHASE — при скейлере ВЫКЛ;
+//   2) HCOEFF (16 фаз = lan2coefftab16 = наша таблица) — при скейлере ВЫКЛ;
+//   3) затем единственная запись CTRL = EN | COEFF_RDY;
+//   4) GLOBAL_DBUFFER = 1 — без неё регистры не защёлкиваются (чёрный экран).
+// r1466 вёл себя иначе: скейлер включался ПОСЛЕ загрузки коэффициентов одной
+// записью, а DBUFFER вообще не трогался, плюс база GSU была 0x30000 (неверно).
+// bpp = 16 (RGB565) или 32 (XRGB8888). Возврат 0 — ок; -1 — не годятся размеры.
 int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_t bpp,
 			  uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh) {
 	uint32_t hstep, vstep, row, fmt;
@@ -232,17 +239,30 @@ int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_
 		return -1;
 	}
 
+	/* Слой UI (как sun8i_ui_layer_update_coord/update_buffer):
+	 * SIZE и OVL_SIZE = ИСХОДНЫЙ размер; COORD(UI) = 0 (позиция наложения —
+	 * только в BLEND_ATTR_COORD); PITCH = ширина [байт]; TOP_LADDR = адрес. */
 	H3_DE2_MUX0_UI->CFG[0].SIZE = H3_DE2_WH(src_w, src_h);
-	H3_DE2_MUX0_UI->CFG[0].COORD = (dy << 16) | dx;
+	H3_DE2_MUX0_UI->CFG[0].COORD = 0;
 	H3_DE2_MUX0_UI->CFG[0].PITCH = (bpp / 8u) * src_w;
 	H3_DE2_MUX0_UI->CFG[0].TOP_LADDR = addr;
-	H3_DE2_MUX0_UI->CFG[0].ATTR = H3_DE2_UI_CFG_ATTR_EN | H3_DE2_UI_CFG_ATTR_FMT(fmt);
-	H3_DE2_MUX0_UI->OVL_SIZE = H3_DE2_WH(dw, dh);
+	H3_DE2_MUX0_UI->CFG[0].ATTR = H3_DE2_UI_CFG_ATTR_EN |
+		H3_DE2_UI_CFG_ATTR_FMT(fmt);
+	/* r1490: OVL_SIZE = ИСХОДНЫЙ размер кадра (окно выборки скейлера), как
+	 * sun8i_ui_layer_update_coord: UI_OVL_SIZE = insize. Если здесь выходной
+	 * размер (800×600 при источнике 640×480), строки читаются с «чужим»
+	 * шагом VSTEP и разъезжаются. */
+	H3_DE2_MUX0_UI->OVL_SIZE = H3_DE2_WH(src_w, src_h);
+	/* BLD-атрибуты: ВЫХОДНОЙ прямоугольник, куда скейлер кладёт кадр
+	 * (как sun8i_ui_layer_update_coord: BLEND_ATTR_INSIZE = outsize,
+	 * BLEND_ATTR_COORD = dst). */
+	H3_DE2_MUX0_BLD->ATTR[0].INSIZE = H3_DE2_WH(dw, dh);
+	H3_DE2_MUX0_BLD->ATTR[0].OFFSET = (dy << 16) | dx;
 
-	/* r1466: 1:1 — скейлер НЕ включаем. На H3 его включение (CTRL=EN|COEFF_RDY)
-	 * гасило выход целиком; без масштаба он и не нужен. */
+	/* 1:1 — скейлер не нужен, но выключаем по-честному. */
 	if (src_w == dw && src_h == dh) {
 		h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+		H3_DE2_MUX0_GLB->DBUFFER = 1;   // r1489: commit обязателен
 		__asm volatile("dsb" ::: "memory");
 		return 0;
 	}
@@ -250,6 +270,9 @@ int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_
 	hstep = (uint32_t)(((uint64_t)src_w << H3_UI_SCAL_SCALE_FRAC) / dw);
 	vstep = (uint32_t)(((uint64_t)src_h << H3_UI_SCAL_SCALE_FRAC) / dh);
 
+	/* 1) размеры и шаг — при CTRL=0 (скейлер выключен) */
+	h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+	__asm volatile("dsb" ::: "memory");
 	h3_ui_scal_wr(H3_UI_SCAL_OUTSIZE, H3_UI_SCAL_SIZE(dw, dh));
 	h3_ui_scal_wr(H3_UI_SCAL_INSIZE, H3_UI_SCAL_SIZE(src_w, src_h));
 	h3_ui_scal_wr(H3_UI_SCAL_HSTEP, hstep);
@@ -257,18 +280,31 @@ int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_
 	h3_ui_scal_wr(H3_UI_SCAL_HPHASE, 0);
 	h3_ui_scal_wr(H3_UI_SCAL_VPHASE, 0);
 
-	/* строка коэффициентов = целая часть коэффициента увеличения (1..15) */
-	row = hstep >> H3_UI_SCAL_SCALE_FRAC;
-	if (row == 0)
-		row = 1;
-	if (row > 15)
-		row = 15;
-	coef = &h3_ui_scaler_coef[(row - 1) * H3_UI_SCAL_COEFF_COUNT];
+	/* 2) коэффициенты — индекс строки как sun8i_ui_scaler_coef_index(),
+	 * таблица lan2coefftab16 = h3_ui_scaler_coef (16 фаз). */
+	{
+		unsigned int scale, int_part, float_part;
+		scale = hstep >> (H3_UI_SCAL_SCALE_FRAC - 3);
+		int_part = scale >> 3;
+		float_part = scale & 0x7;
+		switch (int_part) {
+		case 0:  row = 0;  break;
+		case 1:  row = float_part; break;
+		case 2:  row = 8 + (float_part >> 1); break;
+		case 3:  row = 12; break;
+		case 4:  row = 13; break;
+		default: row = 14; break;
+		}
+	}
+	coef = &h3_ui_scaler_coef[row * H3_UI_SCAL_COEFF_COUNT];
 	for (uint32_t i = 0; i < H3_UI_SCAL_COEFF_COUNT; i++)
 		h3_ui_scal_wr(H3_UI_SCAL_HCOEFF(i), coef[i]);
 
+	/* 3) включение: EN | COEFF_RDY одной записью (как sun8i_ui_scaler_enable). */
 	__asm volatile("dsb" ::: "memory");
 	h3_ui_scal_wr(H3_UI_SCAL_CTRL, H3_UI_SCAL_CTRL_EN | H3_UI_SCAL_CTRL_COEFF_RDY);
+	/* 4) commit регистров — DE продолжит со старыми значениями без неё. */
+	H3_DE2_MUX0_GLB->DBUFFER = 1;
 	__asm volatile("dsb" ::: "memory");
 	return 0;
 }
@@ -278,6 +314,8 @@ void h3_de2_ui_restore(void) {
 	if (g_out_w == 0 || g_out_h == 0)
 		return;
 	h3_ui_scal_wr(H3_UI_SCAL_CTRL, 0);
+	/* UI-слой: полный экран, адрес меню (как de2_mode_set). COORD(UI)=0 —
+	 * позиция задаётся только в BLEND_ATTR_COORD. */
 	H3_DE2_MUX0_UI->CFG[0].SIZE = H3_DE2_WH(g_out_w, g_out_h);
 	H3_DE2_MUX0_UI->CFG[0].COORD = 0;
 	H3_DE2_MUX0_UI->CFG[0].PITCH = g_out_w * 4u;
@@ -285,6 +323,14 @@ void h3_de2_ui_restore(void) {
 	H3_DE2_MUX0_UI->CFG[0].ATTR = H3_DE2_UI_CFG_ATTR_EN |
 		H3_DE2_UI_CFG_ATTR_FMT(H3_DE2_UI_FORMAT_XRGB_8888);
 	H3_DE2_MUX0_UI->OVL_SIZE = H3_DE2_WH(g_out_w, g_out_h);
+	/* r1490: BLD-атрибуты — обратно на весь экран (скейлер/слой pxt их
+	 * менял на (800,600)/(112,0)). Иначе после выхода меню «обрезано»
+	 * областью 800×600+сдвигом. */
+	H3_DE2_MUX0_BLD->ATTR[0].INSIZE = H3_DE2_WH(g_out_w, g_out_h);
+	H3_DE2_MUX0_BLD->ATTR[0].OFFSET = 0;
+	/* r1489: commit — иначе смена размеров/адреса не защёлкнется (как в
+	 * sun8i_mixer_commit: GLOBAL_DBUFFER=1 после настройки слоёв). */
+	H3_DE2_MUX0_GLB->DBUFFER = 1;
 	__asm volatile("dsb" ::: "memory");
 }
 
