@@ -41,6 +41,14 @@ extern "C" {
 #include "fat.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
+// r1512: DE2 GSU / cache (C-линковка; без extern "C" C++ манглит имена и
+// сборка падает на undefined reference).
+int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                          uint32_t bpp, uint32_t dx, uint32_t dy,
+                          uint32_t dw, uint32_t dh);
+void h3_de2_ui_restore(void);
+void h3_de2_set_bkcolor(uint32_t argb);
+void usb_cache_clean(uint32_t addr, uint32_t size);
 }
 
 // ---- FBNeo extern (burn.cpp / драйвер) ----
@@ -105,6 +113,24 @@ extern UINT8 NeoDiag[2];
 static uint16_t g_frame[CPS1_W * 320];
 static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
+
+// ---- r1512: аппаратный DE2 GSU (вместо программного host_render_frame) ----
+// 32-битный DE2-буфер кадра аркад (CPS-1/CPS-2/NEOGEO/Toaplan/Cave/S16/FBNeo).
+// Размер активного кадра ПЕРЕМЕННЫЙ по играм/драйверам: 384×224 (CPS),
+// 304×224 (NEO), 304×240 (Toaplan-гор), до 384×320 (буфер макс. — как g_frame).
+// В cps_render_frame кадр из pBurnDraw (RGB565, страйд nBurnPitch/2) пишется
+// в XRGB8888 (строки по w слов, DE2 PITCH = INSIZE — урок r1495); DE2 GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций (contain,
+// dst_w = w×600/h, кламп 1024, dx по центру — как MD r1505); слой
+// перекалибруется при смене w/h (урок r1506 — MD «строки разъехались»).
+static uint32_t cps_rgb32[CPS1_W * 320] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1512: активен ли аппаратный DE2 GSU (для run_cps — не звать программный
+// host_render_frame). file-static — переживает сессии, сбрасывается в run_cps
+// при входе (урок r1496: без сброса повторный запуск = чёрный экран).
+static int g_cps_hw_scaler_active = 0;
+// r1512: размер источника, на который слой DE2 откалиброван (урок r1506).
+static int g_cps_gsu_w = 0;
+static int g_cps_gsu_h = 0;
 
 // ---- ROM-источники (выбранная игра) ----
 // r1275 (K-02): zip игры до 64 МБ — в 0x50000000 (ROM_BUF браузера, во время
@@ -440,6 +466,20 @@ static uint32_t lut_rgb565(uint16_t p) {
     return g_rgb565_lut[p];
 }
 
+// r1512: инициализация LUT RGB565→XRGB8888 вынесена из host_render_frame —
+// её использует и программный путь, и cps_render_frame (GSU). Однократно.
+static void lut_init(void) {
+    if (g_lut_ready) return;
+    for (int i = 0; i < 65536; i++) {
+        uint16_t p = (uint16_t)i;
+        uint32_t r = ((p >> 11) & 0x1F) << 3;
+        uint32_t g = ((p >> 5) & 0x3F) << 2;
+        uint32_t b = (p & 0x1F) << 3;
+        g_rgb565_lut[i] = (r << 16) | (g << 8) | b;
+    }
+    g_lut_ready = 1;
+}
+
 static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
@@ -452,16 +492,7 @@ static void host_render_frame(void)
     if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
     uint32_t* dst = FB_ADDR;
 
-    if (!g_lut_ready) {
-        for (int i = 0; i < 65536; i++) {
-            uint16_t p = (uint16_t)i;
-            uint32_t r = ((p >> 11) & 0x1F) << 3;
-            uint32_t g = ((p >> 5) & 0x3F) << 2;
-            uint32_t b = (p & 0x1F) << 3;
-            g_rgb565_lut[i] = (r << 16) | (g << 8) | b;
-        }
-        g_lut_ready = 1;
-    }
+    lut_init();
 
     // Кадр из драйвера всегда «альбомный» W×H: NEO 304×224, CPS 384×224,
     // Toaplan-гор 304×240. Вертикальные Toaplan/Cave/S16 ядро кладёт «боком»
@@ -513,6 +544,67 @@ static void host_render_frame(void)
             drow[dx] = lut_rgb565(srow[sx[dx]]);
         }
         y_acc += step_y;
+    }
+}
+
+// ---- r1512: активен ли аппаратный DE2 GSU (для run_cps) ----
+static int cps_hw_scaler_active(void) { return g_cps_hw_scaler_active; }
+
+// r1512: рендер кадра аркады на DE2 GSU (вместо программного host_render_frame).
+// Источник — pBurnDraw (RGB565, активная ширина страйда nBurnPitch/2, высота
+// g_frame_h). Конвертируем активную область в XRGB8888 (cps_rgb32, упакован
+// w×h — строки по w слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций (contain: dst_w = w×600/h,
+// кламп 1024, dx по центру — как MD r1505). Слой перекалибруется при смене
+// w/h (урок r1506 — MD «строки разъехались»). Fallback — программный
+// host_render_frame (g_cps_hw_scaler_active=0).
+static void cps_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    const uint16_t* src = (const uint16_t*)pBurnDraw;
+    if (!src) return;
+    int w = g_frame_w > 0 && g_frame_w <= CPS1_W ? g_frame_w : (nBurnPitch >> 1);
+    if (w <= 0 || w > CPS1_W) w = CPS1_W;
+    int h = g_frame_h;
+    if (h <= 0 || h > 320) h = CPS1_H;
+    int sstride = nBurnPitch >> 1;
+    if (sstride <= 0 || sstride > CPS1_W) sstride = w;
+    // r1512: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_cps_hw_scaler_active || w != g_cps_gsu_w || h != g_cps_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как host_render_frame contain).
+        int dh = 600;   // FB_H
+        int dw = (w * 600) / h;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)cps_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_cps_hw_scaler_active = 1;
+            g_cps_gsu_w = w;
+            g_cps_gsu_h = h;
+            emulog_field("ARC", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("ARC", "scaler", "fallback CPU host_render_frame");
+        }
+    }
+    if (g_cps_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+        uint32_t* d = cps_rgb32;
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = src + (size_t)y * sstride;
+            uint32_t* drow = d + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint16_t p = srow[x];
+                // LUT RGB565→XRGB8888 (совпадает с host_render_frame).
+                drow[x] = g_rgb565_lut[p];
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)cps_rgb32,
+                        (uint32_t)((size_t)w * h * 4u));
     }
 }
 
@@ -1002,6 +1094,13 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // Кадровый буфер хоста (static BSS) переживает выход из эмулятора —
     // без очистки при повторном входе виден мусор предыдущей игры.
     memset(g_frame, 0, sizeof(g_frame));
+    // r1512: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_cps_hw_scaler_active = 0;
+    g_cps_gsu_w = 0;
+    g_cps_gsu_h = 0;
+    // r1512: LUT RGB565→XRGB8888 нужна и программному пути, и GSU.
+    lut_init();
     if (g_toa || g_cave || g_sega)
         toa_input_cache();   // входные массивы драйвера — static в его файле
     printf("CPS: %s frame %dx%d pitch %d\n", game,
@@ -1055,12 +1154,26 @@ for (;;) {
             if (n > 0 && pBurnSoundOut)
                 i2s_push_block(pBurnSoundOut, (uint32_t)n);
         }
-        host_render_frame();
+        // r1512: аппаратный DE2 GSU — кадр из pBurnDraw → XRGB8888 → GSU
+        // (contain на весь экран). Программный host_render_frame (FB_ADDR +
+        // поля + LUT) не нужен и наложился бы поверх аппаратного.
+        if (!g_cps_hw_scaler_active)
+            host_render_frame();
+        else
+            cps_render_frame();
         fb_flush();
         emu_throttle();
         if (emu_esc_hold()) break;
     }
 
+    // r1512: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр аркады и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     BurnDrvExit();
     emu_period_us = saved_period;   // r0.390: вернуть общий период (60 Гц)
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */

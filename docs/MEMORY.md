@@ -193,7 +193,8 @@ USB).
   (r1500, NGP/NGPC), `gg_rgb32` (r1503, Game Gear), `nes_rgb32` (r1504, NES),
   `md_rgb32` (r1505, Mega Drive), `col_rgb32` (r1507, ColecoVision),
   `pce_rgb32` (r1508, PC Engine), `sms_rgb32` (r1509, Sega Master System),
-  `sg_rgb32` (r1510, SG-1000) и `vecx_rgb32` (r1511, Vectrex) —
+  `sg_rgb32` (r1510, SG-1000), `vecx_rgb32` (r1511, Vectrex) и `cps_rgb32`
+  (r1512, CPS-1/CPS-2/NEOGEO/Toaplan/Cave/Sega16/FBNeo) —
   32-битные DE2-буферы
   кадров, объявлены `static` в `.noinit_fbn`. DE2 GSU читает их по DMA
   (UI-слой PITCH = INSIZE); каждый кадр буфер перезаписывается конверсией в
@@ -241,7 +242,13 @@ USB).
   330 слов, источник vx_fb RGB1555 (серый, vx_rgb1555) — конверсия как была
   в программном `vx_render_hdmi`; геометрия GSU — stretch на всю высоту
   FB_H=600, dst_w=330×600/410=482, dx=271, r1511 — перевод Vectrex с
-  прямого писателя в FB_ADDR на аппаратный GSU);
+  прямого писателя в FB_ADDR на аппаратный GSU); `cps_rgb32` — переменный
+  w×h (макс. 384×320, строки по w слов, источник pBurnDraw (RGB565, страйд
+  nBurnPitch/2) напрямую, минуя FB_ADDR/EMU_FB; размер g_frame_w×g_frame_h:
+  384×224 CPS, 304×224 NEO, 304×240 Toaplan-гор, до 384×320; геометрия GSU —
+  stretch contain на всю высоту FB_H=600, dst_w=w×600/h, кламп 1024, dx по
+  центру, r1512; слой перекалибруется при смене w/h — `g_cps_gsu_w/h`
+  (урок r1506, MD «строки разъехались»));
 - флаг аппаратного скейлера GBA — file-static `g_hw_scaler_active`, сбрасывается
   в `gba_init_game()` при каждом входе (r1496: без сброса повторный запуск GBA =
   чёрный экран — слой не перенастраивается после `h3_de2_ui_restore`);
