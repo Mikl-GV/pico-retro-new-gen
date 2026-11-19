@@ -45,6 +45,19 @@ extern "C" uint32_t g_s9x_guard;   // r175: safety SNES (cpuexec.c)
 // ---- состояние host-слоя ----
 static int g_loaded = 0;
 
+// r1498: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X/GBA/Lynx: битый DE2-16бит, CPU-копия чистая).
+// SNES рендерит RGB565 в EMU_FB (256/512 колонок, страйд 320 — hi-res 512
+// клампится до 320, как в программном emu_scale); в snes_render_frame кадр
+// конвертируется в XRGB8888-буфер и отдаётся DE2 GSU, который растягивает
+// на всю высоту FB_H=600 с сохранением пропорций (dst_w = w*600/h, кламп
+// 1024, dx по центру) — та же геометрия, что у программного emu_scale.
+// Буфер упакован w×h (строки по w слов) — DE2 PITCH = INSIZE (урок r1495).
+static uint32_t snes_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1498: активен ли аппаратный DE2 GSU (для emu_run_snes — пропустить emu_scale).
+// file-static — переживает сессии, сбрасывается в snes_init_game (урок r1496).
+static int g_hw_scaler_active = 0;
+
 // Joypad-данные (читаются S9xReadJoypad, заполняются build_input)
 static uint32_t g_joydata = 0;
 
@@ -162,6 +175,9 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     if (size > 0x800000) { printf("SNES: ROM too big (%u > 8MB)\n", (unsigned)size); return 0; }
     g_loaded = 0;
     gb_heap_reset();
+    // r1498: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_hw_scaler_active = 0;
 
     // Настройки по умолчанию (как в init_sfc_setting libretro.c)
     memset(&Settings, 0, sizeof(Settings));
@@ -316,6 +332,65 @@ extern "C" void snes_run_frame(void) {
             EMU_FB[y * EMU_W + x] = 0;
 }
 
+// ---- r1498: аппаратный DE2 GSU (вместо CPU emu_scale) ----
+// Активен ли DE2 GSU (для emu_run_snes — пропустить emu_scale).
+extern "C" int snes_hw_scaler_active(void) { return g_hw_scaler_active; }
+
+// Рендер кадра: DE2 GSU растягивает 32-битную копию кадра на весь экран.
+// Геометрия — как emu_scale (dst_h = FB_H = 600, dst_w = w*600/h, кламп
+// 1024, dx по центру), «не ломать что работает». Слой настраивается один
+// раз при первом кадре, дальше DE2 читает snes_rgb32 по DMA; CPU только
+// конвертирует RGB565→XRGB8888 (дёшево, без интерполяции).
+// Fallback — программный emu_scale из самого EMU_FB (g_hw_scaler_active=0).
+extern "C" void snes_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    int w = IPPU.RenderedScreenWidth;
+    int h = IPPU.RenderedScreenHeight;
+    if (w <= 0 || w > EMU_W) w = EMU_W;   // как emu_scale: hi-res 512 клампится до 320
+    if (h <= 0 || h > EMU_H) h = EMU_H;
+    if (!g_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = EMU_H * 5 / 2;   // FB_H = 600
+        int dw = (w * 600) / h;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)snes_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_hw_scaler_active = 1;
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("SNES", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("SNES", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+        // Источник — EMU_FB (страйд 320), куда snes_run_frame уже скопировал кадр.
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = snes_rgb32;
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)snes_rgb32,
+                        (uint32_t)((size_t)w * h * 4u));
+    }
+}
+
 // ---- стоп ----
 extern "C" void snes_stop(void) {
     if (!g_loaded) return;
@@ -352,14 +427,27 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
     emu_esc_hold_reset();
     for (;;) {
         snes_run_frame();
+        snes_render_frame();
         emu_throttle();
-        emu_scale(IPPU.RenderedScreenWidth > 0 ? IPPU.RenderedScreenWidth : 256,
-                  IPPU.RenderedScreenHeight > 0 ? IPPU.RenderedScreenHeight : 224);
+        // r1498: при активном DE2 GSU кадр уже на экране (snes_render_frame
+        // конвертирует RGB565→XRGB8888, GSU растягивает) — программный emu_scale
+        // не нужен и наложился бы поверх аппаратного.
+        if (!snes_hw_scaler_active())
+            emu_scale(IPPU.RenderedScreenWidth > 0 ? IPPU.RenderedScreenWidth : 256,
+                      IPPU.RenderedScreenHeight > 0 ? IPPU.RenderedScreenHeight : 224);
         fb_flush();
         // ESC — удержание ~0.9 с на выход
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1498: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр SNES и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     snes_stop();
     emu_audio_stop();   // r939: НЕ вызывался — кольцо не сбрасывалось после
                         // выхода (доезды/«звук ниоткуда»); теперь чистый сброс

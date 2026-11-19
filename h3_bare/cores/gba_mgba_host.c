@@ -353,12 +353,14 @@ u32 gba_last_pairs(void) { return g_gba_pairs; }
 // r1494: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
 int gba_hw_scaler_active(void) { return g_hw_scaler_active; }
 
-// r1494: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра ×3
-// (240×160 → 720×480, dx=152, dy=60 — та же геометрия, что у программного
-// emu_scale_int(240,160), «не ломать что работает»). Слой настраивается один
-// раз при первом кадре, дальше DE2 читает gba_rgb32 по DMA; CPU только
-// конвертирует RGB565→XRGB8888 (дёшево, без интерполяции). Fallback —
-// программный emu_scale_int из самого EMU_FB (g_hw_scaler_active=0).
+// r1502: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра на
+// всю высоту FB_H=600 с сохранением пропорций (dst_w = 240×600/160 = 900,
+// dx по центру, dy=0 — как NGP r1501 / SNES / 32X). По стенду r1496: целый
+// ×3 (720×480) оставлял поля сверху/снизу — владелец просил «масштаб по
+// высоте с сохранением пропорций, максимально занимать экран». Слой
+// настраивается один раз при первом кадре, дальше DE2 читает gba_rgb32 по
+// DMA; CPU только конвертирует RGB565→XRGB8888 (дёшево, без интерполяции).
+// Fallback — программный emu_scale_int из самого EMU_FB (g_hw_scaler_active=0).
 void gba_render_frame(void) {
     extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
                                      uint32_t bpp, uint32_t dx, uint32_t dy,
@@ -366,14 +368,18 @@ void gba_render_frame(void) {
     extern void h3_de2_set_bkcolor(uint32_t argb);
     extern void usb_cache_clean(uint32_t addr, uint32_t size);
     if (!g_hw_scaler_active) {
-        // Целый ×3, центрировано (как emu_scale_int: 1024/240=4, 600/160=3 → min=3).
-        int dw = GBA_W * 3, dh = GBA_H * 3;
-        int dx = (1024 - dw) / 2, dy = (600 - dh) / 2;
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (GBA_W * 600) / GBA_H;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
         if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)gba_rgb32,
-                                  GBA_W, GBA_H, 32, dx, dy, dw, dh) == 0) {
+                                  GBA_W, GBA_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
             g_hw_scaler_active = 1;
             h3_de2_set_bkcolor(0xFF0E1A2Eu);   // бордюр, как emu_set_border_color
-            emulog_field("GBA", "scaler", "DE2 GSU 32bpp 240x160->720x480");
+            emulog_field("GBA", "scaler", "DE2 GSU 32bpp 240x160->%dx%d", dw, dh);
         } else {
             emulog_field("GBA", "scaler", "fallback CPU emu_scale_int");
         }

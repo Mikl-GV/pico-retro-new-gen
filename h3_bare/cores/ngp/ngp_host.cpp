@@ -51,6 +51,17 @@ unsigned char realBIOSloaded = 0;
 // We define it with SIZEX pitch: each scanline uses SIZEX entries
 unsigned short __attribute__((aligned(4))) drawBuffer[SIZEX * NGPC_SIZEY];
 
+// r1500: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X/GBA/Lynx/SNES/GB: битый DE2-16бит, CPU-копия
+// чистая). NGP рендерит 160x152 RGB565 в drawBuffer (stride SIZEX=320); в
+// graphics_paint_impl кадр конвертируется в XRGB8888-буфер и отдаётся DE2
+// GSU (×3 целый, 480×456 — та же геометрия, что у emu_scale_int(160,152)).
+// Буфер упакован 160×152 (строки по 160 слов) — DE2 PITCH = INSIZE (r1495).
+static uint32_t ngp_rgb32[NGPC_SIZEX * NGPC_SIZEY] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1500: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+// file-static — переживает сессии, сбрасывается в ngp_init_game (урок r1496).
+static int g_hw_scaler_active = 0;
+
 // Stub SDL surface
 struct SDL_Surface { int w; int h; unsigned short* pixels; };
 static SDL_Surface g_screen = { SIZEX, SIZEY, drawBuffer };
@@ -190,6 +201,9 @@ extern "C" int ngp_init_game(const uint8_t* rom, uint32_t size) {
 
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
     // r944: target кольца адаптивный (emu_throttle) — не ставим тут.
+    // r1500: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_hw_scaler_active = 0;
 
     memset(mainrom, 0, sizeof(mainrom));
     // r502 fix: верхний 16Mbit-слот читается как mainrom[0x200000..] — у файла
@@ -259,7 +273,63 @@ extern "C" void ngp_run_frame(void) {
 
 // Graphics override for graphics_paint — must be C-linkage
 extern "C" void graphics_paint_impl(void);
-void graphics_paint_impl(void) {
-    // Called from graphics.cpp at VBlank — blits drawBuffer to EMU_FB
-    blit_to_fb();
+
+// r1500: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+extern "C" int ngp_hw_scaler_active(void) { return g_hw_scaler_active; }
+
+extern "C" void graphics_paint_impl(void) {
+    // r1501: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра на
+    // всю высоту FB_H=600 с сохранением пропорций (dst_w = 160×600/152 = 631,
+    // dx по центру — как emu_scale у SNES/32X). По стенду r1500: целый ×3
+    // (480×456) оставлял поля сверху/снизу — владелец просил «максимально
+    // занимать экран по высоте». Слой настраивается один раз при первом кадре,
+    // дальше DE2 читает ngp_rgb32 по DMA; CPU только конвертирует
+    // RGB565→XRGB8888 (дёшево, без интерполяции).
+    // Fallback — программный blit_to_fb + emu_scale_int (g_hw_scaler_active=0).
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (NGPC_SIZEX * 600) / NGPC_SIZEY;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)ngp_rgb32,
+                                  NGPC_SIZEX, NGPC_SIZEY, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_hw_scaler_active = 1;
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("NGP", "scaler", "DE2 GSU 32bpp 160x152->%dx%d", dw, dh);
+        } else {
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("NGP", "scaler", "fallback CPU emu_scale_int");
+        }
+    }
+    if (g_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 160×152 (строки по 160 слов):
+        // DE2 PITCH = INSIZE (640 Б), читает ровно NGPC_SIZEX слов на строку.
+        // Источник — drawBuffer со страйдом SIZEX=320 (как GBA r1494, урок r1495:
+        // строки упаковываем, PITCH не равен страйду источника).
+        const uint16_t* s = drawBuffer;
+        uint32_t* d = ngp_rgb32;
+        for (int y = 0; y < NGPC_SIZEY; y++) {
+            const uint16_t* srow = s + y * SIZEX;
+            uint32_t* drow = d + (size_t)y * NGPC_SIZEX;
+            for (int x = 0; x < NGPC_SIZEX; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)ngp_rgb32,
+                        (uint32_t)((size_t)NGPC_SIZEX * NGPC_SIZEY * 4u));
+    } else {
+        // Fallback — программный путь: блит в EMU_FB (старый blit_to_fb).
+        blit_to_fb();
+    }
 }

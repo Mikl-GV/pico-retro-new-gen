@@ -34,6 +34,17 @@ static uint32_t g_lynx_pairs = 800;        // r511: сэмплов (пар) за
 static uint32_t g_lynx_aud_min = 0xFFFFFFFFu, g_lynx_aud_max = 0;
 static uint32_t g_lynx_aud_sum = 0, g_lynx_aud_n = 0;
 
+// r1497: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X/GBA: битый DE2-16бит, CPU-копия чистая).
+// Lynx рендерит 160x102 RGB565 в lynx_fb; в lynx_render_frame кадр
+// конвертируется в XRGB8888-буфер и отдаётся DE2 GSU (×5 целый, 800×510 —
+// та же геометрия, что у программного emu_scale_int(160,102)). Буфер
+// упакован 160×102 (строки по 160 слов) — DE2 PITCH = INSIZE (урок r1495).
+static uint32_t lynx_rgb32[LYNX_W * LYNX_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1497: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+// file-static — переживает сессии, сбрасывается в lynx_init_game (урок r1496).
+static int g_hw_scaler_active = 0;
+
 extern "C" uint32_t lynx_last_pairs(void) { return g_lynx_pairs; }
 static ULONG g_lynx_next_cycle = 0;   // r516: стaтик, сбрасывается в lynx_init_game
 
@@ -96,6 +107,9 @@ extern "C" int lynx_init_game(const uint8_t* rom, uint32_t size) {
 
     i2s_dc_shift_set(6);   // r943: дефолт 10 (~7.5 Гц) — без среза нижней середины (r941-регрессия)
     // r944: target кольца адаптивный (emu_throttle) — не ставим тут.
+    // r1497: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_hw_scaler_active = 0;
 
     if (memcmp(rom, "LYNX", 4) != 0) {
         printf("[lynx] no LYNX header (headerless ROM), size=%u\n", (unsigned)size);
@@ -257,9 +271,47 @@ extern "C" void lynx_audio_report(void) {
     g_lynx_aud_n = 0;
 }
 
+extern "C" int lynx_hw_scaler_active(void) { return g_hw_scaler_active; }
+
 extern "C" void lynx_render_frame(void) {
     if (!g_lynx) return;
-    for (int y = 0; y < LYNX_H && y < EMU_H; y++)
-        for (int x = 0; x < LYNX_W && x < EMU_W; x++)
-            EMU_FB[y * EMU_W + x] = lynx_fb[y * LYNX_W + x];
+    // r1497: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра ×5
+    // (160×102 → 800×510, dx=112, dy=45 — та же геометрия, что у программного
+    // emu_scale_int(160,102), «не ломать что работает»). Слой настраивается
+    // один раз при первом кадре, дальше DE2 читает lynx_rgb32 по DMA; CPU
+    // только конвертирует RGB565→XRGB8888 (дёшево, без интерполяции).
+    // Fallback — программный emu_scale_int из самого EMU_FB (g_hw_scaler_active=0).
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_hw_scaler_active) {
+        // Целый ×5, центрировано (как emu_scale_int: 1024/160=6, 600/102=5 → min=5).
+        int dw = LYNX_W * 5, dh = LYNX_H * 5;
+        int dx = (1024 - dw) / 2, dy = (600 - dh) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)lynx_rgb32,
+                                  LYNX_W, LYNX_H, 32, dx, dy, dw, dh) == 0) {
+            g_hw_scaler_active = 1;
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("Lynx", "scaler", "DE2 GSU 32bpp 160x102->800x510");
+        } else {
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("Lynx", "scaler", "fallback CPU emu_scale_int");
+        }
+    }
+    if (g_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 160×102 (строки по 160 слов):
+        // DE2 PITCH = INSIZE (640 Б), читает ровно LYNX_W слов на строку.
+        const uint16_t* s = lynx_fb;
+        uint32_t* d = lynx_rgb32;
+        for (int i = LYNX_W * LYNX_H; i > 0; i--, s++, d++) {
+            uint16_t p = *s;
+            *d = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                 (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                 (uint32_t)((p & 0x1Fu) << 3);
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)lynx_rgb32,
+                        (uint32_t)LYNX_W * LYNX_H * 4u);
+    }
 }

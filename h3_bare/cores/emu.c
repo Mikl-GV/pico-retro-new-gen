@@ -802,6 +802,7 @@ extern int portfolio_exit_requested(void);
 extern int gb_init_game(const uint8_t* rom, uint32_t size);
 extern void gb_run_frame(void);
 extern void gb_render_frame(void);
+extern int gb_hw_scaler_active(void);   // r1499: DE2 GSU активен (пропустить emu_scale_int)
 extern int gba_init_game(const uint8_t* rom, uint32_t size);
 extern void gba_run_frame(void);
 extern void gba_render_frame(void);
@@ -809,8 +810,10 @@ extern int gba_hw_scaler_active(void);   // r1494: DE2 GSU активен (пр�
 extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
+extern int lynx_hw_scaler_active(void);   // r1497: DE2 GSU активен (пропустить emu_scale_int)
 extern int ngp_init_game(const uint8_t* rom, uint32_t size);
 extern void ngp_run_frame(void);
+extern int ngp_hw_scaler_active(void);   // r1500: DE2 GSU активен (пропустить emu_scale_int)
 extern void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_name);
 extern void emu_run_megadrive(const uint8_t* rom, uint32_t size, const char* rom_name);
@@ -1062,11 +1065,24 @@ void emu_run_gameboy(const uint8_t* rom, uint32_t size, const char* rom_name) {
         gb_run_frame();
         gb_render_frame();
         emu_throttle();
-        emu_scale_int(160, 144);
+        // r1499: при активном DE2 GSU кадр уже на экране (gb_render_frame
+        // конвертирует RGBA8888→XRGB8888, GSU делает ×4) — программный
+        // emu_scale_int не нужен и наложился бы поверх аппаратного.
+        if (!gb_hw_scaler_active())
+            emu_scale_int(160, 144);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("GameBoy");
+exit:
+    // r1499: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр GB и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
+    emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("GameBoy");
 }
 
 void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -1166,11 +1182,21 @@ void emu_run_lynx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         }
         lynx_render_frame();
         emu_throttle();
-        emu_scale_int(160, 102);
+        // r1497: при активном DE2 GSU кадр уже на экране (lynx_render_frame
+        // конвертирует RGB565→XRGB8888, GSU делает ×5) — программный
+        // emu_scale_int не нужен и наложился бы поверх аппаратного.
+        if (!lynx_hw_scaler_active())
+            emu_scale_int(160, 102);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit: {
+        // r1497: вернуть DE2 слой на буфер меню (иначе экран держит последний
+        // кадр Lynx и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
         // r956: сводка Lynx печатается на выходе (поток остановлен) — до
         // emu_audio_stop, чтобы drop был ещё «за сессию».
         extern void lynx_audio_report(void);
@@ -1207,11 +1233,23 @@ void emu_run_ngp(const uint8_t* rom, uint32_t size, const char* rom_name) {
     for (;;) {
         ngp_run_frame();
         emu_throttle();
-        emu_scale_int(160, 152);
+        // r1500: при активном DE2 GSU кадр уже на экране (graphics_paint_impl
+        // конвертирует RGB565→XRGB8888, GSU делает ×3) — программный
+        // emu_scale_int не нужен и наложился бы поверх аппаратного.
+        if (!ngp_hw_scaler_active())
+            emu_scale_int(160, 152);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1500: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр NGP и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_period_us = 16667;   // r645: всегда дефолтный период (нет протечки от NGP 16200)
     emu_audio_stop();
     fb_clear(); fb_flush();

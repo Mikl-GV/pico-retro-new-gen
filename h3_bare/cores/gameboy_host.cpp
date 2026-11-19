@@ -29,6 +29,17 @@ int printf(const char* fmt, ...);
 
 static Emulator* g_emu = NULL;
 
+// r1499: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X/GBA/Lynx/SNES: битый DE2-16бит, CPU-копия
+// чистая). GB (binjgb) отдаёт кадр RGBA8888 в FrameBuffer (160×144); в
+// gb_render_frame кадр конвертируется в XRGB8888-буфер и отдаётся DE2 GSU
+// (×4 целый, 640×576 — та же геометрия, что у emu_scale_int(160,144)).
+// Буфер упакован 160×144 (строки по 160 слов) — DE2 PITCH = INSIZE (r1495).
+static uint32_t gb_rgb32[GB_W * GB_H] __attribute__((aligned(4), section(".noinit_fbn")));
+// r1499: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+// file-static — переживает сессии, сбрасывается в gb_init_game (урок r1496).
+static int g_hw_scaler_active = 0;
+
 // r1069/r1070: диагностика «виснет при загрузке» — static на уровне файла,
 // чтобы сбрасывать при каждом gb_init_game() (внутри функции не сбросить).
 static int gb_warned = 0;
@@ -124,6 +135,9 @@ extern "C" int gb_init_game(const uint8_t* rom, uint32_t size) {
     gb_warned = 0;
     gb_warn_t = 0;
     gb_heap_reset();
+    // r1499: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_hw_scaler_active = 0;
     // r0.417 (M6 аудита): битый элемент (NULL/0) — не запускаем binjgb
     // на пустом буфере (это единственный host без guard'а, как у остальных).
     if (!rom || size == 0) { printf("[GB] no ROM\n"); return 0; }
@@ -257,18 +271,50 @@ extern "C" void gb_run_frame(void) {
     ab->position = ab->data;   // буфер перезапишется ядром («съели»)
 }
 
+extern "C" int gb_hw_scaler_active(void) { return g_hw_scaler_active; }
+
 extern "C" void gb_render_frame(void) {
     if (!g_emu) return;
     FrameBuffer* fb = emulator_get_frame_buffer(g_emu);
     if (!fb) return;
 
-    // RGBA = (a<<24)|(b<<16)|(g<<8)|r
-    for (int y = 0; y < GB_H && y < EMU_H; y++)
-        for (int x = 0; x < GB_W && x < EMU_W; x++) {
-            RGBA rgba = (*fb)[y * GB_W + x];
-            uint16_t r5 = (rgba & 0xFF) >> 3;
-            uint16_t g6 = ((rgba >> 8) & 0xFF) >> 2;
-            uint16_t b5 = ((rgba >> 16) & 0xFF) >> 3;
-            EMU_FB[y * EMU_W + x] = (r5 << 11) | (g6 << 5) | b5;
+    // r1499: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра ×4
+    // (160×144 → 640×576, dx=192, dy=12 — та же геометрия, что у программного
+    // emu_scale_int(160,144), «не ломать что работает»). Слой настраивается
+    // один раз при первом кадре, дальше DE2 читает gb_rgb32 по DMA; CPU
+    // только конвертирует RGBA8888→XRGB8888 (дёшево, без интерполяции).
+    // Fallback — программный emu_scale_int из самого EMU_FB (g_hw_scaler_active=0).
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_hw_scaler_active) {
+        // Целый ×4, центрировано (как emu_scale_int: 1024/160=6, 600/144=4 → min=4).
+        int dw = GB_W * 4, dh = GB_H * 4;
+        int dx = (1024 - dw) / 2, dy = (600 - dh) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)gb_rgb32,
+                                  GB_W, GB_H, 32, dx, dy, dw, dh) == 0) {
+            g_hw_scaler_active = 1;
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("GB", "scaler", "DE2 GSU 32bpp 160x144->640x576");
+        } else {
+            extern void emulog_field(const char* tag, const char* field, const char* fmt, ...);
+            emulog_field("GB", "scaler", "fallback CPU emu_scale_int");
+        }
+    }
+    if (g_hw_scaler_active) {
+        // RGBA8888 -> XRGB8888, упакованно 160×144 (строки по 160 слов):
+        // DE2 PITCH = INSIZE (640 Б), читает ровно GB_W слов на строку.
+        // binjgb RGBA = (a<<24)|(b<<16)|(g<<8)|r — уже 32-бит, переносим как есть
+        // (RGB-каналы те же, альфа отбрасываем: XRGB = (0xFF<<24)|(b<<16)|(g<<8)|r).
+        const RGBA* s = *fb;
+        uint32_t* d = gb_rgb32;
+        for (int i = GB_W * GB_H; i > 0; i--, s++, d++) {
+            RGBA p = *s;
+            *d = 0xFF000000u | (p & 0x00FFFFFFu);
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)gb_rgb32,
+                        (uint32_t)GB_W * GB_H * 4u);
     }
 }
