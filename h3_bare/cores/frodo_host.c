@@ -289,13 +289,13 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     const uint32_t* src = (const uint32_t*)data;
     size_t sp = pitch >> 2;                 // байты -> uint32
 
-    // r1516: при активном DE2 GSU кадр уже на экране (c64_render_frame
-    // копирует XRGB8888→c64_rgb32, GSU растягивает на 600) — программный
-    // путь не нужен и наложился бы поверх аппаратного.
-    if (g_c64_hw_scaler_active) {
-        c64_render_frame(src, (int)width, (int)height, sp);
-        return;
-    }
+    // r1519: c64_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно он
+    // при первом кадре настраивает DE2 GSU (ставит g_c64_hw_scaler_active).
+    // Раньше его звали ВНУТРИ if (активен) — он никогда не вызывался, GSU
+    // не активировался, ядро вечно сидело на программном host_video.
+    c64_render_frame(src, (int)width, (int)height, sp);
+    // r1516-fallback: программный путь — только пока GSU не активирован.
+    if (g_c64_hw_scaler_active) return;
 
     // Картинка на всю высоту, ширина — по aspect_ratio ядра (4:3).
     int dh = FB_H_C;

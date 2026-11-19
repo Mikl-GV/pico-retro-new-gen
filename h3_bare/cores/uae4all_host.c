@@ -168,9 +168,85 @@ static void u4a_audio_sample(int16_t l, int16_t r) {
     (void)u4a_audio_sample_batch(d, 1);
 }
 
+// ---- r1517: аппаратный DE2 GSU (вместо программного emu_scale_rgb565_src_aspect) ----
+// Кадр Amiga — RGB565, размер ПЕРЕМЕННЫЙ: ядро UAE4All отдаёт реальный
+// кадр (retrow×retroh, дефолт PREFS_GFX 640×256, gfx_resolution при >600).
+// В u4a_render_frame кадр конвертируется в XRGB8888 (amiga_rgb32, упакован
+// w×h — строки по w слов, DE2 PITCH = INSIZE, урок r1495), GSU растягивает
+// на всю высоту FB_H=600 с сохранением пропорций по аспекту ядра 4:3
+// (dst_w = 600×4/3 = 800, dx = (1024-800)/2 = 112 — та же геометрия, что
+// была у emu_scale_rgb565_src_aspect). r1516: слой DE2 калибруется ПОВТОРНО
+// при смене w/h (урок r1506 — «строки разъехались»). Сброс флага при входе
+// (урок r1496). Fallback — программный emu_scale_rgb565_src_aspect.
+static uint32_t amiga_rgb32[768 * 320] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_amiga_hw_scaler_active = 0;
+static int g_amiga_gsu_w = 0;
+static int g_amiga_gsu_h = 0;
+
+// r1517: рендер кадра Amiga на DE2 GSU. К этому моменту u4a_retro_run
+// вызвал u4a_video с кадром RGB565 w×h (data, pitch байт). Конвертируем
+// кадр в XRGB8888 (amiga_rgb32, упакован w×h — строки по w слов, PITCH =
+// INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 по
+// аспекту ядра 4:3 (dst_w = 600×4/3 = 800, dx = 112 по центру).
+void u4a_render_frame(const uint16_t* src, int w, int h, size_t sp) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!src || w <= 0 || h <= 0) return;
+    if (w > 768) w = 768;
+    if (h > 320) h = 320;
+    // r1517: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_amiga_hw_scaler_active || w != g_amiga_gsu_w || h != g_amiga_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 по аспекту ядра 4:3.
+        int dh = 600;   // FB_H
+        int dw = (int)(((int64_t)dh * 4) / 3);   // 600×4/3 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        h3_de2_set_bkcolor(0xFF000000u);   // поля чёрные (у Amiga бордюра нет)
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)amiga_rgb32,
+                                  (uint32_t)w, (uint32_t)h, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_amiga_hw_scaler_active = 1;
+            g_amiga_gsu_w = w;
+            g_amiga_gsu_h = h;
+            emulog_field("Amiga", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
+        } else {
+            emulog_field("Amiga", "scaler", "fallback CPU emu_scale");
+        }
+    }
+    if (g_amiga_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
+        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
+        const uint16_t* s = src;
+        uint32_t* d = amiga_rgb32;
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = s + (size_t)y * sp;
+            uint32_t* drow = d + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)amiga_rgb32,
+                        (uint32_t)((size_t)w * h * 4u));
+    }
+}
+
 // ---- видео: RGB565 320x240 -> EMU_FB -> HDMI ----
 static void u4a_video(const void* data, unsigned width, unsigned height, size_t pitch) {
     if (!data || width == 0 || height == 0) return;
+    // r1519: u4a_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно он
+    // при первом кадре настраивает DE2 GSU (ставит g_amiga_hw_scaler_active).
+    // Раньше его звали ВНУТРИ if (активен) — он никогда не вызывался, GSU
+    // не активировался, ядро вечно сидело на программном пути.
+    u4a_render_frame((const uint16_t*)data, (int)width, (int)height, pitch >> 1);
+    // r1517-fallback: программный путь — только пока GSU не активирован.
+    if (g_amiga_hw_scaler_active) return;
     // r1252: Amiga PAL — 4:3 при неквадратном пикселе. Пропорциональный скейл
     // 320x256 давал 1.25 и текст выглядел сжатым по X; тянем по аспекту 4:3.
     emu_scale_rgb565_src_aspect((const uint16_t*)data, (int)width, (int)height,
@@ -433,6 +509,12 @@ void emu_run_amiga(const uint8_t* rom, uint32_t size, const char* rom_name) {
 
     emu_set_period_us(20000u);   // PAL 50 Гц
 
+    // r1517: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_amiga_hw_scaler_active = 0;
+    g_amiga_gsu_w = 0;
+    g_amiga_gsu_h = 0;
+
     // retro_load_game(PATH) -> RPATH=PATH -> pre_main -> real_main: полная
     // инициализация (под __LIBRETRO__ real_main только init, без цикла).
     // ВАЖНО: pre_main строит cmdline по глобальному RPATH (не по argv), поэтому
@@ -480,6 +562,17 @@ exit:
                g_fs_rom_opens);
     // Выход: leave_program (очистка ядра: gfx, sound, memory)
     u4a_leave_program_c();
+    /* r1517: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр Amiga и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый
+       amiga_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();
     fb_clear();
     fb_flush();

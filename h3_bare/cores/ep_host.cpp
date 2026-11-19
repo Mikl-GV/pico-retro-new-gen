@@ -45,6 +45,59 @@ extern "C" {
 #define FB_H     600
 
 // ---------------------------------------------------------------------------
+// r1518: DE2 GSU / cache (C-линковка; без extern "C" C++ манглит имена и
+// сборка падает на undefined reference — как в cps1_host.cpp r1512).
+// ---------------------------------------------------------------------------
+extern "C" {
+int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                          uint32_t bpp, uint32_t dx, uint32_t dy,
+                          uint32_t dw, uint32_t dh);
+void h3_de2_ui_restore(void);
+void h3_de2_set_bkcolor(uint32_t argb);
+void usb_cache_clean(uint32_t addr, uint32_t size);
+}
+
+// ---------------------------------------------------------------------------
+// r1518: аппаратный DE2 GSU (вместо прямого писателя в FB_ADDR).
+// Кадр Nick — 768×288 (строки RLE-декодируются в linebuf, палитра RGB565).
+// В drawLine кадр теперь накапливается в ep_rgb32 (XRGB8888, упакован 768×288
+// — строки по 768 слов, DE2 PITCH = INSIZE, урок r1495), а ep_render_frame
+// (в цикле emu_run_enterprise) просит DE2 GSU растянуть его на всю высоту
+// FB_H=600 с сохранением пропорций 4:3 (dst_w = 600×4/3 = 800, dx = 112 —
+// та же геометрия, что была у прямого писателя). Размер фиксированный
+// (768×288) — перекалибровка при смене w/h не нужна (урок r1506 не применим).
+// Сброс флага при входе (урок r1496). Fallback — старый прямой писатель.
+// ---------------------------------------------------------------------------
+static uint32_t ep_rgb32[EP_LOGICAL_W * EP_FRAME_LINES] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_ep_hw_scaler_active = 0;
+
+// r1518: рендер кадра Enterprise на DE2 GSU. ep_rgb32 заполнен drawLine за
+// кадр (768×288 XRGB8888). DE2 GSU растягивает на всю высоту FB_H=600 с
+// сохранением пропорций 4:3 (dst_w = 600×4/3 = 800, dx = (1024-800)/2 = 112;
+// бордюр — через h3_de2_set_bkcolor, поля заполняет микшер).
+static void ep_render_frame(void)
+{
+  if (!g_ep_hw_scaler_active) {
+    int dh = FB_H;                        // 600
+    int dw = (FB_H * 4) / 3;              // 800
+    if (dw > FB_W) dw = FB_W;
+    if (dw <= 0) return;
+    int dx = (FB_W - dw) / 2;             // 112 по центру
+    h3_de2_set_bkcolor(0x00060812u);      // тёмно-синий бордюр (как поля EP)
+    if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)ep_rgb32,
+                              (uint32_t)EP_LOGICAL_W, (uint32_t)EP_FRAME_LINES, 32,
+                              (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+      g_ep_hw_scaler_active = 1;
+      printf("EP: DE2 GSU scaler %dx%d->%dx%d\n", EP_LOGICAL_W, EP_FRAME_LINES, dw, dh);
+    } else {
+      printf("EP: GSU scaler failed, fallback direct FB\n");
+    }
+  }
+  usb_cache_clean((uint32_t)(uintptr_t)ep_rgb32,
+                  (uint32_t)((size_t)EP_LOGICAL_W * EP_FRAME_LINES * 4u));
+}
+
+// ---------------------------------------------------------------------------
 // Палитра Nick (R2G2B2, 64 цвета) -> 256-entry RGB565, повтор по 4.
 // Enterprise видеоконтроллер Nick выдаёт 2-бита на канал; цвет 0..63.
 // ---------------------------------------------------------------------------
@@ -275,16 +328,24 @@ void EpDisplay::drawLine(const uint8_t* buf, size_t nBytes)
   int src_y = g_ep_y0 + lineNo * 2;
   if (src_y < 0 || src_y >= g_ep_y0 + g_ep_dh) { lineNo++; curLine++; return; }
 
-  uint32_t* fb = (uint32_t*)FB_ADDR;
-  uint32_t* drow = fb + (size_t)src_y * FB_W + g_ep_x0;
+  // r1518: при активном DE2 GSU строки Nick копятся в ep_rgb32 (упакован
+  // 768×288) — программный прямой писатель в FB не нужен (и наложился бы
+  // поверх аппаратного). Сброс флага в начале кадра (vsyncStateChange) —
+  // после любого кадра буфер заполняется заново (fallback — старый путь).
+  uint32_t* dst_row = NULL;
+  if (g_ep_hw_scaler_active) {
+    dst_row = ep_rgb32 + (size_t)lineNo * EP_LOGICAL_W;
+  } else {
+    dst_row = (uint32_t*)FB_ADDR + (size_t)src_y * FB_W + g_ep_x0;
+  }
   for (int dx = 0; dx < g_ep_dw; dx++) {
     uint16_t p = ep_pal(linebuf[sx[dx]]);
-    drow[dx] = (((p >> 11) & 0x1Fu) << 19) | (((p >> 5) & 0x3Fu) << 10) |
-               ((p & 0x1Fu) << 3);
+    dst_row[dx] = (((p >> 11) & 0x1Fu) << 19) | (((p >> 5) & 0x3Fu) << 10) |
+                  ((p & 0x1Fu) << 3);
   }
-  if (src_y + 1 < g_ep_y0 + g_ep_dh) {
-    uint32_t* drow2 = drow + FB_W;
-    for (int dx = 0; dx < g_ep_dw; dx++) drow2[dx] = drow[dx];
+  if (!g_ep_hw_scaler_active && src_y + 1 < g_ep_y0 + g_ep_dh) {
+    uint32_t* drow2 = dst_row + FB_W;
+    for (int dx = 0; dx < g_ep_dw; dx++) drow2[dx] = dst_row[dx];
   }
   lineNo++;
   curLine++;
@@ -859,6 +920,9 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
   emulog_field("EP", "init", "OK");
   emu_set_border_color(0x00060812);   // тёмно-синий (как CPC/Frodo) — поля меню не видны
   emu_set_period_us(20000);   // PAL 50 Гц (20 мс на кадр)
+  // r1518: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+  // static переживает сессию, без сброса повторный запуск = чёрный экран.
+  g_ep_hw_scaler_active = 0;
   emu_throttle_reset();
   emu_esc_hold_reset();
   emu_disk_register(&g_ops_ep);
@@ -882,17 +946,40 @@ extern "C" void emu_run_ep(const uint8_t* rom, uint32_t size, const char* rom_na
       g_ep_frames_done = 0; g_ep_lines_drawn = 0;
     }
     if (disp.frameDone) {
-      // Строки уже записаны напрямую в FB (drawLine). Финализируем кадр.
+      // r1518: при активном DE2 GSU кадр уже накоплен drawLine в ep_rgb32
+      // (XRGB8888 768×288) — просим GSU его растянуть (программный путь со
+      // строками FB не нужен). Иначе — старый прямой писатель (поля/copy
+      // уже сделаны в drawLine и ep_fill_border).
       disp.frameDone = false;
-      fb_dirty_all();
-      fb_frame_scaled();
-      fb_flush();
+      // r1519: ep_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно он
+      // при первом кадре настраивает DE2 GSU (ставит g_ep_hw_scaler_active).
+      // Раньше его звали ВНУТРИ if (активен) — он никогда не вызывался, GSU
+      // не активировался, ядро вечно сидело на старом прямом писателе.
+      ep_render_frame();
+      // r1518-fallback: программный прямой путь — только пока GSU не
+      // активирован (строки Nick уже записаны drawLine в FB, полs
+      // залиты ep_fill_border).
+      if (!g_ep_hw_scaler_active) {
+        fb_dirty_all();
+        fb_frame_scaled();
+        fb_flush();
+      }
       g_ep_frames_done++;
     }
     emu_throttle();
     if (emu_esc_hold()) break;
   }
 
+  /* r1518: вернуть DE2 слой на буфер меню (иначе экран держит последний
+     кадр Enterprise и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+     ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый ep_rgb32. */
+  {
+    extern void h3_de2_ui_restore(void);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+
+    h3_de2_ui_restore();
+    h3_de2_set_bkcolor(0xFF000000u);
+  }
   emu_audio_stop();
   fb_clear(); fb_flush();
   g_ep_dir[0] = 0;               // каталог игры не наследуется следующей сессией

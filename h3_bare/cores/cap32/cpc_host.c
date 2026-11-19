@@ -306,13 +306,13 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     const uint16_t* src = (const uint16_t*)data;
     size_t sp = pitch >> 1;                 // байты -> uint16
 
-    // r1514: при активном DE2 GSU кадр уже на экране (cpc_render_frame
-    // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
-    // путь не нужен и наложился бы поверх аппаратного.
-    if (g_cpc_hw_scaler_active) {
-        cpc_render_frame(src, (int)width, (int)height, sp);
-        return;
-    }
+    // r1519: cpc_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно он
+    // при первом кадре настраивает DE2 GSU (ставит g_cpc_hw_scaler_active).
+    // Раньше его звали ВНУТРИ if (активен) — он никогда не вызывался, GSU
+    // не активировался, ядро вечно сидело на программном host_video.
+    cpc_render_frame(src, (int)width, (int)height, sp);
+    // r1514-fallback: программный путь — только пока GSU не активирован.
+    if (g_cpc_hw_scaler_active) return;
 
     // r970: картинка на всю высоту, ширина — по aspect_ratio ЯДРА (24/17),
     // а не по пикселям кадра. Пиксель CPC не квадратный, поэтому

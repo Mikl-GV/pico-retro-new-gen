@@ -452,13 +452,14 @@ void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name)
         emu_disk_poll();   /* r1363: F12 — до a8_retro_run, иначе уйдёт в машину */
         a8_retro_run();
         emu_throttle();
-        // r1515: при активном DE2 GSU кадр уже на экране (a8_render_frame
-        // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
-        // emu_scale не нужен и наложился бы поверх аппаратного.
+        // r1519: a8_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно он
+        // при первом кадре настраивает DE2 GSU (ставит g_a8_hw_scaler_active).
+        // Раньше звали его ВНУТРИ if (активен) — он никогда не вызывался,
+        // GSU не активировался, ядро вечно сидело на программном emu_scale.
+        a8_render_frame();
+        // r1515-fallback: программный путь — только пока GSU не активирован.
         if (!a8_hw_scaler_active())
             emu_scale(320, 240);
-        else
-            a8_render_frame();
         fb_flush();
         if (emu_esc_hold()) break;
     }

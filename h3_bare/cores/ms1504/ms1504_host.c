@@ -278,6 +278,66 @@ static uint16_t ms1504_rgb565(uint32_t rgb888) {
 static uint16_t ms1504_scr[MS1504_SCR_W_640 * MS1504_SCR_H_400]
     __attribute__((section(".noinit_fbn"), aligned(4)));
 
+// ---- r1520: аппаратный DE2 GSU (вместо прямого писателя в FB_ADDR) ----
+// Кадр — 640×400 RGB565 (ms1504_scr, .noinit_fbn). В ms1504_render_frame кадр
+// конвертируется в XRGB8888 (ms1504_rgb32, упакован 640×400 — строки по
+// 640 слов, DE2 PITCH = INSIZE, урок r1495), GSU растягивает на всю высоту
+// FB_H=600 с сохранением пропорций по аспекту ядра 4:3 (dst_w = 600×4/3 =
+// 800, dx = (1024-800)/2 = 112 — та же геометрия, что была у прямого
+// писателя 960×600). Размер фиксированный — перекалибровка при смене w/h
+// не нужна (урок r1506 не применим). Сброс флага при входе (урок r1496).
+// Fallback — старый прямой писатель (g_ms1504_hw_scaler_active=0).
+static uint32_t ms1504_rgb32[MS1504_SCR_W_640 * MS1504_SCR_H_400] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_ms1504_hw_scaler_active = 0;
+
+// r1520: рендер кадра МС-1504 на DE2 GSU. ms1504_scr заполнен
+// ms1504_render_into (640×400 RGB565). Конвертируем кадр в XRGB8888
+// (ms1504_rgb32, упакован 640×400 — строки по 640 слов, PITCH = INSIZE,
+// урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с сохранением
+// пропорций по аспекту ядра 4:3 (dst_w = 600×4/3 = 800, dx = 112 по центру).
+// r1519-эталон: вызывается БЕЗУСЛОВНО каждый кадр (setup GSU — внутри при
+// первом вызове), программный путь — fallback, пока флаг не выставлен.
+static void ms1504_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_ms1504_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 по аспекту ядра 4:3.
+        int dh = 600;   // FB_H
+        int dw = (600 * 4) / 3;   // 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)ms1504_rgb32,
+                                  (uint32_t)MS1504_SCR_W_640, (uint32_t)MS1504_SCR_H_400, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_ms1504_hw_scaler_active = 1;
+            printf("MS1504: DE2 GSU scaler 640x400->%dx%d\n", dw, dh);
+        } else {
+            printf("MS1504: GSU scaler failed, fallback direct FB\n");
+        }
+    }
+    if (g_ms1504_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 640×400 (строки по 640 слов):
+        // DE2 PITCH = INSIZE (2560 Б), читает ровно 640 слов на строку.
+        const uint16_t* s = ms1504_scr;
+        uint32_t* d = ms1504_rgb32;
+        for (int y = 0; y < MS1504_SCR_H_400; y++) {
+            const uint16_t* srow = s + (size_t)y * MS1504_SCR_W_640;
+            uint32_t* drow = d + (size_t)y * MS1504_SCR_W_640;
+            for (int x = 0; x < MS1504_SCR_W_640; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)ms1504_rgb32,
+                        (uint32_t)((size_t)MS1504_SCR_W_640 * MS1504_SCR_H_400 * 4u));
+    }
+}
+
 static void ms1504_render_into(uint16_t* dst, int dw, int dh) {
     uint32_t vb = videobase;
     if (vb > RAM_SIZE - 4096) vb = 0xB8000;
@@ -352,9 +412,17 @@ static void ms1504_scale_to_hdmi(void) {
 // показать: рендер 640×400 в ms1504_scr + прямой вывод на HDMI
 static void ms1504_video_flush(void) {
     ms1504_render_into(ms1504_scr, MS1504_SCR_W_640, MS1504_SCR_H_400);
-    // r1473: по просьбе владельца возвращён растровый масштаб 640×400 → 960×600.
-    // Вариант 1:1 (r1469) остался в emu_show_rgb565_1to1() — откат одной строкой.
-    ms1504_scale_to_hdmi();
+    // r1520: ms1504_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно
+    // он при первом кадре настраивает DE2 GSU (ставит g_ms1504_hw_scaler_active).
+    // Эталон паттерна — r1519 (MD/GG r1503–r1510): НЕ звать render_frame
+    // внутри if (активен) — иначе GSU никогда не активируется (баг r1513–r1518).
+    ms1504_render_frame();
+    // r1520-fallback: старый прямой писатель — только пока GSU не активирован.
+    if (!g_ms1504_hw_scaler_active) {
+        // r1473: по просьбе владельца возвращён растровый масштаб 640×400 → 960×600.
+        // Вариант 1:1 (r1469) остался в emu_show_rgb565_1to1() — откат одной строкой.
+        ms1504_scale_to_hdmi();
+    }
     fb_flush();
 }
 
@@ -519,6 +587,9 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("MS1504", "machine", "1801BM1 / 8086-compat");
     emulog_field("MS1504", "init", "OK");
     emu_set_border_color(0x00000000);
+    // r1520: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_ms1504_hw_scaler_active = 0;
     emu_throttle_reset();
     emu_esc_hold_reset();
     memset(g_kbd_prev, 0, sizeof(g_kbd_prev));
@@ -537,6 +608,17 @@ void emu_run_ms1504(const uint8_t* rom, uint32_t size, const char* rom_name) {
     }
 
     running = 0;
+    /* r1520: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр МС-1504 и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый
+       ms1504_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     // r1351: не вызывался emu_audio_stop() — кольцо I2S не сбрасывалось после
     // выхода (хвост «доезжал» в меню/следующую игру), статистика и флаг
     // «идёт игра» оставались включёнными, DE2 не возвращался на штатный буфер.

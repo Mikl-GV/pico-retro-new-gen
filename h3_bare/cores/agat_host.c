@@ -688,14 +688,14 @@ static void agat_run_common(int systype, int apple2, const char *label,
 		if (fh > AGAT_FRAME_H) fh = AGAT_FRAME_H;
 		if (fw <= 0 || fh <= 0) { fw = AGAT_FRAME_W; fh = AGAT_FRAME_H; }
 		agat_video_expand(frame, fw, fh, 1);
-		/* r1513: при активном DE2 GSU кадр уже на экране (agat_render_frame
-		   конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный
-		   emu_scale_rgb565_src_aspect не нужен и наложился бы поверх
-		   аппаратного. */
+		/* r1519: agat_render_frame вызывается БЕЗУСЛОВНО каждый кадр — именно
+		   он при первом кадре настраивает DE2 GSU (ставит флаг). Раньше его
+		   звали ВНУТРИ else-ветки — он никогда не вызывался, GSU не
+		   активировался и ядро вечно сидело на программном масштабе. */
+		agat_render_frame(frame, fw, fh);
+		/* r1513-fallback: программный путь — только пока GSU не активирован. */
 		if (!agat_hw_scaler_active())
 			emu_scale_rgb565_src_aspect(frame, fw, fh, fw, 4, 3);
-		else
-			agat_render_frame(frame, fw, fh);
 		fb_flush();
 		emu_throttle();
 		if (emu_esc_hold()) break;
