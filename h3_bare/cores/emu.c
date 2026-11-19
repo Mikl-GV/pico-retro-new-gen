@@ -805,6 +805,7 @@ extern void gb_render_frame(void);
 extern int gba_init_game(const uint8_t* rom, uint32_t size);
 extern void gba_run_frame(void);
 extern void gba_render_frame(void);
+extern int gba_hw_scaler_active(void);   // r1494: DE2 GSU активен (пропустить emu_scale_int)
 extern int lynx_init_game(const uint8_t* rom, uint32_t size);
 extern void lynx_run_frame(void);
 extern void lynx_render_frame(void);
@@ -1100,11 +1101,23 @@ void emu_run_gba(const uint8_t* rom, uint32_t size, const char* rom_name) {
         gba_run_frame();
         gba_render_frame();
         emu_throttle();
-        emu_scale_int(240, 160);
+        // r1494: при активном DE2 GSU кадр уже на экране (gba_render_frame
+        // конвертирует RGB565→XRGB8888, GSU делает ×3) — программный
+        // emu_scale_int не нужен и наложился бы поверх аппаратного.
+        if (!gba_hw_scaler_active())
+            emu_scale_int(240, 160);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
 exit:
+    // r1494: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр GBA и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     // r1351: снять ядро mGBA, пока память bump-пула ещё валидна (следующий
     // emu_prepare сбросит пул, и deinit по затёртой памяти уронил бы вход).
     {

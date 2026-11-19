@@ -41,6 +41,7 @@ typedef uint64_t u64;
 #include "btn_pad.h"
 #include "remap.h"
 #include "i2s.h"
+#include "emulog.h"   // r1494: emulog_field("GBA","scaler",...) для DE2 GSU
 #include "h3_hs_timer.h"
 
 // ---- ЕМУ-буфер кадра (240x160 RGB565, общий для эмуляторов) ----
@@ -51,6 +52,17 @@ typedef uint64_t u64;
 // GBA-размеры (mGBA interface.h): GBA_VIDEO_HORIZONTAL_PIXELS=240, VERTICAL=160.
 #define GBA_W 240
 #define GBA_H 160
+
+// r1495: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
+// — шахматит (проверено на 32X: битый DE2-16бит, CPU-копия чистая). GBA
+// рендерит 240x160 RGB565 в EMU_FB (stride 320); в gba_render_frame кадр
+// конвертируется в XRGB8888-буфер и отдаётся DE2 GSU (×3 целый, 720×480 —
+// та же геометрия, что у программного emu_scale_int(240,160)). CPU освобождён
+// от integer-скейла, формат для DE2 — проверенный 32-бит.
+// r1495: буфер упакован 240×160 (строки по 240 слов) — DE2 PITCH = INSIZE,
+// иначе строки «разъезжаются» (r1495: конверсия со страйдом EMU_FB 320
+// давала шаг строк 320 слов при PITCH 960 Б = рассинхрон).
+static uint32_t gba_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".noinit_fbn")));
 
 // ---- ресемпл звука 32768 → 48000 Гц (полифазный, 64 фазы × 8 тапов) ----
 // mGBA, как и gpSP, синтезирует GBA-звук на 32768 Гц стерео (s16-пары).
@@ -168,6 +180,10 @@ static struct mCore* g_core = NULL;
 static int g_loaded = 0;
 static uint32_t g_keys = 0;
 static u32 g_gba_pairs = 0;
+// r1494: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+// static — переживает сессии, поэтому сбрасывается в gba_init_game (r1496):
+// иначе повторный вход видит флаг=1, не настраивает слой заново → чёрный экран.
+static int g_hw_scaler_active = 0;
 
 // r1351: снять ядро ДО сброса bump-пула. emu_prepare() (gb_heap_reset) идёт
 // раньше gba_init_game, поэтому g_core к этому моменту уже указывал на
@@ -232,6 +248,11 @@ int gba_init_game(const uint8_t* rom, uint32_t size) {
     printf("GBA: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     gba_rs_phase = 0;
+    // r1496: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе. g_hw_scaler_active —
+    // static, переживает сессию; без сброса повторный запуск GBA видит флаг=1,
+    // не перенастраивает DE2 GSU (слой был возвращён h3_de2_ui_restore на выходе)
+    // и показывает чёрный экран. У 32X такого нет: hw_scaler_ok — локальная стека.
+    g_hw_scaler_active = 0;
     // r1145: «как у эталона» (mGBA-фронтенд НЕ добавляет DC-фильтр) — полное
     // отключение DC-блокера CPU2 на пути GBA. Откат фильтра r1143 (shift=5),
     // по решению владельца: звук должен быть без ФВЧ, как выводит эталон mGBA.
@@ -329,8 +350,51 @@ void gba_run_frame(void) {
 
 u32 gba_last_pairs(void) { return g_gba_pairs; }
 
+// r1494: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale_int).
+int gba_hw_scaler_active(void) { return g_hw_scaler_active; }
+
+// r1494: аппаратный путь — DE2 GSU растягивает 32-битную копию кадра ×3
+// (240×160 → 720×480, dx=152, dy=60 — та же геометрия, что у программного
+// emu_scale_int(240,160), «не ломать что работает»). Слой настраивается один
+// раз при первом кадре, дальше DE2 читает gba_rgb32 по DMA; CPU только
+// конвертирует RGB565→XRGB8888 (дёшево, без интерполяции). Fallback —
+// программный emu_scale_int из самого EMU_FB (g_hw_scaler_active=0).
 void gba_render_frame(void) {
-    // Видео уже отрендерено software-рендером mGBA прямо в EMU_FB (setVideoBuffer).
-    // Здесь нечего копировать — буфер кадра и есть EMU_FB (240x160 в левом
-    // верхнем углу 320x240). Ничего не делаем.
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void h3_de2_set_bkcolor(uint32_t argb);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_hw_scaler_active) {
+        // Целый ×3, центрировано (как emu_scale_int: 1024/240=4, 600/160=3 → min=3).
+        int dw = GBA_W * 3, dh = GBA_H * 3;
+        int dx = (1024 - dw) / 2, dy = (600 - dh) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)gba_rgb32,
+                                  GBA_W, GBA_H, 32, dx, dy, dw, dh) == 0) {
+            g_hw_scaler_active = 1;
+            h3_de2_set_bkcolor(0xFF0E1A2Eu);   // бордюр, как emu_set_border_color
+            emulog_field("GBA", "scaler", "DE2 GSU 32bpp 240x160->720x480");
+        } else {
+            emulog_field("GBA", "scaler", "fallback CPU emu_scale_int");
+        }
+    }
+    if (g_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 240×160 (строки по 240 слов):
+        // DE2 PITCH = INSIZE (960 Б), читает ровно GBA_W слов на строку.
+        // Конвертация построчно из EMU_FB со страйдом 320 (mGBA stride).
+        const uint16_t* s = (const uint16_t*)EMU_FB;
+        uint32_t* d = gba_rgb32;
+        for (int y = 0; y < GBA_H; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + y * GBA_W;
+            for (int x = 0; x < GBA_W; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)gba_rgb32,
+                        (uint32_t)GBA_W * GBA_H * 4u);
+    }
 }
