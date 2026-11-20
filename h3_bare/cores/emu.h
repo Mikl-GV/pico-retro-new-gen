@@ -98,6 +98,7 @@ void emu_hdmi_flip(void);
 
 // rom_name может быть NULL
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name);
+void emu_run_a2600(const uint8_t* rom, uint32_t size, const char* rom_name);   // r1525: Stella вместо MCUME
 void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name);

@@ -11,8 +11,8 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 │          меню → браузер ROM → диспетчер эмуляторов            │
 │   (a2600/…/sms/gameboy/…/zxspectrum/bk0010/model-диалоги)      │
 ├───────────────────────────────────────────────────────────────┤
-│  mcume/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
-│  (A2600)   (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
+│  a2600/    a5200/    a7800/    fceumm/    gpgx/     portfolio/│
+│  (Stella)  (A5200)   (A7800)   (NES)   (MD+SMS)      (8088)   │
 │  gameboy/ (binjgb)   lynx/ (Handy)   snes/ (Snes9x 2005)      │
 │  ngp/ (RACE)  vecx/ (Vectrex, реализован, статус READY)  gearcoleco/ (Coleco)  │
 │  msx/ (fMSX)  fuse/ (ZX Spectrum)  pce_fast/ (PC Engine)      │
@@ -46,7 +46,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 | Система | Ядро | Язык | Рендер | Ввод |
 |---------|------|:----:|--------|------|
-| Atari 2600 | MCUME (Virtual VCS) | C (gnu89) | 160×192 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Atari 2600 | **Stella 2014 (libretro)** | C++ | 160×N (NTSC ~210, PAL до 256) → EMU_FB 320×240 → GSU | usb_kbd_get_raw + sega_pad + ремап A2600 |
 | Atari 5200 | pico5200 (Atari800) | C (gnu89) | 320×240 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari 7800 | ProSystem | C++ | 320×240 через maria_LineReady → EMU_FB | usb_kbd_get_raw + sega_pad |
 | NES / Famicom | **FCEUmm** (FCE Ultra) | C | 256×240 → EMU_FB | usb_kbd_get_raw + SuborKB + sega_pad |
@@ -342,11 +342,52 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 - R_PIO требует включения тактирования (PRCM) — настраивается через U-Boot `gpio set PL10`
   в boot.scr (или остаётся в функции 7)
 
-### system_atari_h3.cpp (A2600, MCUME)
+### a2600_host.cpp (A2600, Stella 2014 libretro)
 
-- Пул: статический bump-аллокатор
-- `emu_DrawScreenPal16()` → EMU_FB (160×192 RGB565)
-- Сложность P1 (Novice/Expert) — настройка Settings
+- Ядро: `h3_bare/cores/a2600/{emucore,common,cheat,stubs}` (Stella 2014 libretro,
+  `emulator-refs/stella2014-libretro`); старый `mcume/` (x2600/PocketVCS) и
+  `system_atari_h3.cpp` в сборке остаются, но НЕ вызываются (r1525;
+  `emu_run_a2600_mcume` в `emu.c` помечен LEGACY).
+- `OSystem` + `Settings` + `Cartridge::create(AUTO)` + `Console`; кадр TIA
+  160×N индексов палитры → `a2600_render_tia_to_fb()` в `EMU_FB` (RGB565
+  320×240, горизонталь ×2, вертикаль N→240) → `a2600_render_frame()`:
+  XRGB8888 `a26_rgb32` (`.noinit_fbn`) + DE2 GSU (800×600, dx=112).
+- Регион (r1526/r1538): меню «Atari 2600 TV mode» трёхпозиционное — Auto
+  (дефолт), NTSC или PAL; `Display.Format` пишется в `Properties` до
+  `new Console` всегда: `"AUTO"` (по картриджу), `"NTSC"` или `"PAL"` — пустое
+  свойство Stella автоопределением не считает (`Console.cxx:114`). Период
+  кадра — из фактической частоты консоли (`a2600_frame_period_us()`:
+  NTSC 1498/25 → 16 689 мкс, PAL 1248/25 → 20 032 мкс), поэтому Auto на
+  PAL-игре идёт 50 Гц.
+- Сложность P1 (r1526): из меню «A2600 Difficulty» (`a2600_diff_expert`,
+  дублируется в SRAM 0x70) начальное состояние `ConsoleLeftDiffA/B`; тумблер
+  по ремап-кнопке `BTN_DIFF` работает по фронту нажатия и обновляет ту же
+  переменную, что и меню. Правая сложность (r1533, `BTN_RDIFF`) — тоже по
+  фронту, живёт в сессии (`a26_rdiff_expert`); выставляется РОВНО один из
+  `ConsoleRightDiffA/B` (позиция A проверяется первой).
+- Ввод (r1531): `build_input()` заполняет `Event` (джойстик/пад, коммутаторы,
+  клавиатура через ремап), затем **`console->riot().update()`** переводит
+  Event в пины `Controller`/`Switches` — без него `Joystick::update()` и
+  `Switches::update()` не вызываются и ввод не доходит. Порядок кадра:
+  `build_input()` → `riot().update()` → `tia.update()`.
+- Коммутаторы (r1535): Reset/Select — УРОВНИ `Event::ConsoleReset/Select`
+  (игра сама опрашивает SWCHB; `System::reset()` по кнопке НЕ вызывается —
+  это перезапускало CPU в момент нажатия). Color/B&W (r1531: сброс в новой
+  игре), диффы и Fry (`Console::fry()` по фронту — `Event::Fry` ядром не
+  читается) — по фронту нажатия.
+- Тип контроллеров (r1534): база DefProps не подключена, поэтому
+  `Controller.Left/Right` выбирает `a2600_ctrl.c` по MD5 (179 записей
+  PADDLES*/KEYBOARD) плюс эвристик по имени; лог
+  `A2600: controller L=… R=… swap=…`. Keypad-игры получают
+  `Event::KeyboardZero*/One*` с верхнего ряда 1..0 и numpad. Ограничение:
+  второй paddle (порт 1) не кормится.
+- Звук (r1537): `Sound::processFragment` — `31400×den/num` сэмплов на кадр
+  (NTSC 1498/25 → 524, PAL 1248/25 → 629, потолок 1024; как в эталоне
+  `libretro.cxx:1766`) → линейный ресемплер 31400→48000 (`A26_RS_INC` 66901u)
+  → `i2s_push_block`. Фикс. 600 давал завышенный темп на NTSC.
+- Привязки (r1533, ремап `REMAP_PLAT_A2600`): стрелки = D-Pad, Z = Fire,
+  R = Game Reset, Enter = Game Select, Q/W = диффы L/R, C = Color/B&W,
+  E = Fry; геймпад: A/B = Fire, Start = Reset, Mode = Select.
 
 ### portfolio/system_portfolio.cpp (Atari Portfolio, Fake86 8088)
 
@@ -385,7 +426,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | # | Функция |
 |---|---------|
 | 1 | Создать папки ROM на SD (основная + alt_dir для NES/SMS, двойное подтверждение) |
-| 2 | Input Test (тест кнопок NES/A2600) |
+| 2 | Input Test (тест кнопок NES) |
 | 3 | Atari 2600 Difficulty: Novice ⇄ Expert (Enter или ←/→) |
 | 4 | Sega 6-button gamepad — тест скана геймпада (сырые чтения, биты, время; UART при смене) |
 | 5 | Keyboard remap (по системам, `/retro.cfg`) |
@@ -394,9 +435,9 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 
 Порядок отображения задаёт `set_order[]` в `settings.c` (не значения enum — от них
 зависят TFT-индексы и `switch`): WiFi Transfer, Audio test tone, Volume,
-Video: no tearing, A2600 Difficulty, A2600/A5200/A7800 TV mode, Input Test,
+A2600 Difficulty, A2600/A5200/A7800 TV mode, Input Test,
 Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
-Пунктов 14, окно — 12 (`SET_VISIBLE`), меню скроллится (`^`/`v` в правом верхнем/
+Пунктов 13, окно — 12 (`SET_VISIBLE`), меню скроллится (`^`/`v` в правом верхнем/
 нижнем углу), значения переключаются ←/→ или Enter.
 
 > Настройки частоты кадра вручную **убраны** (r158). С r1179..r1182 период
@@ -404,7 +445,6 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 > 2600/5200/7800 выбирается пунктами меню. Собственный темп ядра сохранён:
 > Lynx — 75 Гц (плюс слежение за потреблением I2S, r559/r560), NGP — ~61.7 Гц
 > (16200 мкс), GBA — адаптивный период по TX Sample Counter (r562).
-> Пункт «Video: no tearing» (r1183) — двойная буферизация, по умолчанию ВЫКЛ.
 
 ## Ввод (usb_kbd.c / usb_ohci.c)
 
@@ -461,7 +501,9 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
     (патч всех банков ROM напрямую, с compare-условием)
   - **RAW-читы `AAAA:VV[:CC]`** — универсальный формат (адрес:значение[:байт-условие])
     для систем без своего движка. Парсинг — `cheats_parse_raw`, применение каждый кадр:
-    - **A2600 (MCUME)** — `theRam[addr & 0x7F]` (RIOT RAM 128 байт)
+    - **A2600 (Stella 2014)** — RAW-читы к новому ядру не подключены (старый
+      путь `theRam[addr & 0x7F]` из MCUME ушёл вместе с ядром; читы в проекте
+      отключены с r500)
     - **A5200** — `memory[addr & 0xFFFF]` (RAM 64K)
     - **A7800** — `memory_ram[addr & 0x3FFF]` (RAM 16K)
     - **Lynx (Handy)** — `Peek_RAM`/`Poke_RAM` (RAM 64K)
@@ -502,7 +544,7 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.frodo_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1408; источник истины по адресам — `docs/MEMORY.md`, ниже только краткая сводка)
+## Карта памяти (актуально r1538; источник истины по адресам — `docs/MEMORY.md`, ниже только краткая сводка)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
@@ -514,10 +556,10 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40A90C9C | `.text` + init_array (≈10.6 МБ, r1484); векторы `_vectors`=0x40000000 |
-| 0x40A90CC0..0x4102AE48 | `.rodata` (≈5.6 МБ, r1484) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
-| 0x41030FA0..0x414DE244 | `.data` (≈4.7 МБ, копируется из образа) |
-| 0x414DF000..0x44B50BB0 | `.bss` (`_bstart1.._bend1`, ≈54.4 МБ, обнуляется в `startup.S`; r1484 — `ms1504_scr` в `.noinit_fbn`) |
+| 0x40000000..0x40AD7864 | `.text` + init_array (≈10.8 МБ, r1538); векторы `_vectors`=0x40000000 |
+| 0x40AD7880..0x41083628 | `.rodata` (≈5.6 МБ, r1538) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
+| 0x41083970..0x41532A64 | `.data` (≈4.7 МБ, копируется из образа) |
+| 0x41533000..0x44BA8C80 | `.bss` (`_bstart1.._bend1`, ≈54.4 МБ, обнуляется в `startup.S`; r1538 — `ms1504_scr` в `.noinit_fbn`) |
 | 0x4A400000..0x4A402E40 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
@@ -526,7 +568,7 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x50000000..0x51800000 | `ROM_BUF` — буфер браузера ROM (24 МБ). Аркады используют этот же адрес как 92-МБ zip-буфер (`cps1_host.cpp:112`), поэтому «24 МБ» — граница только для `rom_browser.c`, не физическая |
 | 0x52000000..0x524A78A0 | `.frodo_bss` (≈ 4.65 МБ, NOLOAD, r1284/r1347) — BSS C64 (Frodo, `Retro_Screen` 4 МБ); обнуляется в `startup.S` (до r1284 — `.vice_bss`, VICE, ~31 МБ) |
 | 0x53E00000..0x53E00CE4 | `.fs_bss` (r1010/r1354, NOLOAD) — ЕДИНЫЙ файловый слой прошивки `cores/fs_layer.c` (r1014: вынесен из `atari800/a8_fs.c`; глобальные `fopen/fread/open/stat` + слоты `g_files`/`g_rom_*`/`g_fd_*` + доп. файлы образа r1354); слоты валидируются magic `0xA85A5A5A` (r1011), `setvbuf`/`setbuf` перехвачены как no-op; `atari800/a8_fs.c` — мост `a8_fs_register`→`fs_register`; обнуляется в `startup.S` |
-| **0x54000000..0x5A8F0FF0** | **`.noinit_fbn` (NOLOAD, ≈105 МБ, r1191/r1460)** — bump-пул FBNeo (`pool_mem`) и большие буферы ядер (pxt VIDEORAM/RAM/UMB/HMA/XMS, `ms1504_scr`); НЕ обнуляется при старте; блоки обнуляются владельцем при выдаче; ASSERT ≤0x5C000000 |
+| **0x54000000..0x5B3A8D00** | **`.noinit_fbn` (NOLOAD, ≈116 МБ, r1191/r1538)** — bump-пул FBNeo (`pool_mem`) и большие буферы ядер (pxt VIDEORAM/RAM/UMB/HMA/XMS, `ms1504_scr`); НЕ обнуляется при старте; блоки обнуляются владельцем при выдаче; ASSERT ≤0x5C000000 |
 | 0x5F000000..0x5F1D7310 | `.a8_bss` (r778, ≈ 1.84 МБ, NOLOAD) — BSS Atari 800; обнуляется в `startup.S` |
 | 0x5F800000..0x5F825800 | `EMU_FB` — общий буфер эмуляторов (320×240 RGB565) |
 | 0x5F900000..0x5FB58000 | HDMI framebuffer (1024×600 XRGB8888) |
@@ -534,22 +576,22 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x5FF00000..0x5FF04000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
-Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BCCBB0 на r1460),
+Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BA8C80 на r1538),
 не граница кучи и не конец DRAM (r1278, см. `h3_bare/platform/linker.ld`);
 `.coherent`, `_menu_arena` и framebuffer'ы —
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
-**Числа-размеры (r1484, `arm-none-eabi-readelf -SW`):** `.text` 0xA90C9C (≈10.6 МБ,
-0x40000000..0x40A90C9C), `.rodata` 0x59A188 (≈5.6 МБ, 0x40A90CC0..0x4102AE48),
-`.data` 0x4AD2A4 (≈4.7 МБ, 0x41030FA0..0x414DE244),
-`.bss` 0x3671BB0 (≈54.4 МБ, 0x414DF000..0x44B50BB0),
-`.noinit_fbn` 0x68F0FF0 (≈105 МБ, пул FBNeo + буферы ядер, NOLOAD, 0x54000000..0x5A8F0FF0),
+**Числа-размеры (r1538, `arm-none-eabi-readelf -SW`):** `.text` 0xAD7864 (≈10.8 МБ,
+0x40000000..0x40AD7864), `.rodata` 0x5A5DA8 (≈5.6 МБ, 0x40AD7880..0x41083628),
+`.data` 0x4AF0F4 (≈4.7 МБ, 0x41083970..0x41532A64),
+`.bss` 0x3675C80 (≈54.4 МБ, 0x41533000..0x44BA8C80),
+`.noinit_fbn` 0x73A8D00 (≈116 МБ, пул FBNeo + буферы ядер, NOLOAD, 0x54000000..0x5B3A8D00),
 `.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` ≈11.6 КБ
 (0x4A400000..0x4A402E40),
 `.fs_bss` 0xCE4 (файловый слой fs_layer.c; 0x53E00000..0x53E00CE4, r1354),
 `.frodo_bss` — 0x4A78A0 (≈4.65 МБ), 0x52000000..0x524A78A0, NOLOAD (r1284;
 до r1284 — `.vice_bss`, ≈29.6 МБ, r974).
-Образ `h3_bare.bin` = 21 881 412 Б (r1484).
+Образ `h3_bare.bin` = 22 227 556 Б (r1538).
 
 ## Загрузочная карта памяти (r502)
 
@@ -605,10 +647,12 @@ U-Boot SPL → U-Boot → (boot.scr: gpio-настройка светодиод�
 
 ## Производительность
 
-A2600 (MCUME): `mainloop` — 7600 инструкций, с r157 останавливается на границе
-кадра (`tv_draw_count`); на железе run/s=60, sim/s=60, кадр ≈ 2–5.8 мс —
-запас до 16.6 мс. Более тяжёлые системы (A5200 — ANTIC 140K, A7800 — MARIA 55K
-вызовов/кадр, Portfolio — 8088 интерпретация + LCD-рендер) тяжелее, но укладываются.
+A2600 (Stella 2014, r1525): точное ядро (M6502 + TIA + M6532), кадр считается
+`tia.update()`, бюджет кадра 16667 мкс; замер fps на железе — после стендовой
+проверки (прежние цифры MCUME — `mainloop` 7600 инструкций, `tv_draw_count`,
+2–5.8 мс — к Stella не относятся). Более тяжёлые системы (A5200 — ANTIC 140K,
+A7800 — MARIA 55K вызовов/кадр, Portfolio — 8088 интерпретация + LCD-рендер)
+тяжелее, но укладываются.
 512 МБ DRAM + Cortex-A7 @ 1.2 ГГц — запас достаточен.
 ### Системы сверх таблицы (добавлены после базового описания)
 

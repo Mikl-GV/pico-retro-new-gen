@@ -52,7 +52,7 @@
 | **GBA** | A | B | L | R | — | — | Start | Select |
 | **Lynx** | A | B | — | Opt1 | Opt2 | — | Pause | — |
 | **NGP / NGPC** | A | B | — | — | — | — | Start | Option(Select) |
-| **Atari 2600** | Fire | Fire | — | — | — | — | Reset | Select |
+| **Atari 2600** | Fire | Fire | — | — | — | — | Reset (Game Reset) | Select (Game Select) |
 | **Atari 5200** | Fire | **Pause** | — | — | — | — | Start | # |
 | **Atari 7800** | B1 | B2 | — | — | — | Pause | Start | Select |
 | **Vectrex** | 1 | 2 | — | 3 | 4 | — | — | — |
@@ -75,7 +75,7 @@
 | **GBA** | Z | X | — | — | — | — | Enter | S | L=Q, R=W |
 | **Lynx** | Z | X | — | — | — | — | Enter(Opt2) | S(Opt1) | P=Pause |
 | **NGP** | Z | X | — | — | — | — | Enter | S | — |
-| **A2600** | Z=Fire | — | — | — | — | — | Enter=Reset | S=Select | Q=Diff |
+| **A2600** | Z=Fire | — | — | — | — | — | R=Game Reset | Enter=Game Select | Q/W=Diff L/R, C=Color/BW, E=Fry; keypad: 1..0 / numpad |
 | **A5200** | Z=Fire | — | — | — | — | — | Enter=Start | S=Key3 | P=Pause, X=Fire2 |
 | **A7800** | Z=B1 | X=B2 | — | — | — | — | Enter | S | P=Pause |
 | **Vectrex** | Z=1 | X=2 | C=3 | V=4 | — | — | — | — | — |
@@ -83,8 +83,9 @@
 | **PCE** | Z=I | X=II | — | — | — | — | Enter=Run | S=Sel | — |
 | **CPS1** | Z=Att | X=Jump | C=F3 | — | — | — | Enter | S=Coin | 5 / Numpad5 = Coin |
 
-Коды HID: Z=29 X=27 C=6 A=4 S=22 D=7 Q=20 W=26 V=25 P=19 Enter=40 Space=44
-стрелки: Up=82 Down=81 Left=80 Right=79.
+Коды HID: Z=29 X=27 C=6 A=4 S=22 D=7 Q=20 W=26 R=21 E=8 V=25 P=19 Enter=40 Space=44
+стрелки: Up=82 Down=81 Left=80 Right=79 (эмпирика стенда, r1536: левая на этой
+клавиатуре — 80, правая — 79; совпадает с key-test в Settings).
 
 ---
 

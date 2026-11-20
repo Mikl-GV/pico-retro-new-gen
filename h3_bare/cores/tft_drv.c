@@ -647,7 +647,7 @@ static const struct {
     },
     { "a2600",
       "Atari 2600",
-      {"Arrows = D-Pad","Z = Fire (button)","S = Select    Enter = Reset","Diff. = Settings 4","ESC hold = exit",NULL}
+      {"Arrows = D-Pad    Z = Fire","R = Reset   Enter = Select","Q = Diff L    W = Diff R","C = Color/B&W    E = Fry","Paddles: arrows  Keypad: 1..0/numpad","ESC hold = exit",NULL}
     },
     { "a5200",
       "Atari 5200",
@@ -1058,7 +1058,7 @@ static void tft_calib_mode(void) {
 static void tft_settings_mode(void) {
     static const char* const items[7] = {
         "Create ROM folders",
-        "Input test (NES/A2600)",
+        "Input test (NES)",
         "A2600 difficulty",
         "Sega 6-button pad",
         "Keyboard remap",

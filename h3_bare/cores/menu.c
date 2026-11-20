@@ -494,15 +494,18 @@ void menu_help(void) {
         "S=Y  D=Z  Q=Mode",
         "Enter=Start  arrows=D-Pad",
         0,
-        // страница 1: A2600
+        // страница 1: A2600 — только клавиатура (r1533)
         "--- ATARI 2600 ---",
         "Arrows = D-Pad",
         "Z = Fire (button)",
-        "S = Select",
-        "Enter = Game Reset",
-        "X/Space = not used",
+        "R = Reset (Game Reset)",
+        "Enter = Select (Game Select)",
+        "Q = Diff Left   W = Diff Right",
+        "C = Color/B&W",
+        "E = Fry (cold reset)",
+        "Paddles: arrows = paddle",
+        "Keypad: 1..0 = P1, numpad = P2",
         "ESC hold=exit",
-        "Difficulty = Settings 4",
         0,
         // страница 2: A5200
         "--- ATARI 5200 ---",

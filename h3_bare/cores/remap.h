@@ -48,35 +48,28 @@
 #define BTN_L      13
 #define BTN_R      14
 // корпусные/спец. кнопки консолей:
-//   A2600: Reset, Difficulty
+//   A2600: Reset (Game Reset), Select (Game Select), Difficulty L/R,
+//          Color/B&W, Fry (холодный «прогрев» RAM/TIA)
 //   A5200: Pause, Key3, Fire2 (второй огонь)
 //   A7800: (Pause на корпусе)
 //   SMS/GG: Pause (корпусная у SMS), Start (у GG)
 //   MD: (нет корпусных)
 #define BTN_RESET     15
-#define BTN_DIFF      16
+#define BTN_DIFF      16   // A2600/A5200: сложность левого джойстика (A/B)
 #define BTN_PAUSE     17
 #define BTN_KEY3      18
 #define BTN_OPT1      19   // Lynx Option 1, NGP Select
 #define BTN_OPT2      20   // Lynx Option 2, NGP Start
 #define BTN_FIRE      21   // A2600/A5200 Fire
 #define BTN_FIRE2     22   // A5200 второй огонь (нижняя кнопка)
-#define BTN_MAX       23
+#define BTN_COLOR     23   // A2600: тумблер Color/B&W
+#define BTN_RDIFF     24   // A2600: сложность правого джойстика (A/B)
+#define BTN_FRY       25   // A2600: Fry (Console::fry — прогрев RAM/TIA)
+#define BTN_MAX       26
 
 // Флаг Shift-комбинации (SNES и прочие с >8 кнопок):
 // если установлен — привязка срабатывает ТОЛЬКО при удержании Shift + клавиша.
 #define REMAP_MOD_SHIFT 0x01
-
-// Описание одной кнопки платформы
-typedef struct {
-    const char* label;   // как показать в меню
-    uint8_t     def;     // скан-код по умолчанию (0 = не назначено)
-} remap_btn_t;
-
-typedef struct {
-    const char* name;         // имя платформы для меню
-    const remap_btn_t* btns;  // массив BTN_MAX — по индексу кнопки
-} remap_plat_t;
 
 // ---- API ----
 // Текущее значение привязки кнопки платформы: (модификаторы<<8)|сканкод.
@@ -88,9 +81,6 @@ uint16_t remap_get(int plat, int btn);
 // (например SHIFT+кнопка), если в значении привязки стоит REMAP_MOD_SHIFT.
 int remap_kbd_pressed(int plat, int btn, const uint8_t* keys, int n);
 
-// Назначить кнопке платформы значение (0 = снять)
-void remap_set(int plat, int btn, uint16_t val);
-
 // Сброс к дедолту
 void remap_defaults(void);
 
@@ -100,8 +90,5 @@ void remap_save(void);
 
 // Интерактивное меню настройки (Settings). Вызывается как settings пункт.
 void remap_menu(void);
-
-// Доступ к таблицам для меню
-const remap_plat_t* remap_plats(void);   // массив [PLAT_COUNT]
 
 #endif

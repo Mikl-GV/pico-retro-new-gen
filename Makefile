@@ -86,10 +86,52 @@ OBJ  += $(BUILD)/coleco_bios.o
 OBJ  += $(addprefix $(BUILD)/,$(addsuffix .o,h3_sdc fw_blob))
 
 
-# MCUME
+# MCUME (старый A2600, x2600/PocketVCS — заменён Stella, не вызывается)
 MCUME := $(TOP)h3_bare/cores/mcume
 OBJ  += $(foreach fn,Vcsemu Vmachine Raster Table Display Collision Tiasound Options Keyboard Exmacro,$(BUILD)/mcume_$(fn).o)
 OBJ  += $(foreach fn,Cpu Memory,$(BUILD)/mcume_$(fn).o)
+
+# A2600 (Stella 2014 libretro-порт, r1525 — замена MCUME)
+# Ядро: emucore (TIA/M6502/M6532/Cart*), common (Base/Sound), стабы OSystem.
+# Host-слой a2600_host.cpp — точку входа emu_run_a2600, GSU-рендер, ввод, звук.
+A2600 := $(TOP)h3_bare/cores/a2600
+A2600_INC := -I$(A2600) -I$(A2600)/emucore -I$(A2600)/common -I$(A2600)/stubs -I$(A2600)/libretro_inc
+# Stella — C++ c std::string/iostream (как Gearcoleco): БЕЗ -ffreestanding,
+# иначе newlib в freestanding-режиме блокирует iostream/sstream/iomanip.
+# Исключения ВЫКЛЮЧЕНЫ (-fno-exceptions, как у всех ядер): вендорские
+# try/catch в Cart*.cxx убраны (r1525) — иначе libstdc++ тянет locale/cxx11-
+# inst в .bss и он перекрывает CPS ZIP_BUF_BIG (0x44C00000).
+A2600_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS)
+A2600_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
+A2600_CXXFLAGS += -Wno-unused-parameter
+A2600_BONES := Base.cxx Sound.cxx
+A2600_EMU := $(foreach f,$(wildcard $(A2600)/emucore/*.cxx),$(BUILD)/a26e_$(notdir $(f:.cxx=.o)))
+A2600_OBJS := $(BUILD)/a2600_host.o $(BUILD)/a2600_compat.o $(addprefix $(BUILD)/a26c_,$(notdir $(A2600_BONES:.cxx=.o)))
+A2600_OBJS += $(filter-out %Thumbulator.o,$(A2600_EMU)) $(BUILD)/a26_thumbulator.o
+OBJ  += $(A2600_OBJS)
+OBJ  += $(BUILD)/a2600_renamed.stamp
+# r1534: таблица типов контроллеров A2600 (paddle/keypad) — хост-код, не
+# Stella; линкуется после ядра, чтобы не сдвигать USB-объекты.
+OBJ  += $(BUILD)/a2600_ctrl.o
+$(BUILD)/a2600_ctrl.o: $(TOP)h3_bare/cores/a2600_ctrl.c $(TOP)h3_bare/cores/a2600_ctrl.h | $(BUILD)
+	$(CC) $(CFLAGS) $(A2600_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/a2600_host.o: $(TOP)h3_bare/cores/a2600_host.cpp | $(BUILD)
+	$(CXX) $(A2600_CXXFLAGS) $(A2600_INC) $(INCLUDES) -c -o $@ $<
+# Только rfgetc: остальные rf* уже в libretro-common проекта (r1525).
+$(BUILD)/a2600_compat.o: $(TOP)h3_bare/cores/a2600_compat.c | $(BUILD)
+	$(CC) $(CFLAGS) $(A2600_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/a26c_%.o: $(A2600)/common/%.cxx | $(BUILD)
+	$(CXX) $(A2600_CXXFLAGS) $(A2600_INC) -c -o $@ $<
+$(BUILD)/a26e_%.o: $(A2600)/emucore/%.cxx | $(BUILD)
+	$(CXX) $(A2600_CXXFLAGS) $(A2600_INC) -c -o $@ $<
+$(BUILD)/a26_thumbulator.o: $(A2600)/emucore/Thumbulator.c | $(BUILD)
+	$(CC) $(CFLAGS) $(A2600_INC) -c -o $@ $<
+# r1525: переименование C++-символов Stella суффиксом _a26 — иначе дубли
+# Cartridge/System/Settings и др. с Gearcoleco (gc_Cartridge.o) склеиваются
+# --allow-multiple-definition в РАЗНЫЕ тела (порча кучи, r0.193-грабли).
+$(BUILD)/a2600_renamed.stamp: $(A2600_OBJS) $(TOP)h3_bare/cores/a2600_rename.sh | $(BUILD)
+	$(TOP)h3_bare/cores/a2600_rename.sh $(BUILD) $(A2600_OBJS)
+	@touch $@
 
 # A7800
 A7800 := $(TOP)h3_bare/cores/a7800

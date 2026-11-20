@@ -243,6 +243,67 @@ static void host_video(const void* data, unsigned width, unsigned height, size_t
     }
 }
 
+// ---- r1522: аппаратный DE2 GSU (вместо программного emu_scale) ----
+// Кадр ZX Spectrum — RGB565 320×240 в EMU_FB после host_video (Timex 640×480
+// уже сжат до 320×240 в host_video). В zx_render_frame кадр конвертируется
+// в XRGB8888 (zx_rgb32, упакован 320×240 — строки по 320 слов, DE2 PITCH =
+// INSIZE, урок r1495), GSU растягивает на всю высоту FB_H=600 с сохранением
+// пропорций (dst_w = 320×600/240 = 800, dx = 112 — как col_rgb32 r1507).
+// Размер фиксированный — перекалибровка при смене w/h не нужна (урок r1506
+// не применим). Сброс флага при входе (урок r1496). Fallback — программный
+// emu_scale (g_zx_hw_scaler_active=0). r1519-эталон: вызывается БЕЗУСЛОВНО.
+static uint32_t zx_rgb32[EMU_FB_W * EMU_FB_H] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_zx_hw_scaler_active = 0;
+
+// r1522: рендер кадра ZX Spectrum на DE2 GSU. К этому моменту host_video
+// уже скопировал кадр RGB565 320×240 в EMU_FB (лево-верх, страйд 320).
+// Конвертируем его в XRGB8888 (zx_rgb32, упакован 320×240 — строки по
+// 320 слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает на всю высоту
+// FB_H=600 с сохранением пропорций (dst_w = 320×600/240 = 800, dx = 112 по
+// центру). Fallback — программный emu_scale из самого EMU_FB
+// (g_zx_hw_scaler_active=0).
+void zx_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_zx_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (EMU_FB_W * 600) / EMU_FB_H;   // 320×600/240 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)zx_rgb32,
+                                  (uint32_t)EMU_FB_W, (uint32_t)EMU_FB_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_zx_hw_scaler_active = 1;
+            printf("ZX: DE2 GSU scaler %dx%d->%dx%d\n", EMU_FB_W, EMU_FB_H, dw, dh);
+        } else {
+            printf("ZX: GSU scaler failed, fallback CPU emu_scale\n");
+        }
+    }
+    if (g_zx_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 320×240 (строки по 320 слов):
+        // DE2 PITCH = INSIZE (1280 Б), читает ровно 320 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (host_video уже скопировал).
+        const uint16_t* s = (const uint16_t*)EMU_FB_ADDR;
+        uint32_t* d = zx_rgb32;
+        for (int y = 0; y < EMU_FB_H; y++) {
+            const uint16_t* srow = s + y * EMU_FB_W;
+            uint32_t* drow = d + (size_t)y * EMU_FB_W;
+            for (int x = 0; x < EMU_FB_W; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)zx_rgb32,
+                        (uint32_t)((size_t)EMU_FB_W * EMU_FB_H * 4u));
+    }
+}
+
 static void host_log(enum retro_log_level level, const char* fmt, ...)
 {
     // r0.417: тихий лог (UART не спамим). Диагностика «загрузки ROM» (r735)
@@ -504,6 +565,9 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
     }
 
     emu_set_border_color(0x00000000);
+    // r1522: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_zx_hw_scaler_active = 0;
     emu_throttle_reset();
     emu_esc_hold_reset();
     g_fuse_exit_req = 0;
@@ -514,13 +578,29 @@ void emu_run_fuse(const uint8_t* rom, uint32_t size, const char* rom_name)
         emu_disk_poll();   /* r1363: F12 — до fuse_retro_run, иначе уйдёт в машину */
         fuse_retro_run();
         emu_throttle();
-        emu_scale(EMU_FB_W, EMU_FB_H);
+        // r1522: zx_render_frame вызывается БЕЗУСЛОВНО каждый кадр (эталон
+        // r1519) — именно он при первом кадре настраивает DE2 GSU.
+        zx_render_frame();
+        // r1522-fallback: программный путь — только пока GSU не активирован.
+        if (!g_zx_hw_scaler_active)
+            emu_scale(EMU_FB_W, EMU_FB_H);
         fb_flush();
         if (emu_esc_hold() || g_fuse_exit_req) break;
     }
 
     fuse_retro_unload_game();
     fuse_retro_deinit();
+    /* r1522: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр ZX и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый
+       zx_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
     emulog_end("ZX");

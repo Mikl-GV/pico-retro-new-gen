@@ -50,12 +50,11 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 | WiFi Transfer (FTP) | Запуск FTP-сервера для обмена ROM (r795..r846) |
 | Audio test tone | Тест-тон 440/1000/3000 Гц (выбор ←/→) |
 | Volume | Громкость I2S, 0..100 % (←/→) |
-| Video: no tearing (+1 frame) | Двойная буферизация с переключением по vblank (r1183), по умолчанию Off; применяется при следующем запуске эмулятора |
 | Atari 2600 Difficulty | Novice / Expert |
-| Atari 2600 TV mode | NTSC / PAL |
+| Atari 2600 TV mode | NTSC / PAL / Auto (r1526/r1538): Auto — автодетект Stella по картриджу; период кадра — по частоте консоли (NTSC 16 689 / PAL 20 032 мкс) |
 | Atari 5200 TV mode | NTSC / PAL (r1184), по умолчанию NTSC |
 | Atari 7800 TV mode | NTSC / PAL / Auto (r1184); Auto — по байту региона в заголовке картриджа |
-| Input Test (NES/A2600) | Тест кнопок |
+| Input Test (NES) | Тест кнопок NES-пада (сырые HID-коды клавиатуры) |
 | Sega 6-button pad | Тест скана геймпада (сырые чтения + биты, в UART при смене) |
 | Keyboard remap | Ремап клавиатуры по системам (/retro.cfg) |
 | Touch calibration | Калибровка SPI-тача TSC2046I (5 мишеней на TFT) |
@@ -72,21 +71,21 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 
 ## Эмуляторы (игровой маппинг — клавиатура)
 
-| Клавиша | NES | A2600 (MCUME) | A5200 | A7800 | SMS/GG | SG-1000 | Game Boy | GBA | Lynx | NGP | Mega Drive | SNES | Vectrex | Coleco | PC Engine |
+| Клавиша | NES | A2600 (Stella) | A5200 | A7800 | SMS/GG | SG-1000 | Game Boy | GBA | Lynx | NGP | Mega Drive | SNES | Vectrex | Coleco | PC Engine |
 |---------|:---:|:-------------:|:-----:|:-----:|:------:|:-------:|:--------:|:---:|:----:|:---:|:----------:|:----:|:-------:|:------:|:---------:|
 | ↑ ↓ ← → | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | D-Pad | Стик | D-Pad | D-Pad |
 | **Z** | A (огонь) | Fire | Fire | B1 (A) | Button 1 | Button 1 | **B** | **A** | A | **A** | **A** | **B** | Кноп.1 | Fire 1 | **I** |
 | **X** | B | — | Pause | B2 (B) | Button 2 | Button 2 | **A** | **B** | B | **B** | **B** | **Y** | Кноп.2 | Fire 2 | **II** |
-| **C** | — | — | — | — | — | — | — | — | — | — | **C** | **L** | Кноп.3 | — | — |
+| **C** | — | Color/BW | — | — | — | — | — | — | — | — | **C** | **L** | Кноп.3 | — | — |
 | **V** | — | — | — | — | — | — | — | — | — | — | — | — | Кноп.4 | — | — |
 | **A** | — | — | — | — | — | — | — | — | — | — | **X** | **A** | — | — | — |
-| **S** | Select | Select | **Key 3** | Select | Pause | — | Select | Select | Option 1 | **Select** | **Y** | **X** | — | **# (keypad)** | **Select** |
+| **S** | Select | — | **Key 3** | Select | Pause | — | Select | Select | Option 1 | **Select** | **Y** | **X** | — | **# (keypad)** | **Select** |
 | **D** | — | — | — | — | — | — | — | — | — | — | **Z** | — | — | — | — |
-| **Q** | — | — | — | — | — | — | — | **L** | — | — | Mode | — | — | **\* (keypad)** | — |
-| **W** | — | — | — | — | — | — | — | **R** | — | — | — | **R** | — | **# (keypad)** | — |
+| **Q** | — | Left Diff | — | — | — | — | — | **L** | — | — | Mode | — | — | **\* (keypad)** | — |
+| **W** | — | Right Diff | — | — | — | — | — | **R** | — | — | — | **R** | — | **# (keypad)** | — |
 | **1..9,0** | — | — | — | — | — | — | — | — | — | — | — | — | — | keypad 1..9,0 (r0.195) | — |
 | Space | — | — | — | — | — | — | — | — | — | — | — | Select | — | — | — |
-| Enter | Start | Game Reset | **Start** | Start | **Start** | **Start** | Start | Start | Option 2 | **Start** | Start | Start | — | Start (keypad 8) | **Run** |
+| Enter | Start | Game Select | **Start** | Start | **Start** | **Start** | Start | Start | Option 2 | **Start** | Start | Start | — | Start (keypad 8) | **Run** |
 | ESC (удерж. ~1с)¹ | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 | Start (джой, удерж. ~1с) | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход | Выход |
 
@@ -94,6 +93,13 @@ USB-клавиатура (Boot HID) + Sega-геймпад 6-button через PC
 Удержание выхода (ESC или Start) «рвётся» пустыми пакетами клавиатуры? Нет: счётчик sticky (r155) — отсчёт сбрасывается только при отсутствии нажатия >250 мс подряд.
 После выхода из эмулятора код **ждёт отпускания всех кнопок** (клавиатура + геймпад) — зажатая кнопка выхода не «доезжает» в меню и не прыгает курсор в первую строку (r0.204, `usb_wait_release_all`).
 Все клавиши (в т.ч. Vectrex: стик/кнопки 1-4) можно перемапить в Settings → Keyboard remap.
+
+**A2600 (Stella, r1533/r1537):** **R** = Game Reset (пуск игры), **Enter** = Game
+Select, **Q/W** = сложность левого/правого джойстика, **C** = Color/B&W, **E** = Fry
+(холодный сброс). Тип контроллера — по MD5 рома: paddle-игры управляются стрелками
+(Paddles читает те же JoystickZero*), keypad-игры — верхний ряд 1..0 (порт 0) и
+цифровой блок (порт 1), `-`/`=` и numpad `*`/`+` = `*`/`#`. Второй paddle (порт 1)
+не кормится — 2-игровые paddle-игры потребуют доработки.
 
 ## Hot-swap дискет (F12, r1363)
 

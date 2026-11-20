@@ -1,4 +1,4 @@
-# HANDOVER — текущее состояние (r1410)
+# HANDOVER — текущее состояние (r1538)
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -7,6 +7,430 @@
 ---
 
 ## 0. Последние правки
+
+- **r1538 (2026-11-20): A2600 — настоящий Auto TV-режим и темп по консоли; удалена опция «Video: no tearing».**
+  - A2600 TV mode: при Auto (`a2600_tv_mode == 2`) в `Properties` теперь явно
+    пишется `Display.Format = "AUTO"`. Раньше свойство не ставилось вовсе, а
+    `Console.cxx:114` сравнивает именно с "AUTO" — автоопределение не
+    срабатывало, формат оставался неизвестным и PAL-игры шли как NTSC.
+  - Период кадра A2600: вместо `a2600_tv_mode == 1 ? 20000 : 16667` — функция
+    `a2600_frame_period_us()` из фактической частоты консоли (NTSC 1498/25 →
+    16 689 мкс, PAL 1248/25 → 20 032 мкс). В Auto PAL-игры больше не идут на
+    60 Гц. Пункт «Atari 2600 Difficulty» проверен — работает через
+    `Event::ConsoleLeftDiffA/B` каждый кадр.
+  - Опция «Video: no tearing (+1 frame)» удалена из настроек: `SET_VIDEO_VSYNC`,
+    `g_video_vsync`, пункт меню и обработчик. DE2 сканирует EMU_FB напрямую —
+    двойная буферизация FB_ADDR не нужна; API `fb_flip_set()/fb_flip_active()`
+    оставлен (хосты зовут `fb_flip_set(0)` как страховку сброса). Пунктов
+    настроек стало 13, `set_order[]` перенумерован.
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1538**, `h3_bare.bin` 22 227 556 Б;
+    `a2600_frame_period_us` 0x400eee84, `a2600_run_frame` 0x400eed58,
+    `a2600_stop` 0x400eed7c, `emu_run_a2600` 0x400efc7c; `g_video_vsync` в
+    символах отсутствует; USB сдвинут на -0x10 (0x4000e728/0x40010ba8) из-за
+    изменения кода до USB-модулей.
+  - Документы: ARCHITECTURE (список настроек, A2600 TV-режим, карта памяти
+    r1538), CONTROLS (пункт «Video: no tearing» удалён, A2600 TV mode —
+    NTSC/PAL/Auto), MEMORY (карта r1538), README/AGENTS/HANDOVER — r1538.
+  - **Стенд: ожидает проверки** — A2600 TV mode Auto на PAL-игре (50 Гц, без
+    «мерцания»), Difficulty, отсутствие пункта «Video: no tearing» в меню.
+
+- **r1537 (2026-11-20): ревизия документации + очистка зомби-кода + звук A2600 по эталону.**
+  - Код: удалены мёртвые `remap_set()`, типы `remap_btn_t`/`remap_plat_t` и
+    `remap_plats()` (объявлен, но не определён), `a2600_reset_hw_scaler()`
+    (вызовов нет); `emu_run_a2600_mcume` в `emu.c` помечен LEGACY — в сборке,
+    но не вызывается (rom_browser идёт в `emu_run_a2600`).
+  - Звук A2600: фиксированные 600 сэмплов на кадр заменены формулой эталона
+    `31400×den/num` (`libretro.cxx:1766`): NTSC 524, PAL 629, потолок 1024.
+    600 при `A26_RS_INC` = 31400/48000 давало ≈35950 Гц — темп и тон выше на
+    NTSC и ниже на PAL. **Требует проверки на слух.**
+  - Комментарии приведены к коду: исправлен искажённый комментарий у
+    `tiaSamples` (он и скрывал пункт выше), убран устаревший про «Fire2» в UI
+    ремапа; `settings.c`/`tft_drv.c`: пункт «Input Test (NES/A2600)» →
+    «Input Test (NES)» (экран тестирует только NES-пада).
+  - Документы: `README.md` r1484→r1537; `AGENTS.md` r1459→r1537; шапка
+    `HANDOVER` r1410→r1537; `ROADMAP` «Atari 2600 (MCUME)»→«(Stella 2014)»;
+    `CONTROLS.md` — колонка «A2600 (Stella)», Enter=Game Select, R=Game Reset,
+    Q/W=диффы, C=Color/B&W, E=Fry + сноска (paddle/keypad, порт 1 не кормится);
+    `BUTTON_MAPPING.md` — строка A2600 и коды HID (R=21, E=8, пометка об
+    эмпирике 80/79); `ARCHITECTURE.md` — раздел A2600 (`riot().update()`,
+    коммутаторы-уровни, `a2600_ctrl`, звук) и карта памяти r1537;
+    `PITFALLS.md` §19 (ввод/Reset/контроллеры/звук); `MEMORY.md` — карта DRAM
+    по факту r1537.
+  - Сборка: `make clean && make -j20` (правка `remap.h`), `linkcheck: OK`,
+    **r1537**, `h3_bare.bin` 22 227 300 Б. Символы: `a2600_run_frame`
+    0x400eed68, `a2600_stop` 0x400eed8c, `emu_run_a2600` 0x400efc2c,
+    `a2600_ctrl_lookup` 0x4012e6f4, `remap_kbd_pressed` 0x40019c18; USB без
+    сдвига (0x4000e738/0x40010bb8).
+  - **Стенд: ожидает проверки** — A2600 (старт игр, Reset/Select/диффы/
+    Color/Fry, paddle/keypad) и звук (темп и тон).
+
+- **r1536 (2026-11-20): A2600 — возврат кодов Left/Right по стенду.**
+  - Стенд r1535: управление работает, но влево/вправо инвертированы.
+  - Причина: конкретная USB-клавиатура отдаёт **80 = Left, 79 = Right**
+    (это же зафиксировано экраном Settings → key test, `settings.c:118`), а
+    не по HID Usage Tables (0x4F=Left, 0x50=Right).
+  - `remap.c`: возвращены `KBD_LEFT 80`, `KBD_RIGHT 79`; в комментарии —
+    пометка, что значения эмпирические, «спековая» правка r1535 ошибочна.
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1536**, `h3_bare.bin`
+    22 227 300 Б; `a2600_run_frame` 0x400ee680, `a2600_stop` 0x400eed70;
+    USB без сдвига (0x4000e738/0x40010bb8). **Стенд: ожидает проверки.**
+
+- **r1535 (2026-11-20): A2600 — Reset как в старом ядре (без сброса CPU) + стрелки.**
+  - Стенд r1534: Adventure не стартует, управление «не работает».
+  - Причина №1: в r1533 на фронт Reset добавлен `System::reset()`. В старом
+    ядре x2600 (`system_atari_h3.cpp: emu_GetPad` + `vcs_Input`/`keycons`)
+    Game Reset — **только бит коммутатора** (`riotRead[0x282]`), CPU не
+    сбрасывается. В Stella `Event::ConsoleReset` тоже лишь бит SWCHB; игра
+    сама опрашивает его. Наш сброс перезапускал CPU в момент нажатия — игра
+    не успевала увидеть отпускание и оставалась на титуле.
+  - Фикс: `System::reset()` из `build_input` удалён, Reset остаётся уровнем
+    `Event::ConsoleReset` (SWCHB bit0).
+  - Причина №2: в `remap.c` HID-коды стрелок были перепутаны
+    (`KBD_LEFT 80`/`KBD_RIGHT 79`); по HID Usage Tables 0x4F=Left (79),
+    0x50=Right (80) — горизонталь работала инвертированно. Исправлено.
+  - Диагностика (r1535): в init печатается `A2600: bind up=… rst=… sel=…`
+    (фактические привязки после `/retro.cfg`), в кадре — `A2600 in: …` при
+    изменении ввода (сырые HID-коды, биты пада, итоговый `j`, rst/sel).
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1535**, `h3_bare.bin`
+    22 227 300 Б; `a2600_run_frame` 0x400ee680, `a2600_stop` 0x400eed70,
+    `emu_run_a2600` 0x400efc10, `a2600_ctrl_lookup` 0x4012e6c4; USB без
+    сдвига (0x4000e738/0x40010bb8). **Стенд: Game Reset (R) должен стартовать
+    игру, стрелки — двигать, Z — огонь.**
+
+- **r1534 (2026-11-20): A2600 — управление в paddle/keypad-играх.**
+  - Симптом: в части ромов (Video Pinball, Arcade Pong, Bumper Bash,
+    Concentration/Hunt & Score) управление не реагировало.
+  - Причина: тип контроллера Stella берёт из базы свойств (`Controller.Left/
+    Right`), а DefProps в сборке не подключена (r1525, экономия 273 КБ) — все
+    игры получали JOYSTICK. Paddle-игры читают TIA INPT0-3 (аналог), keypad
+    сканирует RIOT через `Keyboard`-контроллер: это другой канал, джойстик им
+    не подходит.
+  - Решение: компактная таблица MD5→(L,R,swap) из DefProps 2014 только для
+    не-джойстиковых типов — `a2600_ctrl.c/.h` (179 записей, ~3.6 КБ .rodata),
+    генератор `h3_bare/cores/gen_a2600_ctrl.ps1` (запуск из корня). Плюс
+    эвристик по имени для paddle-тайтлов, которых в базе 2014 нет: Video
+    Pinball, Arcade Pong, Breakout, Warlords, Kaboom, Circus Atari, Night
+    Driver, Street Racer, Demons to Diamonds, Paddle.
+  - `a2600_init_game(rom, size, rom_name)`: lookup ДО `new Console`, установка
+    `Controller.Left/Right` (+`SwapPaddles`) в Properties; лог
+    `A2600: controller L=… R=… swap=…`.
+  - Движение paddle идёт через те же `JoystickZero*` события
+    (`Paddles::update` читает их как цифровое управление) — стрелки/Z работают
+    без новых привязок. Keypad: верхний ряд 1..0 → порт 0, numpad 1..0 → порт 1;
+    `-`/`=` и numpad `*`/`+` = `*`/`#` (события KeyboardZero*/One*).
+  - Справка HDMI/TFT дополнена строками про paddle/keypad.
+  - Проверка по `roms/a2600`: Arcade Pong → PADDLES (имя), Bumper Bash →
+    PADDLES_IAXIS (база), Concentration и Hunt & Score → KEYBOARD/KEYBOARD,
+    Video Pinball → PADDLES (имя), остальные 34 — JOYSTICK.
+  - Сборка: `make -j20` (новый объект), `linkcheck: OK`, **r1534**,
+    `h3_bare.bin` 22 226 788 Б; `a2600_ctrl_lookup` 0x4012e574, `a2600_stop`
+    0x400eecb8, `emu_run_a2600` 0x400efac0; USB без сдвига
+    (0x4000e738/0x40010bb8). **Стенд: проверить 5 игр и USB.**
+
+- **r1533 (2026-11-20): A2600 — финальная раскладка клавиатуры + справка.**
+  - Раскладка владельца: стрелки = направления, `Z` = Fire, `R` = Reset
+    (Game Reset, запуск; по фронту ещё и `System::reset()`), `Enter` = Select
+    (Game Select), `Q` = Left Difficulty, `W` = Right Difficulty, `C` =
+    Color/B&W, `E` = Fry.
+  - `remap.h`: добавлены `BTN_RDIFF` (24) и `BTN_FRY` (25), `BTN_MAX` 24→26;
+    ключи конфига `rdiff`/`fry`, метки "Right Diff"/"Fry". `def_a2600`
+    переписан под раскладку; `btn_label()` r1532 удалён — владелец использует
+    стандартные имена Reset/Select.
+  - `a2600_host.cpp`: правая сложность — тумблер по фронту, уровни
+    `ConsoleRightDiffA/B`, сессионный static `a26_rdiff_expert` (сброс на
+    входе); Fry — по фронту вызывается `console->fry()` (мангалит RAM RIOT/TIA;
+    `Event::Fry` в ядре никто не читает — в Stella его обрабатывает
+    EventHandler, у нас заглушка).
+  - Справка (только клавиатура): HDMI `menu.c` — страница A2600; TFT
+    `tft_drv.c` — запись `a2600` (5 компактных строк).
+  - Сборка: `make clean && make -j20` (правка `.h`), `linkcheck: OK`, **r1533**,
+    `h3_bare.bin` 22 221 284 Б. Символы: `a2600_run_frame` 0x400ee688,
+    `a2600_stop` 0x400eeb10, `emu_run_a2600` 0x400ef638, `remap_kbd_pressed`
+    0x40019c48; USB сдвинут на +8 (`usb_ohci_ctrl_transfer` 0x4000e740,
+    `usb_kbd_init` 0x40010bc0) из-за правок справки в `menu.c`/`tft_drv.c`
+    (код USB не менялся). **Стенд: проверить клавиатуру и USB.**
+
+- **r1532 (2026-11-20): A2600 — уточнение привязок по терминологии владельца.**
+  - Start — корпусной Game Reset (запуск/перезапуск игры): `Enter` на клавиатуре
+    и `Start` геймпада (как было, меняется только подпись).
+  - Reset — корпусной Game Select (выбор вариации): `R` на клавиатуре (было
+    `S`) и `Mode` геймпада.
+  - `def_a2600[BTN_SELECT]` = `KBD_R` (HID 21). В списке ремапа A2600 строки
+    подписаны терминами владельца: `BTN_RESET` → "Start", `BTN_SELECT` →
+    "Reset" (helper `btn_label()`, только для A2600; глобальные `btn_labels`
+    не тронуты — они общие для всех платформ).
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1532**, `h3_bare.bin`
+    22 221 220 Б. Символы: `a2600_run_frame` 0x400ee800, `a2600_stop`
+    0x400eebf8, `emu_run_a2600` 0x400ef71c, `remap_kbd_pressed` 0x40019c40;
+    USB без сдвига (0x4000e738/0x40010bb8). **Стенд: проверить владельцем.**
+
+- **r1531 (2026-11-20): A2600 — ввод доходит до игры (Event → пины).**
+  - Симптом: нажатия клавиатуры и геймпада (направления, огонь, Select/Reset,
+    сложность, цвет) не влияли на игру — реакции не было ни по одному
+    источнику.
+  - Причина: `M6532::update()` — единственный пересчёт `Event` в
+    `myDigitalPinState[]` контроллеров и биты `Switches` (`M6532.cxx:82-99`:
+    `port0.update()`, `port1.update()`, `switches().update()`), — в порте не
+    вызывался ниоткуда. Пины оставались дефолтными «отпущено»
+    (`Control.cxx:31-35`), поэтому SWCHA/INPT4/SWCHB всегда читались как «не
+    нажато». Логика r1530 (уровни, фронты) была верной, но недостижимой.
+  - Фикс (`a2600_host.cpp`): в `a2600_run_frame()` после `build_input()` и до
+    `tia.update()` вызывается `console->riot().update()`; добавлен include
+    `M6532.hxx`; на входе сложность ставится ровно в один из A/B;
+    `a26_color_bw` вынесен в файловый static и сбрасывается в
+    `a2600_init_game` (новая игра — всегда в цвете).
+  - Источники по-прежнему суммируются независимо: клавиатура (ремап
+    REMAP_PLAT_A2600) OR геймпад (`pad_scan_combined`: D-pad, A/B → Fire,
+    Start → Reset, Mode → Select).
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1531**, `h3_bare.bin`
+    22 220 836 Б. Символы: `a2600_run_frame` 0x400ee678, `a2600_stop`
+    0x400eea70, `emu_run_a2600` 0x400ef594, `remap_kbd_pressed` 0x40019c40;
+    USB без сдвига (0x4000e738/0x40010bb8). **Стенд: проверить владельцем.**
+
+- **r1530 (2026-11-20): A2600 — клавиатура: коммутаторы, цвет, сложность.**
+  - Симптом: направления и огонь с клавиатуры работали, корпусные
+    переключатели — нет.
+  - Причина: `Switches::update()` (`M6532.cxx:93`) читает
+    `Event::ConsoleSelect/ConsoleReset` как УРОВНИ, а host выставлял их только
+    в 1 и не сбрасывал — после первого нажатия Select/Reset оставались
+    «нажатыми» навсегда. Сложность ставилась одновременно в
+    `ConsoleLeftDiffA` и `ConsoleLeftDiffB`, а `Switches::update()` проверяет A
+    первой — позиция B была недостижима. Reset менял лишь бит коммутатора: сам
+    сброс CPU/TIA/RIOT в Stella делает EventHandler, у нас он заглушка, поэтому
+    игра не перезапускалась. Тумблера Color/B&W не было вовсе.
+  - Фикс (`a2600_host.cpp`, `remap.h`, `remap.c`): Select/Reset — уровни каждый
+    кадр; аппаратный Reset по ФРОНТУ вызывает `console->system().reset()`;
+    сложность — ровно один из A/B; добавлен `BTN_COLOR` (BTN_MAX 23→24, ключ
+    `color`, метка "Color/BW", дефолт `C`): по фронту
+    `console->toggleColorLoss()` + уровни `ConsoleColor`/`ConsoleBlackWhite`.
+  - Сборка: `make clean && make -j20` (правка `.h`), `linkcheck: OK`, **r1530**,
+    `h3_bare.bin` 22 220 772 Б. Символы: `a2600_stop` 0x400eea60,
+    `emu_run_a2600` 0x400ef564, `remap_kbd_pressed` 0x40019c40; USB без сдвига
+    (0x4000e738/0x40010bb8). **Стенд: перепроверить владельцем.**
+
+- **r1529 (2026-11-20): A2600 — ФИКС креша при выходе (двойное удаление картриджа).**
+  - Симптом (стенд r1528): вход и кадр Ok (`init OK`, `DE2 GSU scaler`), при
+    выходе по Esc — `P:00000000:0E`, `LR 4`, `SP 200001D3`, `BL 400EE9F4`.
+    В обработчике `_prefetch` строка `SP` печатает SPSR (здесь SVC/ARM),
+    `LR` — LR_abt (адрес возврата аборта = 0+4), `BL` — банковый LR_svc,
+    т.е. точка вызова.
+  - Диагноз: `BL 0x400EE9F4` = `a2600_stop+0x7c`, а по раскладке статиков
+    (`nm`: `g_loaded +4`, `console +8`, `osystem +12`, `cartridge +24`,
+    `settings +28`) это `delete cartridge`. `Console` привязывает картридж к
+    `System` (`Console.cxx:110 System::attach(myCart)`), а `System::~System()`
+    освобождает `myDevices[]` как «свои» — значит `delete console` уже удалил
+    картридж. Повторный `delete` читал vtable освобождённого объекта:
+    `[vptr+4] == 0` → `blx 0` → prefetch abort по адресу 0.
+  - Фикс (`h3_bare/cores/a2600_host.cpp`): после `delete console` картридж НЕ
+    удаляется (`cartridge = 0`), отдельный `delete cartridge` оставлен только в
+    ветке «init упал до создания Console». `Device` имеет виртуальный
+    деструктор, `~OSystem` `Settings` не трогает — порядок
+    «console → settings → ~OSystem» корректен.
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1529**, `h3_bare.bin`
+    22 220 516 Б. Символы: `a2600_stop` 0x400ee978, `emu_run_a2600` 0x400ef47c,
+    `a2600_render_frame` 0x400ee514; USB без сдвига
+    (0x4000e738/0x40010bb8). **Стенд: перепроверить владельцем.**
+
+- **r1528 (2026-11-20): A2600 — уточнение фикса r1527 (безопасный повторный вход).**
+  - В `a2600_init_game` убрано разрушение прежнего `OSystem` перед
+    реконструкцией: функция вызывается уже ПОСЛЕ `newlib_heap_reset()`, когда
+    память его членов (Sound/EventHandler/PropertiesSet) отобрана, — `delete`
+    по ним испортил бы хип на повторном входе или после неудачного init.
+    Теперь просто `placement new` поверх `s_osys_mem` (утечка безвредна: куча
+    откатывается на следующем входе); `~OSystem()` остаётся только в
+    `a2600_stop`, где хип ещё цел.
+  - Сборка: `make -j20`, `linkcheck: OK`, **r1528**, `h3_bare.bin`
+    22 220 516 Б. Символы: `a2600_render_frame` 0x400ee514,
+    `emu_run_a2600` 0x400ef470; USB без сдвига (0x4000e738/0x40010bb8).
+    **Стенд: перепроверить владельцем.**
+
+- **r1527 (2026-11-20): A2600 — ФИКС креша на стенде (Data Abort, F1/DFAR=0x0F сразу после init).**
+  - Симптом (стенд r1526): `A2600(Stella): init size=4096` → дамп
+    `F1 0000000F, F2 21, F3 FBF5DBCA, F4 00, F5 401237E4, F6 00C5187D, M1 …` —
+    Data Abort, DFAR=0x0F (обращение по почти нулевому адресу).
+  - Диагноз: по `startup.S` F5 — это LR, `addr2line` дал
+    `PropertiesSet::getMD5` (`_Rb_tree::find`, PropsSet.cxx), т.е. падение на
+    первом обращении к `osystem.propSet()`. Причина: `static OSystem osystem`
+    конструировался в `.init_array` (`startup.S:719-729`) ДО `main` и успевал
+    выделить `Sound/SerialPort/EventHandler/PropertiesSet` из newlib-кучи
+    (`.gb_heap`), а `emu_prepare()` вызывает `newlib_heap_reset()`
+    (`emu.c:471-473`) — память откатывается и перезаписывается объектами сессии
+    (`Settings`, `Cartridge`, `Console`). `myPropSet` остаётся висячим
+    указателем → мусор в узлах `std::map` → Data Abort.
+  - Фикс (`h3_bare/cores/a2600_host.cpp`): `OSystem` больше НЕ статический
+    объект — статический буфер `s_osys_mem[sizeof(OSystem)]` (aligned 16) и
+    `placement new` в `a2600_init_game` ПОСЛЕ `emu_prepare()` (после сброса
+    кучи), явный `~OSystem()` в `a2600_stop`. Обращения `osystem.` →
+    `osystem->`; `Settings(osystem)`, `Console(osystem, …)`,
+    `Cartridge::create(…, *osystem, …)`.
+  - Сборка: `make -j20`, `linkcheck: OK`, версия **r1527**, `h3_bare.bin`
+    22 220 580 Б. Символы: `a2600_render_frame` 0x400ee514,
+    `emu_run_a2600` 0x400ef4bc; USB не сдвинулся (`usb_ohci_ctrl_transfer`
+    0x4000e738, `usb_kbd_init` 0x40010bb8). **Стенд: перепроверить владельцем.**
+
+- **r1526 (2026-11-20): A2600 — меню Settings подключено к Stella (TV-режим, сложность).**
+  - TV-режим стал трёхпозиционным: `a2600_tv_pal` (0/1) → `a2600_tv_mode`
+    (0 = NTSC, 1 = PAL, **2 = Auto — дефолт**), по образцу `a7800_tv_mode`.
+    В `a2600_init_game` при режиме < 2 формат форсируется в `Properties`
+    (`Display.Format` = "NTSC"/"PAL") ДО `new Console` — иначе автодетект
+    Stella (`Console.cxx:112..135`) перезаписал бы формат; Auto оставлен
+    автодетекту по картриджу. Период кадра в `emu_run_a2600`: 20000 мкс для
+    PAL, 16667 мкс для NTSC/Auto.
+  - Сложность: `a2600_diff_expert` выставляется в `ConsoleLeftDiffA/B` при
+    инициализации; тумблер по ремап-кнопке `BTN_DIFF` переключает ту же
+    переменную (и пишет SRAM 0x70, как меню) по ФРОНТУ нажатия
+    (`remap_kbd_pressed` возвращает уровень — иначе состояние дрожало бы
+    каждый кадр).
+  - Старое ядро `system_atari_h3.cpp`: `base_opts.tvtype = (a2600_tv_mode == 1)
+    ? PAL : NTSC` (у него автодетекта нет — Auto трактуется как NTSC).
+  - Фикс сборки: `a2600_rename.sh` переписан на ПОСТОЯННУЮ карту
+    `build/a2600_syms.map`. Прежний вариант строил список по уже
+    переименованным объектам — карта пустела, и перекомпилированный
+    `a2600_host.o` оставался с исходными ссылками (`undefined reference to
+    Sound::Sound` и др., поймано на r1526).
+  - Сборка: `make -j20`, `linkcheck: OK`, версия **r1526**, `h3_bare.bin`
+    22 220 452 Б. Символы: `a2600_render_frame` 0x400ee514,
+    `a2600_hw_scaler_active` 0x400ee4f0, `emu_run_a2600` 0x400ef41c; USB
+    сдвинут на 0x18 (`usb_ohci_ctrl_transfer` 0x4000e738, `usb_kbd_init`
+    0x40010bb8). **Стенд: ожидает проверки владельцем.**
+
+- **r1525 (2026-11-20): Atari 2600 — ядро ЗАМЕНЕНО: x2600/PocketVCS → Stella 2014 libretro.**
+  - Старый порт (`h3_bare/cores/mcume/`, `system_atari_h3.cpp`) — это x2600
+    (Alex Hornby, 1996) в редакции PocketVCS (Stuart Russell, 2002), не MCUME:
+    `VBuf` = 160×192+8 (`Display.c:87`), NTSC `tv_height`=192, PAL — 228, т.е.
+    PAL-строки писались за буфер, а `emu_scale(160,192)` всегда резал кадр по
+    NTSC-высоте → «съезд вниз, обрезка низа, чёрное сверху». Ядро больше не
+    вызывается (`rom_browser.c:115` → `emu_run_a2600`), блок в Makefile помечен.
+  - Новое ядро: `h3_bare/cores/a2600/{emucore(177),common(11),cheat(9),stubs}`
+    из `emulator-refs/stella2014-libretro` (7d1361e). Host-слой —
+    `h3_bare/cores/a2600_host.cpp`: OSystem/Settings/Cartridge/Console,
+    GSU-рендер по эталону r1519 — TIA 160×N индексов → палитра → RGB565 320×240
+    в `EMU_FB`, затем `a2600_render_frame()` безусловно каждый кадр: XRGB8888
+    `a26_rgb32` в `.noinit_fbn`, PITCH=INSIZE (r1495), GSU stretch
+    320×240→800×600 (dx=112); сброс флага скейлера при входе (r1496);
+    `emu_scale(320,240)` — fallback; выход — `h3_de2_ui_restore()` + чёрный бордюр.
+  - Ввод: Sega-пад + ремап-сетка A2600 (BTN_FIRE/SELECT/RESET/DIFF), Esc — выход.
+    Звук: TIA `processFragment` 600 сэмплов 31400 Гц → линейный ресемплер
+    31400→48000 (`A26_RS_INC` 66901u) → `i2s_push_block` (стерео).
+  - Разгрузка `.bss` (корень «кто лезет в память»): `a26e_PropsSet.o` тянул базу
+    DefProps — 273 016 Б `.rodata`; из-за неё `.bss` начинался выше и `_bend1`
+    выходил за 0x44C00000 (ASSERT CPS `ZIP_BUF_BIG`). `DefProps.hxx` и поиск в
+    `PropsSet::getMD5` удалены — дефолты из `Properties::setDefaults`, регион
+    автодетектит TIA. `TIATables.cxx` (PxMask/MxMask/BLMask/PFMask/
+    PxPosResetWhen, ~225 КБ) перенесены в `.noinit_fbn`. Итог a26: `.bss`
+    16 060 Б, `.text` 262 376 Б, `.rodata` 312 627 Б.
+  - Вендорский код под `-fno-exceptions` (как все ядра): try/catch убраны в
+    CartCDF/CartBUS/CartARM/CartEnhanced/CartMVC, `Serializer::getString`
+    throw → `return ""`. `a2600_compat.c` — только `rfgetc` (open/close/read/
+    write/seek/tell уже в libretro-common fuse), заглушка
+    `a2600/libretro_inc/streams/file_stream.h`.
+  - Конфликт C++-символов с Gearcoleco (оба определяют `Cartridge`, `System`,
+    `Settings`…): `h3_bare/cores/a2600_rename.sh` переименовывает все
+    определённые `_Z`-символы a26-объектов суффиксом `_a26`
+    (`objcopy --redefine-syms`), стемп `build/a2600_renamed.stamp` — иначе
+    `--allow-multiple-definition` склеивает РАЗНЫЕ тела (порча кучи).
+  - Сборка: `make -j20`, `linkcheck: OK`, версия **r1525**, `h3_bare.bin`
+    22 220 260 Б. Символы: `a2600_render_frame` 0x400ee4fc,
+    `a2600_hw_scaler_active` 0x400ee4d8, `a2600_reset_hw_scaler` 0x400ee4e8,
+    `emu_run_a2600` 0x400ef358. USB сдвинут ровно на 0x340
+    (`usb_ohci_ctrl_transfer` 0x4000e720, `usb_kbd_init` 0x40010ba0) — код USB
+    не менялся. **Стенд: ожидает проверки владельцем.**
+
+- **r1524-РК86-решение (2026-11-19): Радио-86РК — НЕ переводим на DE2 GSU.**
+  - `rk86_render()` пишет готовый кадр напрямую в FB 1024×600 XRGB8888
+    (`rk86_host.c:185` → `fb_draw_addr()`, текст 80×30 или 64×25, знакоместо
+    12×16, центрирование в `rk86_video.c`), **промежуточного RGB565 нет и
+    CPU-масштаба нет** — этот путь уже идёт в DE2-буфер без скалирования.
+    `fb_frame_scaled()` (`fb_text.c:325`) — лишь флаг `g_scaled_frame`,
+    сужающий D-cache-clean по dirty-прямоугольнику в `fb_flush()`, а не
+    масштаб. Решение владельца: «оставить как есть» — GSU здесь не даст
+    выигрыша. Код/версия не менялись (r1524 остаётся).
+
+- **r1524 (2026-11-19): Atari 5200 (`system_a5200_h3.cpp` + `emu.c`) — DE2 GSU через 32-битный путь (вместо программного `emu_scale(320,240)`).**
+  - Раньше каждый кадр: ядро (Atari800/5200) звало `a5_DrawLinePal16` построчно
+    в `EMU_FB` (RGB565 320×240, страйд 320), затем `emu_scale(320,240)` на
+    CPU — теперь `a5200_render_frame()` (аналог `a7800_render_frame` r1523):
+    безусловно каждый кадр (эталон r1519) конвертирует из EMU_FB RGB565 →
+    XRGB8888 (`a5_rgb32`, `.noinit_fbn`, упакован 320×240 — строки по 320
+    слов, PITCH=INSIZE, урок r1495) + GSU 32-бит stretch на всю высоту
+    FB_H=600 (dst_w=320×600/240=800, dx=112 — та же геометрия 4:3); размер
+    фиксированный — перекалибровка при смене w/h не нужна (урок r1506 не
+    применим); сброс `g_a5_hw_scaler_active` (`a5200_reset_hw_scaler`) в
+    `emu_run_a5200` (урок r1496); программный `emu_scale` — fallback (через
+    `a5200_hw_scaler_active()`); на выходе `h3_de2_ui_restore()` + бордюр
+    чёрный; период PAL/NTSC (`a5200_tv_pal`, 20000/16667 мкс) сохранён.
+  - Сборка: `make -j20` (инкрементальная), `linkcheck: OK`, версия **r1524**,
+    `h3_bare.bin` 21 895 172 Б. Символы: `a5_rgb32` 0x5404b000,
+    `a5200_render_frame` 0x400278d4, `a5200_hw_scaler_active` 0x40027a28,
+    `a5200_reset_hw_scaler` 0x40027a38. **Стенд (2026-11-19): ПОДТВЕРЖДЕНО** —
+    «Супер, все ОК».
+
+- **r1523 (2026-11-19): Atari 7800 (ProSystem, `system_a7800_h3.cpp` + `emu.c`) — DE2 GSU через 32-битный путь (вместо программного `emu_scale(320,240)`).**
+  - Раньше каждый кадр: ядро (ProSystem) звало `maria_LineReady` построчно,
+    писал строки MARIA (≤320 px) прямо в EMU_FB (320×240 RGB565, страйд 320,
+    вертикаль растянута `(sy*EMU_H)/h`), затем в цикле `emu_run_a7800`
+    программный `emu_scale(320,240)`.
+  - Теперь как у остальных ядер: `a7800_render_frame` (вызывается БЕЗУСЛОВНО
+    каждый кадр — эталон r1519) конвертирует кадр из EMU_FB RGB565→XRGB8888
+    (`a7_rgb32`, `.noinit_fbn`, упакован 320×240 — строки по 320 слов,
+    PITCH=INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с
+    сохранением пропорций (dst_w = 320×600/240 = 800, dx = 112 — та же
+    геометрия 4:3, что была у `emu_scale`).
+  - Размер кадра фиксированный (320×240) — перекалибровка при смене w/h
+    не нужна (урок r1506 не применим). Сброс флага (`a7800_reset_hw_scaler`)
+    при входе в `emu_run_a7800` (урок r1496); программный `emu_scale` —
+    fallback (через `a7800_hw_scaler_active()`); на выходе
+    `h3_de2_ui_restore()` + бордюр чёрный (паттерн 32X r1493). Период
+    PAL/NTSC (`a7800_region_pal`) сохранён.
+  - Сборка: `make -j20` (инкрементальная), `linkcheck: OK`, версия **r1523**,
+    `h3_bare.bin` 21 894 724 Б. Символы: `a7_rgb32` 0x54000000,
+    `a7800_render_frame` 0x40026f58. **Стенд (2026-11-19): ПОДТВЕРЖДЕНО** —
+    «ОК».
+
+- **r1522 (2026-11-19): ZX Spectrum (Fuse host, `fuse_host.c`) — DE2 GSU через 32-битный путь (вместо программного `emu_scale(320,240)`).**
+  - Раньше каждый кадр: ядро Fuse звало `host_video` с кадром RGB565
+    320×240 (Timex 640×480 сжимался nearest до 320×240 в самом `host_video`),
+    host_video копировал его в EMU_FB (страйд 320), затем программный
+    `emu_scale(320,240)`.
+  - Теперь как у остальных ядер: `zx_render_frame` (вызывается БЕЗУСЛОВНО
+    каждый кадр — эталон r1519) конвертирует кадр из EMU_FB RGB565→XRGB8888
+    (`zx_rgb32`, `.noinit_fbn`, упакован 320×240 — строки по 320 слов,
+    PITCH=INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с
+    сохранением пропорций (dst_w = 320×600/240 = 800, dx = 112 — та же
+    геометрия 4:3, что была у `emu_scale`).
+  - Размер кадра фиксированный (320×240; Timex уже сжат в host_video) —
+    перекалибровка при смене w/h не нужна (урок r1506 не применим). Сброс
+    `g_zx_hw_scaler_active` при входе в `emu_run_spectrum` (урок r1496);
+    программный `emu_scale` — fallback, пока флаг не выставлен; на выходе
+    `h3_de2_ui_restore()` + бордюр чёрный (паттерн 32X r1493). Ветка «file
+    not loaded» и `i2s_dc_shift_set(6)` не тронуты.
+  - Сборка: `make -j20` (инкрементальная), `linkcheck: OK`, версия **r1522**,
+    `h3_bare.bin` 21 894 148 Б. Символы: `zx_rgb32` 0x541d1b00,
+    `zx_render_frame` 0x401e85f0. **Стенд (2026-11-19): ПОДТВЕРЖДЕНО** —
+    «Все ОК».
+
+- **r1521 (2026-11-19): MSX (fMSX host, `msx/host/msx_host.c`) — DE2 GSU через 32-битный путь (вместо программного `emu_scale`).**
+  - Раньше каждый кадр: ядро fMSX рендерило кадр RGB565 в `image_buffer`
+    (272×228 обычные режимы / 544×228 широкие V9938 SCREEN 6/7/TEXT80),
+    `PutImage` переносил его в EMU_FB (320×240; широкие 544 сжимались до 320
+    nearest), затем программный `emu_scale(vw, vh)` (vw=min(272/544,320),
+    vh=228) и `fb_flush`.
+  - Теперь как у остальных ядер: `msx_render_frame` (вызывается БЕЗУСЛОВНО
+    каждый кадр — эталон r1519) конвертирует кадр из EMU_FB RGB565→XRGB8888
+    (`msx_rgb32`, `.noinit_fbn`, упакован vw×vh — строки по vw слов,
+    PITCH=INSIZE, урок r1495), DE2 GSU растягивает на всю высоту FB_H=600 с
+    сохранением пропорций (dst_w = vw×600/vh, кламп 1024, dx по центру).
+  - **Ширина источника ПЕРЕМЕННАЯ** (272 обычные / 320 широкие после сжатия
+    PutImage): слой DE2 калибруется ПОВТОРНО при смене vw/vh
+    (`g_msx_gsu_w/h`, урок r1506). Сброс `g_msx_hw_scaler_active` при входе
+    в `emu_run_msx` (урок r1496); программный `emu_scale` — fallback, пока
+    флаг не выставлен; на выходе `h3_de2_ui_restore()` + бордюр чёрный
+    (паттерн 32X r1493). Период PAL 50 Гц (`emu_period_us=20000`) и прогрев
+    3 с без throttle сохранены.
+  - Сборка: `make -j20` (инкрементальная), `linkcheck: OK`, версия **r1521**,
+    `h3_bare.bin` 21 893 764 Б. Символы: `msx_rgb32` 0x54401d10,
+    `msx_render_frame` 0x4042395c. **Стенд (2026-11-19): ПОДТВЕРЖДЕНО** —
+    «Ок, строки есть»; UART: «MSX: DE2 GSU scaler …» — аппаратный путь активен.
 
 - **r1520 (2026-11-19): МС-1504 (Fake86/8086, `ms1504_host.c`) — DE2 GSU (вместо прямого писателя в FB_ADDR).**
   - Раньше: `ms1504_video_flush` рендерил кадр 640×400 RGB565 в `ms1504_scr`

@@ -31,6 +31,73 @@ static uint16_t a7_pal_rgb565[256];
 static uint8_t a7_rom_data[1024 * 1024];
 static uint32_t a7_rom_size = 0;
 
+// ---- r1523: аппаратный DE2 GSU (вместо программного emu_scale) ----
+// Кадр Atari 7800 — RGB565 320×240 в EMU_FB (страйд 320) после
+// maria_LineReady. В a7800_render_frame кадр конвертируется в XRGB8888
+// (a7_rgb32, упакован 320×240 — строки по 320 слов, DE2 PITCH = INSIZE,
+// урок r1495), GSU растягивает на всю высоту FB_H=600 с сохранением
+// пропорций (dst_w = 320×600/240 = 800, dx = 112 — как col_rgb32 r1507).
+// Размер фиксированный — перекалибровка при смене w/h не нужна (урок r1506
+// не применим). Сброс флага при входе (урок r1496). Fallback — программный
+// emu_scale (g_a7_hw_scaler_active=0). r1519-эталон: вызывается БЕЗУСЛОВНО.
+static uint32_t a7_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_a7_hw_scaler_active = 0;
+
+// r1523: рендер кадра Atari 7800 на DE2 GSU. К этому моменту maria_LineReady
+// уже скопировал кадр RGB565 320×240 в EMU_FB (лево-верх, страйд 320).
+// Конвертируем его в XRGB8888 (a7_rgb32, упакован 320×240 — строки по
+// 320 слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает на всю высоту
+// FB_H=600 с сохранением пропорций (dst_w = 320×600/240 = 800, dx = 112 по
+// центру). Fallback — программный emu_scale из самого EMU_FB
+// (g_a7_hw_scaler_active=0).
+extern "C" void a7800_render_frame(void) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (!g_a7_hw_scaler_active) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (EMU_W * 600) / EMU_H;   // 320×600/240 = 800
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;   // 112 по центру
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)a7_rgb32,
+                                  (uint32_t)EMU_W, (uint32_t)EMU_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_a7_hw_scaler_active = 1;
+            printf("A7800: DE2 GSU scaler %dx%d->%dx%d\n", EMU_W, EMU_H, dw, dh);
+        } else {
+            printf("A7800: GSU scaler failed, fallback CPU emu_scale\n");
+        }
+    }
+    if (g_a7_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно 320×240 (строки по 320 слов):
+        // DE2 PITCH = INSIZE (1280 Б), читает ровно 320 слов на строку.
+        // Источник — EMU_FB со страйдом 320 (maria_LineReady уже рендерил).
+        const uint16_t* s = EMU_FB;
+        uint32_t* d = a7_rgb32;
+        for (int y = 0; y < EMU_H; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * EMU_W;
+            for (int x = 0; x < EMU_W; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)a7_rgb32,
+                        (uint32_t)((size_t)EMU_W * EMU_H * 4u));
+    }
+}
+
+// r1523: активен ли аппаратный DE2 GSU (для emu.c — пропустить emu_scale).
+extern "C" int a7800_hw_scaler_active(void) { return g_a7_hw_scaler_active; }
+
+// r1523: сброс флага аппаратного скейлера при входе (урок r1496).
+extern "C" void a7800_reset_hw_scaler(void) { g_a7_hw_scaler_active = 0; }
+
 // Writable RAM 7800 (16K: 0x0000..0x3FFF). В v8 выделялся из общего пула
 // (SCREEN/ChrBuf/RAM/SRAM), но при переходе на FCEUmm те буферы исчезли,
 // а a7800_set_memory() не вызывался — memory_ram оставался NULL, и

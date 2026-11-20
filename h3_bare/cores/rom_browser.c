@@ -112,7 +112,7 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
 
     emu_clear_fb();
     if (strcmp(sys_id, "a2600") == 0)
-        emu_run_a2600_mcume(rom, size, sel_name);
+        emu_run_a2600(rom, size, sel_name);   // r1525: Stella вместо MCUME
     else if (strcmp(sys_id, "a7800") == 0)
         emu_run_a7800(rom, size, sel_name);
     else if (strcmp(sys_id, "a5200") == 0)

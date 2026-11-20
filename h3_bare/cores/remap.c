@@ -42,8 +42,11 @@
 #define KBD_SPACE 44
 #define KBD_ENTER 40
 #define KBD_ESC 41
-#define KBD_UP 82
-#define KBD_DOWN 81
+#define KBD_UP 82      // HID 0x52
+#define KBD_DOWN 81    // HID 0x51
+// Эмпирика стенда (и экран Settings → key test, settings.c:118): на реальной
+// USB-клавиатуре Left приходит как 80, Right как 79 — НЕ по HID-спеке.
+// r1536: возвращено после ошибочной «спековой» правки r1535.
 #define KBD_LEFT 80
 #define KBD_RIGHT 79
 #define KBD_1 30
@@ -164,10 +167,13 @@ static const uint16_t def_ngp[BTN_MAX] = {
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
 };
-// A2600: Stick + Fire + корпусные Reset/Select/Difficulty
+// A2600: Stick + Fire + корпусные Reset/Select + обе сложности + Color/B&W + Fry.
+// Раскладка владельца (r1533): R = Game Reset (запуск), Enter = Game Select,
+// Q/W = сложность левого/правого джойстика, C = Color/B&W, E = Fry.
 static const uint16_t def_a2600[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
-    [BTN_FIRE]=KBD_Z, [BTN_SELECT]=KBD_S, [BTN_RESET]=KBD_ENTER, [BTN_DIFF]=KBD_Q,
+    [BTN_FIRE]=KBD_Z, [BTN_RESET]=KBD_R, [BTN_SELECT]=KBD_ENTER,
+    [BTN_DIFF]=KBD_Q, [BTN_RDIFF]=KBD_W, [BTN_COLOR]=KBD_C, [BTN_FRY]=KBD_E,
 };
 // A5200: Stick + Fire1/Fire2 + Start/Pause + Keypad
 // r170: Enter = Start (а не Key3), S = Key3, P = Pause — привычная схема
@@ -215,6 +221,7 @@ static const char* btn_labels[BTN_MAX] = {
     "A", "B", "C", "X", "Y", "Z",
     "Start", "Select", "Mode", "L", "R",
     "Reset", "Difficulty", "Pause", "Key 3", "Option 1", "Option 2", "Fire", "Fire 2",
+    "Color/BW", "Right Diff", "Fry",
 };
 
 // ================= ТАБЛИЦА ПЛАТФОРМ =================
@@ -245,7 +252,8 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
 
 static const char* btn_keys[BTN_MAX] = {
     "up","down","left","right","a","b","c","x","y","z",
-    "start","select","mode","l","r","reset","diff","pause","key3","opt1","opt2","fire","fire2"
+    "start","select","mode","l","r","reset","diff","pause","key3","opt1","opt2","fire","fire2",
+    "color","rdiff","fry"
 };
 
 // Текущая конфигурация: [платформа][кнопка] = (mod<<8)|scancode
@@ -261,12 +269,6 @@ uint16_t remap_get(int plat, int btn) {
     if (plat < 0 || plat >= REMAP_PLAT_COUNT) return 0;
     if (btn < 0 || btn >= BTN_MAX) return 0;
     return g_map[plat][btn];
-}
-
-void remap_set(int plat, int btn, uint16_t val) {
-    if (plat < 0 || plat >= REMAP_PLAT_COUNT) return;
-    if (btn < 0 || btn >= BTN_MAX) return;
-    g_map[plat][btn] = val;
 }
 
 // Нажата ли кнопка? Проверяет скан-код и модификатор (Shift и т.п.).
@@ -479,7 +481,7 @@ static void draw_btn_list(int plat, int sel) {
     for (int b = 0; b < BTN_MAX; b++) {
         if (!btn_labels[b]) continue;
         uint16_t v = g_map[plat][b];
-        // пропускаем совсем неиспользуемые (нет дефолта и не назначено и нет метки "Fire2" для не-5200)
+        // кнопки без дефолта и без назначения не показываем — настраивать нечего
         if (!v && !plat_specs[plat].def[b]) continue;
         uint32_t clr = (b == sel) ? 0x00FFFF00 : 0x00FFFFFF;
         if (b == sel) fb_fill_rect(50, y - 4, PHYS_W - 100, ROW_H, 0x00181818);

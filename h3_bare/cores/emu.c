@@ -50,11 +50,10 @@ void emu_set_border_color(uint32_t rgb888) {
 // ниже HDMI FB (0x5F900000+2.46МБ) и ниже стеков CPU2/CPU1 — пересечений нет.
 #define FB_ADDR_BACK 0x5F400000u   // второй FB для direct-писателей (до EMU_FB)
 
-// r1183: опция меню «двойная буферизация / без разрыва» (0 = выкл., дефолт).
-// Включается на сессию: emu_prepare() армирует режим в fb_text.c, emu_audio_stop()
-// возвращает штатный вывод в FB_ADDR. Прямые писатели (C64/CPS1/Vectrex/BK) режим
-// не поддерживают и сбрасывают его сами через fb_flip_set(0).
-int g_video_vsync = 0;
+// r1538: опция «Video: no tearing (+1 frame)» удалена — аппаратный DE2 сканирует
+// EMU_FB напрямую, двойная буферизация FB_ADDR больше не нужна. API
+// fb_flip_set()/fb_flip_active() в fb_text.c оставлен: хосты зовут
+// fb_flip_set(0) на входе/выходе как страховку сброса режима.
 
 void emu_hdmi_flip(void) {
 #if CONFIG_HDMI_DOUBLE_BUF
@@ -511,9 +510,8 @@ void emu_prepare(void) {
     emu_scale_int_invalidate();
     emu_native_geom_reset();   // r1271 (CORE-04): геометрия кадра прошлой сессии не наследуется
     btn_pad_debounce_reset();  // r1272 (RT-14): дебаунсер кнопок не наследует состояние игры
-    // r1183: армируем режим вывода. Если опция включена — рисование уйдёт в
-    // back-буфер, а fb_flush в конце кадра начнёт переключать DE2 по vblank.
-    fb_flip_set(g_video_vsync);
+    // r1538: опция двойной буферизации удалена; режим всегда штатный (FB_ADDR).
+    fb_flip_set(0);
 }
 
 // r910 (Фаза 0): единая точка завершения звукового замера — печатаем итог
@@ -788,8 +786,14 @@ extern void atari2600_run_frame(void);
 extern void atari2600_set_difficulty(int p1_expert);
 extern int a7800_init_game(const uint8_t* rom, uint32_t size);
 extern void a7800_run_frame(void);
+extern void a7800_render_frame(void);   // r1523: DE2 GSU рендер кадра A7800
+extern int a7800_hw_scaler_active(void);   // r1523: DE2 GSU активен (пропустить emu_scale)
+extern void a7800_reset_hw_scaler(void);   // r1523: сброс флага GSU при входе
 extern int a5200_init_game(const uint8_t* rom, uint32_t size);
 extern void a5200_run_frame(void);
+extern void a5200_render_frame(void);
+extern int a5200_hw_scaler_active(void);
+extern void a5200_reset_hw_scaler(void);
 extern int sms_init_game(const uint8_t* rom, uint32_t size);
 extern void sms_run_frame(void);
 extern void sms_render_frame(void);   // r1509: DE2 GSU рендер кадра SMS (256×192 → 800×600)
@@ -846,13 +850,32 @@ void emu_run_a7800(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("A7800", "video", "320x240");
     emulog_field("A7800", "machine", "%s", a7800_region_pal() ? "PAL" : "NTSC");
     emulog_field("A7800", "init", "OK");
+    // r1523: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    a7800_reset_hw_scaler();
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
-        a7800_run_frame(); emu_throttle(); emu_scale(320, 240); fb_flush();
+        a7800_run_frame(); emu_throttle();
+        // r1523: a7800_render_frame вызывается БЕЗУСЛОВНО каждый кадр (эталон
+        // r1519) — именно он при первом кадре настраивает DE2 GSU.
+        a7800_render_frame();
+        if (!a7800_hw_scaler_active())
+            emu_scale(320, 240);
+        fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A7800");
+exit:
+    // r1523: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр A7800 и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
+    emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A7800");
 }
 
 void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -875,16 +898,33 @@ void emu_run_a5200(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("A5200", "video", "320x240");
     emulog_field("A5200", "machine", "%s", a5200_tv_pal ? "PAL" : "NTSC");
     emulog_field("A5200", "init", "OK");
+    // r1524: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    a5200_reset_hw_scaler();
     emu_throttle_reset();
     emu_esc_hold_reset();
     for (;;) {
         a5200_run_frame();
         emu_throttle();
-        emu_scale(320, 240);
+        // r1524: a5200_render_frame вызывается БЕЗУСЛОВНО каждый кадр (эталон
+        // r1519) — именно он при первом кадре настраивает DE2 GSU.
+        a5200_render_frame();
+        if (!a5200_hw_scaler_active())
+            emu_scale(320, 240);
         fb_flush();
         if (emu_esc_hold()) goto exit;
     }
-exit: emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A5200");
+exit:
+    // r1524: вернуть DE2 слой на буфер меню (иначе экран держит последний
+    // кадр A5200 и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
+    emu_audio_stop(); fb_clear(); fb_flush(); emulog_end("A5200");
 }
 
 void emu_run_sms(const uint8_t* rom, uint32_t size, const char* rom_name) {
@@ -1045,6 +1085,10 @@ exit:
     emulog_end("SG1000");
 }
 
+// LEGACY: старое A2600-ядро x2600/mcume. Компилируется (atari2600_*), но из
+// меню НЕ вызывается — rom_browser запускает emu_run_a2600() (Stella, r1524).
+// Оставлено как эталон поведения Reset/Select и запасной путь; не удалять без
+// аудита (docs/ARCHITECTURE.md, «a2600: два ядра»).
 void emu_run_a2600_mcume(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_prepare();
     emulog_begin("A2600");

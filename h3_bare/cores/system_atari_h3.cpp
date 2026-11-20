@@ -36,7 +36,7 @@ extern "C" {
 #include "mcume/Memory.h"
 #include "i2s.h"
 }
-#include "settings.h"   // r500: a2600_tv_pal — TV-режим только для слоя A2600
+#include "settings.h"   // r500/r1526: a2600_tv_mode — TV-режим только для слоя A2600
 
 static uint8_t pool[160 * 192 + 8 + 4096 + 4096 + 1024 + 28 * 8];
 static uint8_t* pool_ptr = pool;
@@ -174,8 +174,10 @@ extern "C" void atari2600_init(const uint8_t* rom, uint32_t size) {
         }
     }
     base_opts.bank = bank;
-    // r500 (П1 сессии): TV-режим из Settings — влияет ТОЛЬКО на слой A2600
-    base_opts.tvtype = a2600_tv_pal ? PAL : NTSC;
+    // r500 (П1 сессии): TV-режим из Settings — влияет ТОЛЬКО на слой A2600.
+    // r1526: режим трёхпозиционный (Auto/NTSC/PAL); у старого ядра автодетекта
+    // нет — Auto трактуем как NTSC.
+    base_opts.tvtype = (a2600_tv_mode == 1) ? PAL : NTSC;
     base_opts.lcon = STICK;
     base_opts.rcon = STICK;
 

@@ -70,6 +70,78 @@ extern uint16_t emu_period_us;   // r0.210: для MSX ставим 50 Гц (PAL
 #define EMU_W   320
 #define EMU_H   240
 
+// ---- r1521: аппаратный DE2 GSU (вместо программного emu_scale) ----
+// Кадр MSX — RGB565 в EMU_FB (320×240) после PutImage. Ширина источника
+// ПЕРЕМЕННАЯ: vw = min(image_buffer_width, 320) — 272 (обычные режимы) или
+// 320 (широкие 544 сжаты PutImage); высота 228. В msx_render_frame кадр
+// конвертируется в XRGB8888 (msx_rgb32, упакован vw×vh — строки по vw слов,
+// DE2 PITCH = INSIZE, урок r1495), GSU растягивает на всю высоту FB_H=600
+// с сохранением пропорций (dst_w = vw×600/vh, кламп 1024, dx по центру —
+// как MD r1505). Слой перекалибруется при смене vw (урок r1506 —
+// «строки разъехались»). Сброс флага при входе (урок r1496). Fallback —
+// программный emu_scale (g_msx_hw_scaler_active=0). r1519-эталон:
+// вызывается БЕЗУСЛОВНО каждый кадр.
+static uint32_t msx_rgb32[320 * 240] __attribute__((aligned(4), section(".noinit_fbn")));
+static int g_msx_hw_scaler_active = 0;
+static int g_msx_gsu_w = 0;
+static int g_msx_gsu_h = 0;
+
+// r1521: рендер кадра MSX на DE2 GSU. К этому моменту PutImage уже
+// скопировал кадр RGB565 vw×vh в EMU_FB (лево-верх, страйд 320 — широкие
+// 544 сжаты до 320). Конвертируем его в XRGB8888 (msx_rgb32, упакован
+// vw×vh — строки по vw слов, PITCH = INSIZE, урок r1495), DE2 GSU
+// растягивает на всю высоту FB_H=600 с сохранением пропорций
+// (dst_w = vw×600/vh, кламп 1024, dx по центру). Fallback — программный
+// emu_scale из самого EMU_FB (g_msx_hw_scaler_active=0).
+void msx_render_frame(int vw, int vh) {
+    extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
+                                     uint32_t bpp, uint32_t dx, uint32_t dy,
+                                     uint32_t dw, uint32_t dh);
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    if (vw <= 0) vw = EMU_W;
+    if (vh <= 0) vh = 228;
+    if (vw > EMU_W) vw = EMU_W;
+    if (vh > EMU_H) vh = EMU_H;
+    // r1521: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    if (!g_msx_hw_scaler_active || vw != g_msx_gsu_w || vh != g_msx_gsu_h) {
+        // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
+        int dh = 600;   // FB_H
+        int dw = (vw * 600) / vh;
+        if (dw > 1024) dw = 1024;
+        if (dw <= 0) return;
+        int dx = (1024 - dw) / 2;
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)msx_rgb32,
+                                  (uint32_t)vw, (uint32_t)vh, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
+            g_msx_hw_scaler_active = 1;
+            g_msx_gsu_w = vw;
+            g_msx_gsu_h = vh;
+            printf("MSX: DE2 GSU scaler %dx%d->%dx%d\n", vw, vh, dw, dh);
+        } else {
+            printf("MSX: GSU scaler failed, fallback CPU emu_scale\n");
+        }
+    }
+    if (g_msx_hw_scaler_active) {
+        // RGB565 -> XRGB8888, упакованно vw×vh (строки по vw слов):
+        // DE2 PITCH = INSIZE, читает ровно vw слов на строку (урок r1495).
+        // Источник — EMU_FB со страйдом 320 (PutImage уже скопировал).
+        const uint16_t* s = EMU_FB;
+        uint32_t* d = msx_rgb32;
+        for (int y = 0; y < vh; y++) {
+            const uint16_t* srow = s + y * EMU_W;
+            uint32_t* drow = d + (size_t)y * vw;
+            for (int x = 0; x < vw; x++) {
+                uint16_t p = srow[x];
+                drow[x] = (uint32_t)(((p >> 11) & 0x1Fu) << 19) |
+                          (uint32_t)(((p >> 5)  & 0x3Fu) << 10) |
+                          (uint32_t)((p & 0x1Fu) << 3);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)msx_rgb32,
+                        (uint32_t)((size_t)vw * vh * 4u));
+    }
+}
+
 // Состояние
 static int g_loaded = 0;
 
@@ -637,6 +709,11 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emulog_field("MSX", "machine", "model=%d PAL", g_msx_model);
     emulog_field("MSX", "init", "OK");
     emu_set_border_color(0x00000000);
+    // r1521: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
+    // static переживает сессию, без сброса повторный запуск = чёрный экран.
+    g_msx_hw_scaler_active = 0;
+    g_msx_gsu_w = 0;
+    g_msx_gsu_h = 0;
     /* r0.210: MSX у нас PAL (YIS-503II, 50 Гц). emu_throttle гнал 60 Гц →
      * гость шёл 1.2× и «рывками» (смена кадров 50↔60). Держим 50 Гц. */
     uint16_t saved_period = emu_period_us;
@@ -658,7 +735,12 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
         int vw = (int)image_buffer_width;
         if (vw > EMU_W) vw = EMU_W;
         int vh = (int)image_buffer_height;
-        emu_scale(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
+        // r1521: msx_render_frame вызывается БЕЗУСЛОВНО каждый кадр (эталон
+        // r1519) — именно он при первом кадре настраивает DE2 GSU.
+        msx_render_frame(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
+        // r1521-fallback: программный путь — только пока GSU не активирован.
+        if (!g_msx_hw_scaler_active)
+            emu_scale(vw > 0 ? vw : 256, vh > 0 ? vh : 212);
         fb_flush();
         // r0.392: OSD-подсказка раскладки после F9 (2.5 с) поверх кадра.
         if ((int32_t)(h3_hs_timer_lo_us() - g_ru_hint_until) < 0 && g_msx_ru) {
@@ -672,6 +754,17 @@ void emu_run_msx(const uint8_t* rom, uint32_t size, const char* rom_name) {
 exit:
     emu_period_us = saved_period;   // r0.210: вернуть общий период
     msx_stop();
+    /* r1521: вернуть DE2 слой на буфер меню (иначе экран держит последний
+       кадр MSX и меню не видно) + бордюр обратно чёрный, как у 32X r1493.
+       ВАЖНО: до fb_clear — иначе DE2 продолжит читать освобождённый
+       msx_rgb32 (мусор на меню после выхода). */
+    {
+        extern void h3_de2_ui_restore(void);
+        extern void h3_de2_set_bkcolor(uint32_t argb);
+
+        h3_de2_ui_restore();
+        h3_de2_set_bkcolor(0xFF000000u);
+    }
     emu_audio_stop();   /* r1278: сброс кольца и честный AUDIO-END на выходе */
     fb_clear(); fb_flush();
     emulog_end("MSX");
