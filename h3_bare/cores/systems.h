@@ -47,6 +47,11 @@ static const system_entry_t systems[] = {
     SYS("gba",        "Game Boy Advance",            PORTABLE, READY),
     SYS("lynx",       "Atari Lynx",                  PORTABLE, READY),
     SYS("ngp",        "Neo Geo Pocket / Color",      PORTABLE, READY),
+    // r1544: Game & Watch / Электроника (murmulator SM5xx). Каталог на SD —
+    // /roms/gw/RUS (IM-XX, Электроника) и /roms/gw/ENG (G&W). Вход через
+    // пункт "Game & Watch" раскрывает подменю-селектор IM-XX / G&W
+    // (см. src/main.c, обработка id "gw").
+    SYS_DIR("gw",     "Game & Watch",                NULL,     PORTABLE, READY),
 
     // -- Консоли --
     SYS("a2600",      "Atari 2600",                  CONSOLE,  READY),

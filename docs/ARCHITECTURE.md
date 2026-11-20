@@ -546,7 +546,7 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.frodo_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1542; источник истины по адресам — `docs/MEMORY.md`, ниже только краткая сводка)
+## Карта памяти (актуально r1545; источник истины по адресам — `docs/MEMORY.md`, ниже только краткая сводка)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
@@ -558,10 +558,10 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40ADAB0C | `.text` + init_array (≈10.8 МБ, r1542); векторы `_vectors`=0x40000000 |
-| 0x40ADAB40..0x410809E8 | `.rodata` (≈5.6 МБ, r1542) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
-| 0x41086D30..0x41535E24 | `.data` (≈4.7 МБ, копируется из образа) |
-| 0x41536000..0x44BACC80 | `.bss` (`_bstart1.._bend1`, ≈54.4 МБ, обнуляется в `startup.S`; r1542 — `ms1504_scr` в `.noinit_fbn`) |
+| 0x40000000..0x40AE129C | `.text` + init_array (≈10.9 МБ, r1545); векторы `_vectors`=0x40000000 |
+| 0x40AE12C0..0x410876E8 | `.rodata` (≈5.6 МБ, r1545) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
+| 0x4108DA30..0x4153CB24 | `.data` (≈4.7 МБ, копируется из образа) |
+| 0x4153D000..0x44BB4C80 | `.bss` (`_bstart1.._bend1`, ≈54.4 МБ, обнуляется в `startup.S`; r1544 — `ms1504_scr` в `.noinit_fbn`; r1545 — GW-буферы в `.noinit_fbn`) |
 | 0x4A400000..0x4A402E40 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
@@ -578,22 +578,22 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x5FF00000..0x5FF04000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
-Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BACC80 на r1542),
+Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BB4C80 на r1545),
 не граница кучи и не конец DRAM (r1278, см. `h3_bare/platform/linker.ld`);
 `.coherent`, `_menu_arena` и framebuffer'ы —
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
-**Числа-размеры (r1542, `arm-none-eabi-readelf -SW`):** `.text` 0xADAB0C (≈10.8 МБ,
-0x40000000..0x40ADAB0C), `.rodata` 0x5A5EA8 (≈5.6 МБ, 0x40ADAB40..0x410809E8),
-`.data` 0x4AF0F4 (≈4.7 МБ, 0x41086D30..0x41535E24),
-`.bss` 0x3676C80 (≈54.4 МБ, 0x41536000..0x44BACC80),
-`.noinit_fbn` 0x73A8D00 (≈116 МБ, пул FBNeo + буферы ядер, NOLOAD, 0x54000000..0x5B3A8D00),
+**Числа-размеры (r1545, `arm-none-eabi-readelf -SW`):** `.text` 0xAE129C (≈10.9 МБ,
+0x40000000..0x40AE129C), `.rodata` 0x5A6428 (≈5.6 МБ, 0x40AE12C0..0x410876E8),
+`.data` 0x4AF0F4 (≈4.7 МБ, 0x4108DA30..0x4153CB24),
+`.bss` 0x3677C80 (≈54.4 МБ, 0x4153D000..0x44BB4C80),
+`.noinit_fbn` 0x7406900 (≈115.7 МБ, пул FBNeo + буферы ядер, NOLOAD, 0x54000000..0x5B406900),
 `.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` ≈11.6 КБ
 (0x4A400000..0x4A402E40),
 `.fs_bss` 0xCE4 (файловый слой fs_layer.c; 0x53E00000..0x53E00CE4, r1354),
 `.frodo_bss` — 0x4A78A0 (≈4.65 МБ), 0x52000000..0x524A78A0, NOLOAD (r1284;
 до r1284 — `.vice_bss`, ≈29.6 МБ, r974).
-Образ `h3_bare.bin` = 22 240 804 Б (r1542).
+Образ `h3_bare.bin` = 22 268 708 Б (r1545).
 
 ## Загрузочная карта памяти (r502)
 

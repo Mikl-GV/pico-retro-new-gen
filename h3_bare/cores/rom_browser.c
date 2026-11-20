@@ -137,6 +137,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_lynx(rom, size, sel_name);
     else if (strcmp(sys_id, "ngp") == 0)
         emu_run_ngp(rom, size, sel_name);
+    else if (strcmp(sys_id, "gw") == 0)
+        emu_run_gw(rom, size, sel_name);   // r1544: Game & Watch / Электроника
     else if (strcmp(sys_id, "megadrive") == 0)
         emu_run_megadrive(rom, size, sel_name);
     else if (strcmp(sys_id, "32x") == 0)

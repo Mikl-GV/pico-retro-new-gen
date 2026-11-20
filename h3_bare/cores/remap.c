@@ -138,10 +138,17 @@ static const uint16_t def_snes[BTN_MAX] = {
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_SPACE,
 };
 // NES: D-Pad + A B + Start Select
-static const uint16_t def_nes[BTN_MAX] = {
+    static const uint16_t def_nes[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER, [BTN_SELECT]=KBD_S,
+};
+// GW (Game & Watch / Электроника): 4 напр. + A/B + Start(GAME) — по решению
+// владельца раскладка «как NES/Денди» (A=Z, B=X, крестовина стрелками).
+static const uint16_t def_gw[BTN_MAX] = {
+    [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
+    [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
+    [BTN_START]=KBD_ENTER,
 };
 // GB/GBC: D-Pad + A B + Start Select
 static const uint16_t def_gb[BTN_MAX] = {
@@ -248,6 +255,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_COLECO]  = { "ColecoVision",         "coleco",  def_coleco },
     [REMAP_PLAT_PCE]     = { "PC Engine / TurboGrafx","pce",    def_pce   },
     [REMAP_PLAT_CPS1]    = { "CPS-1 (Capcom)",         "cps1",   def_cps1  },
+    [REMAP_PLAT_GW]      = { "Game & Watch / Электроника", "gw", def_gw  },
 };
 
 static const char* btn_keys[BTN_MAX] = {

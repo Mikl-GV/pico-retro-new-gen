@@ -118,6 +118,37 @@ static int zx_model_dialog(void) {
 }
 
 // 2 = BASIC, 1 = ROM (браузер /roms/zxspectrum), 0 = назад
+// ---- Game & Watch / Электроника: выбор каталога (IM-XX / G&W) ----
+// r1544: один пункт меню «Game & Watch» раскрывается в выбор из двух папок:
+//   IM-XX -> /roms/gw/RUS (Электроника, 17 тайтлов)
+//   G&W   -> /roms/gw/ENG (оригинальные Game & Watch, 59 тайтлов)
+// Возврат: 1 = RUS, 2 = ENG, 0 = ESC/назад.
+static int gw_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Game & Watch: region", 2, 0x00FFAA00);
+            const char* opts[2] = { "1. IM-XX (Электроника / RUS)", "2. G&W (ENG)" };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 700, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 1 : 2;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 static int zx_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
@@ -522,7 +553,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1543";
+const char g_fw_version[] = "r1545";
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
@@ -1094,6 +1125,19 @@ void main(void) {
         if (strcmp(id, "pxt") == 0) {
             extern void pxt_menu_run(const char* name);
             pxt_menu_run(name);
+            continue;
+        }
+
+        // Game & Watch / Электроника: подменю-селектор IM-XX (RUS) / G&W (ENG).
+        // Один пункт меню; выбор задаёт каталог /roms/gw/RUS или /roms/gw/ENG.
+        if (strcmp(id, "gw") == 0) {
+            int src = gw_source_dialog();
+            if (src == 0) continue;            // ESC/назад — в меню
+            const char* subdir = (src == 1) ? "gw/RUS" : "gw/ENG";
+            sega_pad_init();
+            tft_help_show("gw");
+            rom_browser_run("gw", name, subdir);
+            sega_pad_init();
             continue;
         }
 

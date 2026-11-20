@@ -457,18 +457,40 @@ int usb_kbd_init(void) {
 
     usb_dev_t d1, d2;
     usb_dev_t mouse1, mouse2;
-    memset(&d1, 0, sizeof(d1)); memset(&mouse1, 0, sizeof(mouse1));
-    memset(&d2, 0, sizeof(d2)); memset(&mouse2, 0, sizeof(mouse2));
     int t1 = 0, t2 = 0;
-    if (usb_ohci_root_port_connected(0x01C1B400, 0))
-        t1 = enum_port(0x01C1B400, &d1, &mouse1);
-    if (usb_ohci_root_port_connected(0x01C1C400, 0))
-        t2 = enum_port(0x01C1C400, &d2, &mouse2);
 
-    if (t1 == 1) { memcpy(&g_kbd, &d1, sizeof(g_kbd)); }
-    else if (t1 == 2) { memcpy(&g_touch, &d1, sizeof(g_touch)); }
-    if (t2 == 1) { if (!g_kbd.found) memcpy(&g_kbd, &d2, sizeof(g_kbd)); }
-    else if (t2 == 2) { if (!g_touch.found) memcpy(&g_touch, &d2, sizeof(g_touch)); }
+    // r1544-FIX (коэкс. USB): с флешкой в одном из OHCI-портов энумерация
+    // рвётся на чтении полного дескриптора («usb: ctrl TIMEOUT ... cc=0/0/15»
+    // — SETUP/DATA NoError, а status-TD так и не списался, WDH не взведён).
+    // На стенде повторилось ДЕТЕРМИНИРОВАННО на ohci2 (ED 0x4A400A50): простой
+    // port_reset устройства НЕ помогает — он не чистит залипший ED/TD и
+    // done-очередь самого контроллера. Поэтому повтор энумерации делает ПОЛНЫЙ
+    // usb_ohci_init() (HCR + обнуление ED/TD/HCCA + тайминги) — контроллер
+    // стартует с чистого листа. Без флешки = одна итерация, поведение прежнее.
+    for (int retry = 0; retry < 3 && !g_kbd.found; retry++) {
+        memset(&d1, 0, sizeof(d1)); memset(&mouse1, 0, sizeof(mouse1));
+        memset(&d2, 0, sizeof(d2)); memset(&mouse2, 0, sizeof(mouse2));
+        t1 = t2 = 0;
+        if (retry > 0) {
+            // Полный ре-инит контроллеров: HCR снимает залипшие ED/TD и
+            // done-очередь; ED/TD/HCCA обнуляются заново. Порт/устройство
+            // enum_port() сбрасывает сам (port_reset внутри).
+            usb_ohci_init(0x01C1B400);
+            usb_ohci_init(0x01C1C400);
+            extern int uart0_printf(const char* fmt, ...);   // как в usb_ohci.c
+            uart0_printf("usb: enum retry %d\n", retry);
+        }
+        if (usb_ohci_root_port_connected(0x01C1B400, 0))
+            t1 = enum_port(0x01C1B400, &d1, &mouse1);
+        if (usb_ohci_root_port_connected(0x01C1C400, 0))
+            t2 = enum_port(0x01C1C400, &d2, &mouse2);
+
+        if (t1 == 1) { memcpy(&g_kbd, &d1, sizeof(g_kbd)); }
+        else if (t1 == 2) { memcpy(&g_touch, &d1, sizeof(g_touch)); }
+        if (t2 == 1) { if (!g_kbd.found) memcpy(&g_kbd, &d2, sizeof(g_kbd)); }
+        else if (t2 == 2) { if (!g_touch.found) memcpy(&g_touch, &d2, sizeof(g_touch)); }
+        if (g_kbd.found) break;
+    }
 
     if (mouse1.type == 3) { memcpy(&g_pad, &mouse1, sizeof(g_pad)); }
     else if (mouse2.type == 3) { memcpy(&g_pad, &mouse2, sizeof(g_pad)); }

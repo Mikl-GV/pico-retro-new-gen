@@ -159,6 +159,17 @@ OBJ  += $(addprefix $(BUILD)/,lynx_blip_buffer.o lynx_blip_stereo.o)
 NGP := $(TOP)h3_bare/cores/ngp
 OBJ  += $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphics.o ngp_tlcs900h.o ngp_z80.o ngp_flash.o ngp_neopopsound.o ngp_sound.o ngp_ngpBios.o ngp_input.o ngp_neopop_blip.o)
 
+# Game & Watch / Электроника (murmulator SM5xx core, r1544)
+# Ядро: cpus (SM500/SM5A/SM510/SM511) + system (gw_system/gw_graphic/gw_romloader).
+# Host: gw_host.cpp — emu_run_gw, ресемпл звука, палитра фона -> EMU_FB 320x240.
+# Ядро — чистый C (murmulator), объекты НЕ переименовываются: глобальных
+# коллизий с проектом нет (проверено аудитом r1544).
+GW := $(TOP)h3_bare/cores/gw
+GW_INC := -I$(GW) -I$(GW)/cpus -I$(GW)/system
+GW_C  := $(addprefix $(BUILD)/gw_,sm500core.o sm500op.o sm510base.o sm510core.o sm510op.o sm511core.o sm5acore.o system.o graphic.o romloader.o)
+OBJ  += $(addprefix $(BUILD)/,gw_host.o)
+OBJ  += $(GW_C)
+
 # ---- PC Engine / TurboGrafx (Beetle PCE Fast / mednafen_pce_fast, HuCard) ----
 # Враппер (libretro.c) + движок vendored в h3_bare/cores/pce_fast/.
 # Host-слой (pce_host.c) — наш thin libretro-frontend (видео/ввод, без звука).
@@ -1609,6 +1620,32 @@ NGP_OBJS := $(addprefix $(BUILD)/,ngp_host.o ngp_main.o ngp_memory.o ngp_graphic
 $(BUILD)/ngp_renamed.stamp: $(NGP_OBJS)
 	$(TOP)h3_bare/cores/ngp_rename.sh $(NGP_OBJS)
 	touch $@
+
+# Game & Watch / Электроника (murmulator SM5xx core, r1544) — правила сборки.
+# Ядро — C (murmulator), host — C++ (gw_host.cpp). Глобальных коллизий с
+# проектом нет, objcopy-переименование не требуется.
+$(BUILD)/gw_host.o: $(TOP)h3_bare/cores/gw_host.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(GW_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/gw_sm500core.o: $(GW)/cpus/sm500core.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm500op.o: $(GW)/cpus/sm500op.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm510base.o: $(GW)/cpus/sm510base.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm510core.o: $(GW)/cpus/sm510core.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm510op.o: $(GW)/cpus/sm510op.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm511core.o: $(GW)/cpus/sm511core.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_sm5acore.o: $(GW)/cpus/sm5acore.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_system.o: $(GW)/system/gw_system.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_graphic.o: $(GW)/system/gw_graphic.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
+$(BUILD)/gw_romloader.o: $(GW)/system/gw_romloader.c | $(BUILD)
+	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
 
 # ---- GBA ядро mGBA: переименование коллизий crc32/strlcpy (r1132) ----
 MGBA_OBJS := $(filter $(addprefix $(BUILD)/,mgba_%),$(OBJ))
