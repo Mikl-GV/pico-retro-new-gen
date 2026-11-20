@@ -130,6 +130,15 @@ class Sound : public Serializable
     void processFragment(int16_t* stream, uint32_t length);
 
     /**
+      Get the current value of a TIA sound register (AUDC/AUDF/AUDV).
+      Diagnostics only: reports what the generator sees, changes nothing.
+
+      @param addr  Register address (0x15..0x1a)
+      @return  Register value, 0 for any other address
+    */
+    uint8_t registerValue(uint16_t addr) const { return myTIASound.get(addr); }
+
+    /**
       Saves the current state of this device to the given Serializer.
 
       @param out  The serializer device to save to.

@@ -7,6 +7,7 @@ OSystem::OSystem()
 {
     myNVRamDir     = ".";
     mySettings     = 0;
+    myConsole      = 0;   // r1542: иначе getTicks() до присвоения — Data Abort
     mySound        = new Sound(this);
     mySerialPort   = new SerialPort();
     myEventHandler = new EventHandler(this);
@@ -36,7 +37,8 @@ uint64_t OSystem::getTicks() const
     // being reproducible and netplay/run-ahead/replay determinism
     // silently breaks. TIA::getMilliSeconds() is derived purely from
     // emulated frame counters, which is what keeps this deterministic.
-    return myConsole->tia().getMilliSeconds();
+    // r1542: myConsole до создания Console не присвоен — защита от NULL.
+    return myConsole ? myConsole->tia().getMilliSeconds() : 0;
 }
 
 EventHandler::EventHandler(OSystem*) { }

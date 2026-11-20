@@ -101,9 +101,13 @@ A2600_INC := -I$(A2600) -I$(A2600)/emucore -I$(A2600)/common -I$(A2600)/stubs -I
 # Исключения ВЫКЛЮЧЕНЫ (-fno-exceptions, как у всех ядер): вендорские
 # try/catch в Cart*.cxx убраны (r1525) — иначе libstdc++ тянет locale/cxx11-
 # inst в .bss и он перекрывает CPS ZIP_BUF_BIG (0x44C00000).
+# THUMB_SUPPORT: включает гостевой ARM-интерпретатор Thumbulator для ARM-
+# картриджей (DPC+/CDF/BUS/AR). Эталон stella2014-libretro собирает её с
+# -DTHUMB_SUPPORT (Makefile:680-681); без неё runArm() — no-op и ARM-игры
+# не исполняются (аудит r1542). Флаг вплоть до r1541 отсутствовал.
 A2600_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS)
 A2600_CXXFLAGS += -Wall -Wextra -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics
-A2600_CXXFLAGS += -Wno-unused-parameter
+A2600_CXXFLAGS += -Wno-unused-parameter -DTHUMB_SUPPORT
 A2600_BONES := Base.cxx Sound.cxx
 A2600_EMU := $(foreach f,$(wildcard $(A2600)/emucore/*.cxx),$(BUILD)/a26e_$(notdir $(f:.cxx=.o)))
 A2600_OBJS := $(BUILD)/a2600_host.o $(BUILD)/a2600_compat.o $(addprefix $(BUILD)/a26c_,$(notdir $(A2600_BONES:.cxx=.o)))
@@ -125,7 +129,7 @@ $(BUILD)/a26c_%.o: $(A2600)/common/%.cxx | $(BUILD)
 $(BUILD)/a26e_%.o: $(A2600)/emucore/%.cxx | $(BUILD)
 	$(CXX) $(A2600_CXXFLAGS) $(A2600_INC) -c -o $@ $<
 $(BUILD)/a26_thumbulator.o: $(A2600)/emucore/Thumbulator.c | $(BUILD)
-	$(CC) $(CFLAGS) $(A2600_INC) -c -o $@ $<
+	$(CC) $(CFLAGS) $(A2600_INC) -DTHUMB_SUPPORT -c -o $@ $<
 # r1525: переименование C++-символов Stella суффиксом _a26 — иначе дубли
 # Cartridge/System/Settings и др. с Gearcoleco (gc_Cartridge.o) склеиваются
 # --allow-multiple-definition в РАЗНЫЕ тела (порча кучи, r0.193-грабли).

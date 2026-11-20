@@ -11,6 +11,10 @@
 //        в EMU_FB (RGB565 320×240, кадр растянут до 240 строк) ->
 //        a2600_render_frame (GSU)
 //     -> a2600_stop: delete console (картридж освобождает ~System) + UI restore
+//
+// Ввод: только левый порт (JoystickZero*/Paddle порта 0). Правый геймпад/пэдёл
+// (порт 1, JoystickOne*/PaddleTwo/Three) НЕ эмулируется — ядру для спецнужд не
+// нужен, 2-игроковые/правые paddle-тайтлы управляются без него (r1542).
 
 #include <stdint.h>
 #include <string.h>
@@ -272,26 +276,14 @@ static void build_input(void) {
     ev.set(Event::JoystickZeroLeft,  (j >> Event::JoystickZeroLeft) & 1);
     ev.set(Event::JoystickZeroRight, (j >> Event::JoystickZeroRight) & 1);
     ev.set(Event::JoystickZeroFire,  (j >> Event::JoystickZeroFire) & 1);
-
-    // r1535: стенд-диагностика ввода — строка только при изменении состояния
-    // (сырые HID-коды, биты пада, итоговые rst/sel). Позволяет отличить
-    // «клавиши не доходят» от «ремап не совпал» без лишнего спама в кадре.
-    static int dbg_n = -1;
-    static uint16_t dbg_sp = 0xFFFF;
-    if (n != dbg_n || sp != dbg_sp) {
-        printf("A2600 in: n=%d", n);
-        for (int i = 0; i < n; i++) printf(" %02X", keys[i]);
-        printf(" pad=%04X j=%04X rst=%d sel=%d\n",
-               (unsigned)sp, (unsigned)j, rst_pressed, sel_pressed);
-        dbg_n = n; dbg_sp = sp;
-    }
 }
 
 // Рендер кадра TIA в EMU_FB (RGB565 320×240): кадр 160×N индексов палитры,
 // растягивается по горизонтали 1:2 (160→320) и по вертикали N→240
-// (N = 210..256 строк по setTIAProperties, NTSC ~210, PAL до 256). Низ
-// добивается автоматически: кадр занимает ровно 240 строк EMU_FB, GSU
-// растягивает буфер целиком на 600 — изображение всегда на всю высоту.
+// (строки sy = y*h/240). N задаётся setTIAProperties (Console.cxx): NTSC 210,
+// PAL — до 256 (height = MAX(…, 250), строка 492). Push в 240 строк EMU_FB:
+// PAL-кадр (250–256) слегка сжимается по вертикали; GSU растягивает буфер
+// целиком на 600 — изображение всегда на всю высоту.
 
 // Пишем кадр из TIA в EMU_FB — масштаб 1:2 по горизонтали, по вертикали
 // N → 240 (строки кадра повторяются с целым шагом).
@@ -327,33 +319,74 @@ static void a2600_render_tia_to_fb(void) {
 }
 
 // ---- ресемплер звука 31400 → 48000 Гц (линейный, стерео-пары) ----
-// TIA-звук Stella: Sound::processFragment отдаёт 31400 Гц стерео s16.
+// Sound::processFragment отдаёт 31400 Гц стерео s16 уже полной шкалы:
+// TIASound держит AUDV со сдвигом AUDV_SHIFT=10 (TIASnd.hxx:144), то есть
+// 0..15360 на канал и до 30720 на сумме. Усиление не нужно — r1539 умножал
+// сырьё на 1024 и заворачивал int16; в r1541 множитель снят.
+// DC-смещение снимает DC-блокер CPU2 (shift 6) — отдельный фильтр не нужен.
 // I2S на 48 кГц; 31400→48000 = ×1.529. Фрагмент кадра считается от частоты
 // консоли (r1537): NTSC 1498/25 → 524 сэмпла → 801 пара, PAL 1248/25 → 629
 // → 962 пары. Линейная интерполяция достаточна для TIA-шума.
-#define A26_RS_INC 66901u   // (31400<<16)/48000 = 66901.3
-#define A26_RS_MAX_OUT 1300
+#define A26_RS_INC ((31400u << 16) / 48000u)  // шаг входа на выход = 42871
+#define A26_RS_MAX_OUT 1600                   // 1024 входа × 1.529 ≈ 1566
 static uint32_t a26_rs_phase = 0;   // непрерывна между кадрами
 
 static uint32_t a26_resample(const int16_t* in, uint32_t nin, int16_t* out) {
-    uint32_t ph = a26_rs_phase;
+    uint32_t ph = a26_rs_phase;   // непрерывная 16.16-фаза входного потока
     uint32_t o = 0;
     while (o < A26_RS_MAX_OUT) {
         uint32_t i = ph >> 16;
-        if (i + 1 >= nin) break;
+        if (i >= nin) break;      // вышли за фрагмент — данных больше нет
+        uint32_t j = (i + 1 < nin) ? (i + 1) : i;  // последняя пара — hold
         uint32_t f = ph & 0xFFFFu;
         int32_t l0 = in[2 * i],     r0 = in[2 * i + 1];
-        int32_t l1 = in[2 * i + 2], r1 = in[2 * i + 3];
+        int32_t l1 = in[2 * j],     r1 = in[2 * j + 1];
         out[2 * o]     = (int16_t)(l0 + (((l1 - l0) * (int32_t)f) >> 16));
         out[2 * o + 1] = (int16_t)(r0 + (((r1 - r0) * (int32_t)f) >> 16));
         o++;
         ph += A26_RS_INC;
     }
-    if (ph >= ((uint64_t)nin << 16))
-        a26_rs_phase = (uint32_t)(ph - ((uint64_t)nin << 16));
-    else
-        a26_rs_phase = ph;
+    // r1543: фаза обязана лежать ВНУТРИ фрагмента. Раньше после кадра (nin=524)
+    // ph застревала на краю (i≈523), а условие `ph >= period` из-за округления
+    // не срабатывало -> фаза оставалась у края, следующий кадр сразу выходил из
+    // цикла, n=0, i2s_push_block получал 0 -> полная тишина после первого кадра
+    // (лог r1542: audio heard peak=4096 pairs=0). Остаток по периоду = сдвиг на
+    // целое число фрагментов, непрерывность входного потока сохраняется.
+    a26_rs_phase = (uint32_t)(ph % ((uint64_t)nin << 16));
     return o;
+}
+
+// ---- диагностика звука (r1541) -------------------------------------------
+// peak — максимальная амплитуда СЫРЬЯ TIA по модулю: 0 означает, что ядро
+// отдаёт нули (AUDV не пишется или звук выключен в самом ядре), а не проблему
+// вывода H3 — остальные системы на том же I2S звучат.
+static uint32_t a26_dbg_frame = 0;
+static uint32_t a26_dbg_peak_all = 0;
+static int      a26_dbg_heard = 0;
+static int      a26_dbg_beats = 0;
+static uint32_t a26_dbg_pairs = 0;
+
+static uint32_t a26_peak(const int16_t* buf, uint32_t count) {
+    uint32_t peak = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        int32_t v = buf[i];
+        if (v < 0) v = -v;
+        if ((uint32_t)v > peak) peak = (uint32_t)v;
+    }
+    return peak;
+}
+
+static void a26_log_audio(const char* what, uint32_t spf, uint32_t peak) {
+    Sound& snd = osystem->sound();
+    emulog_field("A2600", what,
+                 "f=%u peak=%u spf=%u pairs=%u ring=%u vol=%d audv=%u/%u audc=%u/%u",
+                 (unsigned)a26_dbg_frame, (unsigned)peak, (unsigned)spf,
+                 (unsigned)a26_dbg_pairs, (unsigned)i2s_ring_fill(),
+                 i2s_volume_pct(),
+                 (unsigned)snd.registerValue(0x19),
+                 (unsigned)snd.registerValue(0x1a),
+                 (unsigned)snd.registerValue(0x15),
+                 (unsigned)snd.registerValue(0x16));
 }
 
 extern "C" int a2600_init_game(const uint8_t* rom, uint32_t size,
@@ -364,6 +397,11 @@ extern "C" int a2600_init_game(const uint8_t* rom, uint32_t size,
     // static переживает сессию, без сброса повторный запуск = чёрный экран.
     g_a26_hw_scaler_active = 0;
     a26_rs_phase = 0;
+    a26_dbg_frame = 0;          // r1541: статистика звука — с нуля на игру
+    a26_dbg_peak_all = 0;
+    a26_dbg_heard = 0;
+    a26_dbg_beats = 0;
+    a26_dbg_pairs = 0;
     a26_color_bw = 0;           // r1531: новая игра всегда в цвете
     a26_rdiff_expert = 0;       // r1533: правая сложность — B/Novice
     a26_ctrl_left = A26C_JOY;   // r1534: до lookup — джойстик
@@ -488,9 +526,25 @@ extern "C" void a2600_run_frame(void) {
     if (tiaSamples > 1024u) tiaSamples = 1024u;
     osystem->sound().processFragment(a26_frag, tiaSamples);
 
-    // DC-блокер не нужен (Stella уже убирает offset в processFragment/dc-block).
+    // r1541: амплитуда сырья уже полной шкалы (комментарий у A26_RS_INC),
+    // усиления нет; DC-смещение снимает DC-блокер CPU2 (shift 6).
     uint32_t n = a26_resample(a26_frag, tiaSamples, a26_rs);
     if (n) i2s_push_block(a26_rs, n);
+
+    // r1541: статистика звука. peak=0 и на 300-м кадре означает, что ядро
+    // отдаёт нули (AUDV не пишется), а не потерю на стороне I2S.
+    uint32_t peak = a26_peak(a26_frag, tiaSamples * 2u);
+    if (peak > a26_dbg_peak_all) a26_dbg_peak_all = peak;
+    a26_dbg_frame++;
+    a26_dbg_pairs = n;
+    if (peak && !a26_dbg_heard) {
+        a26_dbg_heard = 1;
+        a26_log_audio("audio heard", tiaSamples, peak);
+    } else if (!a26_dbg_heard && a26_dbg_frame % 300u == 0u &&
+               a26_dbg_beats < 12) {
+        a26_dbg_beats++;
+        a26_log_audio("audio silent", tiaSamples, a26_dbg_peak_all);
+    }
 }
 
 extern "C" void a2600_stop(void) {
@@ -510,6 +564,12 @@ extern "C" void a2600_stop(void) {
     }
     else if (cartridge) { delete cartridge; cartridge = 0; }
     if (settings) { delete settings; settings = 0; }
+    // r1541: итог диагностики звука — одна строка при выходе в меню.
+    if (a26_dbg_frame)
+        emulog_field("A2600", "audio stop",
+                     "f=%u peakAll=%u heard=%d pairs=%u vol=%d",
+                     (unsigned)a26_dbg_frame, (unsigned)a26_dbg_peak_all,
+                     a26_dbg_heard, (unsigned)a26_dbg_pairs, i2s_volume_pct());
     // r1527: OSystem разрушается явно — следующий вход сконструирует свежий
     // (память под него могла быть отобрана newlib_heap_reset).
     if (osystem) { osystem->~OSystem(); osystem = 0; }
