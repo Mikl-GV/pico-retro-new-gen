@@ -160,6 +160,11 @@ uint32_t gw_get_buttons(void) {
     if (remap_kbd_pressed(REMAP_PLAT_GW, BTN_A,     raw, n)) b |= GW_BUTTON_A;
     if (remap_kbd_pressed(REMAP_PLAT_GW, BTN_B,     raw, n)) b |= GW_BUTTON_B;
     if (remap_kbd_pressed(REMAP_PLAT_GW, BTN_START, raw, n)) b |= GW_BUTTON_GAME;
+    // r1547: TIME (часы/демонстрация) и ALARM (будильник) — программные
+    // комбинации ядра: бит 10 = B+TIME (KEY_SOFT_TIME), бит 11 = B+GAME
+    // (KEY_SOFT_ALARM), см. gw_system.c:428-443.
+    if (remap_kbd_pressed(REMAP_PLAT_GW, BTN_MODE,   raw, n)) b |= (1u << 10);
+    if (remap_kbd_pressed(REMAP_PLAT_GW, BTN_SELECT, raw, n)) b |= (1u << 11);
     return b;
 }
 
@@ -234,6 +239,19 @@ extern "C" uint32_t gw_frame_period_us(void) {
 // ---- выполнение кадра ----
 extern "C" void gw_run_frame(void) {
     if (!g_loaded) return;
+
+    // r1547: AC-сброс (кнопка RESET, по умолчанию R) — по ФРОНТУ, не удержанием.
+    // Ядро не поддерживает pause/power (биты 8/9 игнорируются, gw_system.c:288),
+    // поэтому сброс = перезапуск состояния ядра.
+    {
+        static int prev_reset = 0;
+        uint8_t raw[6];
+        int n = usb_kbd_get_raw(raw, 6);
+        int now = remap_kbd_pressed(REMAP_PLAT_GW, BTN_RESET, raw, n);
+        if (now && !prev_reset) gw_system_reset();
+        prev_reset = now;
+    }
+
     // Кадр 60 Гц: 8 субкадров по 68 циклов (544 цикла 32768 Гц). После каждого
     // субкадра ядро наполнило gw_audio_buffer[0..67]; собираем PCM и снимаем
     // флаг copied, затем ресемплем всю пачку 544->800 пар в конце кадра.

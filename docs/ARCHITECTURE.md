@@ -56,6 +56,7 @@ Bare-metal мультисистемный эмулятор для Allwinner H3 (
 | Game Boy Advance | **mGBA-core** | C | 240×160 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Atari Lynx | Handy | C++ | 160×102 → EMU_FB | usb_kbd_get_raw + sega_pad |
 | Neo Geo Pocket / Pocket Color | **RACE** | C++ | 160×152 → EMU_FB | usb_kbd_get_raw + sega_pad |
+| Game & Watch / Электроника | **murmulator (SM500/SM5A/SM510/SM511)** | C | 320×240 → EMU_FB → DE2 GSU ×2 (640×480) | usb_kbd_get_raw + sega_pad + ремап GW |
 | Atari Portfolio | Fake86 (8088) | C++ | 320×240 через compat-слой → EMU_FB | USB-клава + UART (полная клавиатура) |
 | SNES / Super Famicom | **Snes9x 2005** (libretro) | C | 256×224/240 → GFX.Screen → EMU_FB | usb_kbd_get_raw + sega_pad |
 | MSX / MSX2 (YIS-503III) | **fMSX 6.0** | C | 256×212 → V9938 → EMU_FB | usb_kbd_get_raw + sega_pad |
@@ -558,9 +559,9 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40AE129C | `.text` + init_array (≈10.9 МБ, r1545); векторы `_vectors`=0x40000000 |
-| 0x40AE12C0..0x410876E8 | `.rodata` (≈5.6 МБ, r1545) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
-| 0x4108DA30..0x4153CB24 | `.data` (≈4.7 МБ, копируется из образа) |
+| 0x40000000..0x40AE131C | `.text` + init_array (≈10.9 МБ, r1547); векторы `_vectors`=0x40000000 |
+| 0x40AE1340..0x41087728 | `.rodata` (≈5.6 МБ, r1547) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
+| 0x4108DA70..0x4153CB64 | `.data` (≈4.7 МБ, копируется из образа) |
 | 0x4153D000..0x44BB4C80 | `.bss` (`_bstart1.._bend1`, ≈54.4 МБ, обнуляется в `startup.S`; r1544 — `ms1504_scr` в `.noinit_fbn`; r1545 — GW-буферы в `.noinit_fbn`) |
 | 0x4A400000..0x4A402E40 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
@@ -578,14 +579,14 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x5FF00000..0x5FF04000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
-Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BB4C80 на r1545),
+Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x44BB4C80 на r1547),
 не граница кучи и не конец DRAM (r1278, см. `h3_bare/platform/linker.ld`);
 `.coherent`, `_menu_arena` и framebuffer'ы —
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
-**Числа-размеры (r1545, `arm-none-eabi-readelf -SW`):** `.text` 0xAE129C (≈10.9 МБ,
-0x40000000..0x40AE129C), `.rodata` 0x5A6428 (≈5.6 МБ, 0x40AE12C0..0x410876E8),
-`.data` 0x4AF0F4 (≈4.7 МБ, 0x4108DA30..0x4153CB24),
+**Числа-размеры (r1547, `arm-none-eabi-readelf -SW`):** `.text` 0xAE131C (≈10.9 МБ,
+0x40000000..0x40AE131C), `.rodata` 0x5A63E8 (≈5.6 МБ, 0x40AE1340..0x41087728),
+`.data` 0x4AF0F4 (≈4.7 МБ, 0x4108DA70..0x4153CB64),
 `.bss` 0x3677C80 (≈54.4 МБ, 0x4153D000..0x44BB4C80),
 `.noinit_fbn` 0x7406900 (≈115.7 МБ, пул FBNeo + буферы ядер, NOLOAD, 0x54000000..0x5B406900),
 `.a8_bss` 0x1D7310 (≈1.84 МБ, 0x5F000000..0x5F1D7310), `.coherent` ≈11.6 КБ
@@ -593,7 +594,7 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 `.fs_bss` 0xCE4 (файловый слой fs_layer.c; 0x53E00000..0x53E00CE4, r1354),
 `.frodo_bss` — 0x4A78A0 (≈4.65 МБ), 0x52000000..0x524A78A0, NOLOAD (r1284;
 до r1284 — `.vice_bss`, ≈29.6 МБ, r974).
-Образ `h3_bare.bin` = 22 268 708 Б (r1545).
+Образ `h3_bare.bin` = 22 268 772 Б (r1547).
 
 ## Загрузочная карта памяти (r502)
 
@@ -696,6 +697,20 @@ A7800 — MARIA 55K вызовов/кадр, Portfolio — 8088 интерпре
   вшито (`agat_rom_apple2p`, `apple2p.rom`, грузится на `$D000`); формат
   образа определяется по расширению (`.dsk .do .po .nib .woz`). Агат-9
   остаётся на Agat Emulator (`agat_host.c`, `SYSTEM_9`).
+- **Game & Watch / Электроника** (`h3_bare/cores/gw` + `gw_host.cpp`, r1544;
+  murmulator, GPLv3) — чиповый эмулятор Sharp SM500/SM5A/SM510/SM511. ROM —
+  формат LCD-Game-Shrinker (`.gwm`, заголовок 150 Б) приходит из rom_browser в
+  ROM_BUF; `gw_romloader` раскладывает секции (фон-индексы, сегменты, программа,
+  клавиатура, музыка). Рендер: ядро пишет 8-бит индексы кадра 320×240 в
+  `gw_frame_indices` (`.noinit_fbn`), каждый кадр буфер предзаполняется фоном
+  (`gw_background`, эталон `gw_set_background`); host конвертирует в RGB565
+  (EMU_FB) и выводит через **DE2 GSU ×2** (640×480 по центру 1024×600,
+  32bpp-буфер `gw_rgb32` в `.noinit_fbn`; fallback — CPU ×2; на выходе
+  `h3_de2_ui_restore()`). Звук: пьезо 544 байта/кадр → ресемпл 32768→48000 →
+  `i2s_push_block`. Вход: 8 бит ядра (D-Pad, GAME A/B, TIME, GAME) плюс
+  программные биты 10/11 (TIME-режим/ALARM); сброс — `gw_system_reset()` по
+  фронту. Меню: пункт «Game & Watch» раскрывает подменю IM-XX
+  (`/roms/gw/RUS`) / G&W (`/roms/gw/ENG`).
 - **Hot-swap дискет (F12, r1363)** — `cores/disk_swap.c`. Хост регистрирует
   `emu_disk_ops_t` (число приводов, расширения, `in_memory`, callback вставки)
   и зовёт `emu_disk_poll()` в начале кадра до чтения клавиатуры. F12 открывает

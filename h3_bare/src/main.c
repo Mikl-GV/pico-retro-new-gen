@@ -129,7 +129,7 @@ static int gw_source_dialog(void) {
         if (dirty) {
             fb_clear(); fb_draw_stars();
             fb_puts_s(60, 90, "Game & Watch: region", 2, 0x00FFAA00);
-            const char* opts[2] = { "1. IM-XX (Электроника / RUS)", "2. G&W (ENG)" };
+            const char* opts[2] = { "1. IM-XX (Elektronika / RUS)", "2. G&W (ENG)" };
             for (int i = 0; i < 2; i++) {
                 int y = 160 + i * 40;
                 uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
@@ -553,7 +553,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1545";
+const char g_fw_version[] = "r1547";
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).

@@ -145,10 +145,15 @@ static const uint16_t def_snes[BTN_MAX] = {
 };
 // GW (Game & Watch / Электроника): 4 напр. + A/B + Start(GAME) — по решению
 // владельца раскладка «как NES/Денди» (A=Z, B=X, крестовина стрелками).
+// r1547: TIME (режим времени/демонстрации) = T, ALARM (будильник) = A,
+// сброс ядра (AC) = R. Битовая раскладка — см. gw_host.cpp gw_get_buttons().
 static const uint16_t def_gw[BTN_MAX] = {
     [BTN_UP]=KBD_UP, [BTN_DOWN]=KBD_DOWN, [BTN_LEFT]=KBD_LEFT, [BTN_RIGHT]=KBD_RIGHT,
     [BTN_A]=KBD_Z, [BTN_B]=KBD_X,
     [BTN_START]=KBD_ENTER,
+    [BTN_MODE]=KBD_T,       // TIME: часы/демонстрация (soft-бит 10)
+    [BTN_SELECT]=KBD_A,     // ALARM: будильник (soft-бит 11)
+    [BTN_RESET]=KBD_R,      // AC-сброс (gw_system_reset)
 };
 // GB/GBC: D-Pad + A B + Start Select
 static const uint16_t def_gb[BTN_MAX] = {
@@ -255,7 +260,7 @@ static const plat_spec_t plat_specs[REMAP_PLAT_COUNT] = {
     [REMAP_PLAT_COLECO]  = { "ColecoVision",         "coleco",  def_coleco },
     [REMAP_PLAT_PCE]     = { "PC Engine / TurboGrafx","pce",    def_pce   },
     [REMAP_PLAT_CPS1]    = { "CPS-1 (Capcom)",         "cps1",   def_cps1  },
-    [REMAP_PLAT_GW]      = { "Game & Watch / Электроника", "gw", def_gw  },
+    [REMAP_PLAT_GW]      = { "Game & Watch (Elektronika)", "gw", def_gw  },
 };
 
 static const char* btn_keys[BTN_MAX] = {
