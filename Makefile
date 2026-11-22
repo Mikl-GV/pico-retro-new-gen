@@ -1647,6 +1647,55 @@ $(BUILD)/gw_graphic.o: $(GW)/system/gw_graphic.c | $(BUILD)
 $(BUILD)/gw_romloader.o: $(GW)/system/gw_romloader.c | $(BUILD)
 	$(CC) $(CFLAGS) $(GW_INC) -c -o $@ $<
 
+# r1575: старое ядро Atari ST (Hatari/WinUAE) удалено — см. atari_st_cw (Castaway).
+
+# r1575: правила ast_* удалены вместе со старым ядром.
+
+# r1566: ядро Atari ST на Castaway (замена WinUAE, PITFALLS §22).
+# Точка входа cw_run (cw_host.c); символы ядра переименовываются в cw_*
+# (cw_rename.sh), чтобы не пересекаться с другими C-ядрами.
+CW := $(TOP)h3_bare/cores/atari_st_cw
+CW_INC := -I$(CW) -I$(CW)/cpu -I$(CW)/st -I$(CW)/sound
+CW_CFLAGS := $(CFLAGS) $(CW_INC) $(INCLUDES) -fno-strict-aliasing
+# r1576: логи cw_run — только при отладке (make CW_DEBUG=1); релиз молчит.
+CW_DEBUG ?= 0
+CW_DEBUG_FLAGS := $(if $(filter 1,$(CW_DEBUG)),-DCW_DEBUG,)
+# op68000.c/op68010.c — фрагменты таблиц, включает сам 68000.c (не отдельные TU).
+CW_CPU := 68000 debug nf nfglue op68kadd op68karith op68klogop \
+          op68kmisc op68kmove op68kshift op68ksub
+# file.c — утилиты имён файлов хоста (floppy.h/memAlloc.h отсутствуют, вызовов нет).
+CW_ST  := st blitter cfg fdc ikbd init mem
+CW_SND := AY8910 cw_sound
+CW_OBJS := $(addprefix $(BUILD)/cw_cpu_,$(addsuffix .o,$(CW_CPU))) \
+           $(addprefix $(BUILD)/cw_st_,$(addsuffix .o,$(CW_ST))) \
+           $(addprefix $(BUILD)/cw_snd_,$(addsuffix .o,$(CW_SND))) \
+           $(BUILD)/cw_host.o $(BUILD)/cw_input.o $(BUILD)/cw_tos_data.o
+# До запуска на стенде ядро не в образе: компиляция проверяется отдельно.
+CW_ENABLE ?= 1
+ifeq ($(CW_ENABLE),1)
+OBJ += $(CW_OBJS)
+CW_LINK_DEP := $(BUILD)/cw_renamed.stamp
+endif
+
+$(BUILD)/cw_cpu_%.o: $(CW)/cpu/%.c | $(BUILD)
+	$(CC) $(CW_CFLAGS) -c -o $@ $<
+$(BUILD)/cw_st_%.o: $(CW)/st/%.c | $(BUILD)
+	$(CC) $(CW_CFLAGS) $(CW_DEBUG_FLAGS) -c -o $@ $<
+$(BUILD)/cw_snd_%.o: $(CW)/sound/%.c | $(BUILD)
+	$(CC) $(CW_CFLAGS) -c -o $@ $<
+$(BUILD)/cw_host.o: $(CW)/cw_host.c | $(BUILD)
+	$(CC) $(CFLAGS) $(CW_INC) $(INCLUDES) $(CW_DEBUG_FLAGS) -c -o $@ $<
+$(BUILD)/cw_input.o: $(CW)/cw_input.c | $(BUILD)
+	$(CC) $(CFLAGS) $(CW_INC) $(INCLUDES) -c -o $@ $<
+$(BUILD)/cw_tos_data.o: $(CW)/tos_data.S $(CW)/bios/etos192us.img | $(BUILD)
+	$(CC) $(CW_CFLAGS) -c -o $@ $<
+
+$(BUILD)/cw_renamed.stamp: $(CW_OBJS) $(TOP)h3_bare/cores/cw_rename.sh
+	$(TOP)h3_bare/cores/cw_rename.sh $(CW_OBJS)
+	touch $@
+
+# r1575: генератор таблиц 68000 старого ядра удалён (Castaway таблиц не генерирует).
+
 # ---- GBA ядро mGBA: переименование коллизий crc32/strlcpy (r1132) ----
 MGBA_OBJS := $(filter $(addprefix $(BUILD)/,mgba_%),$(OBJ))
 $(BUILD)/mgba_renamed.stamp: $(MGBA_OBJS)
@@ -1908,7 +1957,7 @@ else
 WINROOT := $(shell cygpath -m $(CURDIR))
 WINPATH = $(subst //,/,$(subst $(CURDIR)/,$(WINROOT)/,$(1)))
 endif
-$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/pxt_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp $(BUILD)/libpom2port.a
+$(ELF): $(OBJ) $(TOP)h3_bare/platform/linker.ld $(BUILD)/ms1504_renamed.stamp $(BUILD)/pxt_renamed.stamp $(BUILD)/ngp_renamed.stamp $(BUILD)/mgba_renamed.stamp $(BUILD)/a8_host.o $(BUILD)/a8_fs.o $(BUILD)/a8_renamed.stamp $(BUILD)/cpc_renamed.stamp $(BUILD)/frodo_renamed.stamp $(BUILD)/u4a_renamed.stamp $(CW_LINK_DEP) $(BUILD)/libpom2port.a
 	$(file >$(BUILD)/linker.rsp)
 	$(foreach o,$(OBJ),$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(o))))
 	$(file >>$(BUILD)/linker.rsp,$(call WINPATH,$(BUILD)/libpom2port.a))

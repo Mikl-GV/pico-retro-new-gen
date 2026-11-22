@@ -85,6 +85,7 @@ static const system_entry_t systems[] = {
     SYS_ALT("atari800", "Atari 8-bit (400/800/XL/XE)", "atari800", "atari8", COMPUTER, READY),
     // r1185: Радио-86РК — READY (порт RK8266), папка /roms/radio86rk.
     SYS_DIR("radio86rk", "Radio-86RK", "radio86rk", COMPUTER, READY),
+    SYS_DIR("atarist", "Atari ST", "atarist", COMPUTER, READY),
     SYS_BUILTIN("bk0010", "BK-0010/0011M",       COMPUTER, READY),
     SYS_BUILTIN("portfolio", "Atari Portfolio",  COMPUTER, READY),
     SYS_BUILTIN("ms1504",  "MS 1504",                     COMPUTER, READY),

@@ -335,6 +335,37 @@ static int ep_source_dialog(void) {
 
 // r966: 2 = BASIC (вшитый BIOS), 1 = ROM/диск (браузер /roms/cpc), 0 = назад.
 // Раскладка возврата та же, что у BK/ZX: 2 -> BASIC, 1 -> браузер.
+// r1548 (Atari ST): 2 = вшитый TOS (EmuTOS в прошивке), 1 = свой TOS/диск
+// (браузер /roms/atarist), 0 = назад. Раскладка та же, что у CPC/EP.
+static int ast_source_dialog(void) {
+    int sel = 0, dirty = 1;
+    for (;;) {
+        if (dirty) {
+            fb_clear(); fb_draw_stars();
+            fb_puts_s(60, 90, "Atari ST: load", 2, 0x00FFAA00);
+            const char* opts[2] = {
+                "1. TOS (built-in EmuTOS)",
+                "2. TOS + disk from SD (.st/.msa/.stx/.dim)"
+            };
+            for (int i = 0; i < 2; i++) {
+                int y = 160 + i * 40;
+                uint32_t clr = (i == sel) ? 0x00FFFF00 : 0x00AAAAAA;
+                if (i == sel) fb_fill_rect(50, y - 6, 700, 30, 0x00222222);
+                fb_puts(70, y, opts[i], clr);
+            }
+            fb_puts(60, 520, "  ^v: select   Enter: OK   ESC: back", 0x00888888);
+            fb_flush(); dirty = 0;
+        }
+        int k = usb_input_poll();
+        if (!k) { udelay(16000); continue; }
+        if (k == 82) { if (sel > 0) sel--; dirty = 1; }
+        else if (k == 81) { if (sel < 1) sel++; dirty = 1; }
+        else if (k == 40) return (sel == 0) ? 2 : 1;
+        else if (k == 41 || k == 27) return 0;
+        udelay(50000);
+    }
+}
+
 static int cpc_source_dialog(void) {
     int sel = 0, dirty = 1;
     for (;;) {
@@ -553,7 +584,7 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1547";
+const char g_fw_version[] = "r1583";
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
@@ -957,6 +988,29 @@ void main(void) {
                 __asm volatile("dsb st" ::: "memory");
             } else {                         // ROM/образ через браузер (0x74 ставит run_emulator)
                 rom_browser_run("enterprise", name, "enterprise");
+            }
+            sega_pad_init();
+            continue;
+        }
+
+        // Atari ST: вшитый EmuTOS (192 КБ) или свой TOS + дискеты с SD.
+        // (r1548: vшитый EmuTOS — свободная GPL-ОС, emutos.sourceforge.io.)
+        if (strcmp(id, "atarist") == 0) {
+            extern void emu_run_atari_st_cw(const uint8_t*, uint32_t, const char*);
+            int src = ast_source_dialog();       // 2=вшитый TOS, 1=ROM/диск
+            if (src == 0) continue;
+            sega_pad_init();
+            tft_help_show("atarist");
+            if (src == 2) {                      // EmuTOS (вшит в прошивку)
+                *(volatile uint32_t*)0x74u = 1;
+                __asm volatile("dsb st" ::: "memory");
+                emu_run_atari_st_cw(NULL, 0, NULL);
+                usb_wait_release_all();
+                usb_kbd_restart_intr();
+                *(volatile uint32_t*)0x74u = 0;
+                __asm volatile("dsb st" ::: "memory");
+            } else {                             // свой TOS + дискеты через браузер
+                rom_browser_run("atarist", name, "atarist");
             }
             sega_pad_init();
             continue;

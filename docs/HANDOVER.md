@@ -1,4 +1,55 @@
-# HANDOVER — текущее состояние (r1547)
+# HANDOVER — текущее состояние (r1583)
+
+## r1583 — убраны следы .ast_bss (зомби-код старого ядра)
+
+- `linker.ld`: убраны `EXCLUDE_FILE(*ast_*.o)` в `.bss` и вся секция
+  `.ast_bss` — правило `*ast_*.o` уже ничего не находило.
+- `docs/MEMORY.md`: зона `0x54800000..0x54AE8D80` помечена свободной.
+
+## r1575 — Castaway: возврат экрана и удаление старого ядра WinUAE
+
+- Выход из эмулятора: после цикла `h3_de2_ui_restore()` +
+  `h3_de2_set_bkcolor(0xFF000000)` (как Agat/32X) — снова видно меню.
+- Удалено ядро `h3_bare/cores/atari_st/` (Hatari+WinUAE), `ast_host.c`,
+  `ast_shim.c`, `atari_st_rename.sh`, `atari_st_gencpu.sh`; из Makefile —
+  блок `AST_*`, правила `ast_*`/`ast_gen`, зависимость `AST_LINK_DEP`;
+  из `emu.h` — `emu_run_atari_st`. В коде ссылок на старое ядро не осталось.
+- Актуальное ядро — `atari_st_cw` (Castaway): кадр в `.noinit_fbn` (r1574),
+  рендер после VBlank (r1573), звук YM2149, ввод USB→IKBD.
+
+## r1568 — стенд: вход в ядро Castaway не состоялся, снимаем логи
+
+- Симптом r1567: образ грузится (`load_rom: ... size=737280`), но эмулятор
+  сразу возвращает в главное меню. Причина не установлена.
+- `cw_host.c`: этапные логи `cw: enter / disk / init / init ok / cpu stop /
+  exit` (макрос `CWLOG`, флаг `CW_DEBUG`), включая имя образа.
+- `Makefile`: `CW_DEBUG ?= 1` на период стенда (потом 0 — релиз молчит).
+
+## r1567 — ядро Atari ST (Castaway) подключено к меню
+
+- `emu.h`: `emu_run_atari_st_cw`; `rom_browser.c` (ветка "atarist") и `main.c`
+  (ветка «вшитый TOS») входят через неё; в `cw_host.c` — обёртка над `cw_run`
+  (образ диска = `rom_name`, TOS вшит в `st/mem.c`).
+- `CW_ENABLE ?= 1` — ядро в образе; в `cw_rename.sh` KEEP добавлена точка
+  входа, `cw_renamed.stamp` зависит от скрипта.
+- Проверено: чистая сборка, `linkcheck: OK`, в ELF есть `cw_run` и
+  `emu_run_atari_st_cw`. На стенде не запускалось; старое ядро `ast_*` пока в
+  сборке — удаляется после успешного запуска.
+
+## r1566 — ядро Atari ST на Castaway: host-слой собран и слинкован
+
+- `Makefile`: правила `cw_*` (CW_ENABLE, по умолчанию 0) — `cpu/`, `st/`,
+  `sound/`, `cw_host.c`, `cw_input.c`, `cw_sound.c`, `tos_data.S`;
+  `cw_rename.sh` переименовывает глобалы ядра в `cw_*` (linkcheck поймал
+  дубли AY8910/`rom` с msx до ренейма).
+- Правки ядра под bare-metal: `config.h` (`bool` только до C23),
+  `st.h` (config.h + stdio.h + типы), `st/mem.c` (вшитый EmuTOS, string.h),
+  `st/fdc.c` (`cw_disk_*`, без поля `ejected` и лога), `st/ikbd.c` (string.h).
+- Host: `cw_run`, диски FAT, COL4/MONO → DE2 800x600, ввод USB → IKBD
+  (`cw_input.c`, HID→ST по keysymToAtari), звук YM2149 (`sound/AY8910.c` из
+  EMULib + `cw_sound.c`), рендер звука в кадре 50 Гц.
+- Проверено: `make -j20 CW_ENABLE=1` → `linkcheck: OK`. На стенде не
+  запускалось; ядро пока НЕ в образе (CW_ENABLE=0).
 
 > Точка сохранения для нового чата. История дельт r849..r1192 — в
 > `docs/HANDOVER_-r1192.md`. Здесь только актуальное для продолжения работы.
@@ -7,6 +58,276 @@
 ---
 
 ## 0. Последние правки
+
+- **r1565 (2026-11-22): Atari ST — скелет ядра Castaway добавлен в проект.**
+  В `h3_bare/cores/atari_st_cw/` скопировано ядро Castaway (форк
+  `github.com/agranlund/castaway`, GPLv2, скачано 2026-11-22): `cpu/`
+  (собственное 68k-ядро — **не WinUAE**), `st/` (st.c, mem.c, fdc.c, ikbd.c,
+  blitter.c, init.c, st.h/mem.h/stkeys.h), `emu.c`, `config.h`, `LICENSE.txt`,
+  `README.md` с провенансом. Не взято: Atari-хост (`host.c`, `start.c`,
+  `nova.c`, `vampire.c`, `asm.S`, `tools/`). Удалён неиспользуемый
+  `#define BIG_ENDIAN` (H3 — little-endian; в коде не встречался).
+  В Makefile ядро ПОКА НЕ включено: сборка r1565 подтверждает, что старый
+  образ не сломан. Следующий этап — host-слой: HostInit/HostEvents/HostVblank/
+  HostAlloc (emu.c), видео через DE2, звук через I2S, ввод через USB,
+  диски через FAT; и замена Atari-специфики в `StartEmulator`
+  (`Rwabs`/`Drvmap`/`DISKA`/`COL4`). Версия **r1565**.
+- **r1564 (2026-11-22): Atari ST — WinUAE-ядро отвергнуто, порт меняем (решение владельца).**
+  CPU-ядро WinUAE внутри порта Hatari (`cpu/newcpu.c`, `newcpu_common.c`,
+  `cpummu*.c`, `memory.c`, `custom.c`, `events.c`, `fpp*.c`, `readcpu.c`,
+  `gencpu.c`; `#define WINUAE_FOR_HATARI` в `cpu/sysconfig.h:7`) — **не
+  использовать**: объём, качество кода, ориентация на Windows; прошлые попытки
+  «заставить его работать как надо» неудачны. Диагностика r1556–r1563
+  подтвердила: VBL-тайминг корректен (`dcyc=133600` / `160256`), после загрузки
+  игра идёт 20 мс/кадр (PAL 50 Гц), тормоз только при чтении дискеты
+  (`icnt≈11 000` при норме 33 800, кадр до 1.3 с) — время в хост-обработчиках
+  CycInt/IO. Решение и правило зафиксированы в `docs/PITFALLS.md` §22.
+  Ядро Atari ST заменяется другим портом (кандидат — **Castaway** с собственным
+  68k-ядром, не WinUAE). ВЕРСИЯ **r1564**, HANDOVER синхронизирован.
+- **r1563 (2026-11-22): Atari ST — тормоз локализован в загрузке с дискеты; замер CycInt по handler_id.**
+  Стенд r1562 (Duck Tales, ~30 мин загрузки): медленные кадры только при чтении
+  дискеты — `icnt≈11 000`, `ms≈1337`, `frame_us≈cpu_us≈1.28 с`, при этом
+  `vbl_us≈2.4 мс`, `snd_us≈1.1 мс`, `video≈0.7 мс`, `audio≈0.26 мс`, `usb_us=0`,
+  `inp_us=4`. **После загрузки игра идёт нормально**: `dcyc=160256` (PAL 50 Гц),
+  `icnt≈33 800`, `ms=20..21`, `frame_us≈20 200` мкс — ровно 20 мс. То есть
+  эмулятор быстрый; «огромные счётчики ожидания» — это FDC-путь при чтении
+  секторов. `FDC_UpdateAll()` → `FDC_IndexPulse_CheckUpdate()` проверены
+  (fdc.c:1590, 2045) — они лёгкие, значит время в самом обработчике
+  прерывания при передаче данных. r1563 добавляет замер по `handler_id` в
+  `CycInt_CallActiveHandler()` (cycInt.c:533): `g_cycint_sum_us[64]`,
+  ast_host печатает `AST cycint id:мкс …` (средние за 60 кадров) — назовёт
+  конкретный INTERRUPT_* (FDC / MFP Timer / DMA). Версия **r1563**.
+- **r1562 (2026-11-22): Atari ST — замер фаз retro_run; единицы таймера подтверждены.**
+  Проверены единицы `h3_hs_timer_lo_us()` (h3_hs_timer.h:38,60): 100 МГц /
+  `HSTMR_MHZ=100` → **микросекунды**. Контроль: f=180 `frame_us=22087` (22 мс)
+  согласуется с `ms=24`; первый VBL `ms=3449850` = 57 мин uptime платы. Если бы
+  это были мс, вышло бы противоречие 1000×. Звук как блокер снят по логу r1560:
+  `acalls=1`, `audio_us≈265` мкс. Медленные VBL (60, 300) с `icnt≈11000` при
+  `frame_us≈0.35–0.75 с` — время хоста ВНЕ VBL-обработчика (r1561 ещё не снят
+  на стенде). r1562 добавляет замеры фаз `retro_run` через `h3_hs_timer_lo_us()`:
+  `usb_us` (`usb_kbd_poll_block`), `inp_us` (`input_poll_cb`), `cpu_us`
+  (`m68k_go_frame`), печать в строке `AST frame_us=…` (средние за 60 кадров).
+  Версия **r1562**.
+- **r1561 (2026-11-22): Atari ST — замер VBL-обработчика (где реально стоит CPU).**
+  Уточнение методики: `icnt` считает ТОЛЬКО инструкции гостя, поэтому время
+  хоста в `Video_InterruptHandler_VBL` (видео, синтез `Sound_Update_VBL`,
+  прерывания) в него не входит — «мало инструкций при `ms=1300`» ещё не
+  доказывает блокировку звука (в логе `ring fill=0`, защита r949 жива).
+  Добавлены замеры на `h3_hs_timer_lo_us()`: `g_ast_vbl_sum_us` — время всего
+  VBL-обработчика (video.c, от входа до `Timing_WaitOnVbl()`), `g_ast_snd_sum_us`
+  — из него `Sound_Update_VBL` (sound.c). ast_host печатает
+  `AST frame_us=… video_us=… audio_us=… acalls=… vbl_us=… snd_us=…` (средние за
+  60 кадров). Версия **r1561**.
+- **r1560 (2026-11-22): Atari ST — найден виновник «3 с на кадр»: backpressure звука.**
+  Лог r1559 (Duck Tales): `dcyc=133564…133708` (норма), `icnt=5683…33305`, но
+  `ms` скачет 9…30 мс (норма) ↔ **1336–1357 мс**, и в медленных VBL `icnt`
+  ПАДАЕТ до ~11000 (при норме ~32000) — CPU простаивает, время уходит вне
+  интерпретатора. `video_us≈690` мкс — видео не при чём. Причина найдена в
+  звуковом пути: `ast_audio_batch()` → `rs44fs_stereo()` →
+  `i2s_push_block()` → `i2s_ring_wait(want)` — при нехватке места в кольце
+  продюсер блокируется до `I2S_BACKPRESSURE_TIMEOUT_US` (50 мс) на БАТЧ
+  (cores/i2s.c:339), а `Sound_Update_VBL` зовёт батч несколько раз за кадр →
+  ~1.3 с. Защита r949 (`I2S_WAIT_FAIL_STREAK_MAX=8`) срабатывает только после
+  8 подряд таймаутов и сбрасывается при первом успехе. Диагностика r1560:
+  `AST frame_us=… video_us=… audio_us=… acalls=…` — время звукового пути и
+  число вызовов батча за кадр (накопление за 60 кадров, сброс при печати).
+  Версия **r1560**.
+- **r1559 (2026-11-22): Atari ST — точный замер скорости интерпретатора.**
+  Лог r1558: `dcyc=0x209bc` (133 564) на каждый VBL, включая vbl=4/5 — **тайминг
+  VBL корректен**; `stop=0`, `spc=0x100` = `SPCFLAG_DOINT` (снимается в первом
+  же `do_specialties`), STOP-гипотеза окончательно снята. `icnt=0` и `ms=0` —
+  дефекты диагностики: работает `m68k_run_2_000` (в нём не было
+  `regs.instruction_cnt++`; путь выбран, потому что `retro/options.c:863`
+  перекрывает `bCompatibleCpu=true` опцией `hatari_cpu_compatible` со значением
+  по умолчанию **false**), а `Timing_GetTicks()`/`gettimeofday()` в bare-metal
+  не работают. Исключены как причина: трассировка (`LogTraceFlags=TRACE_NONE`),
+  cycle-exact (`bCycleExactCpu=false`), `emu_throttle` (спит ≤16.7 мс и вне
+  замера `frame_us`). Правки r1559: `instruction_cnt++` в `m68k_run_2_000`;
+  `ms` в отпечатке VBL считается `h3_hs_timer_lo_us()` (extern, r1559),
+  `dcyc` печатается как `%u`. Версия **r1559**.
+- **r1558 (2026-11-22): Atari ST — разбор лога r1557 и точная диагностика скорости.**
+  Стенд r1557: `AST vbl=1..5 stop=0 spc=100` — VBL идёт **нормально** (1 на кадр),
+  `spc=0x100` = `SPCFLAG_DOINT`, т.е. гипотеза STOP-дедлока **опровергнута**;
+  Vidéo-кадры после 3-го не печатаются потому, что `Screen_Draw()` (retro/screen.c)
+  не вызывает `video_refresh_cb` при неизменном экране (`screen_changed=false`).
+  Главное: `AST frame_us` в ast_host.c печатается раз в 60 кадров, значит
+  «строка раз в 3 минуты» = **≈3 с на один кадр** (в 180 раз медленнее 16.7 мс) —
+  это не зависание, а скорость интерпретатора в циклах/с. Диагностика r1558:
+  `AST vbl=N stop=S spc=0x... dcyc=hi:lo icnt=K ms=M` — циклы, инструкции и
+  реальное время с прошлого VBL; `%llu` заменён на две hex-половины (bare-metal
+  printf его не поддерживает, в r1557 печаталось `dcyc=u`). Версия **r1558**.
+- **r1557 (2026-11-22): Atari ST — цикл кадра по hatariB + диагностика периода VBL.**
+  Стенд r1556: кадр EmuTOS идёт раз в ~3 минуты (VBL-событие приходит чудовищно
+  редко), ESC работает — `retro_run` застревает внутри эмуляции. Перенесён
+  каркас кадра из **hatariB** (bbbradsmith, тот же Hatari 2.6.1): `cpu/newcpu.c`
+  разделён на `m68k_go()` (только инициализация), `m68k_go_frame(bool run)`
+  (одна итерация исходного `for(;;)`, `run=false` — init-only) и
+  `m68k_go_quit()`; `hardboot` вынесен в static (живёт между кадрами);
+  добавлен фикс зависания блиттера — `blitter_x_funcs` + восстановление
+  подмены `x_do_cycles` в `set_x_funcs()` и сброс при reset. `retro/main_retro.c`:
+  `retro_run()` теперь `m68k_go_frame(true)` на кадр (+ `quit_program = 0` перед
+  ним, т.к. `Timing_WaitOnVbl` оставляет UAE_QUIT), reset — `m68k_go_quit()` →
+  `m68k_go()` → `m68k_go_frame(false)`; `retro_deinit()` — `m68k_go_quit()`;
+  парность quit/init держит `ast_m68k_loop_started` (`in_m68k_go` иначе
+  абортит). Диагностика r1556 расширена: `AST vbl=N stop=S spc=0x... dcyc=C` —
+  C циклов с прошлого VBL (ожидается ≈133000 при 8 МГц/60 Гц; много больше =
+  рассинхрон CycInt). Версия **r1557**, HANDOVER синхронизирован.
+- **r1556 (2026-11-22): Atari ST — диагностика завершения кадра (стенд).**
+  После A/B r1554 (частота CPU не влияет) подозрение — кадр EmuTOS «ждёт»
+  (`frame_us` до 1.9 с при бюджете 16.7 мс): гость крутит busy-wait на
+  аппаратном прерывании, которое не доходит до границы кадра вовремя. Добавлен
+  отпечаток в `Timing_WaitOnVbl()` (retro/timing.c) под `#ifdef AST_ST_DEBUG`:
+  печатает `AST vbl=N stop=S spc=0x...` (номер VBL, флаг `SPCFLAG_STOP`, весь
+  `regs.spcflags`) — первые 5 VBL и далее каждые 60. Если VBL-граница доходит
+  сюда при CPU в STOP (`stop=1`), значит `CycInt_Process_stop` пропускает
+  обработку VBL, пока гость «спит» в STOP → кадр не завершается. Версия **r1556**,
+  HANDOVER синхронизирован.
+- **r1555 (2026-11-22): Atari ST — откат A/B-теста частоты CPU (стенд).**
+  Стенд-лог r1554 (clock 16 МГц, `nCpuFreqShift=1`): картины прежняя —
+  `video n=1,2,3,60` растут, но `frame_us=1906566` (≈1.9 с при бюджете 16.7 мс),
+  те же ~7 мин до подписи. Вывод A/B: **частота CPU не влияет** на frame_us-пики
+  → проблема не в производительности интерпретатора, а в тайминге прерываний
+  VBL/MFP: EmuTOS крутит busy-wait на аппаратном прерывании (таймер MFP/VBL),
+  которое не доходит до границы кадра вовремя; кадр завершается только после
+  гигантского цикла ожидания. `CyclesPerVBL` масштабируется верно
+  (`clocks_timings.c:437` `<<= nCpuFreqShift`), IRQ-путь цел
+  (`M68000_SetIRQ(4)`→`intlev`, hatari-glue.c:91). Частота CPU возвращена на
+  штатные **8 МГц** (комментарий r1555 в `retro/options.c`). ВЕРСИЯ **r1555**,
+  HANDOVER синхронизирован. СЛЕДУЮЩИЙ ХОД (не начат): разобрать, почему
+  VBL/MFP-прерывание запаздывает относительно `CyclesGlobalClockCounter` в
+  busy-wait EmuTOS (возможно, `CycInt`/`Sound_Update_VBL`).
+- **r1554 (2026-11-22): Atari ST — A/B тест частоты CPU (стенд).**
+  Стенд-лог r1553 (`retro_run` отпечатки): `video n=1,2,3,60,...,360` — кадры
+  ПРОДВИГАЮТСЯ, `retro_run()` НЕ застревает. Видео быстрое (`video_us` ≈
+  685…730 мкс), но сам `retro_run()` занимает `frame_us` от 22 мс до 1.34 с
+  при бюджете 16.7 мс (60 Гц) — ядро выполняет в 10-20× больше работы, чем
+  реальный 8 МГц ST между кадрами. IRQ/VBL-путь цел (`M68000_SetIRQ(4)` →
+  `doint` → SPCFLAG, m68000.c), частота CPU = 8 МГц (`nCpuFreqShift=0`,
+  configuration.c:833). Вероятная причина: гостью машина (EmuTOS) крутит
+  busy-wait на прерывании таймера/VBL, которое не доходит до границы кадра
+  вовремя → кадр завершается только после гигантского цикла ожидания.
+  A/B-проверка: `hatari_cpu_clock` по умолчанию 8 → **16 МГц**
+  (`nCpuFreqShift=1`) в `retro/options.c` (комментарий r1554). Если `frame_us`
+  останется тем же — дело не в частоте CPU, а в тайминге VBL/таймера.
+  Версия **r1554**, HANDOVER синхронизирован.
+- **r1553 (2026-11-22): Atari ST — отпечатки фаз retro_run (стенд).**
+  Стенд-лог (r1552, AST_DEBUG): `AST video n=1,2,3` (первые 3 кадра — баннер
+  EmuTOS) и больше ни кадра; `AST frame_us` не печатается вовсе, но выход по
+  ESC x3 работает даже после 2-5 мин «висения». Вывод: `usb_kbd_esc3_pressed`
+  (usb_kbd.c:579) обслуживается из длинных USB-передач OHCI
+  (`usb_kbd_poll_block`, usb_ohci.c:678/868), т.е. ВНЕ хост-цикла → выход
+  срабатывает и когда `retro_run()` не возвращается. Это ПОДТВЕРЖДАЕТ
+  r1550-гипотезу: после ~3 кадров ядро уходит в блокирующий вызов (скорее
+  `m68k_run()`/`m68k_go()` не завершаются), кадр не рисуется. Чтобы найти
+  точку блокировки, в `retro/main_retro.c` `retro_run()` добавлены под
+  `AST_ST_DEBUG` отпечатки фаз `AST step[in]/[out] f=N` (первые 3 кадра и далее
+  каждые 60) + `usb_kbd_poll_block()` в начале каждого кадра (держит ESC x3
+  живым даже при блокировке внутри ретро-цикла). Makefile: правило
+  `$(BUILD)/ast_retro_%.o` теперь тоже получает `$(AST_DEBUG_FLAGS)`
+  (`AST_DEBUG=1` → `-DAST_ST_DEBUG`). Версия **r1553**, HANDOVER синхронизирован.
+- **r1552 (2026-11-22): Atari ST — диагностика десктопа (стенд).** Стенд-лог
+  (r1551): выход по ESC работает, хост-цикл жив (fb_flush/`emu_esc_hold` после
+  `retro_run` достигаются), но после стартового баннера экран статичен и
+  `AST video n=...` в логе нет (диагностика r1550/1551 была под `#ifdef
+  AST_ST_DEBUG`, выкл по умолчанию → в релизе молчит). Гипотеза r1550 «host
+  крутится в m68k_run, кадр не рисуется» ОПРОВЕРГНУТА: цикл жив. Похоже, ядро
+  Hatari не продвигает TOS после баннера (ждёт таймер/VBL, busy-wait на его
+  200 Гц tick не получает прерывание). Для локализации добавлен чистый
+  переключатель `make ... AST_DEBUG=1` → `-DAST_ST_DEBUG` ТОЛЬКО для
+  `ast_host.o` (правило `$(BUILD)/ast_host.o`), ядро не трогается. Отладочная
+  прошивка печатает `AST video n=...` и `AST frame_us=... video_us=...` — по
+  ним видно, растут ли номера кадров и сколько мкс занимает кадр (CPU-тормоз
+  >>16 мс против throttle/ожидания ~16-17 мс). Версия **r1552**
+  (`g_fw_version` + `build:` в `main.c`), HANDOVER синхронизирован.
+- **r1551 (2026-11-21): Atari ST — восстановление сборки из свежего клона +
+  ревизия диагностики (аудит).**
+  - **D1 (сборка):** в `Makefile` не было правила генерации `build/ast_gen`
+    (cpudefs.c/cpustbl.c/cpuemu_0|11|13.c/cputbl.h) — свежий клон падал
+    `No rule to make target 'build/ast_gen_cpudefs.o'`. Добавлены:
+    сгенерированные источники как групповой таргет `&:` (make ≥4.3) с
+    зависимостью от `cpu/table68k`, `gencpu.c`, `readcpu.c`, `build68k.c` и
+    скрипта `h3_bare/cores/atari_st_gencpu.sh`; рецепт вызывает скрипт
+    (host-gcc в PATH, см. сборка PITFALLS §7). В `$(BUILD)/ast_cpu_%.o`
+    добавлена order-only зависимость от `$(BUILD)/ast_gen/cputbl.h` —
+    иначе при параллельной сборке `ast_cpu_newcpu.o` (newcpu.c:38 включает
+    cputbl.h) стартует раньше генератора → «No such file». Проверено:
+    `make clean && make -j20` чистый, `linkcheck: OK`.
+  - **D6/D8 (диагностика):** временные printf-блоки `AST video n=...` и
+    `AST frame_us=...` обёрнуты в `#ifdef AST_ST_DEBUG` (по умолчанию выкл →
+    релиз молчит, правило «выводит только при ошибке»). Метка `next` в цикле
+    кадров тоже под `#ifdef AST_ST_DEBUG` (иначе `-Wunused-label` в релизе).
+  - **D3 (ввод):** аккумуляторы/сглаживание мыши (`acc_/sm_`) перенесены из
+    локальных static в file-scope (`g_ast_acc_*`, `g_ast_sm_*`) и сбрасываются
+    в `emu_run_atari_st` при входе — иначе остаток прошлого сеанса «долетает»
+    хвостом после перезахода.
+  - **D5 (документация):** в комментарий у маппинга F12 добавлено пояснение:
+    F12 резервируется за hot-swap дискет (disk_swap.c, r1363), перехватывается
+    `emu_disk_poll()` до чтения клавиатуры ядра и намеренно НЕ отдаётся в
+    гостевую ST-машину; именно поэтому в ядре нет Undo/меню по F12.
+  - Версия прошивки **r1551** (`g_fw_version` + `build:` в `main.c`),
+    HANDOVER и MEMORY (зона `.ast_bss`) синхронизированы.
+- **r1550 (2026-11-21): Atari ST — диагностика кадров (стенд-зависание).**
+  Лог r1549: эмуляция «висит» после `Screen refresh updated to: 60Hz`, строка
+  `AST frame_us=...` не печатается (диагностика из r1548 в лог не попала).
+  Подозрение: после первого кадра (`m68k_go` при reset) следующий `retro_run →
+  m68k_run → m68k_run_2_000` не получает VBL-прерывание (CycInt-таймер) и
+  крутит CPU вечно; кадр не рисуется, DE2 держит прошлый кадр. В `ast_video`
+  добавлен счётчик `nfr` с печатью первых 3 кадров и далее каждые 60
+  (`AST video n=...`) — по стенд-логу видно, доходят ли кадры до DE2.
+- **r1549 (2026-11-21): Atari ST — фикс файловой NVRAM.** `falcon/nvram.c`
+  `NvRam_Load`/`NvRam_Save` на bare-metal (`ALLWINNER_BARE_METAL`) больше не
+  открывают файл: fs_layer умеет только читать (`fopen` игнорирует `mode`),
+  поэтому при каждом выходе печатался ложный WARN `Storing NVRAM to
+  '/roms/atarist/hatari.nvram' failed`. RTC и настройки живут в памяти
+  (`.data.nvram`) и персистентны между входами в ядро. Путь `/roms/atarist/
+  hatari.nvram` корректен (в ELF дизассемблер: `sprintf("%s%c%s", home, '/',
+  "hatari.nvram")`; строки `ataristc` в свежем образе нет — она была в более
+  раннем билде). В `nvram.o` больше нет ссылок на fopen/fread/fwrite/fclose.
+- **r1548 (2026-11-21): ядро Atari ST (libretro/hatari) в образе.**
+  - Срез `h3_bare/cores/atari_st/`: core-файлы Hatari + `cpu/` (WinUAE),
+    `floppies/` (st/msa/stx), `retro/` (libretro-обвязка), без `gui-sdl`/
+    `gui-win`/`gui-osx`/`sdl`. Глобалы переименовываются в `ast_*` скриптом
+    `h3_bare/cores/atari_st_rename.sh` (KEEP=`emu_run_atari_st`) — иначе
+    коллизии с POM2/Agat/Fuse под `--allow-multiple-definition`.
+  - `bios.h`-подобная адаптация: `includes/config.h` (PRI*64/32, `CONFDIR`,
+    `DATADIR`), шим `shim/dirent.h` первым в `-I`, `HAVE_DIRENT_H` под
+    `#ifndef ALLWINNER_BARE_METAL`, `machdep/m68k.c` (cctrue), softfloat,
+    правка `int32_t`-типа в `fpp_softfloat.c`.
+  - CPU ограничен **68000** (ST/STE): в `cpu/newcpu.c` таблица `cputbls[6][8]`
+    оставлена только для 68000 (`op_smalltbl_5/12/14`, fpu-hack 3), собран
+    только нужный `cpuemu_0/11/13` — иначе `.rodata` уходил за 1 МБ.
+  - Host-слой `h3_bare/cores/ast_host.c`: TOS с SD `/roms/atarist/tos.img`
+    (в прошивку не вшит), диск — RAM-образ из ROM_BUF через `fs_layer`
+    (`fs_register`/`fs_register_bios`), кадр XRGB8888 → DE2 GSU 800×600,
+    звук 44100→48000 (`rs44fs_stereo`), USB-клава (retro-клавиатурный
+    колбэк), мышь/тачпад, Sega-пад, выход по удержанию ESC.
+  - BSS ядра (~3.1 МБ) вынесен в NOLOAD-секцию `.ast_bss` (linker.ld, сразу
+    за пулом `.noinit_fbn`), обнуляется в `emu_run_atari_st`;
+    `startup.S` её не трогает.
+  - **Размещение**: код+таблицы (~3.2 МБ) влезли после выноса копии ROM
+    Game Boy (8 МБ) из общего `.bss` в NOLOAD-зону `.gbc_bss` (0x54000000 —
+    начало пула FBNeo): владелец времени один, GB и FBNeo/CPS одновременно
+    не работают, зоны переиспользуются. `_bend1` = 0x446bbba8, запас до
+    `ZIP_BUF_BIG` ≈ 5.3 МБ. IPF (формат `.ipf`) заглушён — нет CAPSimage;
+    остальные `.st/.msa/.stx/.dim/.kfs/.scp` работают.
+  - Меню: `SYS_DIR("atarist", "Atari ST", "atarist", COMPUTER, READY)`,
+    ветка `emu_run_atari_st` в `rom_browser.c`; F12 — hot-swap дискет A:/B:
+    через общий `disk_swap.c` (in_memory=1: образ читается в swap_buf и
+    перерегистрируется в fs_layer под новым путём).
+  - **Выбор источника** (диалог `ast_source_dialog` в main.c): «1. TOS
+    (built-in EmuTOS)» — вшитый EmuTOS 1.4 us (192 КБ, `bios/etos192us.img`
+    с emutos.sourceforge.io, GPLv2; `.incbin` в `tos_data.S`, символы
+    `ast_tos_emutos`) — запуск без диска; «2. TOS + disk from SD» — свой
+    TOS `/roms/atarist/tos.img` + дискета через браузер.
+  - **Мышь**: с тачпада клавиатуры (схема uae4all: абсолютная позиция →
+    сглаженные дельты, аккумулятор, клэмп ±24); кнопки — тачпад/пада.
+  - **Стендовая доводка** (повторный заход): при загрузке образа с SD
+    `tos.img` не обязателен — fallback на вшитый EmuTOS (если своего TOS на
+    SD нет); чёрный бордюр ставится сразу при входе (без «жёлтого из
+    меню»). Белый экран с иконкой диска в углу — рабочий стол EmuTOS
+    (норма); `fs: fopen miss floppy.raw/hatari.cfg/ataristc` и `NVRAM failed`
+    — безвредные промахи (read-only FS).
+  - Сборка: `linkcheck: OK` (bin 25 637 580 Б).
 
 - **r1547 (2026-11-21): G&W — полный набор кнопок (TIME / ALARM / RESET).**
   - Ядро понимает 8 бит: LEFT/UP/RIGHT/DOWN/A/B/TIME/GAME; плюс две программные

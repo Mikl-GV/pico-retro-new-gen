@@ -502,3 +502,41 @@ DC-смещение TIA снимает DC-блокер CPU2 (shift 6) — отд
 побочных эффектов (A2600: `Sound::registerValue()` → `TIASound::get(0x15..0x1a)`),
 а не чтением TIA: `TIA::peek()` — опрос пинов/коллизий, значения звуковых
 регистров он не возвращает.
+
+## 22. Atari ST: ядро WinUAE (внутри порта Hatari) — не использовать (решение владельца, r1564)
+
+**Что было:** порт Atari ST собран из Hatari 2.6.1, но CPU 68000 в нём — из
+WinUAE: `h3_bare/cores/atari_st/cpu/newcpu.c`, `newcpu_common.c`, `cpummu.c`,
+`cpummu030.c`, `memory.c`, `custom.c`, `events.c`, `fpp*.c`, `readcpu.c`,
+`gencpu.c`; `#define WINUAE_FOR_HATARI` в `cpu/sysconfig.h:7`. Периферия ST
+(video/mfp/fdc/psg/ikbd) — Hatari.
+
+**Симптом на стенде:** тайминг корректен (`dcyc=133600` на VBL), но при
+загрузке с дискеты кадр растягивался до 1.3 с (`icnt` падал до 11 000 при
+норме 33 800), время сидело в `m68k_go_frame` вне VBL/USB/видео/звука; после
+загрузки игра шла нормально (20 мс/кадр, PAL 50 Гц).
+
+**Решение владельца (2026-11-22):** WinUAE-ядро не использовать — объём,
+качество кода, ориентация на Windows; прошлые попытки «заставить его работать
+как надо» неудачны. Ядро Atari ST заменяется другим портом (кандидат —
+Castaway с собственным 68k-ядром, не WinUAE).
+
+**Правило:** не возвращаться к `atari_st/cpu/*` WinUAE и не «чинить» его
+диагностикой; новый ST-порт — на отдельном 68k-ядре.
+
+**Уточнение (2026-11-22, r1566):** запрет распространяется и на ветку
+`libretro/hatari` **`hitari2014-mercurial`** — это тоже WinUAE
+(`src/cpu/newcpu.c` 133 КБ, `cpummu*.c`, `gencpu.c`, `jit/`,
+`falcon_cycle030.h`), просто старая и меньше. Решение владельца: «запрет в
+силе». Выбранный путь — **Castaway** (оригинал, Martin Doering/Joachim Hoenig):
+своё C-ядро, в `cpu/` ноль `__asm__`, `jmp_table[8192]` статическая (нет
+тяжёлой генерации таблиц при старте). Звук берём из уже имеющегося в проекте
+`cores/msx/EMULib/AY8910.c` (YM2149 совместим). Исходники — в
+`h3_bare/cores/atari_st_cw/`, см. его `README.md`.
+
+**Итог (2026-11-22, r1575):** старое ядро удалено полностью —
+`h3_bare/cores/atari_st/` (80 файлов), `ast_host.c`, `ast_shim.c`,
+`atari_st_rename.sh`, `atari_st_gencpu.sh`; из `Makefile` — блок `AST_*`,
+правила `ast_*`/`ast_gen` и зависимость `AST_LINK_DEP`; из `emu.h` —
+`emu_run_atari_st`. Активное ядро — `atari_st_cw` (Castaway), точка входа
+`emu_run_atari_st_cw`. Правило «не возвращаться к WinUAE» остаётся в силе.

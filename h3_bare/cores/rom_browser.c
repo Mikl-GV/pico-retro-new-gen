@@ -139,6 +139,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_ngp(rom, size, sel_name);
     else if (strcmp(sys_id, "gw") == 0)
         emu_run_gw(rom, size, sel_name);   // r1544: Game & Watch / Электроника
+    else if (strcmp(sys_id, "atarist") == 0)
+        emu_run_atari_st_cw(rom, size, sel_name);   // r1567: Atari ST (Castaway)
     else if (strcmp(sys_id, "megadrive") == 0)
         emu_run_megadrive(rom, size, sel_name);
     else if (strcmp(sys_id, "32x") == 0)
@@ -596,7 +598,15 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     // (.com + .prg/.scr/...) — host-слою нужен путь каталога.
                     if (is_ep)
                         ep_set_rom_dir(path);
-                    run_emulator(sys_id, rom, size, sel_name);
+                    if (strcmp(sys_id, "atarist") == 0) {
+                        /* r1577: Castaway читает образ диска с SD по пути, а
+                         * sel_name — только имя файла (без каталога). */
+                        char cw_img[FAT_NAME_LEN + 16];
+                        snprintf(cw_img, sizeof(cw_img), "%s/%s", path, sel_name);
+                        run_emulator(sys_id, rom, size, cw_img);
+                    } else {
+                        run_emulator(sys_id, rom, size, sel_name);
+                    }
                     // r625: после игры возвращаемся в браузер (не в главное меню).
                     goto reload_list;
                 } else {

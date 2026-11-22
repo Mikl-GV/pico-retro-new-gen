@@ -54,7 +54,11 @@ SECTIONS
   . = ALIGN(4);
   .bss : {
     _bstart1 = . ;
-    *(.bss); *(.bss.*); *(COMMON);
+    /* r1548: BSS ядра Atari ST (~3.1 МБ таблиц Hatari) вынесен в .ast_bss —
+     * в зазор до ZIP_BUF_BIG (0x44C00000, ~290 КБ) он не влезает. Обнуление
+     * делает host (emu_run_atari_st), startup.S .ast_bss не трогает. */
+    *(.bss .bss.*)
+    *(COMMON)
     . = ALIGN(4);
     _bend1 = . ;
   }
@@ -86,6 +90,20 @@ SECTIONS
     *(.noinit_fbn)
   }
   ASSERT(SIZEOF(.noinit_fbn) <= 0x08000000, "ERROR: .noinit_fbn > 128 МБ (0x54000000..0x5C000000)")
+
+  /* r1548: копия ROM Game Boy (8 МБ, gameboy_host.cpp — заполняется memset+
+   * memcpy при загрузке игры). Общий .bss переполнял ZIP_BUF_BIG, а владелец
+   * времени один: GB и FBNeo/CPS одновременно не работают, поэтому кладём
+   * буфер НАЧАЛОМ пула FBNeo (0x54000000) — зоны переиспользуются. */
+  .gbc_bss 0x54000000 (NOLOAD) : {
+    _gbc_bss_start = .;
+    *(.gbc_bss)
+    . = ALIGN(8);
+    _gbc_bss_end = .;
+  }
+  ASSERT(_gbc_bss_end <= 0x5C000000, "ERROR: .gbc_bss > зоны 0x54000000..0x5C000000")
+
+  /* r1582: .ast_bss удалена вместе со старым ядром Atari ST (WinUAE). */
 
   /* r1363: буфер hot-swap дискет (disk_swap.c, 2 МБ). В общий .bss его класть
    * нельзя — он упирается в ZIP_BUF_BIG аркад (ASSERT ниже). Зона

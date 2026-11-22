@@ -1,0 +1,335 @@
+Castaway M68000 Emulator Reference
+==================================
+
+CONTENTS
+--------
+
+1.  Introduction
+
+2.  Copyright
+
+3.  Programmer's Interface
+3.1 Source Code Overview
+3.2 Memory Access
+3.3 Instruction Execution
+3.4 Interrupts
+
+4.  M680x0 Assembly Level Debugging
+4.1 General Reference
+4.2 Examples
+4.2.1 How To Debug Crashes
+4.2.2 How To Debug Memory Access
+
+5.  M680x0 CPU compatibility notes
+5.1 Exception Processing
+5.2 Miscellaneous
+
+
+1. INTRODUCTION
+---------------
+
+Features:
+
+- complete M68000 emulation (#define CPU_TYPE 68000)
+- complete M68010 emulation (#define CPU_TYPE 68010)
+- platform independent
+- written in C, some assembly language optimizations for i386 platforms
+  using gcc.
+
+Possible uses are Atari or Amiga emulators, or emulators for 68000-based
+microcontrollers. The Castaway Atari ST emulator can be seen as an example
+implementation.
+
+Our future plans are:
+
+- Add M68020 emulation
+- Add runtime debugging features
+
+
+
+2. COPYRIGHT
+------------
+
+Castaway may be distributed under the terms of the GNU General Public
+License (GPL) version 2 or later (http://www.gnu.org/copyleft/gpl.html).
+
+E-mail:
+            jhoenig@@users.sourceforge.net
+            doeringm@@gmx.de
+
+Castaway home:
+            http://castaway.sourceforge.net
+
+
+
+3. PROGRAMMER'S INTERFACE
+-------------------------
+
+3.1 Source Code Overview
+
+68000.c and 68000.h contain some basic internal emulator functionality, and
+the emulator programmer's interface.
+Applications using the emulator typically include 68000.h. At the moment this
+file does include some internals (definitions not meant for public usage other
+than debugging), such as CPU register storage.
+
+Files with names beginning with "op" are CPU internal. op680[012]0.c
+contain the opcode interpreter jump tables for different processor types.
+M68000 opcodes are grouped into blocks of eight, thus the jump table has
+8192 entries to cover the all possible opcodes. Every jump table entry
+references a function, or "opfunc", executing this particular operation.
+The opfuncs are all defined in the files named "op68k[..].c".
+Macros definitions used in the opfuncs are located in op68k.h.
+
+All in all, the opfuncs do make heavy use of C preprocessor macros (the poor
+man's template functions), some files looking a lot like tables. In other 
+words, these files are pretty dull.
+
+Some debug functionality is enclosed in debug.c. There is a disassembler,
+and functions to log executed operations and register content, and to print
+execution traces.
+
+
+3.2 Memory Access
+
+Whenever the CPU wants to read or write a byte (B), a word (W) or a 32bit
+long word from or to memory, it calls one of the functions aptly named
+GetMem[BWL] or SetMem[BWL]. The address passed is a 32bit unsigned long
+value. These functions should take care of the host system's endianness.
+The macros to reassemble bytes are named Read[BWL] and Write[BWL], defined
+in 68000.h.
+Note that 68000 long memory access is not necessarily aligned to a 4 byte
+boundary. This problem is also taken care of by the ReadL and WriteL macros.
+
+The state of the CPU function code FC0-FC2 is not passed as an argument to
+the GetMem/SetMem functions. If the decoding of the address depends on the
+state of the function code lines, the function code can be retrieved using
+the macros GetFC0(), GetFC1(), GetFC2(), or GetFC() to get the 3-bit function
+code value.
+
+
+3.3 Instruction Execution
+
+A CPU hardware reset can be simulated by calling the function HWReset(),
+which will load the initial pc and stack pointer values.
+
+The M68000 emulation executes, while the function CPURun() is executing.
+CPU takes an unsigned integer instruction count. CPURun will not return
+until one of the following events occurs:
+
+   - the CPU executes a STOP instruction
+   - the CPU shuts down after multiple bus errors
+   - if count is not zero, and count instructions have been executed
+   - the CPUEvent() function has been called (either synchronously, from
+     within e.g. SetMem() or GetMem(), or asynchronously from a different
+     thread or from a signal handler).
+
+The CPUEvent() function can be used to pause CPU execution, to allow
+e.g. to handle input events within the emulation of some I/O device,
+and to set the M68000 interrupt priority lines accordingly.
+
+
+3.4 Interrupts
+
+The variable intpri is used to set the interrupt priority of pending
+interrupts. To avoid race conditions, the intpri variable must be set
+synchronously. This can be achieved in two ways:
+
+- The interrupt priority is updated because of the CPU writing to a certain
+  peripheral address (or reading from a peripheral address).
+  When the CPU writes this address, the SetMem() function will in some way
+  enter the emulation of the peripheral device. At this point the device
+  emulation may modify the interrupt priority.
+
+- If the interrupt priority has to be updated because of an asynchronous
+  event (possibly generated by a different thread, or by user input captured
+  by a signal handler), the main thread executing CPURun() has to be forced
+  to update the interrupt priority.
+  For example, on a timer event, the timer signal handler calls CPUEvent()
+  after processing timer event. This forces the CPURun() function in the main
+  thread to return. The main thread then checks if a timer event has occurred,
+  and modifies the interrupt priority if necessary, before reentering CPURun().
+
+
+
+4. M680x0 Assembly Level Debugging
+----------------------------------
+
+4.1 General Reference
+
+The Castaway emulator can be configured at compile-time to handle many
+debugging tasks. Most of these switches are only available in debug mode,
+which is turned on by defining DEBUG. The following table lists the debug
+preprocessor macros.
+
+Macro       Type    Applies to  Description
+-----------------------------------------------------------------------
+DBG_OUT(..) exec.   68000/ST    Used like printf() to print debug output.
+                                (Default: if (verb_on) printf)
+DBG_STOP()  exec.   68000/ST    Call if you want to freeze the emulator.
+                                On Unix-like systems, you can then attach a
+                                debugger to view system contents.
+                                (Default: calls TraceStop(), which prints the
+                                traceback buffer and then sleeps indefinitely)
+DEBUG       none    68000/ST    Debug master switch. Define, if you want
+                                to debug, else do not define to optimize
+                                for speed.
+                                (Default: not defined)
+INTERNALTRACE none  68000       If set, trace information includes internal
+                                processing information (operands, effective
+                                target address) for most instructions.
+                                (Default: not defined)
+NO_TIMER    none    ST          Turns timer off. No vertical blanking or
+                                system timer interrupts are generated.
+                                (Default: not defined)
+ON_NOIO()   exec.   ST          Executed, whenever the ST emulation accesses
+                                an unknown I/O address 0xff8000-0xfffff).
+                                Arguments are offset (off 0xff8000) and value.
+                                (Default: empty)
+ON_TRAP()   exec.   68000       Executed, whenever the 68000 emulation handles
+                                an exception. The exception vector number is
+                                passed as argument.
+                                (Default: empty)
+ON_UNMAPPED() exec  ST          Executed, whenever the ST emulation accesses
+                                an unmapped memory address. Arguments are
+                                address and value. Called both for read and
+                                write accesses.
+                                (Default: empty)
+ON_WRITE()  exec.   ST          Executed, whenever the ST emulation writes to
+                                any memory address. Arguments are address and 
+                                value.
+                                (Default: empty)
+TRACEBACK   numeric 68000       size of the traceback buffer. The traceback
+                                buffer contains the instruction executed, and
+                                the register and stack content for the last
+                                instructions executed.
+                                (Default: 20000)
+VERBOSE     numeric ST          contains single-bit flags controlling
+                                debug output written with DBGOUT()
+                                0x1 write I/O debug messages
+                                0x2 write interrupt debug messages
+                                0x8 write blitter debug messages
+                                (Default: 0x1)
+
+The following is a list of global symbols (functions and variables) available
+at runtime for special debugging purposes:
+
+trace_on    bool    68000       If true, write execution trace to debug output,
+                                for every instruction executed.
+                                (Initial value: 0)
+stop_on     bool    68000       Controls operation of DebugStop() function.
+                                If false, do not stop.
+                                (Initial value: 0)
+verb_on     bool    68000/ST    Verbose master switch. Allows turning debug 
+                                output on and off at runtime.
+                                (Initial value: 0)
+DebugStop()         68000       Sleep indefinitely, if top_on is true.
+TraceStop()         68000       Print traceback buffer and then sleep 
+                                indefinitely.
+
+Other useful globals for debugging are:
+
+ExceptionGroup0()   68000       Raise an 68k exception and write a group 0 
+                                exception frame on stack (adress errors and 
+                                bus errors)
+ExceptionGroup1()   68000       Raise an 68k exception and write a group 1 
+                                exception frame on stack (illegal 
+                                instructions, interrupts)
+ExceptionGroup2()   68000       Raise an 68k exception and write a group 2 
+                                exception frame on stack (traps, division 
+                                by zero)
+
+
+4.2 Examples
+
+4.2.1 How To Debug Crashes
+
+The typical program crash results in an exception, most commonly a bus error or
+an address error.
+
+1. Find out which exception is raised.
+
+2. Define ON_TRAP to call TraceStop(), whenever this exception is raised:
+
+   #define ON_TRAP(number) if (number == BUSERR) TraceStop().
+
+3. Recompile Castaway.
+
+4. Run your application, and let it crash.
+
+5. Analyze the execution trace dumped by trace stop.
+
+
+4.2.2 How To Debug Memory Access
+
+At times you may want to know, when a certain memory address is written to.
+Without an MMU typical native 68000 environments will not provide address
+breakpoints, but you can use the Castaway emulator to accomplish this.
+
+1. Find the address you want to watch.
+
+2. Write an ON_WRITE macro like this:
+
+   #define ON_WRITE(address, value) \
+       if (address == <myaddress>) DBGOUT("%0x08l: 0x04l, address, value);
+
+   Other than printing a log of the access to the debug output, you can
+   TraceStop() instead, or raise a group 0 exception.
+
+3. Recompile Castaway.
+
+4. See what happens.
+
+
+5.  M680x0 CPU compatibility notes (last update Version 0.9.1)
+--------------------------------------------------------------
+
+5.1 Exception Processing
+
+- With an M68000 processor, faulted instructions (bus or address error)
+  usually cannot be restarted, as register contents may have been modified.
+  The emulator has the same problem, plus the program counter may be set wrong.
+  As I can't find a specification of what the processor is supposed to do in
+  this or that case, there's not a lot that can be done. However, no one ever
+  reported troubles with this.
+
+- M68010: The emulation at present does not support the bus error/address
+  error rerun feature.
+
+- M68020:
+  - Bus errors/address errors on next instruction fetch do not generate
+    a short bus error stack frame on stack, bus errors/address errors always 
+    use long bus error stack frames. The bus error special status word is 
+    incorrect.
+  - The emulation at present does not support the bus error/address error rerun
+    feature.
+
+- Breakpoint acknowledge cycles (M680(12)0) are not emulated.
+  Modify the Op4848() function to implement special breakpoint behaviour.
+
+5.2 Miscellaneous
+
+- Function codes are reported wrong by the GetFC() macros in the following 
+  cases:
+  - the MOVES instruction (M68010 and later) does not report sfc or dfc 
+    contents as the function code, instead the function codes are the same as 
+    for the standard MOVE instruction.
+  - if the address read from or written to on a data access is equal to the
+    current PC, an opcode fetch is signalled instead of a data fetch.
+
+- The BCD arithmetic instructions have never been tested. Never ever.
+
+- The SR trace bits are unused at present.
+
+5.3 Native Features
+
+Castaway contains a basic implementation of the "Native Features" interface, 
+which is a general framework implemented on various emulators by which native
+code can be executed from within m68k code. Right now, only the following 
+features are supported: 
+
+- the basic set (inquire the emulator name, print debug messages)
+
+- NF_SHUTDOWN (quit the emulator)
+
+Native features are only enabled when NATFEAT is #defined to 1 in config.h.

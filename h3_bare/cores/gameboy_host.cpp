@@ -60,7 +60,7 @@ static const uint32_t gb_rom_size_bytes[9] = {
     32u * 1024, 64u * 1024, 128u * 1024, 256u * 1024, 512u * 1024,
     1024u * 1024, 2u * 1024u * 1024, 4u * 1024u * 1024, 8u * 1024u * 1024,
 };
-static uint8_t g_gb_rom_copy[GB_HOST_ROM_MAX] __attribute__((aligned(8)));
+static uint8_t g_gb_rom_copy[GB_HOST_ROM_MAX] __attribute__((aligned(8), section(".gbc_bss")));
 static uint32_t g_gb_rom_copy_size = 0;
 
 // ---- Game Genie (Game Boy) чит-коды ----
