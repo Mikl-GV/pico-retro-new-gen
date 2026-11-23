@@ -21,7 +21,8 @@ int  cw_disk_write(int idx, uint32_t off, const void *buf, uint32_t len);
 /* Диагностика (r1570): обращения ядра вне карты памяти. */
 extern volatile uint32_t cw_unmapped_cnt, cw_unmapped_addr;
 
-/* Точка входа: инициализация ядра и цикл кадров до выхода (ESC). */
-void cw_run(const char *disk_path);
+/* Точка входа: инициализация ядра и цикл кадров до выхода (ESC).
+ * img_size — размер образа диска (для лога сессии). */
+void cw_run(const char *disk_path, uint32_t img_size);
 
 #endif /* CW_HOST_H */

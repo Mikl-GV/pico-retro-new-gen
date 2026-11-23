@@ -162,7 +162,7 @@ extern unsigned char fdc_data, fdc_track, fdc_sector,
         fdc_status, fdc_command, fdc_int;
 struct Disk {
     FILE       *file;
-    char        name[80];
+    char        name[160];   /* r1586: полный путь с SD (в 80 не влезал) */
     int         head;
     int         sides;
     int         tracks;

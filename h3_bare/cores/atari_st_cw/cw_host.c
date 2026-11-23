@@ -20,6 +20,7 @@
 #include "fat.h"
 #include "h3_de2.h"
 #include "h3_hs_timer.h"
+#include "../emulog.h"
 
 /* r1578: DE2 читает кадр без кэша — после CPU-записи обязателен clean. */
 extern void usb_cache_clean(uint32_t addr, uint32_t size);
@@ -49,6 +50,10 @@ static fat_entry_t   g_de[CW_DISKS];
 static fat_stream_t  g_ds[CW_DISKS];
 static int           g_dok[CW_DISKS];
 
+/* r1587: счётчики для лога — сколько секторов ядро реально запросило. */
+static uint32_t      g_cw_reads;
+static uint32_t      g_cw_last_off;
+
 static int cw_split(const char *path, char *dir, unsigned dirlen,
                     char *name, unsigned namelen)
 {
@@ -77,10 +82,14 @@ int cw_disk_open(int idx, const char *path)
     if (idx < 0 || idx >= CW_DISKS || !path || !path[0])
         return -1;
     g_dok[idx] = 0;
-    if (cw_split(path, dir, sizeof(dir), name, sizeof(name)) != 0)
+    if (cw_split(path, dir, sizeof(dir), name, sizeof(name)) != 0) {
+        emulog_field("ST", "diskerr", "split '%s' failed", path);
         return -1;
-    if (fat_find(dir, name, &g_de[idx]) != 0)
+    }
+    if (!fat_find(dir, name, &g_de[idx])) {
+        emulog_field("ST", "diskerr", "find '%s' in '%s' failed", name, dir);
         return -1;
+    }
     fat_stream_init(&g_ds[idx], &g_de[idx]);
     g_dok[idx] = 1;
     return 0;
@@ -97,6 +106,8 @@ int cw_disk_read(int idx, uint32_t off, void *buf, uint32_t len)
 {
     if (idx < 0 || idx >= CW_DISKS || !g_dok[idx])
         return -1;
+    g_cw_reads++;
+    g_cw_last_off = off;
     return fat_stream_read(&g_ds[idx], off, (uint8_t *)buf, len);
 }
 
@@ -109,13 +120,15 @@ int cw_disk_write(int idx, uint32_t off, const void *buf, uint32_t len)
 
 /* ======================= кадр ======================= */
 
-#define CW_W 320
+#define CW_MAX_W 640     /* r1593: mid-res 640x200 (COL2) — самая широкая */
 #define CW_H 200
 #define CW_OUT_H 600
 
 /* r1574: кадр — в .noinit_fbn (0x54000000), как у всех ядер: DE2 читает
- * буфер без кэша, .bss-копия давала пропуски строк и скачки по горизонтали. */
-static uint32_t g_fb[CW_W * CW_H]
+ * буфер без кэша, .bss-копия давала пропуски строк и скачки по горизонтали.
+ * r1594: строки упакованы плотно по активной ширине (320 low / 640 mid),
+ * иначе DE2 с PITCH=INSIZE читает половину строки. */
+static uint32_t g_fb[CW_MAX_W * CW_H]
     __attribute__((aligned(64), section(".noinit_fbn")));
 
 static uint32_t cw_palette[16];
@@ -140,7 +153,7 @@ static void cw_render_col4(const uint8_t *v)
 {
     for (int y = 0; y < CW_H; y++) {
         const uint8_t *src = v + (unsigned)y * 160u;
-        uint32_t *dst = &g_fb[(unsigned)y * CW_W];
+        uint32_t *dst = &g_fb[(unsigned)y * 320u];   /* r1594: плотно 320 */
         for (int blk = 0; blk < 20; blk++) {
             const uint8_t *p = src + (unsigned)blk * 8u;
             uint16_t p0 = (uint16_t)((p[0] << 8) | p[1]);
@@ -159,16 +172,36 @@ static void cw_render_col4(const uint8_t *v)
     }
 }
 
-/* ST mono: 640x400, 1 plane; на выходе берём каждую вторую строку/пиксель. */
+/* ST mid res: 640x200, 2 bitplane. Строка — 160 байт: 40 блоков по 4 байта
+ * (plane0..plane1), в каждом блоке 16 пикселей, старший бит — левый. */
+static void cw_render_col2(const uint8_t *v)
+{
+    for (int y = 0; y < CW_H; y++) {
+        const uint8_t *src = v + (unsigned)y * 160u;
+        uint32_t *dst = &g_fb[(unsigned)y * 640u];   /* r1594: плотно 640 */
+        for (int blk = 0; blk < 40; blk++) {
+            const uint8_t *p = src + (unsigned)blk * 4u;
+            uint16_t p0 = (uint16_t)((p[0] << 8) | p[1]);
+            uint16_t p1 = (uint16_t)((p[2] << 8) | p[3]);
+            for (int i = 0; i < 16; i++) {
+                unsigned bit = 15u - (unsigned)i;
+                unsigned ci = ((p0 >> bit) & 1u) | (((p1 >> bit) & 1u) << 1);
+                dst[(unsigned)blk * 16u + (unsigned)i] = cw_palette[ci];
+            }
+        }
+    }
+}
+
+/* ST mono: 640x400, 1 plane; на выходе берём каждую вторую строку. */
 static void cw_render_mono(const uint8_t *v)
 {
     uint32_t fg = cw_palette[0], bg = cw_palette[1];
     for (int y = 0; y < CW_H; y++) {
         const uint8_t *src = v + (unsigned)y * 2u * 80u;
-        uint32_t *dst = &g_fb[(unsigned)y * CW_W];
-        for (int x = 0; x < CW_W; x++) {
-            unsigned byte = (unsigned)x >> 2;
-            unsigned bit = 7u - (((unsigned)x * 2u) & 7u);  /* каждый 2-й пиксель 640 */
+        uint32_t *dst = &g_fb[(unsigned)y * 640u];   /* r1594: плотно 640 */
+        for (int x = 0; x < CW_MAX_W; x++) {
+            unsigned byte = (unsigned)x >> 3;
+            unsigned bit = 7u - ((unsigned)x & 7u);
             dst[x] = ((src[byte] >> bit) & 1u) ? fg : bg;
         }
     }
@@ -180,30 +213,49 @@ static uint32_t cw_vid_base(void)
     return ((uint32_t)vid_baseh << 16) | ((uint32_t)vid_basem << 8);
 }
 
-/* r1580: слой DE2 настраиваем один раз за сессию: повторный scaler_rect
- * каждый кадр перезапускал GSU — картинка дрожала вправо/влево. */
+/* r1580: слой DE2 настраиваем один раз на режим: повторный scaler_rect
+ * каждый кадр перезапускал GSU — картинка дрожала вправо/влево.
+ * r1593: режим ST (low/mid/mono) может смениться — тогда перекалибровка. */
 static int g_cw_gsu_ready;
+static int g_cw_gsu_w;
 
 static void cw_render(void)
 {
     uint32_t base = cw_vid_base();
+    unsigned src_w;
 
     cw_palette_update();
-    if (vid_shiftmode == MONO)
+    switch (vid_shiftmode) {
+    case 1:                          /* mid: 640x200, 2 bitplane */
+        cw_render_col2((const uint8_t *)membase + base);
+        src_w = 640;
+        break;
+    case 2:                          /* mono: 640x400, 1 bitplane */
         cw_render_mono((const uint8_t *)membase + base);
-    else
+        src_w = 640;
+        break;
+    default:                         /* low: 320x200, 4 bitplane */
         cw_render_col4((const uint8_t *)membase + base);
+        src_w = 320;
+        break;
+    }
 
-    /* r1578/r1580: пропорции 4:3 и центр по 1024 (как у Agat); слой
-     * настраиваем один раз, иначе GSU перезапускается каждый кадр.
-     * Кадр после CPU-записи чистим — DE2 читает его без кэша. */
-    int dw = (CW_W * CW_OUT_H) / CW_H;
+    /* r1578/r1593: пропорции 4:3 по пикселю и центр по 1024, как у Agat;
+     * слой настраиваем один раз на режим. Кадр после записи чистим. */
+    int dw = ((int)src_w * CW_OUT_H) / CW_H;
+    if (dw > 1024)
+        dw = 1024;
     int dx = (1024 - dw) / 2;
-    usb_cache_clean((uint32_t)(uintptr_t)g_fb, (uint32_t)(CW_W * CW_H * 4u));
+    if (g_cw_gsu_w != (int)src_w)
+        g_cw_gsu_ready = 0;
+    usb_cache_clean((uint32_t)(uintptr_t)g_fb,
+                    (uint32_t)((size_t)src_w * CW_H * 4u));
     if (!g_cw_gsu_ready) {
-        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)g_fb, CW_W, CW_H, 32,
-                                  (uint32_t)dx, 0, (uint32_t)dw, CW_OUT_H) == 0)
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)g_fb, src_w, CW_H, 32,
+                                  (uint32_t)dx, 0, (uint32_t)dw, CW_OUT_H) == 0) {
             g_cw_gsu_ready = 1;
+            g_cw_gsu_w = (int)src_w;
+        }
     }
 }
 
@@ -227,11 +279,23 @@ void emu_run_atari_st_cw(const uint8_t *rom, uint32_t size, const char *rom_name
         CWLOG(rom_name);
         CWLOG("\n");
     }
-    cw_run(rom_name);
+    cw_run(rom_name, size);
 }
 
-void cw_run(const char *disk_path)
+void cw_run(const char *disk_path, uint32_t img_size)
 {
+    uint32_t t_start = h3_hs_timer_lo_us();
+
+    emulog_begin("ST");
+    emulog_field("ST", "rom", "%s, %u B",
+                 disk_path ? disk_path : "(none)", (unsigned)img_size);
+    /* r1593: Pasti .stx (трековый формат) не поддерживается — назад в меню. */
+    if (disk_path && strstr(disk_path, ".stx")) {
+        emulog_field("ST", "disk", "unsupported .stx (Pasti)");
+        emulog_end("ST");
+        return;
+    }
+
     if (disk_path && disk_path[0]) {
         strncpy(disk[0].name, disk_path, sizeof(disk[0].name) - 1);
         disk[0].name[sizeof(disk[0].name) - 1] = 0;
@@ -242,6 +306,19 @@ void cw_run(const char *disk_path)
     display_mode = COL4;
     Init(0, NULL);              /* MemInit/FDCInit/IOInit/nf_init/HWReset */
     CWLOG("cw: init ok\n");
+    {
+        int dsz = cw_disk_size(0);
+        if (dsz >= 0)
+            emulog_field("ST", "disk", "A: %d B, %d trk x %d sec x %d side",
+                         dsz, disk[0].tracks, disk[0].sectors, disk[0].sides);
+        else
+            emulog_field("ST", "disk", "A: none");
+    }
+    emulog_field("ST", "machine", "68000 PAL 50 Hz, DRAM %u MB",
+                 (unsigned)(memsize >> 20));
+    emulog_field("ST", "video", "COL4 320x200 -> 960x600 (DE2 GSU)");
+    emulog_field("ST", "audio", "YM2149 44100 Hz, 882 pairs/frame");
+    emulog_field("ST", "init", "OK");
 #ifdef CW_DEBUG
     uart_puts("cw: pc="); uart_print_hex((uint32_t)pc);
     uart_puts(" sp="); uart_print_hex((uint32_t)ssp);
@@ -320,4 +397,8 @@ void cw_run(const char *disk_path)
         h3_de2_ui_restore();
         h3_de2_set_bkcolor(0xFF000000u);
     }
+    emulog_field("ST", "diskio", "%u reads, last off 0x%X",
+                 (unsigned)g_cw_reads, (unsigned)g_cw_last_off);
+    emulog_frames("ST", frames, h3_hs_timer_lo_us() - t_start);
+    emulog_end("ST");
 }

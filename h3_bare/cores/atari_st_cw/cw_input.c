@@ -56,6 +56,11 @@ void cw_input_init(void)
 void cw_input_poll(void)
 {
     uint8_t now[CW_KEYS];
+
+    /* r1585: наполнить счётчики дельт тачпада (I8 Pro boot mouse): их
+     * отдаёт usb_mouse_take_delta только после опроса (uae4all_host.c:307). */
+    usb_pad_poll();
+
     int n = usb_kbd_get_raw(now, CW_KEYS);
     int i, j;
 
@@ -127,8 +132,18 @@ void cw_input_poll(void)
         int odx = (int)(acc_x >> 4), ody = (int)(acc_y >> 4);
         acc_x -= (int32_t)(odx << 4);
         acc_y -= (int32_t)(ody << 4);
-        if (odx || ody)
-            IkbdMouseMotion(odx, ody);
+        if (odx || ody) {
+            /* r1584: IkbdMouseMotion ждёт АБСОЛЮТНУЮ позицию (в IkbdMouse
+             * dx = mouse.x - mouse.stx); передача дельты не накапливалась. */
+            static int cur_x, cur_y;
+            cur_x += odx;
+            cur_y += ody;
+            if (cur_x < 0) cur_x = 0;
+            if (cur_y < 0) cur_y = 0;
+            if (cur_x > 1023) cur_x = 1023;
+            if (cur_y > 1023) cur_y = 1023;
+            IkbdMouseMotion(cur_x, cur_y);
+        }
     }
 
     /* Кнопки мыши: бит0=ЛКМ, бит1=ПКМ (IKBD: 1 — левая, 2 — правая). */
