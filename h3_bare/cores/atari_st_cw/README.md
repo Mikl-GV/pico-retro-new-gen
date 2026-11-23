@@ -21,18 +21,26 @@
 
 ## Host-слой
 
-- `cw_host.c`: диски `.st/.msa` с SD через FAT (`cw_disk_*`), вшитый EmuTOS
-  (`tos_data.S` → `st/mem.c`), кадр COL4 320×200 / MONO → XRGB8888 в
-  `.noinit_fbn` → DE2 GSU (960×600, центр по 1024), на выходе —
-  `h3_de2_ui_restore()`. Точка входа диспетчера — `emu_run_atari_st_cw`.
+- `cw_host.c`: образы `.st` с SD через FAT (`cw_disk_*`, только чтение),
+  вшитый EmuTOS (`tos_data.S` → `st/mem.c`), кадр COL4 320×200 / COL2 640×200 /
+  MONO 640×400 → XRGB8888 в `.noinit_fbn` → DE2 GSU (960×600, центр по 1024).
+  F12 — hot-swap диска A: через общий `disk_swap.c` (список `.st` из папки
+  образа, без сброса машины). Выход: `h3_de2_ui_restore()`, `emu_audio_stop()`,
+  `fb_clear()/fb_flush()`. Точка входа диспетчера — `emu_run_atari_st_cw`
+  (первым `emu_prepare()`, иначе повторный вход ломается — PITFALLS §23).
 - `sound/`: YM2149 (`AY8910.c` из EMULib + `cw_sound.c`): `Loop8910` для
   огибающей, генерация 44100 Гц в I2S по кадру 50 Гц.
-- `cw_input.c`: USB HID → ST scancodes (`IkbdKeyPress/Release`); тачпад/тач →
-  `IkbdMouseMotion` (дельты, EMA, при отсутствии относительного источника —
-  абсолютная позиция); кнопки — `usb_pad_buttons` (бит0 ЛКМ, бит1 ПКМ).
+- `cw_input.c`: USB HID → ST scancodes set-1 (`IkbdKeyPress/Release`),
+  модификаторы — отдельным байтом отчёта (`usb_kbd_get_mods`); тачпад/тач →
+  `IkbdMouseMotion` (дельты + EMA, при отсутствии относительного источника —
+  абсолютная позиция), кнопки мыши: ЛКМ = 2, ПКМ = 1 (нумерация IKBD).
+  Джойстик ST0: плата/Sega-пад (`pad_scan_combined`, 50 Гц) + клавиатура как
+  в NES (стрелки, Z = A, X = B; fire — любая кнопка действия пада,
+  START → Space). Состояние сессии сбрасывается в `cw_input_init()`,
+  IKBD/мышь/джойстик — в `cw_ikbd_reset()` (st/ikbd.c).
 - `cw_rename.sh` переименовывает глобалы ядра в `cw_*` (коллизии с msx и др.).
-- Ограничения: только `.st`/`.msa`, диск A только для чтения; `.stx` и
-  пользовательский TOS не поддерживаются (вшитый EmuTOS).
+- Ограничения: только `.st`; `.msa` (нужна распаковка) и `.stx` (Pasti,
+  трековый формат) не поддерживаются, как и пользовательский TOS (вшитый EmuTOS).
 
 ## Лицензия
 

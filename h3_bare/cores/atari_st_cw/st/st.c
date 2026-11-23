@@ -390,7 +390,10 @@ int             DoIOWB(uint32 address, uint8 value)
 #endif
     default:
         ON_NOIO(address, value);
-        if ((address >= 0xff8200 && address <= 0xff820f)
+        /* r1601: видео декодировано на весь блок 0xFF8200..0xFF827F —
+         * на ST bus error внутри него нет. Узкий диапазон ..0xFF820F рвал
+         * word/long-обращения к 0xFF8260 (второй байт уходил в bus error). */
+        if ((address >= 0xff8200 && address <= 0xff827f)
             || (address >= 0xff8600 && address <= 0xff860f)
             || (address >= 0xff8800 && address <= 0xff8807)
             || (address >= 0xfffa00 && address <= 0xfffa2f)
@@ -692,13 +695,13 @@ int             DoIORB(uint32 address, uint8 *result)
         *result = 2 | acia1_sr;
         break;
     case ACIA1_DR:              /* Get char from KBD */
-        if (!(acia1_cr & 0x20)) {       /* transmit interrupt enabled? */
-            acia1_sr &= 0x7e;   /* no, clear interrupt bit */
-            mfp_gpip |= 0x10;   /* clear ACIA-Interrupt request */
-            SetInterruptPriority ();
-        }
+        /* r1601: чтение RDR снимает RDRF и IRQ всегда (6850). Прежнее
+         * условие по TX-IRQ (CR&0x20) оставляло RDRF и линию IRQ зажатыми:
+         * в играх после первого байта клавиатура и мышь замирали. */
+        acia1_sr &= 0x7e;
+        mfp_gpip |= 0x10;
+        SetInterruptPriority ();
         *result = acia1_dr;
-        /* kill (getpid(), SIGSTOP); */
         break;
     case ACIA2_SR:
         *result = acia2_sr;
@@ -735,7 +738,8 @@ int             DoIORB(uint32 address, uint8 *result)
     default:
         ON_NOIO(address, *result);
         *result = VALUE_OPEN;
-        if ((address >= 0xff8200 && address <= 0xff820f)
+        /* r1601: см. DoIOWB — весь видео-блок 0xFF8200..0xFF827F без аварий. */
+        if ((address >= 0xff8200 && address <= 0xff827f)
             || (address >= 0xff8600 && address <= 0xff860f)
             || (address >= 0xff8800 && address <= 0xff8807)
             || (address >= 0xfffa00 && address <= 0xfffa2f)

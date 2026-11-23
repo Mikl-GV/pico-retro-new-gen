@@ -171,67 +171,39 @@ void            FDCCommand(void)
             switch (fdc_command & 0xf0) {
             case 0x80:          /* READ SECTOR */
                 count = dma_scr * 512;
-                if (!0 /* r1566: смещение передаётся в cw_disk_read напрямую */) {
-                    if (count == cw_disk_read(drives, (uint32_t)offset, buffer, (uint32_t)count)) {
-                        address += count;
-                        dma_adrl = address & 0xff;
-                        dma_adrm = (address >> 8) & 0xff;
-                        dma_adrh = (address >> 16) & 0xff;
-                        dma_scr = 0;
-                        dma_sr = 1;
-                        break;
-                    }
+                /* r1566: смещение передаётся в cw_disk_read напрямую. */
+                if (count == cw_disk_read(drives, (uint32_t)offset, buffer, (uint32_t)count)) {
+                    address += count;
+                    dma_adrl = address & 0xff;
+                    dma_adrm = (address >> 8) & 0xff;
+                    dma_adrh = (address >> 16) & 0xff;
+                    dma_scr = 0;
+                    dma_sr = 1;
+                    break;
                 }
                 fdc_status |= 0x10;
                 dma_sr = 1;
                 break;
             case 0x90:          /* READ SECTOR multiple */
                 count = dma_scr * 512;
-                if (!0 /* r1566: смещение передаётся в cw_disk_read напрямую */) {
-                    if (count == cw_disk_read(drives, (uint32_t)offset, buffer, (uint32_t)count)) {
-                        address += count;
-                        dma_adrl = address & 0xff;
-                        dma_adrm = (address >> 8) & 0xff;
-                        dma_adrh = (address >> 16) & 0xff;
-                        dma_scr = 0;
-                        dma_sr = 1;
-                        fdc_sector += dma_scr * (512 / disk[drives].secsize);
-                        break;
-                    }
+                if (count == cw_disk_read(drives, (uint32_t)offset, buffer, (uint32_t)count)) {
+                    address += count;
+                    dma_adrl = address & 0xff;
+                    dma_adrm = (address >> 8) & 0xff;
+                    dma_adrh = (address >> 16) & 0xff;
+                    dma_scr = 0;
+                    dma_sr = 1;
+                    fdc_sector += dma_scr * (512 / disk[drives].secsize);
+                    break;
                 }
                 fdc_status |= 0x10;
                 dma_sr = 1;
                 break;
-            case 0xa0:          /* WRITE SECTOR */
-                count = dma_scr * 512;
-                if (!0 /* r1566: смещение передаётся в cw_disk_read напрямую */) {
-                    if (count == (size_t)-1 /* r1566: запись на SD не поддерживаем */) {
-                        address += count;
-                        dma_adrl = address & 0xff;
-                        dma_adrm = (address >> 8) & 0xff;
-                        dma_adrh = (address >> 16) & 0xff;
-                        dma_scr = 0;
-                        dma_sr = 1;
-                        break;
-                    }
-                }
+            case 0xa0:          /* WRITE SECTOR — образы только для чтения */
                 fdc_status |= 0x10;
                 dma_sr = 1;
                 break;
-            case 0xb0:          /* WRITE SECTOR multiple */
-                count = dma_scr * 512;
-                if (!0 /* r1566: смещение передаётся в cw_disk_read напрямую */) {
-                    if (count == (size_t)-1 /* r1566: запись на SD не поддерживаем */) {
-                        address += count;
-                        dma_adrl = address & 0xff;
-                        dma_adrm = (address >> 8) & 0xff;
-                        dma_adrh = (address >> 16) & 0xff;
-                        dma_scr = 0;
-                        dma_sr = 1;
-                        fdc_sector += dma_scr * (512 / disk[drives].secsize);
-                        break;
-                    }
-                }
+            case 0xb0:          /* WRITE SECTOR multiple — только чтение */
                 fdc_status |= 0x10;
                 dma_sr = 1;
                 break;

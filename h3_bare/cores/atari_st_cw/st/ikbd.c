@@ -51,8 +51,36 @@ unsigned char   outbuff[OBS];
 int             inbuffi = 0;
 int             outbuffi = 0;
 
+/* r1603: снимок состояния IKBD и счётчики — диагностика ввода в ST: inp. */
+int      cw_ikbd_mode, cw_ikbd_pause, cw_ikbd_x, cw_ikbd_stx, cw_ikbd_th;
+int      cw_ikbd_joymode, cw_ikbd_joy;
+unsigned cw_ikbd_bytes, cw_ikbd_last, cw_ikbd_keys, cw_ikbd_mpack;
+
+/* r1609: сброс IKBD на входе в эмулятор. Без него повторный запуск
+ * наследует mouse.mode/pause/очереди и положение мыши прошлой игры. */
+void cw_ikbd_reset(void)
+{
+    memset(inbuff, 0, sizeof(inbuff));
+    memset(outbuff, 0, sizeof(outbuff));
+    inbuffi = 0;
+    outbuffi = 0;
+    pause = 0;
+
+    memset(&mouse, 0, sizeof(mouse));
+    mouse.stx = 160;            /* как после команды IKBD 0x80, low-res */
+    mouse.sty = 100;
+
+    memset(&joystick, 0, sizeof(joystick));
+
+    cw_ikbd_mode = cw_ikbd_pause = cw_ikbd_x = cw_ikbd_stx = 0;
+    cw_ikbd_th = cw_ikbd_joymode = cw_ikbd_joy = 0;
+    cw_ikbd_bytes = cw_ikbd_last = cw_ikbd_keys = cw_ikbd_mpack = 0;
+}
+
 void            IkbdRecv(unsigned char inchar)
 {
+    cw_ikbd_bytes++;
+    cw_ikbd_last = inchar;
 #ifdef DEBUG
     fprintf (stderr, "IkbdRecv: %d\n", inchar);
 #endif
@@ -370,6 +398,15 @@ int             IkbdQueryBuffer(void)
 
 void            IkbdWriteBuffer(void)
 {
+    /* r1603: состояние для лога (вызывается каждый проход host-цикла). */
+    cw_ikbd_mode = mouse.mode;
+    cw_ikbd_pause = pause;
+    cw_ikbd_x = mouse.x;
+    cw_ikbd_stx = mouse.stx;
+    cw_ikbd_th = mouse.xth;
+    cw_ikbd_joymode = joystick.mode;
+    cw_ikbd_joy = joystick.state0;
+
     if (mouse.flag && (outbuffi < (OBS / 2))) {
         IkbdMouse ();
     }
@@ -387,11 +424,13 @@ void            IkbdWriteBuffer(void)
 
 void            IkbdKeyPress (unsigned short keysym)
 {
+    cw_ikbd_keys++;
     IkbdSend (keysym);
 }
 
 void            IkbdKeyRelease (unsigned short keysym)
 {
+    cw_ikbd_keys++;
     IkbdSend (0x80 | keysym);
 }
 
@@ -467,6 +506,7 @@ void            IkbdMouse()
             IkbdSend (0xf8 | mouse.buttons);
             IkbdSend (dx);
             IkbdSend (dy);
+            cw_ikbd_mpack++;
         }
 #if 0
         fprintf (stderr, "Mouse: x %d, y %d, dx %d, dy %d\n", mouse.stx, mouse.sty, dx, dy);
@@ -510,16 +550,21 @@ void            IkbdJoystickChange(int number, uint8 state)
 #ifdef DEBUG
     assert(number == 0 || number == 1);
 #endif
+    /* r1605: состояние обновляем всегда (нужно для 0x16 interrogate),
+     * пакеты 0xFF/0xFE шлём только в event reporting (0x14) — иначе они
+     * попадают в поток программ, ждущих mouse-пакеты. */
     if (number == 0 && joystick.state0 != state) {
         joystick.state0 = state;
-        /* TODO: only if joystick event reporting selected */
-        IkbdSend(0xff);
-        IkbdSend(state);
+        if (joystick.mode == 0x14) {
+            IkbdSend(0xff);
+            IkbdSend(state);
+        }
     }
     if (number == 1 && joystick.state1 != state) {
         joystick.state1 = state;
-        /* TODO: only if joystick event reporting selected */
-        IkbdSend(0xfe);
-        IkbdSend(state);
+        if (joystick.mode == 0x14) {
+            IkbdSend(0xfe);
+            IkbdSend(state);
+        }
     }
 }

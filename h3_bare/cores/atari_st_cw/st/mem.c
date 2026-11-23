@@ -351,7 +351,6 @@ int TosSize(char *filename)
 void            MemInit(void)
 {
     unsigned        romsize;
-    FILE           *roms;
     uint32   romstart = 0;       /* 68k start address of ROM */
 
     membase = malloc(memsize);

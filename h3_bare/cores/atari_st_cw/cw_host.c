@@ -1,7 +1,7 @@
 /* cw_host.c — host-слой Castaway для H3 (r1566)
  *
  * Ядро Castaway (cpu/, st/) не знает о железе. Здесь:
- *   • диски .st/.msa через FAT (cw_disk_*), вместо fopen/fread;
+ *   • диски .st через FAT (cw_disk_*), вместо fopen/fread;
  *   • кадр 320x200 (4 bitplane) -> XRGB8888 -> DE2 GSU (800x600);
  *   • цикл кадра: CPURun -> IOTimer (200 Гц) -> render/VBlank (50 Гц).
  *
@@ -21,11 +21,23 @@
 #include "h3_de2.h"
 #include "h3_hs_timer.h"
 #include "../emulog.h"
+#include "../emu.h"      /* r1602: emu_disk_* — hot-swap диска A: по F12 */
+#include "../fb_text.h"  /* r1609: fb_clear/fb_flush на выходе */
 
 /* r1578: DE2 читает кадр без кэша — после CPU-записи обязателен clean. */
 extern void usb_cache_clean(uint32_t addr, uint32_t size);
+/* r1600: регистр состояния 68k (op68k.h) — маска IPL и режим. */
+extern uint16 GetSRW(void);
+/* r1603: снимок IKBD-мыши и счётчики ввода (st/ikbd.c, cw_input.c). */
+extern int      cw_ikbd_mode, cw_ikbd_pause, cw_ikbd_x, cw_ikbd_stx, cw_ikbd_th;
+extern int      cw_ikbd_joymode, cw_ikbd_joy;
+extern unsigned cw_ikbd_bytes, cw_ikbd_last, cw_ikbd_keys, cw_ikbd_mpack;
+extern unsigned cw_in_motion;
+extern int      cw_in_odx, cw_in_ody;
+extern unsigned cw_in_pad, cw_in_raw;
 #include "sound/cw_sound.h"
 #include "cw_input.h"
+#include "../usb_kbd.h"      /* r1602: F12 читаем прямой опрос отчёта */
 
 #ifdef CW_DEBUG
 #include "uart.h"
@@ -41,6 +53,18 @@ extern void emu_esc_hold_reset(void);
 /* init.c ссылается на этот символ (режим «instructions per second»).
  * 0 = без ограничения: темп задаёт наш цикл кадров. */
 unsigned ips = 0;
+
+/* r1600: редкие события 68k в единый лог сессии.
+ * Бюджет: первые 8 строк, затем каждая 256-я (аварии) / 8192-я (IRQ) —
+ * шторм прерываний не должен вытеснить из лога первую аварию. */
+void cw_dbg_evt(const char *what, unsigned a, unsigned b, unsigned c)
+{
+    static uint32_t n;
+    if (n < 8 || (n & 0xFF) == 0)
+        emulog_field("ST", "evt", "%s addr=0x%06X pc=0x%06X sr=%04X n=%u",
+                     what, a, b, c, (unsigned)n);
+    n++;
+}
 
 /* ======================= диски через FAT ======================= */
 
@@ -83,11 +107,15 @@ int cw_disk_open(int idx, const char *path)
         return -1;
     g_dok[idx] = 0;
     if (cw_split(path, dir, sizeof(dir), name, sizeof(name)) != 0) {
-        emulog_field("ST", "diskerr", "split '%s' failed", path);
+        /* r1606: B: по умолчанию не подключён ('diskb') — это норма,
+         * в лог пишем только настоящую ошибку диска A:. */
+        if (idx == 0)
+            emulog_field("ST", "diskerr", "split '%s' failed", path);
         return -1;
     }
     if (!fat_find(dir, name, &g_de[idx])) {
-        emulog_field("ST", "diskerr", "find '%s' in '%s' failed", name, dir);
+        if (idx == 0)
+            emulog_field("ST", "diskerr", "find '%s' in '%s' failed", name, dir);
         return -1;
     }
     fat_stream_init(&g_ds[idx], &g_de[idx]);
@@ -117,6 +145,32 @@ int cw_disk_write(int idx, uint32_t off, const void *buf, uint32_t len)
     (void)idx; (void)off; (void)buf; (void)len;
     return -1;
 }
+
+/* r1602: F12 -> hot-swap диска A: общим disk_swap.c (r1363). Сброса машины
+ * нет: подменяем образ и перечитываем BPB/геометрию через FDCInit(). */
+static int cw_disk_insert(int drive, const char *path, const uint8_t *data,
+                          uint32_t size, const char *name)
+{
+    (void)data; (void)size; (void)name;
+
+    if (drive != 0 || !path || !path[0])
+        return -1;
+
+    strncpy(disk[0].name, path, sizeof(disk[0].name) - 1);
+    disk[0].name[sizeof(disk[0].name) - 1] = 0;
+    FDCInit();                      /* открыть образ по имени + BPB */
+    if (cw_disk_size(0) < 0)
+        return -1;
+    emulog_field("ST", "disk", "A: %d B, %d trk x %d sec x %d side (swap)",
+                 cw_disk_size(0), disk[0].tracks, disk[0].sectors, disk[0].sides);
+    return 0;
+}
+
+static const emu_disk_ops_t g_cw_disk_ops = {
+    /* r1609: только .st — .msa требует распаковки (file.c не в сборке),
+     * .stx (Pasti) трековый и не поддерживается вовсе. */
+    1, "st", 0, cw_disk_insert
+};
 
 /* ======================= кадр ======================= */
 
@@ -223,9 +277,26 @@ static void cw_render(void)
 {
     uint32_t base = cw_vid_base();
     unsigned src_w;
+    static int render_mode;       /* фактический режим рендера (0/1/2) */
+    static int pend_mode = -1, pend_cnt;
+
+    /* r1596: одиночные переключения регистра (монитор-детект TOS) не должны
+     * рвать кадр: смену режима применяем, только если держится 2 кадра. */
+    int m = (vid_shiftmode == 1) ? 1 : (vid_shiftmode == 2) ? 2 : 0;
+    if (m == render_mode) {
+        pend_mode = -1;
+    } else if (m == pend_mode) {
+        if (++pend_cnt >= 2) {
+            render_mode = m;
+            pend_mode = -1;
+        }
+    } else {
+        pend_mode = m;
+        pend_cnt = 0;
+    }
 
     cw_palette_update();
-    switch (vid_shiftmode) {
+    switch (render_mode) {
     case 1:                          /* mid: 640x200, 2 bitplane */
         cw_render_col2((const uint8_t *)membase + base);
         src_w = 640;
@@ -246,6 +317,20 @@ static void cw_render(void)
     if (dw > 1024)
         dw = 1024;
     int dx = (1024 - dw) / 2;
+    /* r1595: событие смены режима/ширины. r1603: базу не сравниваем —
+     * игры переключают её каждый кадр (двойная буферизация), лог тонул. */
+    {
+        static int last_mode = -1;
+        static unsigned last_w;
+        if (render_mode != last_mode || src_w != last_w) {
+            last_mode = render_mode;
+            last_w = src_w;
+            emulog_field("ST", "mode", "%s %ux%u base=0x%05X -> %dx%d @%d",
+                         render_mode == 1 ? "COL2" :
+                         render_mode == 2 ? "MONO" : "COL4",
+                         src_w, CW_H, base, dw, CW_OUT_H, dx);
+        }
+    }
     if (g_cw_gsu_w != (int)src_w)
         g_cw_gsu_ready = 0;
     usb_cache_clean((uint32_t)(uintptr_t)g_fb,
@@ -273,6 +358,10 @@ void emu_run_atari_st_cw(const uint8_t *rom, uint32_t size, const char *rom_name
 {
     (void)rom;
     (void)size;
+
+    /* r1609: общая подготовка входа (bump/newlib heap, EMU_FB) — без неё
+     * повторный запуск malloc'ил ещё 4 МБ поверх прошлой сессии. */
+    emu_prepare();
     CWLOG("cw: enter\n");
     if (rom_name && rom_name[0]) {
         CWLOG("cw: disk ");
@@ -301,10 +390,22 @@ void cw_run(const char *disk_path, uint32_t img_size)
         disk[0].name[sizeof(disk[0].name) - 1] = 0;
     }
 
+    /* r1602: список F12-свапа — каталог текущего образа. */
+    {
+        char d[256], f[128];
+
+        if (disk_path && cw_split(disk_path, d, sizeof(d), f, sizeof(f)) == 0)
+            emu_disk_set_dir(d);
+        emu_disk_register(&g_cw_disk_ops);
+    }
+
     /* r1579: умолчание st.c — MONO, а CommandlineInit (-4) не вызывается:
      * без этой строки рендер уходил в mono (ч/б, полосы, двоение). */
     display_mode = COL4;
     Init(0, NULL);              /* MemInit/FDCInit/IOInit/nf_init/HWReset */
+    cw_ikbd_reset();            /* r1609: IKBD/мышь/джойстик — с чистого листа */
+    g_cw_reads = 0;             /* r1609: счётчики сессии */
+    g_cw_last_off = 0;
     CWLOG("cw: init ok\n");
     {
         int dsz = cw_disk_size(0);
@@ -338,6 +439,9 @@ void cw_run(const char *disk_path, uint32_t img_size)
 
     uint32_t t_io = h3_hs_timer_lo_us();
     uint32_t t_vbl = t_io;
+#ifdef CW_DEBUG
+    uint32_t t_stat = t_io;
+#endif
     uint32_t frames = 0;
 #ifdef CW_DEBUG
     unsigned dbg_once = 1;
@@ -345,6 +449,35 @@ void cw_run(const char *disk_path, uint32_t img_size)
 #endif
 
     while (!emu_esc_hold()) {
+#ifdef CW_DEBUG
+        /* r1606: срез раз в секунду — только в отладочной сборке. В релизе
+         * остаются значимые события: evt/irq/mode/disk/diskio. */
+        uint32_t now0 = h3_hs_timer_lo_us();
+        if ((uint32_t)(now0 - t_stat) >= 1000000u) {
+            t_stat += 1000000u;
+            emulog_field("ST", "stat",
+                         "pc=0x%05X ip=%u sr=%04X st=%d reads=%u f=%u base=0x%05X"
+                         " ipb=%02X ierb=%02X v45=%X v46=%X v47=%X v4D=%X",
+                         (unsigned)pc, (unsigned)intpri,
+                         (unsigned)GetSRW(), (int)cpu_state,
+                         (unsigned)g_cw_reads, (unsigned)frames,
+                         cw_vid_base(),
+                         (unsigned)mfp_iprb, (unsigned)mfp_ierb,
+                         (unsigned)GetMemL(0x114), (unsigned)GetMemL(0x118),
+                         (unsigned)GetMemL(0x11C), (unsigned)GetMemL(0x134));
+            /* r1603: состояние ввода — что доходит до IKBD и что отдаём. */
+            emulog_field("ST", "inp",
+                         "mode=%d pause=%d x=%d stx=%d th=%d keys=%u bytes=%u"
+                         " mp=%u last=%02X mov=%u odx=%d ody=%d pad=%u raw=%u"
+                         " jm=%d js=%02X",
+                         cw_ikbd_mode, cw_ikbd_pause, cw_ikbd_x, cw_ikbd_stx,
+                         cw_ikbd_th, cw_ikbd_keys, cw_ikbd_bytes,
+                         cw_ikbd_mpack, cw_ikbd_last,
+                         cw_in_motion, cw_in_odx, cw_in_ody,
+                         cw_in_pad, cw_in_raw,
+                         cw_ikbd_joymode, cw_ikbd_joy);
+        }
+#endif
         unsigned n = CPURun(2000);
 #ifdef CW_DEBUG
         if (dbg_once) {                  /* первый выход из CPURun */
@@ -369,13 +502,35 @@ void cw_run(const char *disk_path, uint32_t img_size)
         }
         if ((uint32_t)(now - t_vbl) >= CW_FRAME_US) {
             t_vbl += CW_FRAME_US;
+            /* r1602: F12 — свап диска A:. Оверлей disk_swap рисует в буфер
+             * меню, поэтому на фронт F12 слой DE2 возвращается меню; после
+             * оверлея g_cw_gsu_ready=0 заставит cw_render вернуть слой ST. */
+            {
+                static uint8_t prev_f12;
+                uint8_t keys[8];
+                int nk = usb_kbd_get_raw(keys, sizeof(keys));
+                uint8_t f12 = 0;
+
+                for (int i = 0; i < nk; i++)
+                    if (keys[i] == 0x45)        /* HID F12 */
+                        f12 = 1;
+                if (f12 && !prev_f12) {
+                    extern void h3_de2_ui_restore(void);
+                    h3_de2_ui_restore();
+                }
+                emu_disk_poll();                /* сам откроет оверлей по F12 */
+                if (f12 && !prev_f12)
+                    g_cw_gsu_ready = 0;
+                prev_f12 = f12;
+            }
             VBlank();
             /* r1573: рендер ПОСЛЕ VBlank — TOS закончил кадр, база стабильна. */
             cw_render();
             cw_sound_render();          /* r1566: кадр звука -> I2S */
+            frames++;                   /* r1601: счётчик и в релизе (fps в exit) */
 #ifdef CW_DEBUG
             /* r1570: раз в 64 кадра — где CPU и куда лезет вне карты памяти. */
-            if ((++frames & 0x3F) == 0) {
+            if ((frames & 0x3F) == 0) {
                 uart_puts("cw: t pc="); uart_print_hex((uint32_t)pc);
                 uart_puts(" u="); uart_print_uint((unsigned)cw_unmapped_cnt);
                 uart_puts(" a="); uart_print_hex(cw_unmapped_addr);
@@ -388,6 +543,7 @@ void cw_run(const char *disk_path, uint32_t img_size)
         SetInterruptPriority();
     }
     CWLOG("cw: exit\n");
+    emu_disk_register(0);       /* r1602: снять F12-свап с этого ядра */
     /* r1575: вернуть DE2 слой на буфер меню (иначе экран держит кадр ST)
      * и бордюр обратно чёрный, как у Agat/32X. */
     {
@@ -397,6 +553,10 @@ void cw_run(const char *disk_path, uint32_t img_size)
         h3_de2_ui_restore();
         h3_de2_set_bkcolor(0xFF000000u);
     }
+    /* r1609: остановить звук (кольцо/CPU2) и отдать меню чистый кадр. */
+    emu_audio_stop();
+    fb_clear();
+    fb_flush();
     emulog_field("ST", "diskio", "%u reads, last off 0x%X",
                  (unsigned)g_cw_reads, (unsigned)g_cw_last_off);
     emulog_frames("ST", frames, h3_hs_timer_lo_us() - t_start);

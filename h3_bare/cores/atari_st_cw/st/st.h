@@ -140,6 +140,7 @@ extern uint16   dma_car, dma_scr, dma_sr, dma_mode;
 extern uint8    dma_adrh, dma_adrm, dma_adrl;
 
 /* ikbd.c */
+extern void     cw_ikbd_reset(void);    /* r1609: сброс IKBD на входе в эмулятор */
 extern void     IkbdMouse(void);
 extern void     IkbdRecv(uint8);
 extern void     IkbdSend(uint8);

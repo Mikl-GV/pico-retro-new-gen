@@ -38,6 +38,9 @@ static char     sccsid[] = "$Id: 68000.c,v 1.24 2003/11/30 17:26:28 mdoering Exp
 #include "68000.h"
 
 #include "op68k.h"
+
+/* r1600: аварии 68k уходят в единый лог сессии (см. cw_host.c). */
+extern void cw_dbg_evt(const char *what, unsigned a, unsigned b, unsigned c);
 #include "proto.h"
 
 #if (CPU_TYPE == 68000 || CPU_TYPE == 68008)
@@ -143,11 +146,15 @@ void            ExceptionGroup0(
         int ReadWrite)
 {
     short sr = GetSRW(), context = 0;
+    cw_dbg_evt((number == BUSERR) ? "bus" : "addr",
+               (unsigned)address, (unsigned)GetPC(), (unsigned)sr);
 #ifdef DEBUG
     ON_TRAP(number);
     assert(cpu_state != -3);
 #endif
     if (cpu_state == 0) {
+        /* r1600: повторная авария при выталкивании кадра — двойной сбой. */
+        cw_dbg_evt("dbl", (unsigned)address, (unsigned)GetPC(), (unsigned)sr);
         cpu_state = -3;
         longjmp(trap_buf, 1);
     }
