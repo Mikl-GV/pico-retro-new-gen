@@ -1,4 +1,33 @@
-# HANDOVER — текущее состояние (r1625)
+# HANDOVER — текущее состояние (r1626)
+
+## r1626 — Data East: DEC0 (Robocop/Bad Dudes/Heavy Barrel) + Karnov
+
+Второй пункт очереди аркад (`docs/ROADMAP.md`). Новый корень ROM
+`/roms/dataeast`, система `dataeast` в меню. Взято из того же эталона FBNeo
+(`d025cfc`): `drv/dataeast/d_dec0.cpp` (DEC0: robocop, baddudes, hbarrel) и
+`d_karnov.cpp` (karnov). Видео у DEC0 своё — общий `deco16ic` не понадобился.
+
+- Новые CPU: **6502** (`src/cpu/m6502/*` — t6502/t65c02/t65sc02/tdeco16/tn2a03
+  включаются внутрь `m6502.cpp`, отдельными единицами не собирать) и
+  **HuC6280** (`src/cpu/h6280/*`, `tblh6280.c` внутри `h6280.cpp`).
+  Интерфейсы — `src/cpu/m6502_intf.cpp` и `src/cpu/h6280_intf.cpp` (правило
+  `c1i_`). `mcs51` (Karnov, 8751) уже собирался как `c1cpu_mcs51.o`.
+- Makefile: `-I burn/drv/dataeast -I cpu/m6502 -I cpu/h6280`; `CPS1_DE`
+  (`c1de_`: d_dec0, d_karnov); объекты `c1cpu_m6502.o`, `c1cpu_h6280.o`,
+  `c1i_m6502_intf.o`, `c1i_h6280_intf.o`.
+- `driverlist.h`: `BurnDrvRobocop`, `BurnDrvBaddudes`, `BurnDrvHbarrel`,
+  `BurnDrvKarnov` (pDriver 1998).
+- Host: `g_de` по `HARDWARE_PREFIX_DATAEAST` (0x13xxxxxx), кадр «как у
+  драйвера» (DEC0/Karnov 256×240, отказ при fh>320, лог `DE: game …`),
+  ввод — общий name-based `nam_write_input` (цифровые списки DEC0), DIP-дефолты
+  из таблиц драйвера, подсказка `DE keys:`.
+- Регистрация: `systems.h` (`SYS("dataeast","Data East (Arcade)",ARCADE,READY)`),
+  `rom_browser.c` (ветка `run_emulator` + `is_arcade_sys`), `emu.h`
+  (`emu_run_dataeast`), `cps1_host.cpp` (`emu_run_dataeast` → `/roms/dataeast`),
+  справка TFT.
+- ROM: `roms/dataeast/` — robocop, baddudes, hbarrel, karnov (перенесены из
+  `roms/fbneo`).
+- Версия: `g_fw_version = "r1626"`.
 
 ## r1625 — Arkanoid: скорость весла (масштаб аналоговой оси)
 

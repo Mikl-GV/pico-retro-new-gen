@@ -139,6 +139,7 @@ void emu_run_cave(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_segasys(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_namco(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_taito(const uint8_t* rom, uint32_t size, const char* rom_name);   // r1623
+void emu_run_dataeast(const uint8_t* rom, uint32_t size, const char* rom_name);   // r1626
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name);
 void emu_run_atari800(const uint8_t* rom, uint32_t size, const char* rom_name);   // r778
 void emu_run_cpc(const uint8_t* rom, uint32_t size, const char* rom_name);        // r963

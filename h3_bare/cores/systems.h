@@ -83,6 +83,9 @@ static const system_entry_t systems[] = {
     // r1623: Taito (Rastan/Rainbow Islands/Volfied/Bubble Bobble/Arkanoid),
     // папка /roms/taito на том же FBNeo-хосте (run_cps).
     SYS("taito",      "Taito (Arcade)",               ARCADE,   READY),
+    // r1626: Data East (DEC0: Robocop/Bad Dudes/Heavy Barrel + Karnov),
+    // папка /roms/dataeast на том же FBNeo-хосте (run_cps).
+    SYS("dataeast",   "Data East (Arcade)",           ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

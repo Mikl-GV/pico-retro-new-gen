@@ -10,10 +10,11 @@ _Обновление r0.388:_ из fbneo вынесены поддержива�
 - **Sega System 16/18** → `/roms/segasys` (shinobi, goldnaxe, altbeast, fantzone, astorm, shdancer…);
 - **Cave (68K)** → `/roms/cave` (donpachi, ddonpach, esprade, guwange, feversos и др.).
 
-_Обновление r1610–r1624:_
+_Обновление r1610–r1626:_
 - **Namco** → `/roms/namco` (22 сета: Galaxian, Pac-Man, Rally X, Galaga, Gaplus,
   Mappy, Pac-Land, System 1/86/2);
-- **Taito** → `/roms/taito` (rastan, rbisland, volfied, bublbobl, arkanoid).
+- **Taito** → `/roms/taito` (rastan, rbisland, volfied, bublbobl, arkanoid);
+- **Data East** → `/roms/dataeast` (robocop, baddudes, hbarrel, karnov).
 
 В fbneo остались ONLY сети, для которых драйверов в нашей прошивке НЕТ (чужие платы).
 Ниже — чем их реально запускать вне прошивки.

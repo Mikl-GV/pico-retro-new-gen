@@ -1058,7 +1058,8 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 -I$(CPS1)/src/cpu/upd7810 \
 	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
-	-I$(CPS1)/src/burn/drv/taito \
+	-I$(CPS1)/src/burn/drv/taito -I$(CPS1)/src/burn/drv/dataeast \
+	-I$(CPS1)/src/cpu/m6502 -I$(CPS1)/src/cpu/h6280 \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -1283,6 +1284,25 @@ $(BUILD)/c1ta_%.o: $(CPS1)/src/burn/drv/taito/%.cpp | $(BUILD)
 CPS1_TAIS := burn_ym3526
 OBJ += $(addprefix $(BUILD)/c1tas_,$(addsuffix .o,$(CPS1_TAIS)))
 $(BUILD)/c1tas_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Data East (r1626): DEC0 (robocop/baddudes/hbarrel) + Karnov. Видео у DEC0
+# своё (общий deco16ic не нужен), из нового — только CPU 6502 и HuC6280;
+# MSM6295/YM2203/YM3812/YM3526 и mcs51 (i8051) уже в сборке.
+CPS1_DE := d_dec0 d_karnov
+OBJ += $(addprefix $(BUILD)/c1de_,$(addsuffix .o,$(CPS1_DE)))
+$(BUILD)/c1de_%.o: $(CPS1)/src/burn/drv/dataeast/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# CPU Data East: 6502 и HuC6280. t*.c/ops*.h включаются внутрь m6502.cpp,
+# tblh6280.c — внутрь h6280.cpp: отдельными единицами НЕ собирать.
+# Интерфейсы — src/cpu/*_intf.cpp (правило c1i_ выше).
+OBJ += $(BUILD)/c1cpu_m6502.o $(BUILD)/c1cpu_h6280.o \
+       $(BUILD)/c1i_m6502_intf.o $(BUILD)/c1i_h6280_intf.o
+$(BUILD)/c1cpu_m6502.o: $(CPS1)/src/cpu/m6502/m6502.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_h6280.o: $(CPS1)/src/cpu/h6280/h6280.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).

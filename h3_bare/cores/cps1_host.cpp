@@ -631,6 +631,7 @@ static int g_cave     = 0;    // активен Cave-драйвер (рання�
 static int g_sega     = 0;    // активен Sega System 16 (r0.383)
 static int g_nam      = 0;    // активен Namco-драйвер (System 1/86/2, Galaxian, Pac-Man, r1612)
 static int g_taito    = 0;    // активен Taito-драйвер (misc/F2-классика, r1623)
+static int g_de       = 0;    // активен Data East (DEC0: robocop/baddudes/hbarrel, Karnov, r1626)
 static int g_nam_log_done = 0;   // диагностика name-based ввода: слоты уже напечатаны
 static int g_cps_hw_tried = 0;      // попытка поднять DE2 GSU уже была
 
@@ -928,7 +929,7 @@ static void host_update_input(void)
         toa_write_input(&p1, &p2);
 
     // --- Namco/Taito: по списку входов драйвера каждый кадр (r1613/r1623) ---
-    if (g_nam || g_taito) nam_write_input(&p1, &p2);
+    if (g_nam || g_taito || g_de) nam_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -1144,12 +1145,15 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // на 180° (и вместе с ним направления). Включаем только для Taito, чтобы
         // не тронуть уже проверенные на стенде семейства.
         g_arc_flip = (g_taito && (BurnDrvGetFlags() & BDF_ORIENTATION_FLIPPED)) ? 1 : 0;
+        // r1626: Data East (HARDWARE_PREFIX_DATAEAST = 0x13xxxxxx) — DEC0 и
+        // Karnov: входы в собственных массивах, читаем их по именам.
+        g_de = (pf == HARDWARE_PREFIX_DATAEAST) ? 1 : 0;
     }
 
     // r1615: DIP до init — драйвер читает их в DrvDoReset внутри BurnDrvInit.
-    // Namco/Taito: дефолты из таблиц драйвера (Service Mode/Coinage). Остальным
-    // семействам пока не включаем — годами работали с нулевыми DIP (r1615).
-    if (g_nam || g_taito)
+    // Namco/Taito/Data East: дефолты из таблиц драйвера (Service Mode/Coinage).
+    // Остальным семействам пока не включаем — годами работали с нулевыми DIP.
+    if (g_nam || g_taito || g_de)
         arc_dip_defaults();
 
     if (BurnDrvInit() != 0) {
@@ -1332,6 +1336,29 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = fh;
         printf("TAI: game %s full=%dx%d -> %dx%d pitch=%d flip=%d\n",
                game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_arc_flip);
+    } else if (g_de) {
+        // r1626: Data East DEC0/Karnov — кадр как у драйвера (DEC0 и Karnov
+        // 256×240); видео у драйвера своё, общий deco16ic не задействован.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        if (fh <= 0 || fh > 320) {
+            printf("DE: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
+            emu_audio_stop();   /* r1278 */
+            return;
+        }
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : CPS1_W;
+        nBurnPitch = nw * 2;
+        g_frame_w = nw;
+        g_frame_h = fh;
+        printf("DE: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -1372,6 +1399,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("NAM keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else if (g_taito) {
         printf("TAI keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
+    } else if (g_de) {
+        printf("DE keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -1488,6 +1517,13 @@ void emu_run_namco(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_taito(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/taito", rom, size, rom_name);
+}
+
+// Data East (r1626): d_dec0 (Robocop/Bad Dudes/Heavy Barrel) и d_karnov —
+// корень /roms/dataeast.
+void emu_run_dataeast(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/dataeast", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)

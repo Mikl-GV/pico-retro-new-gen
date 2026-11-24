@@ -176,3 +176,23 @@ CPU M68K/Z80/M6805 для этих плат уже были в дереве. `ta
 
 ROM: `/roms/taito/<игра>.zip`, имя = short name (`rastan`, `rbisland`,
 `volfied`, `bublbobl`, `arkanoid`).
+
+## Data East (r1626)
+
+Семейство Data East — отдельный корень ROM `/roms/dataeast` (система `dataeast`
+в меню). Взято из того же коммита `d025cfc`:
+
+| Путь здесь | Содержимое |
+|---|---|
+| `src/burn/drv/dataeast/d_dec0.cpp` | DEC0: `robocop`, `baddudes`, `hbarrel` (видео/таймеры внутри драйвера) |
+| `src/burn/drv/dataeast/d_karnov.cpp` | `karnov` (68K+6502, MCU 8751 через mcs51) |
+| `src/cpu/m6502/` + `src/cpu/m6502_intf.*` | Motorola 6502 (DEC0, Karnov); t*.c/ops*.h включаются внутрь `m6502.cpp` |
+| `src/cpu/h6280/` + `src/cpu/h6280_intf.*` | Hudson HuC6280 (DEC0); `tblh6280.c` внутри `h6280.cpp` |
+| `src/cpu/i8051/mcs51.*` | MCS-51 (8751 в Karnov) — был в дереве, объект `c1cpu_mcs51.o` |
+
+Звук — уже собранные `msm6295`, `burn_ym2203`, `burn_ym3812`, `burn_ym3526`.
+Общий `deco16ic` (для darkseal/robocop2 и др.) НЕ копировался — эти игры в
+следующей порции вместе с `deco146`/`timer`.
+
+ROM: `/roms/dataeast/<игра>.zip`, имя = short name (`robocop`, `baddudes`,
+`hbarrel`, `karnov`).
