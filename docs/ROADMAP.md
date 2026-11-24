@@ -63,7 +63,8 @@
 NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), **Namco** (r1610,
 `/roms/namco`), **Taito** (r1623, `/roms/taito`: Rastan, Rainbow Islands,
 Volfied, Bubble Bobble, Arkanoid), **Data East** (r1626, `/roms/dataeast`:
-Robocop, Bad Dudes, Heavy Barrel, Karnov), сводный FB Neo (`/roms/fbneo`).
+Robocop, Bad Dudes, Heavy Barrel, Karnov), **Psikyo PS3** (r1627,
+`/roms/psikyo`: Strikers 1945, Tengai), сводный FB Neo (`/roms/fbneo`).
 Каталог ROM — `docs/FBNEO-ROMS.md`.
 
 Паттерн порта семейства:
@@ -83,7 +84,7 @@ Robocop, Bad Dudes, Heavy Barrel, Karnov), сводный FB Neo (`/roms/fbneo`)
 |---|-----------|-----|------|:---------:|
 | ~~1~~ | ~~Taito 68K/Z80 классика~~ (сделано r1623) | 68K+Z80+uPD7810 | Bubble Bobble, Rainbow Islands, Arkanoid, Rastan, Volfied | средняя |
 | ~~2~~ | ~~Data East 68K~~ (сделано r1626) | 68K+6502/h6280+mcs51 | Robocop, Bad Dudes, Heavy Barrel, Karnov | средняя |
-| 3 | Psikyo 68K | 68K | Strikers 1945, Gunbird | выше средней |
+| ~~3~~ | ~~Psikyo 68K (PS3)~~ (сделано r1627) | 68K+Z80 | Strikers 1945, Tengai (Gunbird — нужен сет) | средняя |
 | 4 | Midway 68K | 68K | MK 1-3, NBA Jam | высокая (T-unit) |
 | 5 | Taito F2/F3, Irem M72/M92, UPL | 68K(+MCU) | R-Type 1/2/Leo, Ninja Kids, Pbobble3 | средняя/высокая |
 | 6 | Konami/Capcom ранние | 6809/6502 | 1942, Commando, R-Type (Capcom) | высокая (нужны CPU) |

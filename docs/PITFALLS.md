@@ -727,3 +727,27 @@ compile-unit: `m6502.cpp` #include'ит `t6502.c`/`t65c02.c`/`t65sc02.c`/
 
 Для Data East нашелся уже собранный `mcs51` (Karnov, 8751) — `c1cpu_mcs51.o`
 из `cpu/i8051/mcs51.cpp`; отдельно вендорить его не нужно.
+
+## 30. Psikyo PS3: генерируемый psikyo_tile_func.h и настоящий YM2610 (r1627)
+
+Симптом: `d_dec0`-подобное подключение `d_psikyo.cpp` падает на
+`psikyo_tile_func.h: No such file`, хотя файлы драйвера скопированы; после
+этого — `undefined reference to BurnYM2610Write` или дубли `BurnYM2610*`.
+
+Причина 1: `psikyo_tile_func.h` (и `psikyo_tile_func_table.h`) в репозитории
+FBNeo НЕТ — meson собирает их `custom_target` из
+`src/dep/scripts/psikyo_tile_func.pl`. Генерировать заранее:
+`perl psikyo_tile_func.pl -o …/psikyo_tile_func.h` (скрипт сам создаёт
+`*_table.h`, инклюдит `psikyo_render.h`). Положить рядом с `psikyo_tile.cpp`.
+
+Причина 2: до r1627 YM2610 был заглушен (звук NEO «off»): тела
+`BurnYM2610Init/Reset/Read/Write/…` жили в `neostubs.cpp`, а `burn_ym2610.h`
+объявлял Read/Write функциями. С реальным core'ом (`burn_ym2610.cpp`) это дало
+дубли. Правильно — как в апстриме: `burn_ym2610.h` объявляет
+`BurnYM2610Read/Write` макросами на `fm.c` (`YM2610Read/YM2610Write`), стабы в
+`neostubs.cpp` и `cps1_stubs.cpp` удалены. Важно: чип обязан быть
+инициализирован `BurnYM2610Init` — иначе запись в порт валит data abort в
+`OPNWriteMode` (именно поэтому стабы и появлялись).
+
+Побочный эффект: NEOGEO теперь тоже идёт через реальный YM2610 — звук NEO
+перестал быть заглушённым.

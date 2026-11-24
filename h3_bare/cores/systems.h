@@ -86,6 +86,8 @@ static const system_entry_t systems[] = {
     // r1626: Data East (DEC0: Robocop/Bad Dudes/Heavy Barrel + Karnov),
     // папка /roms/dataeast на том же FBNeo-хосте (run_cps).
     SYS("dataeast",   "Data East (Arcade)",           ARCADE,   READY),
+    // r1627: Psikyo PS3 (Strikers 1945, Tengai), папка /roms/psikyo.
+    SYS("psikyo",     "Psikyo (Arcade)",              ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

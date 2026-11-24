@@ -2007,6 +2007,8 @@ extern struct BurnDriver BurnDrvRobocop;
 extern struct BurnDriver BurnDrvBaddudes;
 extern struct BurnDriver BurnDrvHbarrel;
 extern struct BurnDriver BurnDrvKarnov;
+extern struct BurnDriver BurnDrvS1945;
+extern struct BurnDriver BurnDrvTengai;
 
 static struct BurnDriver* pDriver[] = {
     &BurnDrvGalaxian,
@@ -2045,6 +2047,8 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvBaddudes,
     &BurnDrvHbarrel,
     &BurnDrvKarnov,
+    &BurnDrvS1945,
+    &BurnDrvTengai,
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
     &BurnDrvCps1941r1,

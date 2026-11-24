@@ -1059,6 +1059,7 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 -I$(CPS1)/src/cpu/upd7810 \
 	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
 	-I$(CPS1)/src/burn/drv/taito -I$(CPS1)/src/burn/drv/dataeast \
+	-I$(CPS1)/src/burn/drv/psikyo \
 	-I$(CPS1)/src/cpu/m6502 -I$(CPS1)/src/cpu/h6280 \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
@@ -1304,6 +1305,25 @@ $(BUILD)/c1cpu_m6502.o: $(CPS1)/src/cpu/m6502/m6502.cpp | $(BUILD)
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1cpu_h6280.o: $(CPS1)/src/cpu/h6280/h6280.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Psikyo (r1627): PS3 (68EC020 + Z80 + YM2610/AY8910) — s1945, tengai.
+# psikyo_tile_func.h в апстриме НЕ лежит: meson генерит его скриптом
+# src/dep/scripts/psikyo_tile_func.pl. Файл сгенерирован один раз и лежит
+# рядом с psikyo_tile.cpp (перегенерация: perl psikyo_tile_func.pl -o …).
+CPS1_PS := d_psikyo psikyo_sprite psikyo_tile psikyo_palette
+OBJ += $(addprefix $(BUILD)/c1ps_,$(addsuffix .o,$(CPS1_PS)))
+$(BUILD)/c1ps_%.o: $(CPS1)/src/burn/drv/psikyo/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Звук: YM2610 (OPNB через fm.c) и YMF278B (ymf278b.c — отдельная C-единица).
+CPS1_PSS := burn_ym2610 burn_ymf278b
+OBJ += $(addprefix $(BUILD)/c1pss_,$(addsuffix .o,$(CPS1_PSS)))
+OBJ += $(BUILD)/c1pss_ymf278b_c.o
+$(BUILD)/c1pss_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1pss_ymf278b_c.o: $(CPS1)/src/burn/snd/ymf278b.c | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).
 # Файлы в snd/; c1se_ — отдельный префикс от игровых c1t_.

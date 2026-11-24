@@ -1,4 +1,36 @@
-# HANDOVER — текущее состояние (r1626)
+# HANDOVER — текущее состояние (r1627)
+
+## r1627 — Psikyo PS3: Strikers 1945 и Tengai
+
+Третий пункт очереди аркад (`docs/ROADMAP.md`). Новый корень ROM `/roms/psikyo`,
+система `psikyo` в меню. Взято из эталона FBNeo (`d025cfc`):
+`drv/psikyo/d_psikyo.cpp` (PS3: 68EC020 + Z80 + YM2610/AY8910) + общий рендер
+`psikyo_sprite.cpp`, `psikyo_tile.cpp`, `psikyo_palette.cpp`, `psikyo.h`,
+`psikyo_render.h`, `psikyo_sprite_func.h`.
+
+- `psikyo_tile_func.h` в апстриме НЕ лежит — meson генерит его скриптом
+  `src/dep/scripts/psikyo_tile_func.pl` (`custom_target`). Файл сгенерирован
+  один раз (perl 5.42 из msys64) в `src/burn/drv/psikyo/`, рядом с
+  `psikyo_tile.cpp`; рядом лежит `psikyo_tile_func_table.h`. Перегенерация:
+  `perl psikyo_tile_func.pl -o <путь>/psikyo_tile_func.h`.
+- Звук: **реальный YM2610** (`burn_ym2610.cpp`) и YMF278B
+  (`burn_ymf278b.cpp` + `ymf278b.c` отдельной C-единицей). Стабы YM2610 из
+  `neostubs.cpp` удалены, `BurnYM2610UpdateRequest` — из `cps1_stubs.cpp`;
+  `burn_ym2610.h` вернулся к апстримным макросам `BurnYM2610Read/Write` на
+  `fm.c`. **NEOGEO теперь использует тот же реальный core** (звук больше не
+  «off») — это заметное изменение для NEO, требует проверки на стенде.
+- Makefile: `-I burn/drv/psikyo`; `CPS1_PS` (`c1ps_`: d_psikyo, psikyo_sprite,
+  psikyo_tile, psikyo_palette); звук `c1pss_` (burn_ym2610, burn_ymf278b) +
+  `c1pss_ymf278b_c.o` из `ymf278b.c`.
+- `driverlist.h`: `BurnDrvS1945`, `BurnDrvTengai` (pDriver 2000).
+- Host: `g_psikyo` по `HARDWARE_PREFIX_PSIKYO` (0x0Dxxxxxx), кадр «как у
+  драйвера» (s1945 224×320 вертикаль, tengai 320×224; лог `PSI: game …`),
+  ввод — общий name-based `nam_write_input`, DIP-дефолты, `PSI keys:`.
+- Регистрация: `systems.h` (`SYS("psikyo","Psikyo (Arcade)",ARCADE,READY)`),
+  `rom_browser.c` (ветка + `is_arcade_sys`), `emu.h` (`emu_run_psikyo`),
+  `cps1_host.cpp` (`emu_run_psikyo` → `/roms/psikyo`), справка TFT.
+- ROM: `roms/psikyo/` — s1945, tengai (перенесены из `roms/fbneo`).
+- Версия: `g_fw_version = "r1627"`.
 
 ## r1626 — Data East: DEC0 (Robocop/Bad Dudes/Heavy Barrel) + Karnov
 

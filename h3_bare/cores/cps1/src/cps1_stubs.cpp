@@ -58,5 +58,5 @@ extern "C" void BurnMD2612UpdateRequest() {}
 
 // ---- прочие запросы обновления (C++ linkage, как ожидают burn_sound.h) ----
 void BurnYM2608UpdateRequest() {}
-void BurnYM2610UpdateRequest() {}
+// r1627: YM2610 больше не стаб — реальный core в burn_ym2610.cpp.
 void BurnYM2612UpdateRequest() {}

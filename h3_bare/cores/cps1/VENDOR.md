@@ -196,3 +196,22 @@ ROM: `/roms/taito/<игра>.zip`, имя = short name (`rastan`, `rbisland`,
 
 ROM: `/roms/dataeast/<игра>.zip`, имя = short name (`robocop`, `baddudes`,
 `hbarrel`, `karnov`).
+
+## Psikyo (r1627)
+
+Семейство Psikyo PS3 — отдельный корень ROM `/roms/psikyo` (система `psikyo`
+в меню). Взято из того же коммита `d025cfc`:
+
+| Путь здесь | Содержимое |
+|---|---|
+| `src/burn/drv/psikyo/d_psikyo.cpp` | PS3: `s1945` (Strikers 1945 World), `tengai` (+ gunbird/gunbirdj и клоны, если положить сеты) |
+| `src/burn/drv/psikyo/psikyo_sprite.cpp`, `psikyo_tile.cpp`, `psikyo_palette.cpp` | общий рендер PS3 |
+| `src/burn/drv/psikyo/psikyo_tile_func.h`, `psikyo_tile_func_table.h` | **сгенерированы** скриптом `src/dep/scripts/psikyo_tile_func.pl` (в апстриме их нет) |
+| `src/burn/snd/burn_ym2610.cpp` | YM2610 (OPNB через fm.c) — теперь настоящий, не стаб |
+| `src/burn/snd/burn_ymf278b.cpp` + `ymf278b.c/.h` | YMF278B (часть игр PS3/PS4) |
+
+CPU: M68K и Z80 уже в дереве. Звук NEOGEO с r1627 идёт через тот же реальный
+YM2610 (стабы из `neostubs.cpp` удалены).
+
+ROM: `/roms/psikyo/<игра>.zip`, имя = short name (`s1945`, `tengai`, `gunbird`,
+`gunbirdj`, …).

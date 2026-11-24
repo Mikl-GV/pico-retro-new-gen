@@ -19,12 +19,15 @@ void BurnYM2610Exit();
 extern void (*BurnYM2610Update)(INT16* pSoundBuf, INT32 nSegmentEnd);
 void BurnYM2610Scan(INT32 nAction, INT32* pnMin);
 
-// Read/Write — РЕАЛЬНЫЕ функции, а не макросы на fm.c: при звуке-off
-// (NEOGEO, стабы BurnYM2610Init) прямые вызовы YM2610Read/Write из fm.c
-// попадали в неинициализированный чип (FM2610 = BSS 0) и валились
-// data abort'ом в OPNWriteMode. Стабы живут в neostubs.cpp.
-UINT8 BurnYM2610Read(INT32 nRegister);
-void  BurnYM2610Write(INT32 nRegister, UINT8 nValue);
+// r1627: Read/Write — как в апстриме, макросы на fm.c (YM2610Read/Write):
+// чип инициализируется реальным core'ом (burn_ym2610.cpp), прежняя обёртка
+// со стабами в neostubs.cpp больше не нужна.
+#define BurnYM2610Read(a) YM2610Read(0, a)
+#if defined FBNEO_DEBUG
+	#define BurnYM2610Write(a, n) if (!DebugSnd_YM2610Initted) bprintf(PRINT_ERROR, _T("BurnYM2610Write called without init\n")); YM2610Write(0, a, n)
+#else
+	#define BurnYM2610Write(a, n) YM2610Write(0, a, n)
+#endif
 
 extern INT32 bYM2610UseSeperateVolumes;
 
