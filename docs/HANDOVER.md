@@ -26,7 +26,10 @@
   (`emu_run_dataeast`), `cps1_host.cpp` (`emu_run_dataeast` → `/roms/dataeast`),
   справка TFT.
 - ROM: `roms/dataeast/` — robocop, baddudes, hbarrel, karnov (перенесены из
-  `roms/fbneo`).
+  `roms/fbneo`). В `hbarrel.zip` запись называлась `ec30.9j`, а таблица драйвера
+  ждёт `ec30.9h` (CRC тот же — 5855E8EF): хост грузит по именам, поэтому сет
+  считался incomplete. Запись переименована в локальном zip — на SD нужно
+  положить исправленный `hbarrel.zip`.
 - Версия: `g_fw_version = "r1626"`.
 
 ## r1625 — Arkanoid: скорость весла (масштаб аналоговой оси)
