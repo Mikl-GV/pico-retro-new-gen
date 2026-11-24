@@ -1,13 +1,20 @@
 # FB Neo — каталог ROM-сетов по системам
 
-Сгенерировано из папки `roms/fbneo` (375 сетов) сверкой с драйверами прошивки
+Сгенерировано из папки `roms/fbneo` сверкой с драйверами прошивки
 и каталогом MAME/FBNeo (mame2003-plus).
 
-Всего: **375** сетов. Имеют драйвер в прошивке: **2** (r0.367). Без драйвера: **76**.
+В `roms/fbneo` сейчас **339** сетов; драйвер в прошивке имеют только `batrider`
+и `bgaregga`.
 
 _Обновление r0.388:_ из fbneo вынесены поддерживаемые сеты:
 - **Sega System 16/18** → `/roms/segasys` (shinobi, goldnaxe, altbeast, fantzone, astorm, shdancer…);
 - **Cave (68K)** → `/roms/cave` (donpachi, ddonpach, esprade, guwange, feversos и др.).
+
+_Обновление r1610–r1624:_
+- **Namco** → `/roms/namco` (22 сета: Galaxian, Pac-Man, Rally X, Galaga, Gaplus,
+  Mappy, Pac-Land, System 1/86/2);
+- **Taito** → `/roms/taito` (rastan, rbisland, volfied, bublbobl, arkanoid).
+
 В fbneo остались ONLY сети, для которых драйверов в нашей прошивке НЕТ (чужие платы).
 Ниже — чем их реально запускать вне прошивки.
 
@@ -28,8 +35,8 @@ _Обновление r0.388:_ из fbneo вынесены поддержива�
 |---|---|---|
 | Konami (39) | MAME (fbneo **full**), mame2003-plus | в основном 6809/6502/custom → нужны новые CPU (V6) |
 | Sega (30, кроме System 16/18) | MAME / MAME 2003-plus; System 32/16→FBNeo full | System 32 — 68K, но видео тяжёлое (позже) |
-| Namco (24) | MAME / MAME 2003-plus | 6502/custom → V6 |
-| Taito (17+13) | MAME / FBNeo full (F2/F3) | часть 68K+Z80/M6805 → **V3 Taito 68K** |
+| Namco (24) | MAME / MAME 2003-plus | 68K-классика подключена (r1610–r1622, `/roms/namco`); 6502/custom → V6 |
+| Taito (17+13) | MAME / FBNeo full (F2/F3) | 68K-классика подключена (r1623–r1625, `/roms/taito`); F2/F3 — позже |
 | Irem (17) | MAME | 6809/custom → V6 |
 | Capcom (16, не-CPS) | MAME / mame2003-plus | 6809/6502 → V6 |
 | Data East (15+9) | MAME / FBNeo full | 68K+Z80 → **V4 Data East 68K** |

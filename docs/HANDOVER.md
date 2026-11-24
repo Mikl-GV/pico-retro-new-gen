@@ -1,4 +1,75 @@
-# HANDOVER — текущее состояние (r1622)
+# HANDOVER — текущее состояние (r1625)
+
+## r1625 — Arkanoid: скорость весла (масштаб аналоговой оси)
+
+На стенде r1624 платформа двигалась, но «ползла». Причина — масштаб шага:
+драйвер зовёт `BurnTrackballFrame(0, Analog[0]*1.5, …)`, значение копится в
+`BurnPaddleX`, делится на `0x80` и превращается в скорость (`CURVE[velocity]`,
+кривая линейная — `BurnTrackballSetVelocityCurve(0)` в `BurnTrackballInit`),
+дальше байт-счётчик `TrackA` отдаётся в `DrvInputs[2]` (d_arkanoid.cpp:1345–1348).
+
+- Было `ARC_PADDLE_STEP 0x30`: `48*1.5/0x80 ≈ 0.56` → скорость 1 → 1 отсчёт за
+  кадр, полный ход 256 ≈ 4.3 с («ползло»).
+- Стало `0x280` (640): `640*1.5/0x80 = 7.5` → ~7 отсчётов за кадр, полный ход
+  ≈ 0.6 с. Кламп драйвера — 0x3f на кадр, запас есть.
+- Версия: `g_fw_version = "r1625"`.
+
+## r1624 — Arkanoid: аналоговое весло и перевёрнутый кадр (FLIPPED)
+
+На стенде направления в Arkanoid не работали: у него весло объявлено
+`BIT_ANALOG_REL` (`DrvInputList`: «P1 Right / left» → `Analog[0]`, у P2 →
+`Analog[1]`), а `nam_write_input` писал только `BIT_DIGITAL` — клавиши молча
+уходили в никуда. Плюс драйвер помечен `BDF_ORIENTATION_FLIPPED` (монитор
+ставили вверх ногами), кадр выводился перевёрнутым.
+
+- Ввод (`cps1_host.cpp`, `nam_write_input`): второй проход по списку теперь
+  принимает и `BIT_ANALOG_REL`. Указатель на `INT16`-ось кэшируется по префиксу
+  игрока (`p1 `/`p2 `), за кадр пишется дельта
+  `(right - left) * ARC_PADDLE_STEP` (0x30; драйвер копит её в `BurnPaddleX`
+  и делит на 0x80 — масштаб подбирается на стенде).
+- Направления при `g_arc_flip` зеркалятся (up↔down, left↔right) в том же месте,
+  где раскладываются слоты P1/P2.
+- Кадр: `g_arc_flip = g_taito && (BurnDrvGetFlags() & BDF_ORIENTATION_FLIPPED)`.
+  Поворот на 180° в обоих путях — программном `host_render_frame` (строки и
+  колонки читаются с конца) и аппаратном `cps_render_frame` (DE2 GSU, тот же
+  разворот при упаковке XRGB8888). Флаг выводится в логе `TAI: ... flip=%d`.
+- Прочие четыре игры (`Rastan`, `Rainbow Islands`, `Volfied`, `Bubble Bobble`)
+  не затронуты: у них только `BIT_DIGITAL`, флага FLIPPED нет.
+- Версия: `g_fw_version = "r1624"`.
+
+## r1623 — Taito: Rastan, Rainbow Islands, Volfied, Bubble Bobble, Arkanoid
+
+Первый пункт очереди аркад по `docs/ROADMAP.md` — Taito на уже имеющихся CPU
+(M68K/Z80/M6805). Новый корень ROM `/roms/taito`, система `taito` в меню.
+
+- Драйверы из того же эталона FBNeo (`d025cfc`), каталог
+  `cores/cps1/src/burn/drv/taito/`: `d_taitomisc` (Rastan, Rainbow Islands,
+  Volfied), `d_bublbobl` (Bubble Bobble), `d_arkanoid` (Arkanoid) + общие
+  обвязки `taito.cpp/.h`, `taito_ic.*`, `cchip.*`, `tc0100scn`, `tc0110pcr`,
+  `tc0140syt`, `tc0150rod`, `tc0180vcu`, `tc0220ioc`, `tc0280grd`, `tc0360pri`,
+  `tc0480scp`, `tc0510nio`, `tc0640fio`, `pc080sn`, `pc090oj`.
+- Новый CPU: **uPD7810** (`src/cpu/upd7810/` + `upd7810_intf.*`, интерфейс
+  внутри `upd7810.cpp`; 7810ops/7810tbl включаются в него) — MCU «C-Chip»
+  (Rainbow Islands). В Makefile: `c1cpu_upd7810.o`, путь `-I cpu/upd7810`.
+- Звук: `burn_ym3526` (Bubble Bobble) — в списке `CPS1_TAIS`; YM2203/AY8910/
+  MSM5205 уже были.
+- Makefile: `c1ta_` (драйверы+IC из `drv/taito/`), `c1tas_` (звук Taito).
+- Host: `g_taito` по префиксу `HARDWARE_PREFIX_TAITO` (0x0B...), кадр «как
+  железо» (ветка `TAI:` — Rastan 320×240, Arkanoid 224×256 и т.п., отказ при
+  fh>320), DIP-дефолты из таблиц драйвера (`arc_dip_defaults` теперь и для
+  Taito), ввод — общий name-based `nam_write_input` (для Taito вызывается по
+  `g_taito`; лог переименован в `ARC in:`), подсказка `TAI keys:`.
+- Регистрация: `systems.h` (`SYS("taito","Taito (Arcade)",ARCADE,READY)`),
+  `rom_browser.c` (ветка `run_emulator` + `is_arcade_sys`), `emu.h`
+  (`emu_run_taito`), `cps1_host.cpp` (`emu_run_taito` → `/roms/taito`),
+  справка TFT (`tft_drv.c`).
+- ROM разложены локально: `roms/taito/` — rastan, rbisland, volfied, bublbobl,
+  arkanoid (из `roms/fbneo`).
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 981 108 Б, в образе
+  `r1623`, строки `TAI: game …` и `TAI keys:` присутствуют; `pDriver` = 1994.
+- Не проверено на стенде: экран/ввод/звук пяти игр; Arkanoid — вертикальный
+  кадр 224×256, проверить ориентацию; Rainbow Islands требует C-Chip (uPD7810)
+  — первый запуск покажет, корректна ли защита.
 
 ## r1622 — Namco готово: отладочные логи убраны, диагностика оставлена
 

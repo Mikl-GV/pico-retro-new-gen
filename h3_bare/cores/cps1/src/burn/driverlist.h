@@ -1998,6 +1998,11 @@ extern struct BurnDriver BurnDrvRthunder;
 extern struct BurnDriver BurnDrvSkykid;
 extern struct BurnDriver BurnDrvRthun2;
 extern struct BurnDriver BurnDrvDsaber;
+extern struct BurnDriver BurnDrvRastan;
+extern struct BurnDriver BurnDrvRbisland;
+extern struct BurnDriver BurnDrvVolfied;
+extern struct BurnDriver BurnDrvBublbobl;
+extern struct BurnDriver BurnDrvarkanoid;
 
 static struct BurnDriver* pDriver[] = {
     &BurnDrvGalaxian,
@@ -2027,6 +2032,11 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvSkykid,
     &BurnDrvRthun2,
     &BurnDrvDsaber,
+    &BurnDrvRastan,
+    &BurnDrvRbisland,
+    &BurnDrvVolfied,
+    &BurnDrvBublbobl,
+    &BurnDrvarkanoid,
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
     &BurnDrvCps1941r1,

@@ -80,6 +80,9 @@ static const system_entry_t systems[] = {
     // r1610: Namco (Galaxian/Pac-Man/Rally X/Gaplus/Mappy/System 1/86/SS2),
     // папка /roms/namco на общем FBNeo-хосте (run_cps).
     SYS("namco",      "Namco (Arcade)",               ARCADE,   READY),
+    // r1623: Taito (Rastan/Rainbow Islands/Volfied/Bubble Bobble/Arkanoid),
+    // папка /roms/taito на том же FBNeo-хосте (run_cps).
+    SYS("taito",      "Taito (Arcade)",               ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

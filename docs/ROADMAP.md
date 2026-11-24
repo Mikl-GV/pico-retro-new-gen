@@ -60,8 +60,10 @@
 ## Аркады (FBNeo): принципы и очередь
 
 Вендор — `h3_bare/cores/cps1/` (подмножество FBNeo). Подключено: CPS-1, CPS-2,
-NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), сводный FB Neo
-(`/roms/fbneo`). Каталог ROM — `docs/FBNEO-ROMS.md`.
+NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), **Namco** (r1610,
+`/roms/namco`), **Taito** (r1623, `/roms/taito`: Rastan, Rainbow Islands,
+Volfied, Bubble Bobble, Arkanoid), сводный FB Neo (`/roms/fbneo`). Каталог
+ROM — `docs/FBNEO-ROMS.md`.
 
 Паттерн порта семейства:
 
@@ -69,7 +71,8 @@ NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), сводный FB Neo
 2. Секция объектов в Makefile (`c1*_`) + `cps1_rename.sh` (коллизии m68k*/YM*).
 3. Регистрация в `driverlist.h` + `pDriver[]`.
 4. Host-ветка в `cps1_host.cpp`: `g_*` по `HARDWARE_PREFIX`, кадр «как железо»
-   (rot=0), ввод через `toa_input_cache`.
+   (rot=0), ввод — name-based писатель ((`nam_write_input`, годится и для
+   Namco, и для Taito), при необходимости — свой кэш/разбор `BurnDrvGetInputInfo`.
 5. `systems.h`/меню/справка/About/Arcade-guide.
 6. Стенд: экран, ввод, звук (звук выводится — I2S0/CPU2, r895+).
 
@@ -77,11 +80,12 @@ NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), сводный FB Neo
 
 | # | Семейство | CPU | Игры | Сложность |
 |---|-----------|-----|------|:---------:|
-| 1 | Taito 68K (F2/F3) | 68K(+Z80/M6805) | Bubble Bobble, Rainbow Islands, Arkanoid, Rastan | средняя |
+| ~~1~~ | ~~Taito 68K/Z80 классика~~ (сделано r1623) | 68K+Z80+uPD7810 | Bubble Bobble, Rainbow Islands, Arkanoid, Rastan, Volfied | средняя |
 | 2 | Data East 68K | 68K+Z80 | Robocop 1-2, Bad Dudes, Heavy Barrel, Karnov | средняя |
 | 3 | Psikyo 68K | 68K | Strikers 1945, Gunbird | выше средней |
 | 4 | Midway 68K | 68K | MK 1-3, NBA Jam | высокая (T-unit) |
-| 5 | Konami/Namco/Capcom ранние | 6809/6502 | 1942, Commando, Galaga, R-Type | высокая (нужны CPU) |
+| 5 | Taito F2/F3, Irem M72/M92, UPL | 68K(+MCU) | R-Type 1/2/Leo, Ninja Kids, Pbobble3 | средняя/высокая |
+| 6 | Konami/Capcom ранние | 6809/6502 | 1942, Commando, R-Type (Capcom) | высокая (нужны CPU) |
 
 Риски: защитные MCU (частично покрыто M6805), видео Midway T-unit/System 32,
 объём вендора (только выборка файлов семейства).

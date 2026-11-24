@@ -660,3 +660,51 @@ else cps_render_frame();` нельзя оставлять, если флаг с�
 Правило: после успешного `BurnDrvInit()` вызывать `BurnRecalcPal()` (один раз
 на игру). Диагностика: `pa` = `pBurnDrvPalette[pTransDraw[0]]` — ноль при живом
 кадре указывает именно сюда.
+
+## 27. Taito: taito_ic тянет все IC-модули, C-Chip требует uPD7810 (r1623)
+
+Симптом: при подключении Taito линковка/сборка падает на `upd7810_intf.h`
+(нет такого файла) или на неопределённых `TC0xxx*`/`cchip_*`.
+
+Причина: `drv/taito/taito_ic.cpp` — общий контейнер, он вызывает функции ВСЕХ
+IC-модулей (pc080sn, pc090oj, tc0100scn, tc0110pcr, tc0140syt, tc0150rod,
+tc0180vcu, tc0220ioc, tc0280grd, tc0360pri, tc0430grw, tc0480scp, tc0510nio,
+tc0640fio, cchip). Даже если игре нужен только `TC0220IOC`, копировать надо
+весь набор файлов из `drv/taito/` (они мелкие, ~600 КБ на всё).
+
+C-Chip (`cchip.cpp`) — это MCU **NEC uPD7810**: интерфейс `upd7810Init/Run`
+живёт прямо в `src/cpu/upd7810/upd7810.cpp` (7810ops.c/7810tbl.c включаются
+в него), отдельного `upd7810_intf.cpp` нет. В Makefile: объект
+`c1cpu_upd7810.o` + `-I$(CPS1)/src/cpu/upd7810` в `CPS1_INC` (иначе
+`upd7810_intf.h` не находит `upd7810.h` при сборке `cchip.cpp`).
+
+Проверка после сборки: `pDriver` растёт на число добавленных игр
+(`arm-none-eabi-nm -S build/h3_bare.elf | grep pDriver`, 1994 при r1623).
+
+## 28. Arkanoid: весло — BIT_ANALOG_REL, кадр — FLIPPED (r1624)
+
+Симптом: в Arkanoid не работают направления (платформа стоит), картинка
+перевёрнута. Клавиши при этом живы — в логе `ARC in: …` слоты находятся.
+
+Причина: в `DrvInputList` весло объявлено `A("P1 Right / left", BIT_ANALOG_REL,
+&Analog[0], "p1 x-axis")` (у P2 — `Analog[1]`), а writer писал только
+`BIT_DIGITAL`. Дополнительно `BurnDriver BurnDrvarkanoid` помечен
+`BDF_ORIENTATION_VERTICAL | BDF_ORIENTATION_FLIPPED` (224×256): монитор в
+автомате стоял вверх ногами, эталонный фронтенд переворачивает кадр на 180°.
+
+Лечение (`cps1_host.cpp`):
+- `nam_write_input`: для `BIT_ANALOG_REL` кэшируем `INT16*` по префиксу
+  игрока и пишем за кадр `(right - left) * ARC_PADDLE_STEP`.
+- `g_arc_flip` (только Taito) зеркалит направления up↔down/left↔right и
+  разворачивает кадр в `host_render_frame` и `cps_render_frame` (DE2).
+
+Урок: `BIT_DIGITAL` — не весь ввод. Перед подключением семейства смотреть
+`nType` в `BurnInputInfo`: колесо/весло/трекбол идут как `BIT_ANALOG_REL`,
+а `BDF_ORIENTATION_FLIPPED` — отдельный поворот на 180° поверх VERTICAL.
+
+Масштаб шага весла (r1625): `Analog[0]` копится в `BurnPaddleX`, затем делится
+на 0x80 и даёт скорость `CURVE[velocity]` (кривая линейная —
+`BurnTrackballSetVelocityCurve(0)`), которая на каждом кадре прибавляется к
+байт-счётчику `TrackA` → `DrvInputs[2]`. Полный ход — 256 отсчётов. Шаг
+`ARC_PADDLE_STEP` выбирается из `step*1.5/0x80` ≈ желаемых отсчётов за кадр:
+0x30 давал 1 (ползло ~4 с), 0x280 даёт ~7 (≈0.6 с). Кламп драйвера — 0x3f.

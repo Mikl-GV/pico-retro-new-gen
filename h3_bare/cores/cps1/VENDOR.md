@@ -157,3 +157,22 @@ objcopy-переименования `cps1_rename.sh` (m68k/YM2612), подкл�
 
 ROM для Namco: `/roms/namco/<игра>.zip` (или папка), имя = short name
 (`pacman`, `galaga`, `mappy`, `rthunder`, `dsaber`, …), см. `driverlist.h`.
+
+## Taito (r1623)
+
+Семейство Taito — отдельный корень ROM `/roms/taito` (система `taito` в меню).
+Копия из того же коммита `d025cfc`:
+
+| Путь здесь | Содержимое |
+|---|---|
+| `src/burn/drv/taito/` | `d_taitomisc` (Rastan, Rainbow Islands, Volfied), `d_bublbobl` (Bubble Bobble), `d_arkanoid` (Arkanoid) |
+| там же | общие обвязки: `taito.cpp/.h`, `taito_ic.*`, `cchip.*` (C-Chip), `tc0100scn`, `tc0110pcr`, `tc0140syt`, `tc0150rod`, `tc0180vcu`, `tc0220ioc`, `tc0280grd`, `tc0360pri`, `tc0480scp`, `tc0510nio`, `tc0640fio`, `pc080sn`, `pc090oj` |
+| `src/cpu/upd7810/`, `src/cpu/upd7810_intf.*` | NEC uPD7810 — MCU «C-Chip» (Rainbow Islands); интерфейс внутри `upd7810.cpp`, 7810ops/7810tbl включаются в него |
+| `src/burn/snd/burn_ym3526.*` | YM3526 (OPL) — звук Bubble Bobble |
+
+CPU M68K/Z80/M6805 для этих плат уже были в дереве. `taito_ic.cpp` — общий
+контейнер IC: он ссылается на все `tc*`/`pc*`/`cchip`, поэтому набор файлов
+копируется целиком (пригодится для F2/F3 и других плат Taito).
+
+ROM: `/roms/taito/<игра>.zip`, имя = short name (`rastan`, `rbisland`,
+`volfied`, `bublbobl`, `arkanoid`).

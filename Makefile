@@ -1056,8 +1056,9 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
 	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
 	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
-	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 \
+	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 -I$(CPS1)/src/cpu/upd7810 \
 	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
+	-I$(CPS1)/src/burn/drv/taito \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -1261,6 +1262,27 @@ $(BUILD)/c1cpu_s2650_intf.o: $(CPS1)/src/cpu/s2650_intf.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -I$(CPS1)/src/cpu/s2650 -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1cpu_s2650.o: $(CPS1)/src/cpu/s2650/s2650.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# NEC uPD7810: MCU «C-Chip» в Taito (Rainbow Islands и др.). Интерфейс
+# upd7810Init/Run живёт прямо в upd7810.cpp; 7810ops/7810tbl включаются в него.
+OBJ += $(BUILD)/c1cpu_upd7810.o
+$(BUILD)/c1cpu_upd7810.o: $(CPS1)/src/cpu/upd7810/upd7810.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -I$(CPS1)/src/cpu/upd7810 -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Taito (r1623): d_taitomisc (Rastan, Rainbow Islands, Volfied) + d_bublbobl +
+# d_arkanoid. IC-модули Taito (taito_ic/cchip/tc*) — общие для всех плат этой
+# ветки; звук YM3526 (только bublbobl). CPU: M68K/Z80/M6805 — уже в дереве.
+CPS1_TAI := d_taitomisc d_bublbobl d_arkanoid taito taito_ic cchip pc080sn \
+            pc090oj tc0100scn tc0110pcr tc0140syt tc0150rod tc0180vcu \
+            tc0220ioc tc0280grd tc0360pri tc0480scp tc0510nio tc0640fio
+OBJ += $(addprefix $(BUILD)/c1ta_,$(addsuffix .o,$(CPS1_TAI)))
+$(BUILD)/c1ta_%.o: $(CPS1)/src/burn/drv/taito/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+CPS1_TAIS := burn_ym3526
+OBJ += $(addprefix $(BUILD)/c1tas_,$(addsuffix .o,$(CPS1_TAIS)))
+$(BUILD)/c1tas_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).

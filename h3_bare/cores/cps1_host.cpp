@@ -13,9 +13,9 @@
 //     или /roms/<cps1|cps2|neogeo>/<игра>.zip (распаковка через zlib из fuse/zlib).
 // BIOS NEOGEO: /roms/neogeo/neogeo/ (папка) или /roms/neogeo/neogeo.zip.
 // Игра идентифицируется по имени выбранного в браузере элемента (папки
-// или zip-файла). В driverlist.h — 1989 драйверов: CPS-1 461, CPS-2 377,
-// NEOGEO 692, Sega System 16 246, Toaplan 144, Cave 113 и Namco 27 (r1610);
-// число в счётчике — sizeof(pDriver)/4, см. эталон в docs/PITFALLS.md §24.
+// или zip-файла). В driverlist.h — 1994 драйвера (CPS-1, CPS-2, NEOGEO,
+// Sega System 16, Toaplan, Cave, Namco и Taito, r1623); число в счётчике —
+// sizeof(pDriver)/4, см. эталон в docs/PITFALLS.md §24.
 //
 // Ввод: P1 — клавиатура (ремап-платформа REMAP_PLAT_CPS1, дефолт: стрелки +
 // Z=Attack X=Jump C=Fire3, Enter/1=Start, S=Coin (fallback 5/Numpad5)
@@ -114,6 +114,10 @@ extern UINT8 NeoDiag[2];
 static uint16_t g_frame[CPS1_W * 320];
 static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
+// r1624: драйвер объявлен BDF_ORIENTATION_FLIPPED — монитор ставили вверх
+// ногами, эталонный фронтенд переворачивает кадр на 180° (Arkanoid 224×256).
+// Читают обе ветки рендера, поэтому объявлен до них.
+static int g_arc_flip = 0;
 
 // ---- r1512: аппаратный DE2 GSU (вместо программного host_render_frame) ----
 // 32-битный DE2-буфер кадра аркад (CPS-1/CPS-2/NEOGEO/Toaplan/Cave/S16/FBNeo).
@@ -535,7 +539,8 @@ static void host_render_frame(void)
     for (int dx = 0; dx < vw; dx++) {
         uint32_t t = acc_x >> 16;
         if (t >= (uint32_t)cols) t = cols - 1;
-        sx[dx] = (uint16_t)t;
+        // r1624: при FLIPPED читаем строку/пиксели с конца (поворот на 180°).
+        sx[dx] = (uint16_t)(g_arc_flip ? (int)cols - 1 - (int)t : (int)t);
         acc_x += step_x;
     }
 
@@ -544,6 +549,7 @@ static void host_render_frame(void)
     for (int dy = 0; dy < vh; dy++) {
         uint32_t sy = y_acc >> 16;
         if (sy >= (uint32_t)rows) sy = rows - 1;
+        if (g_arc_flip) sy = (uint32_t)(rows - 1) - sy;
         const uint16_t* srow = src + (size_t)sy * sstride;
         uint32_t* drow = dst + (size_t)(y0 + dy) * FB_W + x0;
         for (int dx = 0; dx < vw; dx++) {
@@ -601,10 +607,11 @@ static void cps_render_frame(void) {
         // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
         uint32_t* d = cps_rgb32;
         for (int y = 0; y < h; y++) {
-            const uint16_t* srow = src + (size_t)y * sstride;
+            // r1624: FLIPPED — источник читаем с конца (поворот на 180°).
+            const uint16_t* srow = src + (size_t)(g_arc_flip ? h - 1 - y : y) * sstride;
             uint32_t* drow = d + (size_t)y * w;
             for (int x = 0; x < w; x++) {
-                uint16_t p = srow[x];
+                uint16_t p = srow[g_arc_flip ? w - 1 - x : x];
                 // LUT RGB565→XRGB8888 (совпадает с host_render_frame).
                 drow[x] = g_rgb565_lut[p];
             }
@@ -623,7 +630,8 @@ static int g_toa      = 0;    // активен Toaplan-драйвер
 static int g_cave     = 0;    // активен Cave-драйвер (ранняя 68K-эра, r0.377)
 static int g_sega     = 0;    // активен Sega System 16 (r0.383)
 static int g_nam      = 0;    // активен Namco-драйвер (System 1/86/2, Galaxian, Pac-Man, r1612)
-static int g_nam_log_done = 0;   // диагностика Namco-ввода: слоты уже напечатаны
+static int g_taito    = 0;    // активен Taito-драйвер (misc/F2-классика, r1623)
+static int g_nam_log_done = 0;   // диагностика name-based ввода: слоты уже напечатаны
 static int g_cps_hw_tried = 0;      // попытка поднять DE2 GSU уже была
 
 struct HostPad {
@@ -685,10 +693,19 @@ static void toa_write_input(const HostPad* p1, const HostPad* p2)
 // Стоимость — ~50 коротких strcmp на кадр, на фоне эмуляции незаметна.
 // Имена у этих драйверов разнобойные («P1 Up»/«p1 up», «P1 Coin»/«Coin 1»,
 // «P1 Button 1»/«p1 fire 1») — сравнение в нижнем регистре.
+// r1624/r1625: шаг аналогового весла за кадр. Драйвер Arkanoid зовёт
+// BurnTrackballFrame(0, Analog[0]*1.5, …): значение копится в BurnPaddleX,
+// делится на 0x80 и превращается в скорость (кламп 1..0x3f) → счётчик TrackA
+// (байт) в DrvInputs[2]. Кривая линейная (BurnTrackballInit → CURVE[i]=i).
+// Нужно ~7 отсчётов/кадр на полный ход 256: 7*0x80/1.5 ≈ 0x250; берём 0x280
+// с запасом (~0.6 с через весь экран). 0x30 давал 1 отсчёт/кадр — «ползло».
+#define ARC_PADDLE_STEP 0x280
+
 static void nam_write_input(const HostPad* p1, const HostPad* p2)
 {
     const HostPad* hp[2] = { p1, p2 };
     UINT8* dst[2][10];  // 0..3 направления, 4..6 B1..B3, 7 Coin, 8 Start, 9 Service
+    INT16* an[2] = { NULL, NULL };   // r1624: аналоговая ось (весло Arkanoid)
     memset(dst, 0, sizeof(dst));
 
     for (UINT32 i = 0; i < 96; i++) {
@@ -696,7 +713,9 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         memset(&ii, 0, sizeof(ii));
         if (BurnDrvGetInputInfo(&ii, i)) break;      // 1 = конец списка
         if (!ii.szName || !ii.szName[0]) break;
-        if ((ii.nType & 0x01) == 0) continue;        // только BIT_DIGITAL
+        const int is_dig = (ii.nType & BIT_DIGITAL) != 0;
+        const int is_rel = (ii.nType & BIT_ANALOG_REL) != 0;
+        if (!is_dig && !is_rel) continue;            // DIP и абсолютные оси — не сюда
         UINT8* p = ii.pVal;
         if (!p) continue;
 
@@ -712,6 +731,14 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
             pl = nm[1] - '1';
             base = nm + 3;
         }
+
+        // r1624: у Arkanoid весло объявлено BIT_ANALOG_REL («p1 right / left» →
+        // Analog[0]); цифровой хост крутит ось шагом за кадр по left/right.
+        if (is_rel) {
+            if (pl >= 0 && !an[pl]) an[pl] = (INT16*)p;
+            continue;
+        }
+
         if      (!strcmp(base, "up"))       slot = 0;
         else if (!strcmp(base, "down"))     slot = 1;
         else if (!strcmp(base, "left"))     slot = 2;
@@ -744,9 +771,21 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         unsigned v[10] = { hp[pl]->up, hp[pl]->down, hp[pl]->left, hp[pl]->right,
                            hp[pl]->a, hp[pl]->b, hp[pl]->c,
                            hp[pl]->select, hp[pl]->start, hp[pl]->service };
+        // r1624: кадр переворачивается на 180° (BDF_ORIENTATION_FLIPPED) —
+        // направления зеркалим, иначе «вверх» уводит вниз.
+        if (g_arc_flip) {
+            unsigned t;
+            t = v[0]; v[0] = v[1]; v[1] = t;
+            t = v[2]; v[2] = v[3]; v[3] = t;
+        }
         for (int s = 0; s < 10; s++) {
             if (!dst[pl][s]) continue;
             *dst[pl][s] = v[s] ? 1 : 0;
+        }
+        // Весло: дельта за кадр (драйвер интегрирует её сам).
+        if (an[pl]) {
+            int d = (int)hp[pl]->right - (int)hp[pl]->left;
+            *an[pl] = (INT16)(d * ARC_PADDLE_STEP);
         }
     }
 
@@ -755,7 +794,7 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         g_nam_log_done = 1;
         int n1 = 0, n2 = 0;
         for (int s = 0; s < 10; s++) { n1 += dst[0][s] != 0; n2 += dst[1][s] != 0; }
-        printf("NAM in: %s hw=%08X slots P1 %d/10 P2 %d/10\n",
+        printf("ARC in: %s hw=%08X slots P1 %d/10 P2 %d/10\n",
                BurnDrvGetTextA(DRV_NAME), (unsigned)BurnDrvGetHardwareCode(), n1, n2);
     }
 }
@@ -888,8 +927,8 @@ static void host_update_input(void)
     if (g_toa || g_cave || g_sega)
         toa_write_input(&p1, &p2);
 
-    // --- Namco: по списку входов драйвера каждый кадр (r1613) ---
-    if (g_nam) nam_write_input(&p1, &p2);
+    // --- Namco/Taito: по списку входов драйвера каждый кадр (r1613/r1623) ---
+    if (g_nam || g_taito) nam_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -1098,12 +1137,19 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_nam = (!g_neo_input && !g_toa && !g_cave && !g_sega &&
                  (pf == HARDWARE_PREFIX_MISC_PRE90S || pf == HARDWARE_PREFIX_MISC_POST90S ||
                   pf == HARDWARE_PREFIX_PACMAN || pf == HARDWARE_PREFIX_GALAXIAN)) ? 1 : 0;
+        // r1623: Taito — свой префикс (HARDWARE_TAITO_* = 0x0Bxxxxxx); ввод у
+        // его драйверов тоже в собственных массивах (TC0220IOC/DrvJoy).
+        g_taito = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_TAITO) ? 1 : 0;
+        // r1624: Arkanoid помечен BDF_ORIENTATION_FLIPPED — кадр нужно перевернуть
+        // на 180° (и вместе с ним направления). Включаем только для Taito, чтобы
+        // не тронуть уже проверенные на стенде семейства.
+        g_arc_flip = (g_taito && (BurnDrvGetFlags() & BDF_ORIENTATION_FLIPPED)) ? 1 : 0;
     }
 
     // r1615: DIP до init — драйвер читает их в DrvDoReset внутри BurnDrvInit.
-    // Пока только Namco: у остальных семейств игры годами работали с нулевыми
-    // DIP, менять им настройки без проверки на стенде нельзя (r1615).
-    if (g_nam)
+    // Namco/Taito: дефолты из таблиц драйвера (Service Mode/Coinage). Остальным
+    // семействам пока не включаем — годами работали с нулевыми DIP (r1615).
+    if (g_nam || g_taito)
         arc_dip_defaults();
 
     if (BurnDrvInit() != 0) {
@@ -1262,6 +1308,30 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = fh;
         printf("NAM: game %s full=%dx%d -> %dx%d pitch=%d\n",
                game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
+    } else if (g_taito) {
+        // r1623: Taito — кадр драйвера как есть (Rastan 320×240, Rainbow
+        // Islands 320×224, Volfied 320×240, Arkanoid 224×256, Bubble Bobble
+        // 256×224). Буфер g_frame 384×320 — высоту проверяем.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        if (fh <= 0 || fh > 320) {
+            printf("TAI: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
+            emu_audio_stop();   /* r1278 */
+            return;
+        }
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : CPS1_W;
+        nBurnPitch = nw * 2;
+        g_frame_w = nw;
+        g_frame_h = fh;
+        printf("TAI: game %s full=%dx%d -> %dx%d pitch=%d flip=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch, g_arc_flip);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -1300,6 +1370,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("S16 keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
     } else if (g_nam) {
         printf("NAM keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
+    } else if (g_taito) {
+        printf("TAI keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -1409,6 +1481,13 @@ void emu_run_segasys(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_namco(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/namco", rom, size, rom_name);
+}
+
+// Taito (r1623): d_taitomisc (Rastan/Rainbow Islands/Volfied), d_bublbobl,
+// d_arkanoid — корень /roms/taito.
+void emu_run_taito(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/taito", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)
