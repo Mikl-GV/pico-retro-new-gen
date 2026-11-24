@@ -171,6 +171,8 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
         emu_run_cave(rom, size, sel_name);      // Cave 68K — /roms/cave (r0.383)
     else if (strcmp(sys_id, "segasys") == 0)
         emu_run_segasys(rom, size, sel_name);   // Sega System 16 — /roms/segasys (r0.383)
+    else if (strcmp(sys_id, "namco") == 0)
+        emu_run_namco(rom, size, sel_name);     // Namco — /roms/namco (r1610)
     else if (strcmp(sys_id, "fbneo") == 0)
         emu_run_fbneo(rom, size, sel_name);     // общий FBNeo-корень
     else if (strcmp(sys_id, "atari800") == 0)
@@ -312,7 +314,7 @@ static int is_arcade_sys(const char* sys_id) {
     return strcmp(sys_id, "cps1") == 0 || strcmp(sys_id, "cps2") == 0 ||
            strcmp(sys_id, "neogeo") == 0 || strcmp(sys_id, "toaplan") == 0 ||
            strcmp(sys_id, "fbneo") == 0 || strcmp(sys_id, "cave") == 0 ||
-           strcmp(sys_id, "segasys") == 0;
+           strcmp(sys_id, "segasys") == 0 || strcmp(sys_id, "namco") == 0;
 }
 
 static char rom_lc(char c) {

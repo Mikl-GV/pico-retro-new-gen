@@ -135,3 +135,25 @@ objcopy-переименования `cps1_rename.sh` (m68k/YM2612), подкл�
 ```
 Приоритет — папке. Игры-мишени CPS: `wof`, `kod`, `unsquad`, `varth`, `willow`,
 `3wonders`. Плюс CPS-2 и NEOGEO (MVS/AES), см. `driverlist.h`.
+
+## Namco (r1610)
+
+Добавлено семейство Namco — отдельный корень ROM `/roms/namco` (система
+`namco` в меню). Скопировано из того же коммита `d025cfc`:
+
+| Путь здесь | Содержимое |
+|---|---|
+| `src/burn/drv/namco/` | `d_galaxian` + `gal_gfx`/`gal_run`/`gal_sound`/`gal_stars`/`cclimber_audio`, `d_pacman`, `d_rallyx`, `d_galaga`, `d_gaplus`, `d_mappy`, `d_pacland`, `d_namcos1`, `d_namcos86`, `d_skykid`, `d_namcos2` |
+| `src/cpu/m6809/`, `src/cpu/m6809_intf.*` | Motorola 6809 (Mappy, Orange Pi-совместимые платы, System 1/86/2) |
+| `src/cpu/m6800/`, `src/cpu/m6800_intf.*` | M6800/HD63701 (вспомогательный CPU Namco) |
+| `src/cpu/s2650/`, `src/cpu/s2650_intf.*` | Signetics 2650 (старые galaxian-платы) |
+| `src/burn/snd/namco_snd.*` | WSG (8-канальный волновой синтез Namco) |
+| `src/burn/snd/sn76496.*`, `flt_rc.*`, `digitalk.*`, `c140.*`, `timeplt_snd.*` | PSG/DAC/фильтры, C140 (System 2), Rally X-звук |
+| `src/burn/devices/namcoio.*`, `earom.*`, `c169.*`, `namco_c45.*` | ввод-контроллеры, EAROM, ROZ-контроллеры System 2 |
+
+`ay8910.c` теперь реальный в сборке (`CPS1_SNDC`), заглушки AY8910 в
+`src/cps1_stubs.cpp` удалены — иначе Pac-Man/Galaga читали бы вход через
+пустой PSG-порт. Единственный владелец `Debug*`-флагов — `burn/debug_track.cpp`.
+
+ROM для Namco: `/roms/namco/<игра>.zip` (или папка), имя = short name
+(`pacman`, `galaga`, `mappy`, `rthunder`, `dsaber`, …), см. `driverlist.h`.

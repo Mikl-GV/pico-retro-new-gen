@@ -77,8 +77,10 @@ static const system_entry_t systems[] = {
     SYS("neogeo",     "Neo Geo MVS",                  ARCADE,   READY),
     SYS("segasys",    "Sega System 16",                ARCADE,   READY),
     SYS("toaplan",    "Toaplan 1 (68K games)",        ARCADE,   READY),
+    // r1610: Namco (Galaxian/Pac-Man/Rally X/Gaplus/Mappy/System 1/86/SS2),
+    // папка /roms/namco на общем FBNeo-хосте (run_cps).
+    SYS("namco",      "Namco (Arcade)",               ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
-
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),
     SYS_BUILTIN("msx",  "MSX / Yamaha YIS-503III",  COMPUTER, READY),

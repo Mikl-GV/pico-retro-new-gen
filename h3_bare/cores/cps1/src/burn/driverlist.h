@@ -1971,8 +1971,62 @@ extern struct BurnDriver BurnDrvWwallyja;
 extern struct BurnDriver BurnDrvWwallyja3p;
 extern struct BurnDriver BurnDrvWwallyjad;
 extern struct BurnDriver BurnDrvWwallyjd;
+extern struct BurnDriver BurnDrvGalaxian;
+extern struct BurnDriver BurnDrvGalaxiana;
+extern struct BurnDriver BurnDrvGalaxianm;
+extern struct BurnDriver BurnDrvKingball;
+extern struct BurnDriver BurnDrvAmidar;
+extern struct BurnDriver BurnDrvpacman;
+extern struct BurnDriver BurnDrvpacplus;
+extern struct BurnDriver BurnDrvmspacman;
+extern struct BurnDriver BurnDrvpuckman;
+extern struct BurnDriver BurnDrvRallyx;
+extern struct BurnDriver BurnDrvNrallyx;
+extern struct BurnDriver BurnDrvGalaga;
+extern struct BurnDriver BurnDrvGaplus;
+extern struct BurnDriver BurnDrvMappy;
+extern struct BurnDriver BurnDrvMappyj;
+extern struct BurnDriver BurnDrvDigdug2;
+extern struct BurnDriver BurnDrvTodruaga;
+extern struct BurnDriver BurnDrvSuperpac;
+extern struct BurnDriver BurnDrvPacland;
+extern struct BurnDriver BurnDrvGalaga88;
+extern struct BurnDriver BurnDrvSplatter;
+extern struct BurnDriver BurnDrvTankfrce;
+extern struct BurnDriver BurnDrvHopmappy;
+extern struct BurnDriver BurnDrvRthunder;
+extern struct BurnDriver BurnDrvSkykid;
+extern struct BurnDriver BurnDrvRthun2;
+extern struct BurnDriver BurnDrvDsaber;
 
 static struct BurnDriver* pDriver[] = {
+    &BurnDrvGalaxian,
+    &BurnDrvGalaxiana,
+    &BurnDrvGalaxianm,
+    &BurnDrvKingball,
+    &BurnDrvAmidar,
+    &BurnDrvpacman,
+    &BurnDrvpacplus,
+    &BurnDrvmspacman,
+    &BurnDrvpuckman,
+    &BurnDrvRallyx,
+    &BurnDrvNrallyx,
+    &BurnDrvGalaga,
+    &BurnDrvGaplus,
+    &BurnDrvMappy,
+    &BurnDrvMappyj,
+    &BurnDrvDigdug2,
+    &BurnDrvTodruaga,
+    &BurnDrvSuperpac,
+    &BurnDrvPacland,
+    &BurnDrvGalaga88,
+    &BurnDrvSplatter,
+    &BurnDrvTankfrce,
+    &BurnDrvHopmappy,
+    &BurnDrvRthunder,
+    &BurnDrvSkykid,
+    &BurnDrvRthun2,
+    &BurnDrvDsaber,
     &BurnDrvCps1941,
     &BurnDrvCps1941j,
     &BurnDrvCps1941r1,

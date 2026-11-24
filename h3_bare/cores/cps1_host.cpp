@@ -13,8 +13,9 @@
 //     или /roms/<cps1|cps2|neogeo>/<игра>.zip (распаковка через zlib из fuse/zlib).
 // BIOS NEOGEO: /roms/neogeo/neogeo/ (папка) или /roms/neogeo/neogeo.zip.
 // Игра идентифицируется по имени выбранного в браузере элемента (папки
-// или zip-файла). В driverlist.h — 1491 драйвер (427 CPS-1 + 377 CPS-2 +
-// 687 NEOGEO).
+// или zip-файла). В driverlist.h — 1989 драйверов: CPS-1 461, CPS-2 377,
+// NEOGEO 692, Sega System 16 246, Toaplan 144, Cave 113 и Namco 27 (r1610);
+// число в счётчике — sizeof(pDriver)/4, см. эталон в docs/PITFALLS.md §24.
 //
 // Ввод: P1 — клавиатура (ремап-платформа REMAP_PLAT_CPS1, дефолт: стрелки +
 // Z=Attack X=Jump C=Fire3, Enter/1=Start, S=Coin (fallback 5/Numpad5)
@@ -480,6 +481,12 @@ static void lut_init(void) {
     g_lut_ready = 1;
 }
 
+// r1616: кэш чёрных полей программного пути; сбрасывается на входе в игру,
+// иначе при той же геометрии поля не перерисовывались и вокруг кадра оставался
+// «старый фон» (меню или прошлая игра).
+static int g_fr_x0 = -1, g_fr_vw = -1, g_fr_vh = -1, g_fr_y0 = -1;
+static void host_render_reset(void) { g_fr_x0 = -1; }
+
 static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
@@ -513,15 +520,14 @@ static void host_render_frame(void)
     int y0 = (FB_H - vh) / 2;
 
     // r0.411: чёрные поля кэшируем по геометрии (не меняется внутри игры).
-    static int s_x0 = -1, s_vw = -1, s_vh = -1, s_y0 = -1;
-    if (s_x0 != x0 || s_vw != vw || s_vh != vh || s_y0 != y0) {
+    if (g_fr_x0 != x0 || g_fr_vw != vw || g_fr_vh != vh || g_fr_y0 != y0) {
         for (int dy = 0; dy < FB_H; dy++) {
             uint32_t* drow = dst + (size_t)dy * FB_W;
             if (dy < y0 || dy >= y0 + vh) { for (int dx = 0; dx < FB_W; dx++) drow[dx] = 0; }
             else { for (int dx = 0; dx < x0; dx++) drow[dx] = 0;
                    for (int dx = x0 + vw; dx < FB_W; dx++) drow[dx] = 0; }
         }
-        s_x0 = x0; s_vw = vw; s_vh = vh; s_y0 = y0;
+        g_fr_x0 = x0; g_fr_vw = vw; g_fr_vh = vh; g_fr_y0 = y0;
     }
     static uint16_t sx[1024];
     uint32_t step_x = ((uint32_t)cols << 16) / (uint32_t)vw;
@@ -616,9 +622,12 @@ static int g_neo_input = 0;   // активен NEOGEO-драйвер (см. run
 static int g_toa      = 0;    // активен Toaplan-драйвер
 static int g_cave     = 0;    // активен Cave-драйвер (ранняя 68K-эра, r0.377)
 static int g_sega     = 0;    // активен Sega System 16 (r0.383)
+static int g_nam      = 0;    // активен Namco-драйвер (System 1/86/2, Galaxian, Pac-Man, r1612)
+static int g_nam_log_done = 0;   // диагностика Namco-ввода: слоты уже напечатаны
+static int g_cps_hw_tried = 0;      // попытка поднять DE2 GSU уже была
 
 struct HostPad {
-    unsigned up, down, left, right, a, b, c, d, start, select, kick1, kick2, kick3;
+    unsigned up, down, left, right, a, b, c, d, start, select, kick1, kick2, kick3, service;
 };
 
 // Кэш указателей на входы Toaplan-драйвера (имена стандартные в FBNeo).
@@ -669,6 +678,89 @@ static void toa_write_input(const HostPad* p1, const HostPad* p2)
     }
 }
 
+// r1613: Namco (System 1/86, Galaxian, Pac-Man, Rally X, Mappy, Pac-Land).
+// Список входов драйвера читается ЗАНОВО КАЖДЫЙ КАДР: у его входов указатели
+// ведут в static-массивы драйвера (DrvJoyN), и кэш, снятый один раз на старте,
+// мог остаться пустым — тогда клавиши молча уходили в никуда (r1612).
+// Стоимость — ~50 коротких strcmp на кадр, на фоне эмуляции незаметна.
+// Имена у этих драйверов разнобойные («P1 Up»/«p1 up», «P1 Coin»/«Coin 1»,
+// «P1 Button 1»/«p1 fire 1») — сравнение в нижнем регистре.
+static void nam_write_input(const HostPad* p1, const HostPad* p2)
+{
+    const HostPad* hp[2] = { p1, p2 };
+    UINT8* dst[2][10];  // 0..3 направления, 4..6 B1..B3, 7 Coin, 8 Start, 9 Service
+    memset(dst, 0, sizeof(dst));
+
+    for (UINT32 i = 0; i < 96; i++) {
+        struct BurnInputInfo ii;
+        memset(&ii, 0, sizeof(ii));
+        if (BurnDrvGetInputInfo(&ii, i)) break;      // 1 = конец списка
+        if (!ii.szName || !ii.szName[0]) break;
+        if ((ii.nType & 0x01) == 0) continue;        // только BIT_DIGITAL
+        UINT8* p = ii.pVal;
+        if (!p) continue;
+
+        char nm[64];
+        int k = 0;
+        for (const char* s = ii.szName; *s && k < (int)sizeof(nm) - 1; s++)
+            nm[k++] = (*s >= 'A' && *s <= 'Z') ? (char)(*s + 32) : *s;
+        nm[k] = 0;
+
+        int pl = -1, slot = -1;
+        const char* base = nm;
+        if (nm[0] == 'p' && (nm[1] == '1' || nm[1] == '2') && nm[2] == ' ') {
+            pl = nm[1] - '1';
+            base = nm + 3;
+        }
+        if      (!strcmp(base, "up"))       slot = 0;
+        else if (!strcmp(base, "down"))     slot = 1;
+        else if (!strcmp(base, "left"))     slot = 2;
+        else if (!strcmp(base, "right"))    slot = 3;
+        else if (!strcmp(base, "button 1") || !strcmp(base, "fire 1")) slot = 4;
+        else if (!strcmp(base, "button 2") || !strcmp(base, "fire 2")) slot = 5;
+        else if (!strcmp(base, "button 3") || !strcmp(base, "fire 3")) slot = 6;
+        else if (!strcmp(base, "coin"))     slot = 7;
+        else if (!strcmp(base, "start"))    slot = 8;
+        else if (!strcmp(base, "service") || !strcmp(base, "service mode")) slot = 9;
+
+        // «Coin 1»/«Coin 2»/«Start 1»/«Start 2» — игрок в цифре, без префикса
+        if (slot < 0) {
+            if      (!strcmp(nm, "coin 1"))  { pl = 0; slot = 7; }
+            else if (!strcmp(nm, "coin 2"))  { pl = 1; slot = 7; }
+            else if (!strcmp(nm, "start 1")) { pl = 0; slot = 8; }
+            else if (!strcmp(nm, "start 2")) { pl = 1; slot = 8; }
+        }
+
+        // r1614: в galaxian-семействе (Amidar, Galaga, Kingball, Galaxian) имена
+        // идут без префикса игрока: «Up»/«Fire 1» — это P1, а P2 там
+        // «Up (Cocktail)» (его не маппим: на панели один игрок).
+        if (pl < 0 && slot >= 0) pl = 0;
+
+        if (pl < 0 || slot < 0) continue;
+        if (!dst[pl][slot]) dst[pl][slot] = p;       // первый найденный
+    }
+
+    for (int pl = 0; pl < 2; pl++) {
+        unsigned v[10] = { hp[pl]->up, hp[pl]->down, hp[pl]->left, hp[pl]->right,
+                           hp[pl]->a, hp[pl]->b, hp[pl]->c,
+                           hp[pl]->select, hp[pl]->start, hp[pl]->service };
+        for (int s = 0; s < 10; s++) {
+            if (!dst[pl][s]) continue;
+            *dst[pl][s] = v[s] ? 1 : 0;
+        }
+    }
+
+    // Диагностика: один раз на игру — сколько слотов входа реально нашлось.
+    if (!g_nam_log_done) {
+        g_nam_log_done = 1;
+        int n1 = 0, n2 = 0;
+        for (int s = 0; s < 10; s++) { n1 += dst[0][s] != 0; n2 += dst[1][s] != 0; }
+        printf("NAM in: %s hw=%08X slots P1 %d/10 P2 %d/10\n",
+               BurnDrvGetTextA(DRV_NAME), (unsigned)BurnDrvGetHardwareCode(), n1, n2);
+    }
+}
+
+
 static void host_update_input(void)
 {
     memset(CpsInp001, 0, sizeof(CpsInp001));
@@ -705,11 +797,14 @@ static void host_update_input(void)
     for (int i = 0; i < n; i++) {
         switch (keys[i]) {
             case 30:          p1.start  = 1; break;   // 1 = Start
-            case 34: case 91: p1.select = 1; break;   // 5 / Numpad5 = Coin
+            // r1614: Numpad5 — HID 0x5D (93), а не 0x5B (91 = Numpad3):
+            // с 91 монета на цифровой клавиатуре не работала никогда.
+            case 34: case 93: p1.select = 1; break;   // 5 / Numpad5 = Coin
             case 20:          p1.kick1  = 1; break;   // Q = Kick weak (CPS-2)
             case 8:           p1.kick2  = 1; break;   // E = Kick med
             case 21:          p1.kick3  = 1; break;   // R = Kick strong
             case 25:          p1.d      = 1; break;   // V = NEO Button D
+            case 23:          p1.service = 1; break; // T = Service/Test (меню настроек автомата)
             case 26: p2.up    = 1; break;             // W
             case 22: p2.down  = 1; break;             // S
             case 4:  p2.left  = 1; break;             // A
@@ -792,6 +887,9 @@ static void host_update_input(void)
     // --- Toaplan/Cave/Sega: пишем по указателям входа драйвера ---
     if (g_toa || g_cave || g_sega)
         toa_write_input(&p1, &p2);
+
+    // --- Namco: по списку входов драйвера каждый кадр (r1613) ---
+    if (g_nam) nam_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -802,6 +900,32 @@ static void strip_zip_ext(char* s)
 }
 
 // ---- точка входа из rom_browser (emu.h) ----
+// r1615: DIP-переключатели. Хост их никогда не выставлял — все DrvDips
+// оставались нулями, а у Namco 0 в DIP0 = «Service Mode: On» (бит 0x80),
+// поэтому игры стартовали в сервисном меню «настроек автомата» и не игрались.
+// Дефолты берём из таблицы драйвера: строки с nFlags == 0xFF, где nInput —
+// индекс входа BIT_DIPSWITCH, а его pVal и есть байт DrvDips. Маску применяем
+// накопительно: в одном байте может быть несколько групп переключателей.
+static void arc_dip_defaults(void)
+{
+    struct BurnDIPInfo bdi;
+    INT32 dip_base = 0;
+    for (UINT32 i = 0; BurnDrvGetDIPInfo(&bdi, i) == 0; i++) {
+        // r1616: строка DIP_OFFSET (nFlags 0xF0) задаёт индекс первого
+        // DIP-входа, а nInput в строках дефолтов отсчитывается ОТ НЕГО — так же,
+        // как nDIPOffset в burner FBNeo. Без этого у galaga (offset 0x0B) и
+        // System 2 (offset 0x14) дефолты писались в чужие входы, DIP оставались
+        // нулями → «Service Mode: On» и меню настроек на старте.
+        if (bdi.nFlags == 0xF0) { dip_base = bdi.nInput; continue; }
+        if (bdi.nFlags != 0xFF || bdi.nInput < 0) continue;
+        struct BurnInputInfo bii;
+        memset(&bii, 0, sizeof(bii));
+        if (BurnDrvGetInputInfo(&bii, (UINT32)(dip_base + bdi.nInput))) continue;
+        if (!bii.pVal || bii.nType != BIT_DIPSWITCH) continue;
+        *bii.pVal = (UINT8)((*bii.pVal & ~bdi.nMask) | (bdi.nSetting & bdi.nMask));
+    }
+}
+
 // rom/size НЕ используются: элемент браузера = папка игры или zip-файл,
 // host сам читает ROM-сет по имени (rom_name).
 // BurnLibInit/BurnGameListInit НЕ вызываются: они копируют короткие имена
@@ -952,6 +1076,36 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     BurnExtLoadRom = host_ext_load_rom;
     BurnHighCol = host_high_col;   // иначе вендорный filler даёт белый экран
 
+    // r1615: флаги систем считаем ДО BurnDrvInit — от них зависит DIP-профиль
+    // (драйвер читает DIP в DrvDoReset внутри init). Код железа доступен сразу
+    // после выбора драйвера.
+    // ВАЖНО: проверять по ТОЧНОМУ публичному коду, а не по `& HARDWARE_SNK_NEOGEO`:
+    // HARDWARE_SNK_NEOGEO (0x05010000) пересекается по битам с
+    // HARDWARE_CAPCOM_CPS2 (0x07010000) и CPS1 (0x01010000) — из-за этого
+    // CPS-игры определялись как NEOGEO и брали чужой pitch/ширину
+    // (dimahoo: 384-кадр читался как 304 → верх внизу, полосы).
+    INT32 hw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
+    g_neo_input = (hw == HARDWARE_SNK_NEOGEO || hw == HARDWARE_SNK_MVS ||
+                   hw == HARDWARE_SNK_NEOCD  || hw == HARDWARE_SNK_DEDICATED_PCB) ? 1 : 0;
+    g_toa = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_TOAPLAN) ? 1 : 0;
+    g_cave = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_CAVE) ? 1 : 0;
+    g_sega = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_SEGA) ? 1 : 0;
+    // r1612/r1614: Namco — по префиксу железа: System 1/86 — MISC_PRE90S,
+    // System 2 — MISC_POST90S, Pac-Man/Galaxian — своими префиксами. Только не
+    // NeoGeo/Toaplan/Cave/Sega: у них свои регистры ввода.
+    {
+        INT32 pf = BurnDrvGetHardwareCode() & 0xFF000000;
+        g_nam = (!g_neo_input && !g_toa && !g_cave && !g_sega &&
+                 (pf == HARDWARE_PREFIX_MISC_PRE90S || pf == HARDWARE_PREFIX_MISC_POST90S ||
+                  pf == HARDWARE_PREFIX_PACMAN || pf == HARDWARE_PREFIX_GALAXIAN)) ? 1 : 0;
+    }
+
+    // r1615: DIP до init — драйвер читает их в DrvDoReset внутри BurnDrvInit.
+    // Пока только Namco: у остальных семейств игры годами работали с нулевыми
+    // DIP, менять им настройки без проверки на стенде нельзя (r1615).
+    if (g_nam)
+        arc_dip_defaults();
+
     if (BurnDrvInit() != 0) {
         printf("CPS: %s init failed (check ROM set)\n", game);
         // что пошло не так: список требуемых драйвером ROM (имена FBNeo)
@@ -977,20 +1131,17 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         emu_audio_stop();
         return;
     }
+    // r1621: пометить палитру драйвера на пересчёт — ровно это делает
+    // VidRecalcPal() в эталонном фронтенде сразу после BurnDrvInit.
+    // Драйверы, которые считают палитру ТОЛЬКО по флагу DrvRecalc (Mappy-
+    // семейство: gaplus, todruaga, superpac), без этого отдают нулевую палитру
+    // и чёрный кадр — при живом CPU и заполненном pTransDraw.
+    BurnRecalcPal();
+
     // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
     // 384), поэтому nBurnPitch обязан совпасть с реальной шириной драйвера —
     // иначе строки съезжают по диагонали. CPS-драйверы как раз 384.
-    // ВАЖНО: проверять по ТОЧНОМУ публичному коду, а не по `& HARDWARE_SNK_NEOGEO`:
-    // HARDWARE_SNK_NEOGEO (0x05010000) пересекается по битам с
-    // HARDWARE_CAPCOM_CPS2 (0x07010000) и CPS1 (0x01010000) — из-за этого
-    // CPS-игры определялись как NEOGEO и брали чужой pitch/ширину
-    // (dimahoo: 384-кадр читался как 304 → верх внизу, полосы).
-    INT32 hw = BurnDrvGetHardwareCode() & HARDWARE_PUBLIC_MASK;
-    g_neo_input = (hw == HARDWARE_SNK_NEOGEO || hw == HARDWARE_SNK_MVS ||
-                   hw == HARDWARE_SNK_NEOCD  || hw == HARDWARE_SNK_DEDICATED_PCB) ? 1 : 0;
-    g_toa = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_TOAPLAN) ? 1 : 0;
-    g_cave = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_CAVE) ? 1 : 0;
-    g_sega = ((BurnDrvGetHardwareCode() & 0xFF000000) == HARDWARE_PREFIX_SEGA) ? 1 : 0;
+    // Флаги g_neo_input/g_toa/g_cave/g_sega/g_nam посчитаны до BurnDrvInit (r1615).
     if (g_neo_input) {
         // NEOGEO: ядро адресует строки как nNeoScreenWidth (304/320).
         extern INT32 nNeoScreenWidth;
@@ -1086,6 +1237,31 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = nh;
         printf("S16: game %s full=%dx%d -> %dx%d pitch=%d\n",
                game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
+    } else if (g_nam) {
+        // r1614: Namco — кадр драйвера как есть (Pac-Man 288×224, Galaga
+        // 224×288, System 1 288×224, System 2 224×288): при CPS-размере
+        // 384×224 картинка уезжала и обрезалась, а вертикали ломали масштаб.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        // Отказ, если кадр не влезает в буфер g_frame (384×320).
+        if (fh <= 0 || fh > 320) {
+            printf("NAM: %s full height %d exceeds buffer (320), not starting\n", game, (int)fh);
+            fb_clear();
+            fb_text_center("FBNeo: frame too tall", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too tall");
+            emulog_end("ARC");
+            emu_audio_stop();   /* r1278 */
+            return;
+        }
+        int nw = (fw > 0 && fw <= CPS1_W) ? fw : CPS1_W;
+        nBurnPitch = nw * 2;
+        g_frame_w = nw;
+        g_frame_h = fh;
+        printf("NAM: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -1099,10 +1275,16 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     g_cps_hw_scaler_active = 0;
     g_cps_gsu_w = 0;
     g_cps_gsu_h = 0;
+    g_nam_log_done = 0;      // диагностика Namco-ввода печатается на каждую игру
+    g_cps_hw_tried = 0;      // DE2 GSU пробуем заново
+    host_render_reset();     // иначе поля кадра не перерисуются (старый фон)
     // r1512: LUT RGB565→XRGB8888 нужна и программному пути, и GSU.
     lut_init();
     if (g_toa || g_cave || g_sega)
         toa_input_cache();   // входные массивы драйвера — static в его файле
+    // r1612: Namco — по префиксу железа (System 1/86/2 и Galaga идут как
+    // MISC_PRE90S, Pac-Man/Galaxian — своими префиксами); у CPS/NeoGeo/Toaplan
+    // входы пишутся в свои регистры, чужой путь им не нужен.
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
 
@@ -1116,6 +1298,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("CAV keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
     } else if (g_sega) {
         printf("S16 keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; ESC x3=exit\n");
+    } else if (g_nam) {
+        printf("NAM keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -1155,12 +1339,18 @@ for (;;) {
                 i2s_push_block(pBurnSoundOut, (uint32_t)n);
         }
         // r1512: аппаратный DE2 GSU — кадр из pBurnDraw → XRGB8888 → GSU
-        // (contain на весь экран). Программный host_render_frame (FB_ADDR +
-        // поля + LUT) не нужен и наложился бы поверх аппаратного.
+        // (contain на весь экран). r1616: условие было инвертировано —
+        // cps_render_frame() (она же поднимает слой и ставит флаг) не вызывалась
+        // НИКОГДА, поэтому все аркадные системы шли программным путём: отсюда
+        // «нет бордюра, виден старый фон». Пробуем слой один раз, при неудаче
+        // остаёмся на программном contain.
+        if (g_cps_hw_scaler_active || !g_cps_hw_tried) {
+            g_cps_hw_tried = 1;
+            cps_render_frame();
+        }
         if (!g_cps_hw_scaler_active)
             host_render_frame();
-        else
-            cps_render_frame();
+
         fb_flush();
         emu_throttle();
         if (emu_esc_hold()) break;
@@ -1212,6 +1402,13 @@ void emu_run_cave(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_segasys(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/segasys", rom, size, rom_name);
+}
+
+// Namco (r1610): Galaxian/Pac-Man/Rally X/Gaplus/Mappy/System 1/86/Super
+// System 2 — корень /roms/namco.
+void emu_run_namco(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/namco", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)

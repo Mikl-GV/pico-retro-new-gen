@@ -1057,7 +1057,7 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
 	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 \
-	-I$(CPS1)/src/burn/drv/sega \
+	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
 	-Wall -Wextra -O2 -fno-strict-aliasing \
@@ -1071,11 +1071,11 @@ CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS)
 	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG \
 	-fno-exceptions -fno-rtti -fno-threadsafe-statics
 
-CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat hiscore load tilemap_generic tiles_generic timer
+CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat debug_track hiscore load tilemap_generic tiles_generic timer
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
 CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705 mc8123 8255ppi
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples dac segapcm upd7759 burn_ym2413 burn_ym2612 rf5c68
-CPS1_SNDC  := fm ym2151 fmopl ym2413 ym2612
+CPS1_SNDC  := fm ym2151 fmopl ym2413 ym2612 ay8910
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
 
 OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))
@@ -1204,6 +1204,63 @@ $(BUILD)/c1t_%.o: $(CPS1)/src/burn/drv/toaplan/%.cpp | $(BUILD)
 CPS1_SEG  := d_sys16a d_sys16b d_sys18 sys16_gfx sys16_run sys16_fd1094 genesis_vid fd1094 fd1094_intf sega_315_5195 fd1089 sega_stubs
 OBJ += $(addprefix $(BUILD)/c1sg_,$(addsuffix .o,$(CPS1_SEG)))
 $(BUILD)/c1sg_%.o: $(CPS1)/src/burn/drv/sega/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Namco (r1610): Galaxian/Pac-Man/Rally X/Gaplus/Mappy/Namco System 1/86/Super
+# System 2 — 25 игр из roms/fbneo. CPU: Z80 (есть), M6809+M6800/HD63701
+# (новые), S2650 (galaxian-сеты: s2650, правил 1x); звук namco_snd (WSG),
+# SN76496, DAC, YM2151, flt_rc/digitalk (только galaxian).
+CPS1_NAM  := d_galaxian gal_gfx gal_run gal_sound gal_stars cclimber_audio \
+             d_pacman d_rallyx d_galaga d_gaplus d_mappy d_pacland \
+             d_namcos1 d_namcos86 d_skykid d_namcos2
+OBJ += $(addprefix $(BUILD)/c1na_,$(addsuffix .o,$(CPS1_NAM)))
+$(BUILD)/c1na_%.o: $(CPS1)/src/burn/drv/namco/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Namco звук/устройства (c1nm_): WSG namco_snd, SN76496, flt_rc, digitalk,
+# namcoio (ввод), earom. M6809/M6800 (HD63701) — ядра из cpu/m6809|m6800
+# (c1cpu_): op-файлы 6809ops.c включаются в m6809.cpp, отдельно не собираются.
+CPS1_NAMS := namco_snd sn76496 flt_rc digitalk c140 timeplt_snd
+OBJ += $(addprefix $(BUILD)/c1nm_,$(addsuffix .o,$(CPS1_NAMS)))
+$(BUILD)/c1nm_%.o: $(CPS1)/src/burn/snd/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+OBJ += $(BUILD)/c1nm_namcoio.o $(BUILD)/c1nm_earom.o $(BUILD)/c1nm_c169.o \
+       $(BUILD)/c1nm_namco_c45.o $(BUILD)/c1nm_joyprocess.o
+$(BUILD)/c1nm_joyprocess.o: $(CPS1)/src/burn/devices/joyprocess.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1nm_namcoio.o: $(CPS1)/src/burn/devices/namcoio.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1nm_earom.o: $(CPS1)/src/burn/devices/earom.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1nm_c169.o: $(CPS1)/src/burn/devices/c169.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1nm_namco_c45.o: $(CPS1)/src/burn/devices/namco_c45.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+OBJ += $(BUILD)/c1cpu_m6809_intf.o $(BUILD)/c1cpu_m6809.o \
+       $(BUILD)/c1cpu_m6800_intf.o $(BUILD)/c1cpu_m6800.o \
+       $(BUILD)/c1cpu_s2650_intf.o $(BUILD)/c1cpu_s2650.o
+$(BUILD)/c1cpu_m6809_intf.o: $(CPS1)/src/cpu/m6809_intf.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -I$(CPS1)/src/cpu/m6809 -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_m6809.o: $(CPS1)/src/cpu/m6809/m6809.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_m6800_intf.o: $(CPS1)/src/cpu/m6800_intf.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -I$(CPS1)/src/cpu/m6800 -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_m6800.o: $(CPS1)/src/cpu/m6800/m6800.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_s2650_intf.o: $(CPS1)/src/cpu/s2650_intf.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -I$(CPS1)/src/cpu/s2650 -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1cpu_s2650.o: $(CPS1)/src/cpu/s2650/s2650.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Звук toaplan: YM3812 (OPL2, pipibibs/tekipaki), YMZ280B (PCM, bbakraid).
@@ -2045,11 +2102,15 @@ $(BUILD)/coleco_bios.o: $(TOP)h3_bare/cores/gearcoleco/bios_data.S | $(BUILD)
 # r1155 (E10): зависимости от .h (см. DEPFLAGS). Нативный gcc пишет в .d
 # виндовые пути (E:/...), а MSYS-make внутри работает с /e/... — цели не
 # совпали бы, поэтому .d сводятся в build/deps.mk с конвертацией буквы диска.
+# r1611: компиляция идёт в `-o $@.tmp`, поэтому -MMD пишет цель `<obj>.o.tmp`,
+# а не `<obj>.o` — объект оставался без зависимостей, и правка .h его НЕ
+# пересобирала (стенд: nBurnDrvCount=1992 при массиве pDriver на 1962 →
+# выход за массив и Data Abort в BurnDrvGetIndex). Переименовываем цель в sed.
 # -include молчит, если deps.mk ещё нет (первая сборка после make clean).
 DEPS_D  := $(sort $(wildcard $(BUILD)/*.d))
 DEPS_MK := $(BUILD)/deps.mk
 ifneq ($(DEPS_D),)
 $(DEPS_MK): $(DEPS_D)
-	@sed -E 's#([A-Za-z]):/#/\L\1/#g' $(DEPS_D) > $@
+	@sed -E -e 's#([A-Za-z]):/#/\L\1/#g' -e 's#\.o\.tmp:#.o:#' $(DEPS_D) > $@
 -include $(DEPS_MK)
 endif

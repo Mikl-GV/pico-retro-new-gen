@@ -1,4 +1,328 @@
-# HANDOVER — текущее состояние (r1609)
+# HANDOVER — текущее состояние (r1622)
+
+## r1622 — Namco готово: отладочные логи убраны, диагностика оставлена
+
+Стенд (после r1621): всё семейство Namco работает — картинка, монета, старт,
+кнопки, Service на T, DIP по умолчанию корректные.
+
+- Убрано: разовая проба кадра `NAM f1/f2/f3` со маячками `pBurnDraw`,
+  счётчики `g_nam_probe_*`, чтение PC через `M6809Open/GetPC`, пер-нажатие
+  `NAM in: P1 mask=…` (маска `g_nam_keymask`).
+- Оставлено (диагностика, по одной строке на игру):
+  `NAM: game <drv> full=WxH -> WxH pitch=…` (как у TOA/CAV/S16),
+  `NAM in: <drv> hw=<код> slots P1 n/10 P2 n/10` — видно, сколько входов
+  драйвера реально замапилось.
+- Итог по семейству (r1610→r1621): 22 набора, свои драйверы в
+  `cores/cps1/src/burn/drv/namco/`, ввод через покадровый разбор
+  `BurnDrvGetInputInfo`, DIP из таблиц драйвера с учётом `DIP_OFFSET`,
+  `BurnRecalcPal()` после init (иначе у Mappy-семейства чёрный кадр),
+  аппаратный вывод через DE2 GSU и размер кадра от драйвера.
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 585 788 Б, в образе
+  `r1622`, строк `NAM f1` нет, `NAM keys:`/`NAM in:` есть.
+
+## r1621 — палитра драйвера не пересчитывалась: вызов BurnRecalcPal после init
+
+Проба r1620 (короткие строки, десятичные числа) сняла все противоречия:
+`nb=0 sum=0`, `b0p=0 b0=0 b200=0` — кадр пуст, а **маячки, поставленные в кадр
+на 60-м кадре, затёрты нулями** (значит `BurnTransferCopy` работает и пишет
+цвет 0), `pa=0` — **цвет палитры по индексу первого пикселя `pTransDraw` равен
+нулю**. При этом CPU живой (`mv` растёт), `pTransDraw` заполняется.
+
+Причина: `DrvDraw` этих драйверов считает палитру только под флагом
+`DrvRecalc` (`if (DrvRecalc) { MappyPaletteInit(); DrvRecalc = 0; }`), а флаг
+выставляет **фронтенд** — в эталоне это `VidRecalcPal()` →
+`BurnRecalcPal()` сразу после `BurnDrvInit`. Наш хост этого не делал; игры,
+которые инициализируют палитру безусловно или пишут в палитровую RAM сами,
+работали, а gaplus/todruaga/superpac (Mappy-семейство) получали нулевую
+палитру и чёрный экран.
+
+- FIX: `BurnRecalcPal();` сразу после успешного `BurnDrvInit()` в `run_cps`
+  (`cps1_host.cpp`). Флаг `*pRecalcPal = 1`, драйвер считает палитру на первом
+  кадре. Действует для всех аркадных систем — это поведение эталонного
+  фронтенда.
+- Проба `NAM f1/f2/f3` оставлена (полезно и дальше): теперь ожидается `nb>0`,
+  `pa>0`.
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 587 004 Б, в образе
+  `r1621`, символ `BurnRecalcPal` на месте.
+- Не проверено на стенде: картинка трёх игр после фикса.
+
+## r1620 — проба короткими строками в десятичном виде
+
+Лог r1619 пришёл с искажениями: в полях лишние символы (`trans=00E50`,
+`pal=00006BE50`), и числа в одной строке противоречат друг другу
+(`nonblack=0`, но `pb[0]` не ноль). Похоже, длинная строка (~140 символов)
+рвётся/сдвигается на UART-логе.
+
+- Проба разбита на три короткие строки, все величины в десятичном виде:
+  `NAM f1: nb=.. sum=..` (ненулевые пиксели и сумма пикселей кадра),
+  `NAM f2: w=.. h=.. st=.. lim=.. bp=.. own=..` (геометрия/лимит CPS1_W,
+  формат пикселя, совпадение pBurnDraw с g_frame),
+  `NAM f3: t0=.. pa=.. b0p=.. b0=.. b200=.. pc=.. mv=..` (индекс первого
+  пикселя pTransDraw, цвет палитры по нему, значение pb[0] ДО скана и после,
+  pb[200], PC и число его изменений).
+- `b0p`/`b0` — до/после скана: если различаются, память кадра меняется прямо
+  во время пробы (такого быть не должно).
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 587 068 Б, в образе
+  `r1620`.
+
+## r1619 — маячки в кадре и цвет по индексу тайла
+
+Лог r1618 (gaplus/superpac/todruaga) показал: CPU идёт (`pc_moves` 54→110, 64→124),
+драйвер заполняет `pTransDraw` (`trans` меняется: 0x0E50, 0x0460 …), палитра
+`pBurnDrvPalette[0]` не нулевая — а `pBurnDraw` пуст (`nonblack=0`). Значит
+вопрос узкий: пишется ли буфер вообще и в какой цвет.
+
+- На 60-м кадре проба кладёт в кадр два маячка (`pm[0]=0x1234`,
+  `pm[200]=0x5678`) и на срезах печатает их состояние, а также
+  `own` (`pBurnDraw == g_frame`), `bpp`, `palAt` — цвет палитры ровно по
+  индексу `pTransDraw[0]`.
+- Как читать: маячки целы → `BurnTransferCopy` не пишет в буфер; маячки
+  затёрты нулями и `palAt=0` → палитра по индексам тайлов нулевая (кривой
+  `DrvRecalc`/цветовые PROM); `palAt≠0` → цвет есть, разбираем копию/страйд.
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 586 748 Б, в образе
+  `r1619` и поля `own=`, `palAt=`, `sent=`.
+
+## r1618 — проба кадра глубже: живёт ли CPU и есть ли палитра
+
+Стенд r1616 (лог по трём чёрным играм) дал главное: `NAM frame: 288x224
+nonblack=0 of 64512` — в `pBurnDraw` **ноль ненулевых пикселей**, то есть
+проблема не в выводе и не в масштабе, а в самом кадре. У GAPLUS/TODRUAGA/
+SUPERPAC общего в коде нет: gaplus — свой `GaplusDraw`, todruaga —
+`Digdug2Init` + `MappyDraw` (digdug2 с тем же init работает), superpac — свои
+read/write и тайлмап. ROM сверены по CRC32 с таблицами драйверов — совпадают
+все 10/9/20 файлов, DIP после r1616 у них дефолтные (0x0F/0xFF/0xFF), т.е.
+«Freeze/Service» = Off.
+
+- Проба расширена: каждые 2 с и 5 с печатается
+  `NAM frame: WxH nonblack=N of M pc=XXXX pc_moves=K trans=X,Y pal=X,Y`.
+  `pc_moves` — сколько раз менялся PC главного CPU за кадры (0 = стоит),
+  `trans` — первые слова `pTransDraw` (рисует ли драйвер),
+  `pal` — первые цвета палитры (посчитан ли `DrvRecalc`).
+- Чтение PC: между кадрами ни один M6809 не открыт, поэтому проба делает
+  `M6809Open(0)` / `M6809GetPC()` / `M6809Close()` (у `M6809GetPC` нет
+  варианта с номером CPU).
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 586 556 Б, в образе
+  `r1618` и строка `pc_moves=`.
+- Как читать результат на стенде: `pc_moves=0` → игра не выполняется (CPU/reset/
+  ROM-ветка); `pc_moves>0`, `trans=0,0` → CPU идёт, но видео не заполняется
+  (инициализация железа); `trans` не нули, `pal=0,0` → не посчитана палитра.
+
+## r1616 — DIP_OFFSET, мёртвый аппаратный вывод, старый фон, проба кадра
+
+Лог r1615 со стенда (все 22 набора) + жалобы владельца: GALAGA/DSABER/RTHUN2
+всё ещё в сервисном меню, GAPLUS/TODRUAGA/SUPERPAC чёрные, «нет бордюра, вижу
+старый фон», «почему не аппаратный вывод».
+
+1. **DIP_OFFSET.** В таблицах DIP многих драйверов есть строка
+   `nFlags == 0xF0` (`DIP_OFFSET(x)`), задающая индекс первого DIP-входа;
+   `nInput` в строках дефолтов отсчитывается ОТ НЕЁ (как `nDIPOffset` в burner:
+   `pgi = GameInp + bdi.nInput + nDIPOffset`). Мы считали `nInput` абсолютным:
+   у galaga (offset 0x0B) дефолты уходили в digital-входы Start2/Coin1 и
+   отбрасывались, у System 2 (offset 0x14) — в P1 Coin/Start. DIP оставались
+   нулями → Service Mode On → меню. FIX: `arc_dip_defaults()` учитывает
+   `dip_base` (r1616). skykid без offset-строки работает как раньше.
+2. **Аппаратный вывод (DE2 GSU) был мёртв для ВСЕХ аркадных систем.** В цикле
+   стояло `if (!g_cps_hw_scaler_active) host_render_frame(); else
+   cps_render_frame();`, а флаг ставится ВНУТРИ `cps_render_frame()` — она не
+   вызывалась никогда. Отсюда программный путь, кэш полей и «старый фон» вокруг
+   кадра. FIX: сначала `cps_render_frame()` (одна попытка, `g_cps_hw_tried`),
+   при неудаче — `host_render_frame()`.
+3. **Старый фон/бордюр** в программном пути: кэш чёрных полей был
+   function-static и переживал игры; при той же геометрии поля не
+   перерисовывались. FIX: `g_fr_*` + `host_render_reset()` на входе в игру.
+4. **Чёрные GAPLUS/TODRUAGA/SUPERPAC**: причина не установлена. Добавлена
+   разовая проба через 2 с: `NAM frame: WxH nonblack=N of M` (счёт ненулевых
+   пикселей `pBurnDraw`). `nonblack=0` → не рисует само ядро (reset/CPU/ROM),
+   иначе — вывод.
+5. Уточнение: `slots P1 6/10` у galaga/kingball — норма, у них в списке входов
+   вообще нет Up/Down (только Left/Right/Fire).
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 586 364 Б, в образе
+  `r1616` и строка пробы кадра.
+- Не проверено на стенде: выход из меню у трёх игр, картинка на DE2-слое,
+  содержимое чёрных кадров (нужна строка `NAM frame:`).
+
+## r1615 — DIP-переключатели Namco (игры стартовали в сервисном меню) + Service на T
+
+Владелец: после запуска Namco-игра показывает «меню настроек автомата» и не
+играется, непонятно, чем из него выходить. Лог r1614 со стенда (skykid)
+показал, что ввод уже полностью доходит до драйвера: `P1 mask=062` → `down=1`,
+`mask=061` → `up=1`, `mask=068` → `right=1`, `mask=100` → `start=1`,
+`mask=0180` → `coin=1`, `mask=0110` → `b1=1`, `slots P1 8/9`.
+
+Причина меню: **хост никогда не выставлял DIP-переключатели** — `DrvDips`
+оставались нулями, а у Namco `0` в DIP0 = «Service Mode: On» (бит 0x80).
+Пример `SkykidDIPList` (`d_skykid.cpp:81`): дефолты `DrvDips[0]=0xff`,
+`[1]=0xf2`, `[2]=0xff`; при нулях бит 0x80 = 0 → сервисное меню на старте.
+
+- `arc_dip_defaults()` (`cps1_host.cpp`, перед `BurnDrvInit`): идёт по
+  `BurnDrvGetDIPInfo`, берёт строки `nFlags == 0xFF`, где `nInput` — индекс
+  входа `BIT_DIPSWITCH`, и пишет `(*pVal & ~nMask) | (nSetting & nMask)`
+  (маска накопительная: в одном байте бывает несколько групп). Именно так это
+  делает `InpDIPSWResetDIPs()` в burner FBNeo.
+- DIP применяются **пока только для Namco** (`if (g_nam)`): у CPS/NeoGeo/
+  Toaplan/Cave/Sega игры годами работали с нулевыми DIP, менять им настройки
+  без проверки на стенде нельзя. Флаги систем (`g_neo_input/g_toa/g_cave/
+  g_sega/g_nam`) перенесены ВЫШЕ `BurnDrvInit` — иначе DIP-профиль не выбрать.
+- Новая кнопка **T = Service/Test** (HID 23) в хардкоде клавиш: слот 9 в
+  `nam_write_input`, матчится по именам `Service` / `Service Mode` (есть у
+  System 1, System 86, Pac-Man и др.). Позволяет осознанно войти в меню
+  настроек автомата и выйти из него повторным нажатием.
+- Диагностика: `slots P1 n/10`, в строке фронта добавлено `svc=`.
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 585 980 Б, в образе
+  `r1615`, `T=Service`, `slots P1 %d/10`.
+- Не проверено на стенде: что все 22 набора после DIP-дефолтов стартуют в
+  аттракт (у части игр DIP-байты иные, чем у skykid).
+
+## r1614 — Namco по логу стенда: имена без префикса, System 2, размер кадра, Numpad5
+
+Лог r1613 со стенда (amidar, galaga, kingball, galaga88, digdug2, dsaber) дал
+точную картину. Ввод в драйвер доходит — `start=1 -> DrvJoy start=1`; но:
+
+- **galaxian-семейство**: `slots P1 2/9` у amidar/galaga/kingball/galaxian. В
+  `d_galaxian.cpp` имена входов БЕЗ префикса игрока (`AmidarInputList`:
+  `"Up"`, `"Fire 1"`, `"Coin 1"`, `"Start 1"`), P2 там `"Up (Cocktail)"`.
+  Матчились только `Coin 1`/`Start 1`. FIX: безымянный префикс = P1
+  (`nam_write_input`), «(Cocktail)» не матчится намеренно.
+- **System 2** (`dsaber`, Dragon Saber): печаталось `CPS1 keys`, `NAM in:` не
+  было — у него `HARDWARE_MISC_POST90S` (0x0A000000), которого не было в списке
+  префиксов. FIX: префикс добавлен; `g_nam` теперь считается рядом с
+  `g_toa/g_cave/g_sega` (до расчёта размера кадра).
+- **Размер кадра**: для всех Namco печаталось `CPS: <game> frame 384x224` —
+  ветки системы в выборе кадра не было, брался CPS-размер 384×224. У Pac-Man
+  кадр 288×224, у Galaga 224×288, у System 1 288×224 → картинка уезжала.
+  FIX: ветка `g_nam` по образцу Cave — `BurnDrvGetFullSize()`, отказ при
+  `fh > 320` (буфер `g_frame` 384×320), `nBurnPitch = fw*2`, лог
+  `NAM: game <drv> full=WxH -> WxH pitch=..`.
+- **Coin**: в логе видно только `start=1`, монета ни разу не появилась.
+  Причина в хардкоде клавиш: `case 34: case 91:` с комментарием «Numpad5», но
+  0x5B (91) — это Numpad3; Numpad5 = 0x5D (93). FIX: 91 → 93 (верхний ряд «5»
+  работал и раньше). Диагностика теперь печатает КАЖДОЕ нажатие по фронту
+  (`NAM in: P1 mask=%03X DrvJoy up=.. coin=.. start=..`), а не только первое —
+  иначе Coin, нажатый после Start, в лог не попадал.
+- Напоминание по поведению автомата: без кредита Start ничего не делает —
+  «игра не реагирует» при непрошедшей монете это нормальное поведение.
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 585 724 Б, в образе
+  `r1614`, строки `NAM: game ... full=` и `NAM in: P1 mask=` присутствуют.
+- Не проверено на стенде: набор строк после Coin/Start/стрелок.
+
+## r1613 — ввод Namco: список входов читается каждый кадр + диагностика
+
+Владелец: на стенде в игре клавиши не работают (r1612). Проверка пути по коду
+показала, что цель маппинга верная — указатели берутся из собственного списка
+драйвера (`BurnDrvGetInputInfo` → `DrvJoyN`), имена совпадают у всех 22 наборов
+(«P1 Up», «P1 Button 1», «P1 Coin»; у galaxian/pacman — «Coin 1»/«Start 1»).
+Слабое место было в кэше r1612: он снимался ОДИН раз на старте, и если в этот
+момент список отдавался пустым, клавиши молча уходили в никуда без единой
+строки в логе.
+
+- `nam_write_input()` теперь разбирает список входов драйвера КАЖДЫЙ кадр и
+  сразу пишет значения: 9 слотов на игрока (направления, 3 кнопки, Coin,
+  Start). Кэш `g_nam_pad`/`nam_input_cache()` удалены — нет состояния, которое
+  может оказаться пустым или устаревшим. Цена — ~50 коротких `strcmp` на кадр.
+- Лог (всегда, один раз за игру):
+  `NAM in: <drv> hw=<код> slots P1 n/9 P2 n/9` — сколько слотов нашлось;
+  затем при первом нажатии: `NAM in: keys up=.. start=.. coin=.. a=.. ->
+  DrvJoy up=.. start=.. coin=..` (обратное чтение того, что попало в драйвер).
+  Если строк `NAM in:` нет — на стенде старая прошивка; если `slots P1 0/9` —
+  список входов отдался пустым (тогда причина в драйвере, а не в клавишах).
+- Сборка: `make -j20`, `linkcheck: OK`, `h3_bare.bin` 24 585 468 Б, в образе
+  `r1613` и обе диагностические строки.
+- Не проверено на стенде: результат (нужен лог `NAM in:` с железа).
+
+## r1612 — ввод Namco: свой writer по указателям BurnDrvGetInputInfo
+
+Симптом (стенд): игра Namco грузится, музыка/демо идут, но **клавиатура не
+реагирует** — ни Coin, ни Start. Причина не в USB/ремапе: `host_update_input()`
+писал ввод только в CPS-регистры (`CpsInp*`), NeoGeo-массивы (`NeoJoy*`/
+`NeoButton*`) и через `toa_write_input()` для Toaplan/Cave/Sega. Namco-драйверы
+читают СВОИ `DrvJoyN[8]` (System 1: `DrvFrame` — `DrvInputs[i] ^= (DrvJoyN[j]&1)<<j`,
+Pac-Man: то же + `ProcessJoystick`), и их никто не заполнял.
+
+- `nam_input_cache()` (по образцу `toa_input_cache`, `cps1_host.cpp`): один проход
+  `BurnDrvGetInputInfo` на старте игры, только `BIT_DIGITAL` (=1). Имя приводится
+  к нижнему регистру, префикс `p1 `/`p2 ` даёт игрока, дальше слот:
+  `up/down/left/right`, `button 1..3` ИЛИ `fire 1..3`, `coin`, `start`; отдельно
+  `coin 1|2` / `start 1|2` (в galaxian/pacman-семействе игрок в цифре, без
+  префикса). Аналоги (`left stick up`, `paddle`, `x axis`) не матчатся — им нужен
+  аналоговый путь, не наш.
+- `nam_write_input()` пишет 9 слотов на игрока; вызывается в `host_update_input()`
+  только при `g_nam`.
+- `g_nam` ставится в `run_cps` по префиксу железа: `HARDWARE_PREFIX_MISC_PRE90S`
+  (System 1/86/SS2, Galaga, Rally X, Mappy, Pac-Land, Sky Kid), `PACMAN`,
+  `GALAXIAN`, и только если это не NeoGeo/Toaplan/Cave/Sega. CPS-драйверы
+  (префиксы `CAPCOM`/`CPS2`) кэш не заполняют — их списки входов нам не нужны.
+- Почему не по имени корня `/roms/namco`: игра может быть запущена и из
+  `/roms/fbneo`, а признак системы нужен устойчивый.
+- Лог при старте: `NAM keys: P1 arrows+Z/X/C, 1=Start, 5=Coin; P2 WASD+J/K/L,
+  2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit` (раньше для Namco печаталась
+  CPS-подсказка с `S=Coin`/`Enter=Start`, что для этого пути неверно).
+- Проверено: `make -j20` — `linkcheck: OK`, `h3_bare.bin` 24 585 148 Б, в образе
+  `r1612`; `pDriver` = 0x1F14 (1989) не изменился, `g_nam_pad` = 0x48 (2×9×4).
+- Не проверено на стенде: реакции игр на Coin/Start/кнопки, а также аналоговые
+  игры System 2 (`numanb`, `finallap` и пр.) — там Steering/Accelerator
+  остаются неподключёнными.
+
+## r1611 — Data Abort в Namco/GALAGA88: объект без зависимостей от .h
+
+Симптом (стенд): `/roms/namco`, ром `GALAGA88.ZIP` → Data Abort сразу
+после `ARC: rom`, дамп `F1=0x622D3631` (мусор), `F2=0x21` (alignment fault),
+`F5` → `BurnDrvGetIndex`.
+
+- Причина: правила CPS компилируют в `-o $@.tmp`, поэтому `-MMD` писал в
+  `.d` цель `<obj>.o.tmp`. В `build/deps.mk` правило ссылалось на
+  несуществующий `.tmp`, и реальный `<obj>.o` был БЕЗ зависимостей от
+  заголовков: правка `driverlist.h` не пересобирала `c1b_burn.o`.
+- Итог рассинхрона: `cps1_host.o` (свежий) ставил `nBurnDrvCount =
+  CPS_DRV_COUNT = 1989`, а массив `pDriver[]` в старом `c1b_burn.o`
+  содержал 1962 указателя → обход выходил за массив, брал ASCII как
+  указатель (`0x622D3631` = "16-b") и падал на `ldr` из нечётного адреса.
+- FIX (`Makefile`, генерация `deps.mk`): к sed добавлено
+  `-e 's#\.o\.tmp:#.o:#'` — зависимости теперь привязаны к настоящему
+  объекту. Проверено: `deps.mk` содержит `c1b_burn.o:` и не содержит
+  `.o.tmp:`; после пересборки `pDriver` = 0x1F14 = 1989 указателей
+  (`grep -c '&BurnDrv' driverlist.h` = 1989).
+- Уточнение прошлой записи: в r1610 было указано «1992 драйвера» — это
+  счёт по строкам с пустыми; фактически **1989**.
+- Правило на будущее — `docs/PITFALLS.md` §24: после правки `.h` проверять
+  `nm -S build/h3_bare.elf | grep pDriver` (`N*4`) и делать `make clean && make`.
+
+
+## r1610 — Namco (аркадное семейство) на общем FBNeo-хосте
+
+- Новое семейство в `systems[]` (GROUP_ARCADE): **`namco`** — «Namco (Arcade)»,
+  корень `/roms/namco`; `emu_run_namco()` → `run_cps("/roms/namco", …)`,
+  ветка в `rom_browser.c` (`run_emulator`), `is_arcade_sys`, страница справки
+  в `tft_drv.c`. Папка с ромами должна называться `namco`.
+- Драйверы FBNeo (коммит `d025cfc`, источник — архив апстрима) скопированы
+  в новый каталог `cores/cps1/src/burn/drv/namco/`: `d_galaxian` (Galaxian,
+  King & Balloon, Amidor …), `gal_gfx/gal_run/gal_sound/gal_stars`
+  (общая часть galaxian-плат), `cclimber_audio`, `d_pacman`, `d_rallyx`,
+  `d_galaga`, `d_gaplus`, `d_mappy` (Mappy, Dig Dug II, Druaga, Super Pac-Man),
+  `d_pacland`, `d_namcos1`, `d_namcos86`, `d_skykid`, `d_namcos2`.
+- Новые CPU: **M6809** (`cpu/m6809` + `m6809_intf`), **M6800/HD63701**
+  (`cpu/m6800` + `m6800_intf`), **S2650** (`cpu/s2650` + `s2650_intf`).
+  M6809/M6800 — «главные» ЦП Namco System 1/86/2 и Mappy; S2650 —
+  старые galaxian-платы (s2650). Op-файлы (`6809ops.c`, `6800ops.c`)
+  включаются внутрь `m6809.cpp`/`m6800.cpp` — отдельно НЕ компилируются.
+- Звук: подключены `namco_snd` (WSG), `sn76496`, `flt_rc`, `digitalk`,
+  `c140`, `timeplt_snd` — `CPS1_NAMS` в `Makefile` (префикс `c1nm_`).
+  Устройства: `namcoio` (ввод), `earom`, `c169`, `namco_c45`, `joyprocess`.
+- `driverlist.h`: добавлены 27 драйверов (Galaxian/Galaxiana/Galaxianm,
+  Kingball, Amidar, pacman/pacplus/mspacman/puckman, Rallyx/Nrallyx, Galaga,
+  Gaplus, Mappy/Mappyj, Digdug2, Todruaga, Superpac, Pacland, Galaga88,
+  Splatter, Tankfrce, Hopmappy, Rthunder, Skykid, Rthun2, Dsaber) —
+  всего в наборе стало 1992 (`extern` + `pDriver[]`).
+- `cps1_stubs.cpp`/`neostubs.cpp`: удалены заглушки AY8910 (теперь настоящее
+  ядро `snd/ay8910.c` в сборке — иначе PSG-порты ввода Pac-Man/Galaga
+  не работали) и все дубли `Debug*`-флагов; единственный владелец —
+  `burn/debug_track.cpp` (добавлен в `CPS1_BURN`).
+- Сборка: `make -j20`, `linkcheck: OK`, версия **r1610**,
+  `h3_bare.bin` 24 583 372 Б.
+- Стенд: **НЕ проверялось**. Ромы для теста (short name = имя zip):
+  pacman, mspacman, puckman, pacplus, galaxian, galaga, galagamf, gaplus,
+  mappy, pacland, digdug2, superpac, todruaga, rallyx, nrallyx, skykid,
+  hopmappy, rthunder, rthun2, dsaber, splatter, tankfrce, galaga88,
+  kingball, amidar.
 
 ## r1609 — повторный вход в эмулятор: полная очистка состояния
 

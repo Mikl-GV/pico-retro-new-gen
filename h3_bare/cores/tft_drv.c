@@ -774,6 +774,11 @@ static const struct {
       "Sega System 16",
       {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
     },
+    // r1610: Namco — Galaxian/Pac-Man/Rally X/Gaplus/Mappy/System 1/86/SS2.
+  { "namco",
+  "Namco (Arcade)",
+  {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","T = Service (DIP/menu)","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
+  },
     { "cave",
       "Cave (68K) STGs",
       {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
