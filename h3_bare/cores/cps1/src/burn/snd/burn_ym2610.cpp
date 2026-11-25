@@ -18,11 +18,6 @@ static INT32 nAY8910Position;
 static UINT32 nSampleSize;
 static INT32 nFractionalPosition;
 
-// r1636 DBG: кадровые вызовы BurnYM2610Update и позиция рендера на входе —
-// видно, рендерит ли кадровый вызов звук или всё уже сделал stream-callback.
-INT32 g_dbg_y2610_upd = 0;
-INT32 g_dbg_y2610_pos = 0;
-
 static INT32 bYM2610AddSignal;
 
 static double YM2610Volumes[3];
@@ -32,6 +27,7 @@ static double YM2610LeftVolumes[3];
 static double YM2610RightVolumes[3];
 
 INT32 bYM2610UseSeperateVolumes; // support custom Taito panning hardware
+INT32 bYM2610SoftLimit = 0;      // r1655: мягкий лимитер вместо жёсткого клипа
 
 // ----------------------------------------------------------------------------
 // Execute YM2610 for part of a frame
@@ -196,8 +192,8 @@ static void YM2610UpdateResample(INT16* pSoundBuf, INT32 nSegmentEnd)
 		nTotalLeftSample = INTERPOLATE4PS_16BIT((nFractionalPosition >> 4) & 0x0fff, nLeftSample[0], nLeftSample[1], nLeftSample[2], nLeftSample[3]);
 		nTotalRightSample = INTERPOLATE4PS_16BIT((nFractionalPosition >> 4) & 0x0fff, nRightSample[0], nRightSample[1], nRightSample[2], nRightSample[3]);
 		
-		nTotalLeftSample = BURN_SND_CLIP(nTotalLeftSample);
-		nTotalRightSample = BURN_SND_CLIP(nTotalRightSample);
+		nTotalLeftSample = bYM2610SoftLimit ? BURN_SND_SOFT(nTotalLeftSample) : BURN_SND_CLIP(nTotalLeftSample);
+		nTotalRightSample = bYM2610SoftLimit ? BURN_SND_SOFT(nTotalRightSample) : BURN_SND_CLIP(nTotalRightSample);
 			
 		if (bYM2610AddSignal) {
 //			pSoundBuf[i + 0] += nTotalLeftSample;
@@ -237,9 +233,6 @@ static void YM2610UpdateNormal(INT16* pSoundBuf, INT32 nSegmentEnd)
 #endif
 
 	if (!pBurnSoundOut) return;
-
-	g_dbg_y2610_upd++;
-	g_dbg_y2610_pos = nYM2610Position;
 
 	INT32 nSegmentLength = nSegmentEnd;
 
@@ -301,8 +294,8 @@ static void YM2610UpdateNormal(INT16* pSoundBuf, INT32 nSegmentEnd)
 			}
 		}
 		
-		nLeftSample = BURN_SND_CLIP(nLeftSample);
-		nRightSample = BURN_SND_CLIP(nRightSample);
+		nLeftSample = bYM2610SoftLimit ? BURN_SND_SOFT(nLeftSample) : BURN_SND_CLIP(nLeftSample);
+		nRightSample = bYM2610SoftLimit ? BURN_SND_SOFT(nRightSample) : BURN_SND_CLIP(nRightSample);
 			
 		if (bYM2610AddSignal) {
 			//pSoundBuf[(n << 1) + 0] += nLeftSample;

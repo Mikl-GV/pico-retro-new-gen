@@ -42,10 +42,10 @@ extern "C" {
 #include "fat.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
-// r1634: счётчик записей Z80 → YM2610 (fm.c) для диагностики gunbird.
-// Внутри функции extern "C"-объявление недопустимо — держим на file scope.
-extern INT32 g_dbg_ym2610w;
-extern INT32 g_dbg_y2610_upd, g_dbg_y2610_pos;   // r1636: кадровые вызовы и позиция рендера
+
+// r1655: флаги мягкого лимитера звуковых ядер (см. burn_ym2610.h/ymf278b.h).
+extern INT32 bYM2610SoftLimit;
+extern INT32 bYMF278BSoftLimit;
 // r1512: DE2 GSU / cache (C-линковка; без extern "C" C++ манглит имена и
 // сборка падает на undefined reference).
 int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
@@ -115,7 +115,15 @@ extern UINT8 NeoDiag[2];
 #define FB_ADDR ((uint32_t*)0x5F900000u)
 #define FB_W    1024
 #define FB_H    600
-static uint16_t g_frame[CPS1_W * 320];
+static struct {
+    uint16_t frame[CPS1_W * 320];
+    // r1652 (A-01): guard ВНУТРИ структуры — линкер не может переставить его
+    // перед кадром; любая запись за 320-ю строку попадёт сюда, а не в
+    // nNeoSMARNGAddress (в ELF кадр примыкает к переменным NEOGEO).
+    uint8_t guard[256];
+} g_frame_mem __attribute__((aligned(16)));
+#define g_frame g_frame_mem.frame
+_Static_assert(CPS1_W * 320 * sizeof(uint16_t) == 0x3C000, "g_frame: размер кадра не 0x3C000");
 static int g_frame_h = CPS1_H;   // высота активного кадра: 224 (CPS/NEO) или 320 (Toaplan вертик.)
 static int g_frame_w = 0;        // ширина активного кадра: 0 = брать из nBurnPitch (питч 320)
 // r1624: драйвер объявлен BDF_ORIENTATION_FLIPPED — монитор ставили вверх
@@ -1178,14 +1186,21 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     if (g_nam || g_taito || g_de || g_psikyo)
         arc_dip_defaults();
 
-    // r1638/r1640: штатный режим FBNeo для YM2610 (gunbird): рендер на native
-    // частоте чипа (clock/144 = 55.5 кГц) + 4-point ресемплинг в 48 кГц.
-    // При nFMInterpolation == 0 включается Normal-путь: чип рендерится прямо
-    // в 48 кГц, т.е. в нештатном для YM2610 режиме. Precalc уже инициализирован
-    // (r1633), поэтому ресемплинг безопасен. s1945/tengai работают через
-    // YMF278B — на них флаг не влияет. Значение задаём для КАЖДОГО драйвера:
-    // иначе 3 протекло бы в NEOGEO (его YM2610 проверен на режиме 0).
-    nFMInterpolation = g_psikyo ? 3 : 0;
+    // r1654: Normal-путь FBNeo для YM2610 (gunbird): чип рендерится сразу в
+    // 48 кГц. Native 55.5 кГц + децимация в 48 (r1640) давала алиасинг —
+    // слышимое «рычание»; на стенде звук сравнялся с s1945/tengai. Precalc
+    // инициализирован (r1633), поэтому путь с ним рабочий. s1945/tengai идут
+    // через YMF278B — на них флаг не влияет. Значение задаём для КАЖДОГО
+    // драйвера, иначе 3 протёк бы в NEOGEO. Возврат к 3 — только по решению
+    // владельца, с ФНЧ перед децимацией.
+    nFMInterpolation = 0;
+
+    // r1655: мягкий лимитер ДО жёсткого клипа ядра — только Psikyo. Клип
+    // живёт внутри BurnYM2610Update (FM + AY×1.2) и BurnYMF278BUpdate
+    // (OPL4×2.80), поэтому ограничитель в цикле кадра (r1651) получал уже
+    // срезанный сигнал. NEOGEO и прочие — штатный BURN_SND_CLIP.
+    bYM2610SoftLimit = g_psikyo ? 1 : 0;
+    bYMF278BSoftLimit = g_psikyo ? 1 : 0;
 
     // r1633: таблица Precalc (её читает INTERPOLATE4PS_16BIT) заполняется
     // только в BurnLibInit(), а хост его не зовёт (см. выше про имена).
@@ -1517,6 +1532,7 @@ for (;;) {
                 const int psi_t = 22937;              // 0.7 FS
                 const int psi_r = 32767 - psi_t;
                 static int psi_peak = 0, psi_soft = 0, psi_n = 0;
+                static int psi_lf = 0, psi_lf_pk = 0;
                 for (int i = 0; i < n * 2; i++) {
                     int v = pBurnSoundOut[i];
                     int a = v < 0 ? -v : v;
@@ -1528,9 +1544,19 @@ for (;;) {
                         psi_soft++;
                     }
                 }
+                // r1655: НЧ-метр — однополюсный ФНЧ 119 Гц (shift 6, как DC в
+                // i2s). Отвечает на вопрос «рычат ли именно низы»: если НЧ-пик
+                // близок к общему — бас на пределе/клипе, если мал — грязь не
+                // низкочастотная.
+                for (int i = 0; i + 1 < n * 2; i += 2) {
+                    int m = (pBurnSoundOut[i] + pBurnSoundOut[i + 1]) >> 1;
+                    psi_lf += (m - psi_lf) >> 6;
+                    int a = psi_lf < 0 ? -psi_lf : psi_lf;
+                    if (a > psi_lf_pk) psi_lf_pk = a;
+                }
                 if ((psi_n++ % 300) == 0) {
-                    printf("PSI clip: peak=%d soft=%d\n", psi_peak, psi_soft);
-                    psi_peak = psi_soft = 0;
+                    printf("PSI clip: peak=%d soft=%d lf=%d\n", psi_peak, psi_soft, psi_lf_pk);
+                    psi_peak = psi_soft = psi_lf_pk = 0;
                 }
             }
             if (n > 0 && pBurnSoundOut)

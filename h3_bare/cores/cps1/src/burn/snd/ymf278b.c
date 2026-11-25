@@ -158,17 +158,9 @@
 	float m_clock_ratio;
 	static int ymf278b_chip_in_reset = 0;
 
-INT32 m_dbg_memwrites = 0;   // r1630 DBG: сколько байт игра пыталась залить в RAM
-// r1631 DBG: сколько раз и с какой амплитудой чип реально микшировал слоты
-INT32 m_dbg_updcalls = 0, m_dbg_updsamples = 0, m_dbg_mixmax = 0;
-// r1634 DBG: чтения за границей PCM-ROM (там 0xFF = шум/«грязь» в звуке)
-INT32 m_dbg_romovf = 0;
-UINT32 m_dbg_rommax = 0;
-
 void write_memory(UINT32 offset, UINT8 data)
 {
 	LOG(("YMF278B:  Memory write %02x to %x\n", data, offset));
-	m_dbg_memwrites++;
 }
 
 UINT8 read_memory(UINT32 offset)
@@ -176,10 +168,8 @@ UINT8 read_memory(UINT32 offset)
 	if (offset >= m_romsize)
 	{
 	//	LOG(("YMF278B:  Memory read overflow %x\n", offset));
-		m_dbg_romovf++;
 		return 0xff;
 	}
-	if (offset > m_dbg_rommax) m_dbg_rommax = offset;
 	return m_rom[offset];
 }
 
@@ -415,18 +405,6 @@ void ymf278b_pcm_update(int num, INT16 **outputs, int samples)
 					compute_envelope(slot);
 			}
 		}
-	}
-
-	m_dbg_updcalls++;
-	m_dbg_updsamples += samples;
-	{
-		INT32 mx = 0;
-		for (i = 0; i < samples * 2; i++) {
-			INT32 v = m_mix_buffer[i];
-			if (v < 0) v = -v;
-			if (v > mx) mx = v;
-		}
-		m_dbg_mixmax = mx;
 	}
 
 	mixp = m_mix_buffer;
@@ -1273,32 +1251,5 @@ WRITE8_HANDLER( YMF278B_control_port_0_C_w )
 WRITE8_HANDLER( YMF278B_data_port_0_C_w )
 {
 	ymf278b_data_port_C_w(0, data);
-}
-
-// r1630 DBG: состояние PCM-движка OPL4 для лога хоста
-void ymf278b_dbg(INT32 *o)
-{
-	int n = 0, n3 = 0, nenv0 = 0, nstep = 0;
-	for (int i = 0; i < 24; i++) {
-		if (!m_slots[i].active) continue;
-		n++;
-		if (m_slots[i].bits == 3) n3++;                  // r1636: режим «неизвестно» → sample=0
-		if (m_slots[i].env_vol == 0) nenv0++;            // r1636: слот заглох по огибающей
-		if (m_slots[i].stepptr >= m_slots[i].endaddr) nstep++; // r1636: позиция вне сэмпла
-	}
-	o[0] = m_dbg_memwrites;
-	o[1] = n;
-	o[2] = m_pcm_l;
-	o[3] = m_pcm_r;
-	o[4] = m_mix_level[m_pcm_l];
-	o[5] = m_mix_level[m_pcm_r];
-	o[6] = m_dbg_updcalls;
-	o[7] = m_dbg_updsamples;
-	o[8] = m_dbg_mixmax;
-	o[9] = m_dbg_romovf;
-	o[10] = (INT32)m_dbg_rommax;
-	o[11] = n3;
-	o[12] = nenv0;
-	o[13] = nstep;
 }
 

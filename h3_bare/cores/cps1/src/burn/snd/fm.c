@@ -4161,8 +4161,6 @@ void YM2610ResetChip(int num)
 /* a = address */
 /* v = value   */
 
-INT32 g_dbg_ym2610w = 0;   /* r1634 DBG: число записей Z80 → YM2610 */
-
 int YM2610Write(int n, int a, UINT8 v)
 {
 	YM2610 *F2610 = &(FM2610[n]);
@@ -4170,7 +4168,6 @@ int YM2610Write(int n, int a, UINT8 v)
 	int addr;
 	int ch;
 
-	g_dbg_ym2610w++;   // r1634 DBG: жив ли поток команд Z80 → чип
 	v &= 0xff;	/* adjust to 8 bit bus */
 
 	switch( a&3 ){

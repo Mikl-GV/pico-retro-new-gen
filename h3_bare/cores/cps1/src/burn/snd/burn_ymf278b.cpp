@@ -7,6 +7,7 @@ static INT16* pBuffer;
 static INT16* pYMF278BBuffer[2];
 
 static INT32 bYMF278BAddSignal;
+INT32 bYMF278BSoftLimit = 0;   // r1655: мягкий лимитер вместо жёсткого клипа
 
 static UINT32 nSampleSize;
 static INT32 nYMF278BPosition;
@@ -18,10 +19,6 @@ static double YMF278BVolumes[2];
 static INT32 YMF278BRouteDirs[2];
 
 static INT32 uses_timer; // when init passed w/NULL IRQHandler, timer is disabled.
-
-// r1630 DBG: счётчик записей в чип (Z80 жив, но, возможно, не программирует звук)
-static INT32 nYMF278BWrites;
-INT32 BurnYMF278BWrites(void) { return nYMF278BWrites; }
 
 // ----------------------------------------------------------------------------
 // Dummy functions
@@ -120,8 +117,14 @@ void BurnYMF278BUpdate(INT32 nSegmentEnd)
 		nTotalLeftSample  = INTERPOLATE4PS_16BIT((nFractionalPosition >> 4) & 0x0fff, nLeftSample[0], nLeftSample[1], nLeftSample[2], nLeftSample[3]);
 		nTotalRightSample = INTERPOLATE4PS_16BIT((nFractionalPosition >> 4) & 0x0fff, nRightSample[0], nRightSample[1], nRightSample[2], nRightSample[3]);
 
-		nTotalLeftSample  = BURN_SND_CLIP(nTotalLeftSample * YMF278BVolumes[BURN_SND_YMF278B_YMF278B_ROUTE_1]);
-		nTotalRightSample = BURN_SND_CLIP(nTotalRightSample * YMF278BVolumes[BURN_SND_YMF278B_YMF278B_ROUTE_2]);
+		// r1655: ×2.80 даёт до 91747 — мягкий лимитер тянет пик вместо
+		// жёсткого среза (гармоники клипа низкого баса = «рычание»).
+		{
+			INT32 l = (INT32)(nTotalLeftSample * YMF278BVolumes[BURN_SND_YMF278B_YMF278B_ROUTE_1]);
+			INT32 r = (INT32)(nTotalRightSample * YMF278BVolumes[BURN_SND_YMF278B_YMF278B_ROUTE_2]);
+			nTotalLeftSample  = bYMF278BSoftLimit ? BURN_SND_SOFT(l) : BURN_SND_CLIP(l);
+			nTotalRightSample = bYMF278BSoftLimit ? BURN_SND_SOFT(r) : BURN_SND_CLIP(r);
+		}
 
 		if (bYMF278BAddSignal) {
 			pSoundBuf[i + 0] = BURN_SND_CLIP(pSoundBuf[i + 0] + nTotalLeftSample);
@@ -150,7 +153,6 @@ void BurnYMF278BUpdate(INT32 nSegmentEnd)
 
 void BurnYMF278BSelectRegister(INT32 nRegister, UINT8 nValue)
 {
-	nYMF278BWrites++;   // r1630 DBG
 #if defined FBNEO_DEBUG
 	if (!DebugSnd_YMF278BInitted) bprintf(PRINT_ERROR, _T("BurnYMF278BSelectRegister called without init\n"));
 #endif
@@ -172,7 +174,6 @@ void BurnYMF278BSelectRegister(INT32 nRegister, UINT8 nValue)
 
 void BurnYMF278BWriteRegister(INT32 nRegister, UINT8 nValue)
 {
-	nYMF278BWrites++;   // r1630 DBG
 #if defined FBNEO_DEBUG
 	if (!DebugSnd_YMF278BInitted) bprintf(PRINT_ERROR, _T("BurnYMF278BWriteRegister called without init\n"));
 #endif
@@ -311,16 +312,6 @@ void BurnYMF278BSetRoute(INT32 nIndex, double nVolume, INT32 nRouteDir)
 
 	YMF278BVolumes[nIndex] = nVolume;
 	YMF278BRouteDirs[nIndex] = nRouteDir;
-}
-
-// r1630/r1632 DBG: состояние чипа и обёртки для лога хоста
-extern "C" void ymf278b_dbg(INT32 *o);
-void BurnYMF278BDebug(INT32* pOut)
-{
-	ymf278b_dbg(pOut);                    // o[0..13], включая romovf/rommax/слоты
-	pOut[14] = (INT32)nSampleSize;        // шаг ресемплинга (0 = звук не идёт)
-	pOut[15] = nYMF278BPosition;          // сколько сэмплов уже отрендерено
-	pOut[16] = nFractionalPosition;       // позиция в буфере на конец кадра
 }
 
 void BurnYMF278BScan(INT32 nAction, INT32* pnMin)

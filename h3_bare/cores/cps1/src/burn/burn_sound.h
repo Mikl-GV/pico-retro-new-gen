@@ -39,6 +39,19 @@ inline INT32 BURN_SND_CLIP(INT32 sam)
 	else return sam;
 }
 
+// r1655: мягкий ограничитель (Psikyo). До порога 0.7 FS — без изменений, выше —
+// плавное сжатие вместо обрезания: жёсткий клип баса даёт гармоники, слышимые
+// как «рычание». Выход всегда <= 0x7fff, поэтому клип после не нужен.
+inline INT32 BURN_SND_SOFT(INT32 sam)
+{
+	const INT32 t = 22937, r = 0x7fff - t;
+	INT32 a = (sam < 0) ? -sam : sam;
+	if (a <= t) return sam;
+	INT32 d = a - t;
+	INT32 y = t + (d * r) / (d + r);
+	return (sam < 0) ? -y : y;
+}
+
 void BurnSoundDCFilter();
 void BurnSoundDCFilterReset(); // called in burn.cpp: BurnDrvInit()
 

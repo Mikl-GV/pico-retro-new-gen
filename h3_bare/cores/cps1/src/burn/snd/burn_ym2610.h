@@ -30,6 +30,9 @@ void BurnYM2610Scan(INT32 nAction, INT32* pnMin);
 #endif
 
 extern INT32 bYM2610UseSeperateVolumes;
+// r1655: мягкий ограничитель вместо BURN_SND_CLIP (включает хост для Psikyo;
+// остальные системы/NEOGEO идут штатным клипом).
+extern INT32 bYM2610SoftLimit;
 
 #define BURN_SND_YM2610_YM2610_ROUTE_1		0
 #define BURN_SND_YM2610_YM2610_ROUTE_2		1
