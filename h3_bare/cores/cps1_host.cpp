@@ -1459,8 +1459,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
 
-    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=real)\n",
-           game);
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
     } else if (g_toa) {
@@ -1484,9 +1482,6 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     emulog_field("ARC", "video", "%dx%d", g_frame_w, g_frame_h);
     emulog_field("ARC", "machine", "%s", BurnDrvGetTextA(DRV_SYSTEM));
     emulog_field("ARC", "init", "OK");
-    // r1629 DBG: тишина PS3 — проверяем, что драйвер вообще задал звук.
-    if (g_psikyo)
-        printf("PSI init: rate=%d len=%d\n", (int)nBurnSoundRate, (int)nBurnSoundLen);
 
     // r0.390 (Sega 16 «подтормаживает»): ядро тикает на частоте ДРАЙВЕРА
     // (nBurnFPS, напр. S16 59.6 Гц / CPS 60.00), а throttle стоял на общих
@@ -1531,32 +1526,14 @@ for (;;) {
             if (g_psikyo && n > 0 && pBurnSoundOut) {
                 const int psi_t = 22937;              // 0.7 FS
                 const int psi_r = 32767 - psi_t;
-                static int psi_peak = 0, psi_soft = 0, psi_n = 0;
-                static int psi_lf = 0, psi_lf_pk = 0;
                 for (int i = 0; i < n * 2; i++) {
                     int v = pBurnSoundOut[i];
                     int a = v < 0 ? -v : v;
-                    if (a > psi_peak) psi_peak = a;
                     if (a > psi_t) {
                         int d = a - psi_t;
                         int y = psi_t + (d * psi_r) / (d + psi_r);
                         pBurnSoundOut[i] = (int16_t)(v < 0 ? -y : y);
-                        psi_soft++;
                     }
-                }
-                // r1655: НЧ-метр — однополюсный ФНЧ 119 Гц (shift 6, как DC в
-                // i2s). Отвечает на вопрос «рычат ли именно низы»: если НЧ-пик
-                // близок к общему — бас на пределе/клипе, если мал — грязь не
-                // низкочастотная.
-                for (int i = 0; i + 1 < n * 2; i += 2) {
-                    int m = (pBurnSoundOut[i] + pBurnSoundOut[i + 1]) >> 1;
-                    psi_lf += (m - psi_lf) >> 6;
-                    int a = psi_lf < 0 ? -psi_lf : psi_lf;
-                    if (a > psi_lf_pk) psi_lf_pk = a;
-                }
-                if ((psi_n++ % 300) == 0) {
-                    printf("PSI clip: peak=%d soft=%d lf=%d\n", psi_peak, psi_soft, psi_lf_pk);
-                    psi_peak = psi_soft = psi_lf_pk = 0;
                 }
             }
             if (n > 0 && pBurnSoundOut)

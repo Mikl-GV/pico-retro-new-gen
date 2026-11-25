@@ -47,8 +47,9 @@ static int g_loaded = 0;
 
 // r1498: DE2 корректно читает 32-битные кадры (PXT), а 16-битные (RGB565)
 // — шахматит (проверено на 32X/GBA/Lynx: битый DE2-16бит, CPU-копия чистая).
-// SNES рендерит RGB565 в EMU_FB (256/512 колонок, страйд 320 — hi-res 512
-// клампится до 320, как в программном emu_scale); в snes_render_frame кадр
+// SNES рендерит RGB565 в EMU_FB (256/512 колонок, страйд 320; r1658: hi-res
+// 512 усредняется парами до 256 логических пикселей — раньше правые колонки
+// просто не попадали в кадр); в snes_render_frame кадр
 // конвертируется в XRGB8888-буфер и отдаётся DE2 GSU, который растягивает
 // на всю высоту FB_H=600 с сохранением пропорций (dst_w = w*600/h, кламп
 // 1024, dx по центру) — та же геометрия, что у программного emu_scale.
@@ -57,6 +58,9 @@ static uint32_t snes_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".n
 // r1498: активен ли аппаратный DE2 GSU (для emu_run_snes — пропустить emu_scale).
 // file-static — переживает сессии, сбрасывается в snes_init_game (урок r1496).
 static int g_hw_scaler_active = 0;
+// r1658 (A-07): ширина кадра в EMU_FB после приведения к логической:
+// hi-res 512 усредняется парами до 256; остальные — как есть.
+static int g_eff_w = 0;
 
 // Joypad-данные (читаются S9xReadJoypad, заполняются build_input)
 static uint32_t g_joydata = 0;
@@ -178,6 +182,7 @@ extern "C" int snes_init_game(const uint8_t* rom, uint32_t size) {
     // r1498: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
     // static переживает сессию, без сброса повторный запуск = чёрный экран.
     g_hw_scaler_active = 0;
+    g_eff_w = 0;
 
     // Настройки по умолчанию (как в init_sfc_setting libretro.c)
     memset(&Settings, 0, sizeof(Settings));
@@ -318,13 +323,26 @@ extern "C" void snes_run_frame(void) {
     int pitch = GFX.Pitch;
     const uint8_t* src = GFX.Screen;
 
+    // r1658 (A-07): hi-res 512 — усредняем пары пикселей в 256 логических
+    // (RGB565-среднее по каналам). Раньше копировались только левые 320
+    // колонок, правые 192 не попадали в кадр.
+    int eff_w = (w > EMU_W) ? (w >> 1) : w;
+    if (eff_w <= 0) eff_w = EMU_W;
+    g_eff_w = eff_w;
     for (int y = 0; y < h && y < EMU_H; y++) {
         const uint16_t* s = (const uint16_t*)(src + y * pitch);
         uint16_t* d = EMU_FB + y * EMU_W;
-        int xw = (w > EMU_W) ? EMU_W : w;
-        for (int x = 0; x < xw; x++)
-            d[x] = s[x];
-        for (int x = xw; x < EMU_W; x++)
+        if (w > EMU_W) {
+            for (int x = 0; x < eff_w; x++) {
+                uint16_t a = s[2 * x];
+                uint16_t b = (2 * x + 1 < w) ? s[2 * x + 1] : a;
+                d[x] = (uint16_t)(((a & 0xF7DEu) >> 1) + ((b & 0xF7DEu) >> 1));
+            }
+        } else {
+            for (int x = 0; x < eff_w; x++)
+                d[x] = s[x];
+        }
+        for (int x = eff_w; x < EMU_W; x++)
             d[x] = 0;
     }
     for (int y = h; y < EMU_H; y++)
@@ -348,9 +366,9 @@ extern "C" void snes_render_frame(void) {
                                      uint32_t dw, uint32_t dh);
     extern void h3_de2_set_bkcolor(uint32_t argb);
     extern void usb_cache_clean(uint32_t addr, uint32_t size);
-    int w = IPPU.RenderedScreenWidth;
+    int w = g_eff_w > 0 ? g_eff_w : EMU_W;   // r1658: логическая ширина кадра
     int h = IPPU.RenderedScreenHeight;
-    if (w <= 0 || w > EMU_W) w = EMU_W;   // как emu_scale: hi-res 512 клампится до 320
+    if (w > EMU_W) w = EMU_W;
     if (h <= 0 || h > EMU_H) h = EMU_H;
     if (!g_hw_scaler_active) {
         // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как emu_scale).
@@ -433,7 +451,7 @@ extern "C" void emu_run_snes(const uint8_t* rom, uint32_t size, const char* rom_
         // конвертирует RGB565→XRGB8888, GSU растягивает) — программный emu_scale
         // не нужен и наложился бы поверх аппаратного.
         if (!snes_hw_scaler_active())
-            emu_scale(IPPU.RenderedScreenWidth > 0 ? IPPU.RenderedScreenWidth : 256,
+            emu_scale(g_eff_w > 0 ? g_eff_w : 256,
                       IPPU.RenderedScreenHeight > 0 ? IPPU.RenderedScreenHeight : 224);
         fb_flush();
         // ESC — удержание ~0.9 с на выход

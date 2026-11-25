@@ -74,6 +74,12 @@ INT32 nBurnBpp;						// Bytes per pixel (2, 3, or 4)
 
 INT32 nBurnSoundRate = 0;			// sample rate of sound or zero for no sound
 INT32 nBurnSoundLen  = 0;			// length in samples per frame
+
+// A-05 (r1656): накопитель дробной длины звукового кадра. Постоянная длина
+// (48000*100/5929 -> 810) давала +25 пар/с при 59.29 Гц: кольцо i2s медленно
+// заполнялось (fill 810..4794), продюсер ждал. Дробим остаток: длина кадра
+// чередуется 809/810, средний темп ровно nBurnSoundRate.
+static INT64 s_snd_acc = 0;			// остаток в 1/100 сэмпла
 INT16* pBurnSoundOut = NULL;		// pointer to output buffer
 
 INT32 nInterpolation   = 1;			// Desired interpolation level for ADPCM/PCM sound
@@ -1005,6 +1011,13 @@ INT32 BurnDrvCartridgeSetup(BurnCartrigeCommand nCommand)
 // Do one frame of game emulation
 extern "C" INT32 BurnDrvFrame()
 {
+	// A-05: точная длина звукового кадра (см. s_snd_acc). Ядра, которым нужна
+	// длина до первого кадра, видят базовое значение из BurnSetRefreshRate.
+	if (nBurnSoundRate > 0 && nBurnFPS > 0) {
+		s_snd_acc += (INT64)nBurnSoundRate * 100;
+		nBurnSoundLen = (INT32)(s_snd_acc / nBurnFPS);
+		s_snd_acc %= nBurnFPS;
+	}
 	CheatApply();									// Apply cheats (if any)
 	HiscoreApply();
 	return pDriver[nBurnDrvActive]->Frame();		// Forward to drivers function
@@ -1090,6 +1103,7 @@ INT32 BurnSetRefreshRate(double dFrameRate)
 #endif
 
 	nBurnSoundLen = (nBurnSoundRate * 100 + (nBurnFPS >> 1)) / nBurnFPS;
+	s_snd_acc = 0;		// A-05: новый темп — остаток с нуля
 
 	return 0;
 }

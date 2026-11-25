@@ -64,7 +64,11 @@ void fat_abort_write(void);
 int  fat_delete_file(const char* dir, const char* name);
 
 // Разделяемый буфер директорий (вместо fat_entry_t dirs[FAT_MAX_ENTRIES] на стеке).
-// Одновременно используется только один контекст (меню/браузер/FAT).
+// Контракт (аудит A-10, 17 мест): буфер один на порт и НЕ реентерабельный —
+// пока держим указатель, нельзя вызывать fat_list/fat_find/fat_delete_file/
+// path_lookup (они его перезаполняют). Имя/поля копировать ДО такого вызова
+// (так сделано в rom_browser.c, cheatdb.c, fat_find). Вложенных вызовов в
+// текущем коде нет — проверено по всем 17 точкам.
 fat_entry_t* fat_scratch(void);
 
 // r788: блочный источник. По умолчанию — SD (sd_read/sd_write_sector).
