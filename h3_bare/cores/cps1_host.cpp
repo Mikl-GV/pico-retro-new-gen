@@ -42,6 +42,10 @@ extern "C" {
 #include "fat.h"
 #include "h3_hs_timer.h"
 #include "i2s.h"
+// r1634: счётчик записей Z80 → YM2610 (fm.c) для диагностики gunbird.
+// Внутри функции extern "C"-объявление недопустимо — держим на file scope.
+extern INT32 g_dbg_ym2610w;
+extern INT32 g_dbg_y2610_upd, g_dbg_y2610_pos;   // r1636: кадровые вызовы и позиция рендера
 // r1512: DE2 GSU / cache (C-линковка; без extern "C" C++ манглит имена и
 // сборка падает на undefined reference).
 int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
@@ -128,7 +132,7 @@ static int g_arc_flip = 0;
 // растягивает на всю высоту FB_H=600 с сохранением пропорций (contain,
 // dst_w = w×600/h, кламп 1024, dx по центру — как MD r1505); слой
 // перекалибруется при смене w/h (урок r1506 — MD «строки разъехались»).
-static uint32_t cps_rgb32[CPS1_W * 320] __attribute__((aligned(4), section(".noinit_fbn")));
+static uint32_t cps_rgb32[CPS1_W * 320] __attribute__((aligned(4), section(".rgb_hi")));
 // r1512: активен ли аппаратный DE2 GSU (для run_cps — не звать программный
 // host_render_frame). file-static — переживает сессии, сбрасывается в run_cps
 // при входе (урок r1496: без сброса повторный запуск = чёрный экран).
@@ -143,12 +147,21 @@ static int g_cps_gsu_h = 0;
 // 0x44C00000..0x4A400000 (88 МБ над .bss, ниже .coherent): прежние 92 МБ от
 // 0x50000000 залезали в пул FBNeo 0x54000000 и затирались при BurnDrvInit.
 // BIOS/родителя — 0x5C000000 (48 МБ), как было.
-#define ZIP_BUF1 ((uint8_t*)0x50000000u)
-#define ZIP_BUF_BIG ((uint8_t*)0x44C00000u)
-#define ZIP_BUF2 ((uint8_t*)0x5C000000u)
+#define ZIP_BUF1_ADDR     0x50000000u
+#define ZIP_BUF_BIG_ADDR  0x44C00000u
+#define ZIP_BUF2_ADDR     0x5C000000u
+#define ZIP_BUF1 ((uint8_t*)ZIP_BUF1_ADDR)
+#define ZIP_BUF_BIG ((uint8_t*)ZIP_BUF_BIG_ADDR)
+#define ZIP_BUF2 ((uint8_t*)ZIP_BUF2_ADDR)
 #define ZIP_MAX  (64u * 1024u * 1024u)   // ROM_BUF до .vice_bss/пула
 #define ZIP_MAX_BIG (88u * 1024u * 1024u)   // .bss..coherent, крупные сеты
 #define ZIP_MAX2 (48u * 1024u * 1024u)   // буфер родителя/BIOS ниже EMU_FB
+// r1642 (A-04): запас до соседних зон был 0 байт — фиксируем границы на
+// этапе компиляции. Адреса-числа: приведение указателя в static_assert не
+// является константным выражением.
+static_assert(ZIP_BUF1_ADDR + ZIP_MAX <= 0x54000000u, "ZIP_BUF1 overlaps .gbc_bss");
+static_assert(ZIP_BUF_BIG_ADDR + ZIP_MAX_BIG <= 0x4A400000u, "ZIP_BUF_BIG overlaps .coherent");
+static_assert(ZIP_BUF2_ADDR + ZIP_MAX2 <= 0x5F000000u, "ZIP_BUF2 overlaps EMU_FB");
 static char g_dir[FAT_NAME_LEN + 16];   // "/roms/cps1/<game>"
 static const uint8_t* g_zip_data = NULL;
 static uint32_t g_zip_size = 0;
@@ -352,7 +365,9 @@ static int check_romset(const char* game)
         BurnDrvGetRomInfo(&ri, (UINT32)i);
         if (ri.nType == 0 && ri.nLen == 0) continue;   // пустые слоты (break ломал NEO: BIOS на 128+)
         if (ri.nLen == 0) continue;
-        if (ri.nType & BRF_OPT) continue;   // PLD-микросхемы драйвер не грузит
+        // BRF_OPT драйвер не грузит; BRF_NODUMP — недокументированный дамп
+        // (например MCU 4-u59.bin у s1945): его нет ни в одном сете, и он не нужен.
+        if (ri.nType & (BRF_OPT | BRF_NODUMP)) continue;
         total++;
         char* name = NULL;
         BurnDrvGetRomName(&name, (UINT32)i, 0);
@@ -558,9 +573,6 @@ static void host_render_frame(void)
         y_acc += step_y;
     }
 }
-
-// ---- r1512: активен ли аппаратный DE2 GSU (для run_cps) ----
-static int cps_hw_scaler_active(void) { return g_cps_hw_scaler_active; }
 
 // r1512: рендер кадра аркады на DE2 GSU (вместо программного host_render_frame).
 // Источник — pBurnDraw (RGB565, активная ширина страйда nBurnPitch/2, высота
@@ -1112,6 +1124,11 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // shift=9 → fc = 48000/(512·2π) ≈ 15 Гц: DC/инфразвук давится, низ
     // остаётся. Для аркад это безопасно (в отличие от NGP/CPC, где DC есть).
     i2s_dc_shift_set(9);
+    // r1637: включаем итоговую статистику ring→FIFO (emu_audio_stop напечатает
+    // AUDIO-END: fill=.. drop=.. under=..) — проверяем версию «рвётся со
+    // временем из-за переполнения кольца»: 810 пар/кадр при 59.3 Гц дают
+    // ~48 030 пар/с против 48 000 у I2S.
+    i2s_audio_diag_set(1);
     // r944: target кольца адаптивный (emu_throttle) — не хардкодим.
 
     BurnExtLoadRom = host_ext_load_rom;
@@ -1160,6 +1177,20 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // с нулевыми DIP.
     if (g_nam || g_taito || g_de || g_psikyo)
         arc_dip_defaults();
+
+    // r1638/r1640: штатный режим FBNeo для YM2610 (gunbird): рендер на native
+    // частоте чипа (clock/144 = 55.5 кГц) + 4-point ресемплинг в 48 кГц.
+    // При nFMInterpolation == 0 включается Normal-путь: чип рендерится прямо
+    // в 48 кГц, т.е. в нештатном для YM2610 режиме. Precalc уже инициализирован
+    // (r1633), поэтому ресемплинг безопасен. s1945/tengai работают через
+    // YMF278B — на них флаг не влияет. Значение задаём для КАЖДОГО драйвера:
+    // иначе 3 протекло бы в NEOGEO (его YM2610 проверен на режиме 0).
+    nFMInterpolation = g_psikyo ? 3 : 0;
+
+    // r1633: таблица Precalc (её читает INTERPOLATE4PS_16BIT) заполняется
+    // только в BurnLibInit(), а хост его не зовёт (см. выше про имена).
+    // Без неё YMF278B (Psikyo PS3) умножал на нули — микс живой, выход 0.
+    BurnSoundInit();
 
     if (BurnDrvInit() != 0) {
         printf("CPS: %s init failed (check ROM set)\n", game);
@@ -1413,7 +1444,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     printf("CPS: %s frame %dx%d pitch %d\n", game,
            (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
 
-    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=stub)\n",
+    printf("SND %s cores: ym2612 ym2413 ym2151 ym2203 ym3812 ymz280b msm5205 msm6295 rf5c68 segapcm dac upd7759 (ay8910=ports, ym2610=real)\n",
            game);
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
@@ -1438,6 +1469,9 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     emulog_field("ARC", "video", "%dx%d", g_frame_w, g_frame_h);
     emulog_field("ARC", "machine", "%s", BurnDrvGetTextA(DRV_SYSTEM));
     emulog_field("ARC", "init", "OK");
+    // r1629 DBG: тишина PS3 — проверяем, что драйвер вообще задал звук.
+    if (g_psikyo)
+        printf("PSI init: rate=%d len=%d\n", (int)nBurnSoundRate, (int)nBurnSoundLen);
 
     // r0.390 (Sega 16 «подтормаживает»): ядро тикает на частоте ДРАЙВЕРА
     // (nBurnFPS, напр. S16 59.6 Гц / CPS 60.00), а throttle стоял на общих
@@ -1465,7 +1499,40 @@ for (;;) {
         {   // r1326 (A1): блоком вместо цикла push_sample (dsb на пару).
             extern INT32 nBurnSoundLen;
             int n = nBurnSoundLen;
-            if (n > 2048) n = 2048;   // страховка от переполнения буфера
+            if (n > 2048) {
+                // r1642 (A-06): раньше хвост кадра молча отбрасывался —
+                // теперь видно, что nBurnSoundLen выходит за буфер cps_snd.
+                static int warned = 0;
+                if (!warned) {
+                    printf("CPS: sound len %d > 2048, tail dropped\n", n);
+                    warned = 1;
+                }
+                n = 2048;
+            }
+            // r1651: маршруты Psikyo перегружены (OPL4 2.8, AY 1.2) — жёсткий
+            // BURN_SND_CLIP в ядре режет пики, слышно «рычание» на ярких
+            // звуках. Мягкое ограничение выше 0.7 FS: громкость до порога
+            // сохраняется, выше — плавное сжатие вместо обрезания.
+            if (g_psikyo && n > 0 && pBurnSoundOut) {
+                const int psi_t = 22937;              // 0.7 FS
+                const int psi_r = 32767 - psi_t;
+                static int psi_peak = 0, psi_soft = 0, psi_n = 0;
+                for (int i = 0; i < n * 2; i++) {
+                    int v = pBurnSoundOut[i];
+                    int a = v < 0 ? -v : v;
+                    if (a > psi_peak) psi_peak = a;
+                    if (a > psi_t) {
+                        int d = a - psi_t;
+                        int y = psi_t + (d * psi_r) / (d + psi_r);
+                        pBurnSoundOut[i] = (int16_t)(v < 0 ? -y : y);
+                        psi_soft++;
+                    }
+                }
+                if ((psi_n++ % 300) == 0) {
+                    printf("PSI clip: peak=%d soft=%d\n", psi_peak, psi_soft);
+                    psi_peak = psi_soft = 0;
+                }
+            }
             if (n > 0 && pBurnSoundOut)
                 i2s_push_block(pBurnSoundOut, (uint32_t)n);
         }

@@ -165,7 +165,7 @@ static void build_input(void) {
     if (mods & 0x04) g_suborkb[88] = 1;   // LAlt
     if (mods & 0x40) g_suborkb[96] = 1;   // RAlt
 }
-extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
+extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size, const char* name) {
     printf("FCEUmm: init size=%u\n", (unsigned)size);
     g_loaded = 0;
     // r1504: сброс флага аппаратного скейлера ПРИ КАЖДОМ входе (урок r1496):
@@ -181,7 +181,10 @@ extern "C" int fceumm_init_game(const uint8_t* rom, uint32_t size) {
         return 0;
     }
 
-    FCEUGI* gi = FCEUI_LoadGame("rom", rom, size, NULL);
+    // r1645 (A-12): имя — для детекта региона. ines.c:1318-1332 ставит
+    // PAL по "(Europe)"/"(PAL)"/"(E)" из имени; с "rom" детект не срабатывал
+    // и Europe-ромы шли по NTSC (быстрее на ~20%).
+    FCEUGI* gi = FCEUI_LoadGame((name && *name) ? name : "rom", rom, size, NULL);
     if (!gi) {
         printf("FCEUmm: load failed (bad/missing mapper?)\n");
         FCEUI_Kill();
@@ -405,7 +408,7 @@ extern "C" void emu_run_nes(const uint8_t* rom, uint32_t size, const char* rom_n
     emulog_begin("NES");
     emulog_field("NES", "rom", "%s, %u B", rom_name ? rom_name : "?", (unsigned)size);
     snd_manifest("nes", "apu 2a03");
-    if (fceumm_init_game(rom, size) != 1) {
+    if (fceumm_init_game(rom, size, rom_name) != 1) {
         printf("NES(FCEUmm): init failed\n");
         emulog_field("NES", "init", "FAILED");
         emulog_end("NES");

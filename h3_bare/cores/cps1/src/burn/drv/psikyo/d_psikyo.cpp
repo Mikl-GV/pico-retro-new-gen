@@ -685,6 +685,15 @@ static struct BurnDIPInfo tengaijRegionDIPList[] = {
 
 STDDIPINFOEXT(tengaij, tengai, tengaijRegion)
 
+// r1630 DBG: звуковая цепочка PS3 — команды 68K, подтверждения Z80, IRQ чипа
+static INT32 PsikyoDbgCmd, PsikyoDbgAck, PsikyoDbgIrq;
+INT32 PsikyoDbgCount(INT32 idx)
+{
+	if (idx == 0) return PsikyoDbgCmd;
+	if (idx == 1) return PsikyoDbgAck;
+	return PsikyoDbgIrq;
+}
+
 // ----------------------------------------------------------------------------
 // CPU synchronisation
 
@@ -712,6 +721,7 @@ static inline void SendSoundCommand(const INT8 nCommand)
 
 	nSoundlatch = nCommand;
 	nSoundlatchAck = 0;
+	PsikyoDbgCmd++;   // r1630 DBG
 
 	ZetNmi();
 }
@@ -1206,6 +1216,7 @@ static void __fastcall samuraiaZ80Out(UINT16 nAddress, UINT8 nValue)
 //			bprintf(PRINT_NORMAL, _T("  - Sound reply sent (0x%02X).\n"), nValue);
 
 			nSoundlatchAck = 1;
+			PsikyoDbgAck++;   // r1630 DBG
 
 			break;
 
@@ -1253,6 +1264,7 @@ static void __fastcall gunbirdZ80Out(UINT16 nAddress, UINT8 nValue)
 //			bprintf(PRINT_NORMAL, _T("  - Sound reply sent (0x%02X).\n"), nValue);
 
 			nSoundlatchAck = 1;
+			PsikyoDbgAck++;   // r1630 DBG
 
 			break;
 
@@ -1302,6 +1314,7 @@ static void __fastcall tengaiZ80Out(UINT16 nAddress, UINT8 nValue)
 //			bprintf(PRINT_NORMAL, _T("  - Sound reply sent (0x%02X).\n"), nValue);
 
 			nSoundlatchAck = 1;
+			PsikyoDbgAck++;   // r1630 DBG
 
 			break;
 
@@ -1317,6 +1330,7 @@ static void PsikyoFMIRQHandler(INT32, INT32 nStatus)
 {
 //	bprintf(PRINT_NORMAL, _T("  - IRQ -> %i.\n"), nStatus);
 
+	PsikyoDbgIrq++;   // r1630 DBG
 	ZetSetIRQLine(0xFF, (nStatus) ? CPU_IRQSTATUS_ACK : CPU_IRQSTATUS_NONE);
 }
 

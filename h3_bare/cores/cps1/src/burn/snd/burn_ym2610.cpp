@@ -18,6 +18,11 @@ static INT32 nAY8910Position;
 static UINT32 nSampleSize;
 static INT32 nFractionalPosition;
 
+// r1636 DBG: кадровые вызовы BurnYM2610Update и позиция рендера на входе —
+// видно, рендерит ли кадровый вызов звук или всё уже сделал stream-callback.
+INT32 g_dbg_y2610_upd = 0;
+INT32 g_dbg_y2610_pos = 0;
+
 static INT32 bYM2610AddSignal;
 
 static double YM2610Volumes[3];
@@ -232,6 +237,9 @@ static void YM2610UpdateNormal(INT16* pSoundBuf, INT32 nSegmentEnd)
 #endif
 
 	if (!pBurnSoundOut) return;
+
+	g_dbg_y2610_upd++;
+	g_dbg_y2610_pos = nYM2610Position;
 
 	INT32 nSegmentLength = nSegmentEnd;
 

@@ -103,6 +103,18 @@ SECTIONS
   }
   ASSERT(_gbc_bss_end <= 0x5C000000, "ERROR: .gbc_bss > зоны 0x54000000..0x5C000000")
 
+  /* r1650: кадровые rgb32-буферы вынесены из .noinit_fbn, чтобы освободить
+   * хвост пула FBNeo (svc требует ~107.2 МБ: 91.2 постоянных + 16 МБ ADPCM).
+   * Зона 0x524A78A0..0x53E00000 свободна (выше frodo_Retro_Screen, ниже
+   * .fs_bss 0x53E00000) — владелец времени один, с FBNeo не пересекаются. */
+  .rgb_hi 0x53000000 (NOLOAD) : {
+    _rgb_hi_start = .;
+    *(.rgb_hi)
+    . = ALIGN(8);
+    _rgb_hi_end = .;
+  }
+  ASSERT(_rgb_hi_end <= 0x53E00000, "ERROR: .rgb_hi > зоны 0x53000000..0x53E00000")
+
   /* r1582: .ast_bss удалена вместе со старым ядром Atari ST (WinUAE). */
 
   /* r1363: буфер hot-swap дискет (disk_swap.c, 2 МБ). В общий .bss его класть

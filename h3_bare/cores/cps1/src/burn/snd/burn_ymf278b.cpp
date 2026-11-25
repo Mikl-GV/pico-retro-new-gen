@@ -19,6 +19,10 @@ static INT32 YMF278BRouteDirs[2];
 
 static INT32 uses_timer; // when init passed w/NULL IRQHandler, timer is disabled.
 
+// r1630 DBG: счётчик записей в чип (Z80 жив, но, возможно, не программирует звук)
+static INT32 nYMF278BWrites;
+INT32 BurnYMF278BWrites(void) { return nYMF278BWrites; }
+
 // ----------------------------------------------------------------------------
 // Dummy functions
 
@@ -146,6 +150,7 @@ void BurnYMF278BUpdate(INT32 nSegmentEnd)
 
 void BurnYMF278BSelectRegister(INT32 nRegister, UINT8 nValue)
 {
+	nYMF278BWrites++;   // r1630 DBG
 #if defined FBNEO_DEBUG
 	if (!DebugSnd_YMF278BInitted) bprintf(PRINT_ERROR, _T("BurnYMF278BSelectRegister called without init\n"));
 #endif
@@ -167,6 +172,7 @@ void BurnYMF278BSelectRegister(INT32 nRegister, UINT8 nValue)
 
 void BurnYMF278BWriteRegister(INT32 nRegister, UINT8 nValue)
 {
+	nYMF278BWrites++;   // r1630 DBG
 #if defined FBNEO_DEBUG
 	if (!DebugSnd_YMF278BInitted) bprintf(PRINT_ERROR, _T("BurnYMF278BWriteRegister called without init\n"));
 #endif
@@ -305,6 +311,16 @@ void BurnYMF278BSetRoute(INT32 nIndex, double nVolume, INT32 nRouteDir)
 
 	YMF278BVolumes[nIndex] = nVolume;
 	YMF278BRouteDirs[nIndex] = nRouteDir;
+}
+
+// r1630/r1632 DBG: состояние чипа и обёртки для лога хоста
+extern "C" void ymf278b_dbg(INT32 *o);
+void BurnYMF278BDebug(INT32* pOut)
+{
+	ymf278b_dbg(pOut);                    // o[0..13], включая romovf/rommax/слоты
+	pOut[14] = (INT32)nSampleSize;        // шаг ресемплинга (0 = звук не идёт)
+	pOut[15] = nYMF278BPosition;          // сколько сэмплов уже отрендерено
+	pOut[16] = nFractionalPosition;       // позиция в буфере на конец кадра
 }
 
 void BurnYMF278BScan(INT32 nAction, INT32* pnMin)

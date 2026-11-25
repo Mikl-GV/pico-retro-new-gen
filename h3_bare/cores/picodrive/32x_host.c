@@ -43,7 +43,7 @@
 // Поэтому 32X рендерит RGB565 в EMU_FB, а в цикле кадр конвертируется в
 // XRGB8888-буфер (32-бит) и отдаётся DE2 GSU напрямую — CPU освобождён от
 // скейла, но формат для DE2 — проверенный 32-бит. Буфер — в пуле аркад.
-static uint32_t s32x_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".noinit_fbn")));
+static uint32_t s32x_rgb32[EMU_W * EMU_H] __attribute__((aligned(4), section(".rgb_hi")));
 
 extern int printf(const char *fmt, ...);
 extern int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);

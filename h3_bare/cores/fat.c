@@ -1192,7 +1192,11 @@ static int wr_flush(void) {
 // замене старого файла в write_end.
 static void fat_free_chain(uint32_t fc) {
     uint32_t guard = 0;
-    while (fc >= 2 && fc < 0x0FFFFFF8 && guard++ < 100000) {
+    // r1644: предел — число кластеров тома, как в read_chain/find_dentry_loc.
+    // Жёсткие 100000 при кластере 512 Б (крупный файл) обрезали цепочку:
+    // файл исчезал, но хвост кластеров оставался занятым (утечка места).
+    uint32_t clim = chain_guard_limit();
+    while (fc >= 2 && fc < 0x0FFFFFF8 && guard++ < clim) {
         uint32_t next = fat_next_cluster(fc);
         fat_set_cluster(fc, 0);
         if (next == fc || next == 0 || next >= 0x0FFFFFF8) break;

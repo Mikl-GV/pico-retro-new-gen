@@ -183,7 +183,7 @@ static const emu_disk_ops_t g_cw_disk_ops = {
  * r1594: строки упакованы плотно по активной ширине (320 low / 640 mid),
  * иначе DE2 с PITCH=INSIZE читает половину строки. */
 static uint32_t g_fb[CW_MAX_W * CW_H]
-    __attribute__((aligned(64), section(".noinit_fbn")));
+    __attribute__((aligned(64), section(".rgb_hi")));
 
 static uint32_t cw_palette[16];
 

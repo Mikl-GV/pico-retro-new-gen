@@ -6,16 +6,20 @@
 
 #include "burnint.h"
 
-#define LOG_MEMORY_USAGE    0
-
 // Eh: H3-порт (r0.264): вместо newlib malloc (sbrk растёт без возврата и
 // исчерпывался за несколько запусков эмулятора) — собственный bump-пул
 // в BSS. BurnInitMemoryManager() вызывается из BurnDrvInit() при КАЖДОМ
 // запуске игры, поэтому пул переиспользуется — повторные запуски чистые.
 // max размер ROM+GFX+времён: wof — 8 МБ (rom 1М + gfx 4М + qsam 2М),
-// CPS-2 — крупные сеты (ddsom: gfx ~28 МБ, PRG/decrypt +), поэтому 96 МБ.
+// CPS-2 — крупные сеты (ddsom: gfx ~28 МБ, PRG/decrypt +).
+// r1641: 96 → 106 МБ. Реальные NEOGEO-сеты (roms/neogeo) дают 85..89,5 МБ
+// ROM-таблиц (kof2003 89,5; svc/kof2000/mslug5/garou 88,5), к ним добавляются
+// 68K/Z80 RAM, VRAM, палитры и буферы — 96 МБ были впритык, и исчерпание пула
+// молча давало NULL (bprintf — заглушка). Свободно до ZIP_BUF2 (0x5C000000)
+// ≈11 МБ, после пула лежат cps_rgb32/s32x_rgb32/g_fb (~1,1 МБ) — взят запас
+// 10 МБ, чтобы объекты .noinit_fbn остались ниже 0x5C000000.
 #define LOG_MEMORY_USAGE    0
-#define CPS1_MEM_POOL_SIZE  (96 * 1024 * 1024)
+#define CPS1_MEM_POOL_SIZE  (108 * 1024 * 1024)
 
 #define MAX_MEM_PTR	2048 // more than 1024 malloc calls should be insane... (fm.c needs a _lot_ for state-ing, increased to 2k)
 
@@ -47,7 +51,10 @@ UINT8 *_BurnMalloc(INT32 size, char *file, INT32 line)
 	INT32 sz = (size + 7) & ~7;   // выравнивание 8 для arm
 
 	if (s_pool_used + sz > CPS1_MEM_POOL_SIZE) {
-		bprintf (0, _T("BurnMalloc pool exhausted (%d + %d of %d)!\n"), s_pool_used, sz, CPS1_MEM_POOL_SIZE);
+		// r1648: bprintf — заглушка (burn.cpp), поэтому отказ пула был невидим.
+		// Печатаем в UART: в релизе это единственный признак нехватки памяти.
+		printf("BurnMalloc pool exhausted: used=%d need=%d of %d\n",
+		       (int)s_pool_used, (int)sz, (int)CPS1_MEM_POOL_SIZE);
 		return NULL;
 	}
 
@@ -117,9 +124,15 @@ void _BurnFree(void *ptr)
 	for (INT32 i = 0; i < MAX_MEM_PTR; i++)
 	{
 		if (mptr != NULL && memptr[i] == mptr) {
-			memptr[i] = NULL;   // bump: память переиспользуется при следующем BurnDrvInit
-
 			mem_allocated -= memsize[i];
+			// r1649: bump-пул не сжимался — временные буферы загрузки ROM
+			// (NeoLoadSprites: pBuf1 = 2×C-ROM, до 32 МБ) оставались занятыми
+			// до следующего BurnDrvInit и валили svc (105 МБ + 16 МБ > 106).
+			// Блок освобождается последним — возвращаем хвост пула.
+			INT32 sz = (memsize[i] + 7) & ~7;
+			if (memptr[i] + sz == s_pool + s_pool_used)
+				s_pool_used -= sz;
+			memptr[i] = NULL;   // bump: РїР°РјСЏС‚СЊ РїРµСЂРµРёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РїСЂРё СЃР»РµРґСѓСЋС‰РµРј BurnDrvInit
 #if LOG_MEMORY_USAGE
 			bprintf(0, _T("BurnFree(): index %d, size %x.  %d total!\n"), i, memsize[i], mem_allocated);
 #endif

@@ -694,8 +694,16 @@ void rom_browser_run(const char *sys_id, const char *sys_name, const char *rom_d
                     if (n <= 0) cursor = 0;
                     else if (cursor >= n) cursor = n - 1;
                 } else {
-                    // Буфер g_scratch_dir испорчен — выходим в меню
-                    return;
+                    // r1644 (A-17): раньше браузер молча закрывался — теперь
+                    // показываем ошибку и остаёмся в списке.
+                    fb_clear();
+                    fb_puts_s(60, 100, "Delete failed", 2, 0x00FF4444);
+                    fb_puts_s(60, 140, del_name, 1, 0x00FFFFFF);
+                    fb_puts_s(80, 220, "  Enter/ESC: back", 1, 0x00888888);
+                    fb_flush();
+                    input_wait();
+                    dirty = 1;
+                    continue;
                 }
                 dirty = 1;
             }

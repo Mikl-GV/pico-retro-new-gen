@@ -258,6 +258,18 @@ void cpc_render_frame(const uint16_t* src, int w, int h, size_t sp) {
     extern void h3_de2_set_bkcolor(uint32_t argb);
     extern void usb_cache_clean(uint32_t addr, uint32_t size);
     if (!src || w <= 0 || h <= 0) return;
+    // r1642 (A-09): HI-режим даёт максимум 768×272 (libretro-core.h:114-117,
+    // LOWRES выключен). Кламп — страховка от иной сборки ядра/иного crop:
+    // без него запись ушла бы за cpc_rgb32 в следующий объект .noinit_fbn.
+    if (w > 768 || h > 272) {
+        static int warned = 0;
+        if (!warned) {
+            printf("CPC: frame %dx%d clamped to 768x272\n", w, h);
+            warned = 1;
+        }
+        if (w > 768) w = 768;
+        if (h > 272) h = 272;
+    }
     if (!g_cpc_hw_scaler_active) {
         // Растяжение на всю высоту FB_H=600 по аспекту ядра (24/17) — пиксель
         // CPC неквадратный, как в программном host_video.

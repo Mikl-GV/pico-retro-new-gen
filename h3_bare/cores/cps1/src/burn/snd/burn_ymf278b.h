@@ -19,6 +19,10 @@ void BurnYMF278BExit();
 void BurnYMF278BUpdate(INT32 nSegmentEnd);
 void BurnYMF278BScan(INT32 nAction, INT32* pnMin);
 
+// r1630 DBG: диагностика тишины PS3 (записи в чип и состояние PCM-слотов)
+INT32 BurnYMF278BWrites(void);
+void BurnYMF278BDebug(INT32* pOut);
+
 #define BURN_SND_YMF278B_YMF278B_ROUTE_1		0
 #define BURN_SND_YMF278B_YMF278B_ROUTE_2		1
 

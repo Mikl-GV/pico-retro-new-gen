@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-int fceumm_init_game(const uint8_t* rom, uint32_t size);
+int fceumm_init_game(const uint8_t* rom, uint32_t size, const char* name);
 void fceumm_run_frame(void);
 void fceumm_set_suborkb_keys(const uint8_t* keys, int n);
 

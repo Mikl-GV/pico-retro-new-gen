@@ -38,6 +38,7 @@ uint8_t  a2600_tv_mode    = 2;   // A2600 TV-режим: 0 = NTSC, 1 = PAL, 2 = 
 uint8_t  a5200_tv_pal     = 0;
 // A7800: 0 = NTSC, 1 = PAL, 2 = Auto (по байту региона в заголовке картриджа).
 uint8_t  a7800_tv_mode    = 2;
+extern int g_video_vsync;   // r1647: двойная буферизация (emu.c), 0 = выкл.
 
 #define PHYS_W 1024
 #define PHYS_H 600
@@ -395,6 +396,10 @@ enum {
     // задаёт set_order[] ниже.
     SET_A5200_TV,
     SET_A7800_TV,
+    // r1647: «Video: no tearing (+1 frame)» — двойная буферизация
+    // программного FB (fb_flip_set). Применяется на входе в эмулятор,
+    // в конец enum — TFT-индексы первых пунктов не сдвигаются.
+    SET_VIDEO_VSYNC,
     SET_COUNT,
 };
 
@@ -412,6 +417,7 @@ static const char* const set_labels[SET_COUNT] = {
     "Volume",
     "Atari 5200 TV mode",
     "Atari 7800 TV mode",
+    "Video: no tearing (+1 frame)",
 };
 
 // r1142: ПОРЯДОК ОТОБРАЖЕНИЯ HDMI-меню настроек (позиция → номер пункта SET_*).
@@ -434,6 +440,7 @@ static const uint8_t set_order[SET_COUNT] = {
     SET_TOUCH_CAL,       // 10: Touch Calibration (TFT)
     SET_PART_INFO,       // 11: ROM partition info
     SET_CREATE_FOLDERS,  // 12: Create ROM system folders
+    SET_VIDEO_VSYNC,     // 13: Video: no tearing (+1 frame)
 };
 
 // Позиция номера пункта SET_* в порядке отображения set_order[] — для быстрых
@@ -583,6 +590,9 @@ static void settings_draw(int sel, int scroll) {
             fb_puts_s(440, y,
                       a7800_tv_mode == 2 ? "Auto" : (a7800_tv_mode ? "PAL" : "NTSC"),
                       1, 0x00AAAAAA);
+        }
+        if (set_idx == SET_VIDEO_VSYNC) {
+            fb_puts_s(440, y, g_video_vsync ? "On" : "Off", 1, 0x00AAAAAA);
         }
         y += 34;
     }
@@ -889,6 +899,11 @@ void settings_run(void) {
                 break;
             case SET_A7800_TV:
                 a7800_tv_mode = (uint8_t)((a7800_tv_mode + 1u) % 3u); // r1184
+                break;
+            case SET_VIDEO_VSYNC:
+                // r1647: применяется на входе в следующий эмулятор
+                // (emu_prepare → fb_flip_set); меню всегда рисует в FB_ADDR.
+                g_video_vsync = !g_video_vsync;
                 break;
             case SET_SEGA_PAD:
                 sega_pad_test_run();

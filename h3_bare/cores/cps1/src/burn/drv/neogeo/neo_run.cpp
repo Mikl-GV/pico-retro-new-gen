@@ -4217,6 +4217,7 @@ INT32 NeoInit()
 
 	if (recursing) {
 		if (LoadRoms()) {
+			printf("NeoInit: LoadRoms failed\n");   // r1648: отказ виден в UART
 			return 1;
 		}
 		return 0;
@@ -4280,6 +4281,7 @@ INT32 NeoInit()
 
 	} else {
 		if (LoadRoms()) {
+			printf("NeoInit: LoadRoms failed\n");   // r1648: отказ виден в UART
 			return 1;
 		}
 	}
