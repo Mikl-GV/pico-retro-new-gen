@@ -17,6 +17,10 @@ _Обновление r1610–r1627:_
 - **Data East** → `/roms/dataeast` (robocop, baddudes, hbarrel, karnov);
 - **Psikyo PS3** → `/roms/psikyo` (s1945, gunbird, tengai).
 
+_Обновление r1660:_
+- **Midway T-unit** → `/roms/midway` (mk, mkr4, mkplus, mktturbo, mk2 и его
+  ревизии: mk2r42, mk2r32e, mk2r31e, mk2r30, mk2r21).
+
 В fbneo остались ONLY сети, для которых драйверов в нашей прошивке НЕТ (чужие платы).
 Ниже — чем их реально запускать вне прошивки.
 

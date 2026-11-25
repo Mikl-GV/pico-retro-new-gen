@@ -2010,6 +2010,17 @@ extern struct BurnDriver BurnDrvKarnov;
 extern struct BurnDriver BurnDrvS1945;
 extern struct BurnDriver BurnDrvGunbird;
 extern struct BurnDriver BurnDrvTengai;
+// Midway T-unit (r1660): MK1/MK2 и клоны (TMS34010 + midtunit).
+extern struct BurnDriver BurnDrvMk;
+extern struct BurnDriver BurnDrvMkr4;
+extern struct BurnDriver BurnDrvMkplus;
+extern struct BurnDriver BurnDrvMktturbo;
+extern struct BurnDriver BurnDrvMk2;
+extern struct BurnDriver BurnDrvMk2r42;
+extern struct BurnDriver BurnDrvMk2r32e;
+extern struct BurnDriver BurnDrvMk2r31e;
+extern struct BurnDriver BurnDrvMk2r30;
+extern struct BurnDriver BurnDrvMk2r21;
 
 static struct BurnDriver* pDriver[] = {
     &BurnDrvGalaxian,
@@ -4016,6 +4027,16 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvmetmqstr,
     &BurnDrvnmaster,
     &BurnDrvsbp,
+    &BurnDrvMk,
+    &BurnDrvMkr4,
+    &BurnDrvMkplus,
+    &BurnDrvMktturbo,
+    &BurnDrvMk2,
+    &BurnDrvMk2r42,
+    &BurnDrvMk2r32e,
+    &BurnDrvMk2r31e,
+    &BurnDrvMk2r30,
+    &BurnDrvMk2r21,
 };
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))
 typedef struct { char* game_name; char* sourcefile; } game_sourcefile_entry;

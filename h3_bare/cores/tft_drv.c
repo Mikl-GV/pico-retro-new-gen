@@ -789,6 +789,10 @@ static const struct {
   "Psikyo (Arcade)",
   {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","T = Service (DIP/menu)","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
   },
+  { "midway",
+  "Midway (Arcade)",
+  {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","T = Service (DIP/menu)","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
+  },
   // r1623: Taito — Rastan/Rainbow Islands/Volfied/Bubble Bobble/Arkanoid.
   { "taito",
   "Taito (Arcade)",

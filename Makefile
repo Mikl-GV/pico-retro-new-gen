@@ -1059,7 +1059,7 @@ CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 -I$(CPS1)/src/cpu/upd7810 \
 	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
 	-I$(CPS1)/src/burn/drv/taito -I$(CPS1)/src/burn/drv/dataeast \
-	-I$(CPS1)/src/burn/drv/psikyo \
+	-I$(CPS1)/src/burn/drv/psikyo -I$(CPS1)/src/burn/drv/midway \
 	-I$(CPS1)/src/cpu/m6502 -I$(CPS1)/src/cpu/h6280 \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
@@ -1080,6 +1080,12 @@ CPS1_DEV   := eeprom i2ceeprom timekpr resnet nmk112 watchdog taito_m68705 mc812
 CPS1_SND   := burn_ym2151 burn_ym2203 msm5205 msm6295 samples dac segapcm upd7759 burn_ym2413 burn_ym2612 rf5c68
 CPS1_SNDC  := fm ym2151 fmopl ym2413 ym2612 ay8910
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
+# Midway T-unit (r1660): драйвер + звук DCS (MK2) на ADSP2100.
+CPS1_MID   := midtunit d_tunit dcs2k
+# r1666: ядро TMS34010 — src/cpu/tms34010 (переписанное ядро FBNeo).
+# Старое src/cpu/tms34 удалено вместе с переходом (r1667).
+CPS1_TUCORE_OBJ := $(BUILD)/c1t34n_tms34010.o $(BUILD)/c1t34n_tms34010_optable.o \
+                   $(BUILD)/c1i_tms34010_intf.o $(BUILD)/c1i_tms34010_compat.o
 
 OBJ += $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN)))
 OBJ += $(addprefix $(BUILD)/c1c_,$(addsuffix .o,$(CPS1_CAP)))
@@ -1087,6 +1093,8 @@ OBJ += $(addprefix $(BUILD)/c1d_,$(addsuffix .o,$(CPS1_DEV)))
 OBJ += $(addprefix $(BUILD)/c1s_,$(addsuffix .o,$(CPS1_SND)))
 OBJ += $(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC)))
 OBJ += $(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80)))
+OBJ += $(addprefix $(BUILD)/c1mw_,$(addsuffix .o,$(CPS1_MID)))
+OBJ += $(CPS1_TUCORE_OBJ) $(BUILD)/c1ads_adsp2100.o $(BUILD)/c1i_adsp2100_intf.o
 OBJ += $(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o
 OBJ += $(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o
 OBJ += $(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
@@ -1098,6 +1106,8 @@ CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
 	$(addprefix $(BUILD)/c1s_,$(addsuffix .o,$(CPS1_SND))) \
 	$(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC))) \
 	$(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80))) \
+	$(addprefix $(BUILD)/c1mw_,$(addsuffix .o,$(CPS1_MID))) \
+	$(CPS1_TUCORE_OBJ) $(BUILD)/c1ads_adsp2100.o $(BUILD)/c1i_adsp2100_intf.o \
 	$(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o \
 	$(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o \
 	$(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
@@ -1371,6 +1381,19 @@ $(BUILD)/c1cpu_mcs51.o: $(CPS1)/src/cpu/i8051/mcs51.cpp | $(BUILD)
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1cpu_i8039.o: $(CPS1)/src/cpu/i8039/i8039.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Midway T-unit (r1660): TMS34010 — 34010tbl/fld/ops/gfx .c #include внутрь
+# tms34010.cpp, 2100ops.c — внутрь adsp2100.cpp: отдельными единицами НЕ
+# собирать (двойные определения). DCS (MK2) — отдельный CPU ADSP2100.
+$(BUILD)/c1mw_%.o: $(CPS1)/src/burn/drv/midway/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# r1666: ядро TMS34010 (src/cpu/tms34010) — объекты c1t34n_*
+$(BUILD)/c1t34n_%.o: $(CPS1)/src/cpu/tms34010/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+$(BUILD)/c1ads_%.o: $(CPS1)/src/cpu/adsp2100/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/cps1_host.o: $(TOP)h3_bare/cores/cps1_host.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@ $<

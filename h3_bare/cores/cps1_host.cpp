@@ -29,6 +29,7 @@
 
 #include "burnint.h"
 #include "driverlist.h"
+#include "tms34010_compat.h"
 #include "zlib.h"
 
 extern "C" {
@@ -112,6 +113,10 @@ extern UINT8 NeoDiag[2];
 // запасом 320 строк, чтобы ядро не писал мимо.
 #define TOA_W   320
 #define TOA_H   240
+// r1660: Midway T-unit (MK/MK2) — кадр 400×254/256 (TMS34010 рисует
+// scanline'ы прямо в pTransDraw шириной 400). Буфер g_frame на 384×320 слов
+// его вмещает (400·256 = 102400 < 122880), отдельный массив не нужен.
+#define CPS_MID_W 400
 #define FB_ADDR ((uint32_t*)0x5F900000u)
 #define FB_W    1024
 #define FB_H    600
@@ -518,12 +523,12 @@ static void host_render_frame(void)
 {
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
-    int cols = g_frame_w > 0 && g_frame_w <= CPS1_W ? g_frame_w : (nBurnPitch >> 1);
-    if (cols <= 0 || cols > CPS1_W) cols = CPS1_W;
+    int cols = g_frame_w > 0 && g_frame_w <= CPS_MID_W ? g_frame_w : (nBurnPitch >> 1);
+    if (cols <= 0 || cols > CPS_MID_W) cols = CPS_MID_W;
     int rows = g_frame_h;
     if (rows <= 0 || rows > 320) rows = CPS1_H;
     int sstride = nBurnPitch >> 1;
-    if (sstride <= 0 || sstride > CPS1_W) sstride = CPS1_W;
+    if (sstride <= 0 || sstride > CPS_MID_W) sstride = cols;
     uint32_t* dst = FB_ADDR;
 
     lut_init();
@@ -597,10 +602,13 @@ static void cps_render_frame(void) {
     extern void usb_cache_clean(uint32_t addr, uint32_t size);
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
-    int w = g_frame_w > 0 && g_frame_w <= CPS1_W ? g_frame_w : (nBurnPitch >> 1);
-    if (w <= 0 || w > CPS1_W) w = CPS1_W;
+    int w = g_frame_w > 0 && g_frame_w <= CPS_MID_W ? g_frame_w : (nBurnPitch >> 1);
+    if (w <= 0 || w > CPS_MID_W) w = CPS_MID_W;
     int h = g_frame_h;
     if (h <= 0 || h > 320) h = CPS1_H;
+    // cps_rgb32 — CPS1_W*320 слов (122880): 400×256 T-unit укладывается
+    // (102400). Шире/выше — программный путь, слой GSU не поднимаем.
+    if ((size_t)w * (size_t)h > (size_t)CPS1_W * 320) return;
     int sstride = nBurnPitch >> 1;
     if (sstride <= 0 || sstride > CPS1_W) sstride = w;
     // r1512: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
@@ -653,6 +661,7 @@ static int g_nam      = 0;    // активен Namco-драйвер (System 1/8
 static int g_taito    = 0;    // активен Taito-драйвер (misc/F2-классика, r1623)
 static int g_de       = 0;    // активен Data East (DEC0: robocop/baddudes/hbarrel, Karnov, r1626)
 static int g_psikyo   = 0;    // активен Psikyo PS3 (s1945, tengai, r1627)
+static int g_mid      = 0;    // активен Midway T-unit (MK/MK2, r1660)
 static int g_nam_log_done = 0;   // диагностика name-based ввода: слоты уже напечатаны
 static int g_cps_hw_tried = 0;      // попытка поднять DE2 GSU уже была
 
@@ -726,7 +735,7 @@ static void toa_write_input(const HostPad* p1, const HostPad* p2)
 static void nam_write_input(const HostPad* p1, const HostPad* p2)
 {
     const HostPad* hp[2] = { p1, p2 };
-    UINT8* dst[2][10];  // 0..3 направления, 4..6 B1..B3, 7 Coin, 8 Start, 9 Service
+    UINT8* dst[2][13];  // 0..3 направления, 4..9 B1..B6, 10 Coin, 11 Start, 12 Service
     INT16* an[2] = { NULL, NULL };   // r1624: аналоговая ось (весло Arkanoid)
     memset(dst, 0, sizeof(dst));
 
@@ -768,9 +777,19 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         else if (!strcmp(base, "button 1") || !strcmp(base, "fire 1")) slot = 4;
         else if (!strcmp(base, "button 2") || !strcmp(base, "fire 2")) slot = 5;
         else if (!strcmp(base, "button 3") || !strcmp(base, "fire 3")) slot = 6;
-        else if (!strcmp(base, "coin"))     slot = 7;
-        else if (!strcmp(base, "start"))    slot = 8;
-        else if (!strcmp(base, "service") || !strcmp(base, "service mode")) slot = 9;
+        else if (!strcmp(base, "button 4") || !strcmp(base, "fire 4")) slot = 7;
+        else if (!strcmp(base, "button 5") || !strcmp(base, "fire 5")) slot = 8;
+        else if (!strcmp(base, "button 6") || !strcmp(base, "fire 6")) slot = 9;
+        // r1663: T-unit (MK/MK2) объявляет удары словами, без «Button N».
+        else if (!strcmp(base, "high punch") || !strcmp(base, "punch")) slot = 4;
+        else if (!strcmp(base, "block"))    slot = 5;
+        else if (!strcmp(base, "high kick") || !strcmp(base, "kick")) slot = 6;
+        else if (!strcmp(base, "low punch"))  slot = 7;
+        else if (!strcmp(base, "low kick"))   slot = 8;
+        else if (!strcmp(base, "block 2"))    slot = 9;
+        else if (!strcmp(base, "coin"))     slot = 10;
+        else if (!strcmp(base, "start"))    slot = 11;
+        else if (!strcmp(base, "service") || !strcmp(base, "service mode")) slot = 12;
 
         // «Coin 1»/«Coin 2»/«Start 1»/«Start 2» — игрок в цифре, без префикса
         if (slot < 0) {
@@ -790,8 +809,9 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
     }
 
     for (int pl = 0; pl < 2; pl++) {
-        unsigned v[10] = { hp[pl]->up, hp[pl]->down, hp[pl]->left, hp[pl]->right,
+        unsigned v[13] = { hp[pl]->up, hp[pl]->down, hp[pl]->left, hp[pl]->right,
                            hp[pl]->a, hp[pl]->b, hp[pl]->c,
+                           hp[pl]->kick1, hp[pl]->kick2, hp[pl]->kick3,
                            hp[pl]->select, hp[pl]->start, hp[pl]->service };
         // r1624: кадр переворачивается на 180° (BDF_ORIENTATION_FLIPPED) —
         // направления зеркалим, иначе «вверх» уводит вниз.
@@ -800,7 +820,7 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
             t = v[0]; v[0] = v[1]; v[1] = t;
             t = v[2]; v[2] = v[3]; v[3] = t;
         }
-        for (int s = 0; s < 10; s++) {
+        for (int s = 0; s < 13; s++) {
             if (!dst[pl][s]) continue;
             *dst[pl][s] = v[s] ? 1 : 0;
         }
@@ -950,7 +970,7 @@ static void host_update_input(void)
         toa_write_input(&p1, &p2);
 
     // --- Namco/Taito/Data East/Psikyo: по списку входов драйвера каждый кадр ---
-    if (g_nam || g_taito || g_de || g_psikyo) nam_write_input(&p1, &p2);
+    if (g_nam || g_taito || g_de || g_psikyo || g_mid) nam_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -1177,13 +1197,16 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // r1627: Psikyo PS3 (HARDWARE_PREFIX_PSIKYO = 0x0Dxxxxxx) — 68EC020+Z80,
         // входы те же стандартные имена («P1 Up», «P1 Button 1»).
         g_psikyo = (pf == HARDWARE_PREFIX_PSIKYO) ? 1 : 0;
+        // r1660: Midway T-unit (HARDWARE_PREFIX_MIDWAY = 0x1Bxxxxxx) — кадр
+        // 400×254/256, входы по стандартным именам («P1 Button 1»).
+        g_mid = (pf == HARDWARE_PREFIX_MIDWAY) ? 1 : 0;
     }
 
     // r1615: DIP до init — драйвер читает их в DrvDoReset внутри BurnDrvInit.
     // Namco/Taito/Data East/Psikyo: дефолты из таблиц драйвера
     // (Service Mode/Coinage/Free Play). Остальным не включаем — годами жили
     // с нулевыми DIP.
-    if (g_nam || g_taito || g_de || g_psikyo)
+    if (g_nam || g_taito || g_de || g_psikyo || g_mid)
         arc_dip_defaults();
 
     // r1654: Normal-путь FBNeo для YM2610 (gunbird): чип рендерится сразу в
@@ -1433,6 +1456,30 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = fh;
         printf("PSI: game %s full=%dx%d -> %dx%d pitch=%d\n",
                game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
+    } else if (g_mid) {
+        // r1660: Midway T-unit (MK/MK2) — кадр 400×254/256: ScanlineRender
+        // TMS34010 пишет строки прямо в pTransDraw (400 px), TUnitDraw
+        // копирует его в pBurnDraw с питчем nBurnPitch. g_frame вмещает.
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        if (fh <= 0 || fh > 320 || fw <= 0 || fw > CPS_MID_W) {
+            printf("MID: %s full %dx%d exceeds buffer (%dx320), not starting\n",
+                   game, (int)fw, (int)fh, CPS_MID_W);
+            fb_clear();
+            fb_text_center("FBNeo: frame too big", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too big");
+            emulog_end("ARC");
+            emu_audio_stop();
+            return;
+        }
+        nBurnPitch = fw * 2;
+        g_frame_w = fw;
+        g_frame_h = fh;
+        printf("MID: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -1475,6 +1522,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("DE keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else if (g_psikyo) {
         printf("PSI keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
+    } else if (g_mid) {
+        printf("MID keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
@@ -1500,7 +1549,9 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     emu_throttle_reset();
     emu_esc_hold_reset();
 
-for (;;) {
+    for (;;) {
+        // r1662: временная диагностика производительности (снять после стенда).
+        uint32_t pf_a = h3_hs_timer_lo_us();
         host_update_input();
         BurnDrvFrame();
 
@@ -1539,6 +1590,7 @@ for (;;) {
             if (n > 0 && pBurnSoundOut)
                 i2s_push_block(pBurnSoundOut, (uint32_t)n);
         }
+        uint32_t pf_b = h3_hs_timer_lo_us();
         // r1512: аппаратный DE2 GSU — кадр из pBurnDraw → XRGB8888 → GSU
         // (contain на весь экран). r1616: условие было инвертировано —
         // cps_render_frame() (она же поднимает слой и ставит флаг) не вызывалась
@@ -1551,6 +1603,43 @@ for (;;) {
         }
         if (!g_cps_hw_scaler_active)
             host_render_frame();
+
+        // r1662/r1665: временная диагностика: реальный fps окна из 120 кадров,
+        // средние мс на эмуляцию (BurnDrvFrame+звук) и на кадр (GSU/CPU),
+        // плюс внутренняя разбивка TUnitFrame: CPU / звук / TUnitDraw.
+        {
+            extern uint32_t g_tu_us_snd, g_tu_us_draw;
+            extern uint32_t g_tu_us_run, g_tu_us_scan, g_tu_us_dcs;
+            static uint32_t pf_t0 = 0, pf_emu = 0, pf_ren = 0;
+            static uint32_t pf_snd = 0, pf_draw = 0;
+            static uint32_t pf_run = 0, pf_scan = 0, pf_dcs = 0;
+            static int pf_n = 0;
+            uint32_t pf_c = h3_hs_timer_lo_us();
+            pf_emu += pf_b - pf_a;
+            pf_ren += pf_c - pf_b;
+            pf_snd += g_tu_us_snd;
+            pf_draw += g_tu_us_draw;
+            pf_run += g_tu_us_run;
+            pf_scan += g_tu_us_scan;
+            pf_dcs += g_tu_us_dcs;
+            pf_n++;
+            if (!pf_t0) pf_t0 = pf_a;
+            if (pf_n >= 120) {
+                uint32_t dt = pf_c - pf_t0;
+                if (dt) {
+                    printf("CPS: perf %.1f fps, emu %.1f ms (run %.1f scan %.1f dcs %.1f snd %.1f draw %.1f), render %.1f ms\n",
+                           120000000.0f / (float)dt,
+                           (float)pf_emu / 120000.0f,
+                           (float)pf_run / 120000.0f, (float)pf_scan / 120000.0f,
+                           (float)pf_dcs / 120000.0f, (float)pf_snd / 120000.0f,
+                           (float)pf_draw / 120000.0f,
+                           (float)pf_ren / 120000.0f);
+                }
+                pf_t0 = pf_c; pf_emu = 0; pf_ren = 0;
+                pf_snd = 0; pf_draw = 0; pf_n = 0;
+                pf_run = 0; pf_scan = 0; pf_dcs = 0;
+            }
+        }
 
         fb_flush();
         emu_throttle();
@@ -1630,6 +1719,13 @@ void emu_run_dataeast(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_psikyo(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/psikyo", rom, size, rom_name);
+}
+
+// Midway T-unit (r1660): d_tunit (Mortal Kombat 1/2 и клоны) — TMS34010,
+// корень /roms/midway. Звук: MK1 — ADPCM (M6809+YM2151+MSM6295), MK2 — DCS.
+void emu_run_midway(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/midway", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)

@@ -216,6 +216,18 @@ YM2610 (стабы из `neostubs.cpp` удалены).
 ROM: `/roms/psikyo/<игра>.zip`, имя = short name (`s1945`, `tengai`, `gunbird`,
 `gunbirdj`, …).
 
+## Midway T-unit (r1660, ядро заменено в r1666)
+
+Взято по модулям из `d025cfc`: `src/cpu/tms34010/*` (TMS34010),
+`src/cpu/adsp2100/*` (ADSP2100 для DCS-звука MK2), интерфейсы
+`tms34010_intf.*`/`adsp2100_intf.*`, драйверы `src/burn/drv/midway/{midtunit,
+d_tunit,dcs2k}`. Wolf Unit (MK3), X/Y-Unit и Kinst не вендорились.
+`tms34010_optable.cpp` и `2100ops.c` (внутрь `adsp2100.cpp`) — отдельные
+единицы трансляции; `dasm`/`new_dasm` TMS34010 порту не нужны и не собираются.
+
+r1666: старое ядро `src/cpu/tms34` + `tms34_intf.*` + `tms34_fast.h` удалены;
+драйвер держит новое ядро через `tms34010_compat.*`.
+
 ## Правки эталона, сделанные портом
 
 Правило (`docs/AUDIT/SUMMARY.md`): любая переделка кода FBNeo фиксируется
@@ -240,6 +252,20 @@ ROM: `/roms/psikyo/<игра>.zip`, имя = short name (`s1945`, `tengai`, `gun
 
 `BurnSetRefreshRate` сбрасывает накопитель. Средний темп — ровно
 `nBurnSoundRate`, длина кадра чередуется 809/810.
+
+### TMS34010: новое ядро и его интерфейс (r1666)
+
+| Файл | Правка | Зачем |
+|---|---|---|
+| `src/cpu/tms34010_intf.cpp` | карта памяти: `static TMS34010MemoryMap` → указатель + `BurnMalloc` в `TMS34010Init()` | 8 МБ карты не влезают в `.bss` H3 (граница `0x44C00000`, CPS `ZIP_BUF_BIG`) |
+| `src/cpu/tms34010_intf.cpp` | shift-колбэки — через `shift_read_tramp`/`shift_write_tramp` | `tms::dword` = `uint32_t`, в arm-none-eabi это `unsigned long`; `UINT32` FBNeo — `unsigned int`, типы указателей на функции несовместимы |
+| `src/cpu/tms34010_intf.cpp` | `TMS34010ScanConfig()` + `TMS34010Exit` в `cpu_core_config` | в структуре порта после `reset` идут `scan` и `exit`; у эталона сразу `nMemorySize` |
+| `src/cpu/tms34010/tms34010.cpp` | `display_info` += `enabled`; заполняются `enabled/vsblnk/veblnk` | `midtunit.cpp` читает эти поля в `ScanlineRender` |
+| `src/cpu/tms34010/tms34010.cpp` + `tms34010_intf.cpp` | `heblnk/hsblnk` умножаются на `g_tms_pixperclock` (r1668) | в IOREG они в пиксель-клоках; у T-unit `pixperclock = 2`, драйвер ждёт пиксели |
+| `src/cpu/tms34010_fast.h` (новый, r1669) | структура карты в заголовке + inline `tms_read_word/byte`, `tms_write_word/byte`; `tms34010_memacc.h` переведён на них | эталон зовёт `TMS34010ReadWord/WriteWord` на каждый доступ — вызов функции в горячем пути интерпретатора |
+| `src/cpu/tms34010_compat.{h,cpp}` (новые) | мост к старому API драйвера: `Init(nCpu)`, `Exit`, `SetCpuCyclesPerFrame` — пустышки; `SetToShift/FromShift` — `UINT16*` → `void*` | драйвер писался под `tms34_intf`; тайминги новое ядро берёт из IOREG |
+| `cores/cps1_host.cpp` | слоты ввода 10→13, имена кнопок T-unit («High Punch» и т.д.), `g_mid` в `arc_dip_defaults()` | у MK/MK2 6 кнопок удара, «Button N» в драйвере нет; MK1 уходил в Test из-за нулевых DIP |
+| `Makefile` | `c1t34n_tms34010.o`/`c1t34n_tms34010_optable.o` (`-O3`), правила старого `tms34` удалены | один владелец ядра, без ветки отката |
 
 ## Актуальность эталона (проверка 2026-11-25)
 

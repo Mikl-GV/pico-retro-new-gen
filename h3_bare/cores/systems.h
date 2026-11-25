@@ -88,6 +88,9 @@ static const system_entry_t systems[] = {
     SYS("dataeast",   "Data East (Arcade)",           ARCADE,   READY),
     // r1627: Psikyo PS3 (Strikers 1945, Tengai), папка /roms/psikyo.
     SYS("psikyo",     "Psikyo (Arcade)",              ARCADE,   READY),
+    // r1660: Midway T-unit (Mortal Kombat 1/2 и клоны) — TMS34010, папка
+    // /roms/midway на общем FBNeo-хосте (run_cps).
+    SYS("midway",     "Midway (Arcade)",              ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

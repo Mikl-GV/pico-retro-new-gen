@@ -1,4 +1,168 @@
-# HANDOVER — текущее состояние (r1659)
+# HANDOVER — текущее состояние (r1669)
+
+## r1669 — Midway: inline-доступ к памяти ядра, профиль по фазам
+
+- Вопрос владельца по r1668: что съедает CPU. По логу: `cpu` = 18.6–20.0 мс
+  из 20.9 (MK1 в бою), `render` стабильно 1.6–2.3 мс, `draw` 1.0 → узкое место
+  в эмуляции (TMS34010 + DCS), а не в выводе кадра.
+- Новое ядро обращалось к памяти через внешние `TMS34010ReadWord/WriteWord` —
+  вызов функции на каждый доступ интерпретатора (то же, что было в tms34 до
+  r1663). Заведён `src/cpu/tms34010_fast.h`: структура карты + inline
+  `tms_read_word/byte`, `tms_write_word/byte`; `tms34010_memacc.h` переведён на
+  них. В `c1t34n_tms34010.o` — 0 вызовов `TMS34010ReadWord/WriteWord`
+  (всего 82 `bl`), как в r1663 для старого ядра.
+- Профиль `TUnitFrame` разбит по фазам слайса: `run` (CPU_RUN TMS34010),
+  `scan` (GenerateScanline + рендер драйвера), `dcs` (IRQ+sync DCS).
+  Строка: `CPS: perf N fps, emu X ms (run A scan B dcs C snd D draw E), render F ms`.
+- Сборка 25 749 884 Б, метка `r1669` @ 0x40E9D250, `linkcheck: OK`.
+
+## r1668 — Midway: ширина строки (pixperclock)
+
+- Стенд r1667: кадр 400×256, 54.7 fps в меню и ~42 fps в бою (`emu 20.9 мс`,
+  `cpu 19.1`), полный кадровый путь живой — но видна **только левая половина**
+  изображения.
+- Причина: старое ядро отдавало `heblnk/hsblnk` в пикселях
+  (`SMART_IOREG(HEBLNK) * pixperclock`), новое отдаёт сырые пиксель-клоки.
+  У T-unit `pixperclock = 2` (`TMS34010SetPixClock(4000000, 2)`) → драйвер
+  получал 200 px вместо 400 и занулял правую половину строки.
+- Правка: `g_tms_pixperclock` (в `tms34010_intf.cpp`) выставляется из
+  `TMS34010SetPixClock()` (перенесён туда из `tms34010_compat.cpp`); в
+  `generate_scanline` `heblnk/hsblnk` умножаются на него. `enabled` теперь
+  реальный флаг `DPYCTL & 0x8000`, а не константа 1.
+- Сборка 25 730 428 Б, метка `r1668` @ 0x40E98640, `linkcheck: OK`.
+
+## r1666–r1667 — Midway: новое ядро TMS34010, старое удалено
+
+- Ядро заменено на `src/cpu/tms34010/` из `d025cfc` (11 файлов:
+  `tms34010.cpp/h` + 9 `*.h`, `tms34010_optable.cpp`). `dasm`/`new_dasm` не
+  собираются — порту они не нужны. Старое `src/cpu/tms34/`, `tms34_intf.*` и
+  `tms34_fast.h` удалены, ветка `make TU_CORE=old` и правило `c1t34_%` — тоже.
+- Правки нового кода (все в `docs/VENDOR.md`): карта памяти в `BurnMalloc`
+  (8 МБ статикой не влезали — `.bss` до `0x44C00000`), shift-колбэки через
+  trampoline (`tms::dword` = `unsigned long`, `UINT32` = `unsigned int`),
+  `TMS34010ScanConfig`/`TMS34010Exit` в `cpu_core_config` порта,
+  `display_info += enabled` + заполнение `vsblnk/veblnk` (их читает
+  `midtunit.cpp`).
+- Новые файлы: `tms34010_compat.{h,cpp}` — мост к API драйвера
+  (`Init(nCpu)`, `Exit`, `SetCpuCyclesPerFrame` — пустышки,
+  `SetToShift/FromShift` — приведение `UINT16*`→`void*`; `SetPixClock` с r1668
+  живёт в `tms34010_intf.cpp`). Тайминги дисплея новое ядро берёт из IOREG,
+  счёт циклов/кадр задаёт сам драйвер слайсами, поэтому
+  `TMS34010ResetPoolCache()` (r1661) стал не нужен и удалён.
+- `Makefile`: `CPS1_TUCORE_OBJ` — постоянный список
+  (`c1t34n_tms34010.o`, `c1t34n_tms34010_optable.o`, `c1i_tms34010_intf.o`,
+  `c1i_tms34010_compat.o`), `-O3` на ядре сохранён.
+- Сборка 25 730 356 Б (−185 688 к r1665), метка `r1667` @ 0x40E98600,
+  `linkcheck: OK`. Ядро в образе: 304 символа `tms::*`.
+- **На стенде не проверено** — ждёт прогона MK/MK2: кадр, кнопки, звук и
+  `CPS: perf` (сравнить `emu` с 20.7 мс MK1 / 30.7–37.9 мс MK2 на старом ядре).
+
+## r1665 — Midway: разбивка времени кадра T-unit (профиль)
+
+- Стенд r1664: `-O3` на `midtunit.cpp` ничего не изменил (бои MK1 всё те же
+  ~20.7 мс emu) → узкое место не в DMA-отрисовке драйвера. MK2: 25–30 fps
+  (`emu 30.7–37.9 мс`) — сверху ложится DCS (ADSP2100).
+- Добавлен внутренний профиль `TUnitFrame` (временный, вместе с `CPS: perf`):
+  `g_tu_us_cpu/snd/draw` — мс на цикл 288 слайсов (TMS34010 + DCS sync),
+  синтез звука в буфер и `TUnitDraw` (перенос кадра в pBurnDraw).
+  Строка: `CPS: perf N fps, emu X ms (cpu A snd B draw C), render D ms`.
+- Это даёт выбор следующего шага по фактам, а не наугад: чинить gfx-операции
+  TMS34010 (пиксельные блоки), ADSP2100/DCS или кадровый путь.
+- Сборка 25 916 044 Б, метка `r1665` @ 0x40EC4580, `linkcheck: OK`.
+
+## r1664 — Midway: драйвер T-unit с -O3; проверка звукового тракта
+
+- Стенд r1663: кнопки работают (`slots P1 10/10`), в меню/начале боя
+  54.7 fps (`emu 14.8 мс, render 2.0 мс`), в бою просадка до ~42 fps
+  (`emu 20.8 мс`) → кольцо i2s пустеет (`under`), в звуке провалы.
+- Проверка звука: ресемплер ядер корректен — `nBurnSoundRate = 48000`
+  выставляется до `BurnDrvInit`, YM2151/OKI рендерят сразу в 48 кГц
+  (`burn_ym2151.cpp: nSamplesNeeded = nSegmentEnd * rate / nBurnSoundRate`),
+  I2S тоже 48 кГц; `nBurnSoundLen` 877/878 по A-05. Хост-ресемплера нет —
+  провалы только из-за недобора кадров.
+- `c1mw_*` (midtunit.cpp с DMA-отрисовкой спрайтов) переведён на `-O3`.
+- `.h` не менялись; пересобраны `c1mw_*` и линк.
+- Сборка 25 915 212 Б, метка `r1664` @ 0x40EC4270, `linkcheck: OK`.
+- Стенд: ожидает `CPS: perf` в бою (цель — emu ≤ 16 мс).
+
+## r1663 — Midway: кнопки MK и inline-доступ к памяти TMS34010
+
+- Стенд r1662 (замер): `emu ≈16–21.5 мс`, `render ≈2 мс` при бюджете 18.3 мс —
+  кадр не держится, отсюда under и трески. (В r1662 принт печатал мкс как «мс»
+  и делил fps на 1000 — в r1663 единицы исправлены.)
+- Кнопки ударов не работали: T-unit объявляет их словами («P1 High Punch»,
+  «P1 Block», «P1 High Kick», «P1 Low Punch», «P1 Low Kick», «P1 Block 2»), а
+  `nam_write_input` знал только «Button N/Fire N». Слоты расширены до 13
+  (4..9 — шесть кнопок), добавлены имена T-unit: a/b/c → HP/Block/HK,
+  kick1/kick2/kick3 (Q/E/R) → LP/LK/Block 2.
+- Производительность: чтение/запись памяти TMS34010 были внешними функциями
+  (`tms34_intf.cpp`) — вызов на каждый доступ эмулятора. Перенесены в
+  `tms34/tms34_fast.h` как `static inline` (карта памяти описана там же),
+  `tms34_intf.cpp` и `tms34010.cpp` включают этот заголовок. Внешний API
+  интерфейса не изменился.
+- `.h` менялись (`tms34_fast.h`, `tms34_intf.h`) → чистая сборка обязательна.
+- Сборка 25 913 996 Б, метка `r1663` @ 0x40EC3DB0, `linkcheck: OK`; в объекте
+  ядра вызовов `TMS34010Read/Write*` не осталось (0 из 325 `bl`) — доступ
+  полностью инлайнен.
+- Стенд: ожидает проверки (MK/MK2: кнопки, `CPS: perf`).
+
+## r1662 — Midway: замер производительности (временная диагностика)
+
+- Стенд r1661: MK1/MK2 запускаются, звук есть, но кадр не тянется (54.7 Гц не
+  держатся) → under в AUDIO-END, «наслоение»/трески. JIT у TMS34010 и ADSP2100
+  нет: оба — интерпретаторы FBNeo, вся нагрузка на core0.
+- В `cps1_host.cpp` добавлен временный замер (снять после стенда): раз в 120
+  кадров строка `CPS: perf <fps> fps, emu <мс>, render <мс>` — реальный fps
+  окна и средние затраты на `BurnDrvFrame` (включая звук) и на кадр (GSU/CPU).
+- `tms34010.cpp` (`c1t34_`) и `adsp2100.cpp` (`c1ads_`) собираются с `-O3`
+  (было `-O2`) — дешёвая попытка ускорить интерпретаторы.
+- `.h` не менялись; пересобраны изменённые объекты.
+- Стенд: ожидает `CPS: perf` из лога — по нему видно, упирается ли в эмуляцию
+  (emu ≈ 20+ мс) или в конвертацию кадра (render).
+
+## r1661 — Midway: DIP-дефолты MK1 и сброс кэша карты TMS34010
+
+- MK1 уходил в сервисное меню: хост не выставлял DIP-дефолты драйвера
+  (`MkDIPList`: Test Switch Off = бит 0x01, Skip Powerup Test — 0xF0 в DIP1),
+  без них `DrvDips` = 0 = «Test Switch: On». Добавлен `g_mid` в вызов
+  `arc_dip_defaults()`.
+- MK2 падал, если запускался ВТОРОЙ игрой сессии (abort: DFAR=0x000A0031,
+  LR→`TMS34010ReadWord`): `BurnInitMemoryManager()` обнуляет пул в каждом
+  `BurnDrvInit`, а `MapStore` кэшировался между играми — карта писалась в зону,
+  которую уже занимает `AllMem`, и затиралась. Добавлен
+  `TMS34010ResetPoolCache()` (`tms34_intf.*`), хост зовёт его ДО `BurnDrvInit()`.
+- `MAX_CPUS` 4→1 (`tms34_intf.cpp`): порт держит один TMS34010 (T-Unit);
+  экономия 24 МБ пула FBNeo (карта — 8 МБ на CPU).
+- `.h` не менялись; сборка чистая (`make clean && make`) по требованию владельца.
+- Сборка 25 853 948 Б, метка `r1661` @ 0x40EB5300, `linkcheck: OK`.
+- Стенд: ожидает проверки (MK1 — сразу игра, MK2 — вторым запуском).
+
+## r1660 — Midway T-unit: Mortal Kombat 1/2 (TMS34010), звук ADPCM и DCS
+
+- Вендор из эталона `d025cfc`: `src/cpu/tms34/*` + `tms34_intf.*` (TMS34010),
+  `src/cpu/adsp2100/*` + `adsp2100_intf.*` (DCS-звук MK2), драйверы
+  `src/burn/drv/midway/{midtunit.cpp,midtunit.h,midtunit_dma.h,d_tunit.cpp,
+  dcs2k.cpp,dcs2k.h}`. Остальные файлы каталога midway (Wolf/Unit/X/Y/Kinst,
+  williams_*) в дерево НЕ взяты.
+- Makefile: `CPS1_MID := midtunit d_tunit dcs2k` (c1mw_), `c1t34_tms34010`,
+  `c1ads_adsp2100`, `c1i_tms34_intf`, `c1i_adsp2100_intf`; в `CPS1_INC`
+  добавлен `-I…/drv/midway`. `34010tbl/fld/ops/gfx.c` и `2100ops.c` входят
+  ТОЛЬКО как #include внутрь `tms34010.cpp`/`adsp2100.cpp` (иначе двойные
+  определения).
+- `driverlist.h`: зарегистрированы mk, mkr4, mkplus, mktturbo, mk2, mk2r42,
+  mk2r32e, mk2r31e, mk2r30, mk2r21 (T-unit; NBA Jam и прочие — позже).
+- `cps1_host.cpp`: ветка `g_mid` (префикс `HARDWARE_PREFIX_MIDWAY`), кадр
+  драйвера 400×254/256 с питчем 400·2; `CPS_MID_W` расширил клампы обоих
+  рендеров (буфер `g_frame` 384×320 слов вмещает 400·256 = 102400), для
+  `cps_rgb32` (122880 слов) добавлен guard объёма; ввод — по стандартным
+  именам (`nam_write_input`), ключи как у прочих аркад.
+- Правка эталона (`tms34_intf.cpp`): `MapStore[MAX_CPUS]` статикой занимал
+  32 МБ `.bss` → линковка «.bss overlaps ZIP_BUF_BIG (0x44C00000)». Выделен
+  через `BurnMalloc` при первом обращении (`MapStoreAlloc`), `.bss` не вырос.
+- `systems.h`/`rom_browser`/`tft_drv`: система «Midway (Arcade)», корень
+  `/roms/midway`, диспетчер `emu_run_midway`.
+- Сборка 25 853 884 Б, метка `r1660` @ 0x40EB52C0, `linkcheck: OK`.
+- Стенд: НЕ проверено (нужны ROM-сеты mk/mk2 в `/roms/midway`).
 
 ## r1659 — снята мёртвая диагностика r1630 в драйвере Psikyo; сверка с эталоном
 
