@@ -240,3 +240,25 @@ ROM: `/roms/psikyo/<игра>.zip`, имя = short name (`s1945`, `tengai`, `gun
 
 `BurnSetRefreshRate` сбрасывает накопитель. Средний темп — ровно
 `nBurnSoundRate`, длина кадра чередуется 809/810.
+
+## Актуальность эталона (проверка 2026-11-25)
+
+Сверено по репозиторию `finalburnneo/FBNeo`: наш коммит `d025cfc` (2026-09-28)
+существует; master ушёл вперёд на 494 коммита (`b454793`, 2026-11-25).
+Правки после `d025cfc` в путях, которые держит порт:
+
+| Путь | Коммиты | Нужно порту |
+|---|---|---|
+| `drv/psikyo/d_psikyo.cpp` | `2eddde4` big-endian (PS1/PS4) | нет: ARM little-endian, PS3 |
+| `drv/psikyo/d_psikyosh.cpp` | `01bdf40`, `2c6dac3` (PS4/SH2) | нет: PS4 не подключён |
+| `snd/burn_ym2610`, `fm.c`, `msm6295`, `ymdeltat`, `burn_ym2151` | `eeddae3`, `e1c4caa` — save-state/rollback | нет: save-state/rollback не используются |
+| `snd/samples` | `af5e474` mp3/flac | нет |
+| `burn/burn.cpp` | строки, артворк, румбл, headless | нет |
+| `drv/capcom/*` | `419854d` fix raster, `0f02e70` старт с vblank, наборы CPS2 | **единственное по делу**: растеризация CPS1 и −1 кадр задержки ввода; брать по жалобе |
+| `cpu/z80` | `699f4f0` и др. — рефакторинг API | нет |
+
+Побайтовая сверка наших копий с `d025cfc` (2026-11-25): `d_psikyo.cpp`,
+`fm.c`, `ymf278b.c`, `cps_run.cpp` — совпадают; `burn_ym2610.cpp` (+5/−4),
+`burn_ymf278b.cpp` (+9/−2), `burn.cpp` (+14) — только описанные выше правки
+порта. Вывод: «рычание» и клип не связаны с версией эталона — уровни микса
+штатные, правок обычного (не save-state) звукового пути после `d025cfc` нет.

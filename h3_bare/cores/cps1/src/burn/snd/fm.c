@@ -4160,7 +4160,6 @@ void YM2610ResetChip(int num)
 /* n = number  */
 /* a = address */
 /* v = value   */
-
 int YM2610Write(int n, int a, UINT8 v)
 {
 	YM2610 *F2610 = &(FM2610[n]);
