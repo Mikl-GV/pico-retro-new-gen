@@ -10,7 +10,7 @@
 |--------|-----------------|
 | Портативные | Game Boy / GBC (binjgb), Game Gear (GPGX), GBA (mGBA-core, r1133), Atari Lynx (Handy), Neo Geo Pocket / Color (RACE) |
 | Консоли | Atari 2600 (Stella 2014), Atari 5200, Atari 7800 (ProSystem), Master System (GPGX), NES / Famicom (FCEUmm), ColecoVision (Gearcoleco), PC Engine / TurboGrafx (Beetle PCE Fast), SNES (Snes9x 2005), Mega Drive / Genesis (GPGX), Sega 32X (PicoDrive, r1147), GCE Vectrex (vecx) |
-| Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
+| Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), Namco, Taito, Data East, Psikyo PS3, Midway T-unit, **Irem M72 (R-Type, r1670)**, FB Neo (сводный) |
 | Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX), Atari 8-bit (400/800/XL/XE, звук r975), Amstrad CPC (Caprice32), Commodore 64 (Frodo, r1284), БК-0010/0011М (libretro-bk), **Радио-86РК (порт RK8266, r1185)**, Atari Portfolio (Fake86), МС 1504 (Fake86), **Enterprise 64/128 (ep128emu, r1354: автозагрузка, мультифайловые игры)**, **Apple II+ (ядра POM2, r1388; образы .dsk/.do/.po/.nib/.woz, hot-swap по F12 r1396)** |
 
 Планируются (PLANNED в systems.h): —
@@ -85,9 +85,21 @@ Robocop, Bad Dudes, Heavy Barrel, Karnov), **Psikyo PS3** (r1627,
 | ~~1~~ | ~~Taito 68K/Z80 классика~~ (сделано r1623) | 68K+Z80+uPD7810 | Bubble Bobble, Rainbow Islands, Arkanoid, Rastan, Volfied | средняя |
 | ~~2~~ | ~~Data East 68K~~ (сделано r1626) | 68K+6502/h6280+mcs51 | Robocop, Bad Dudes, Heavy Barrel, Karnov | средняя |
 | ~~3~~ | ~~Psikyo 68K (PS3)~~ (сделано r1627) | 68K+Z80 | Strikers 1945, Tengai (Gunbird — нужен сет) | средняя |
-| 4 | Midway 68K (T-unit сделано r1660) | 68K+TMS34010 | MK 1-2; MK3 (Wolf) и NBA Jam — отдельными unit | высокая (T-unit) |
-| 5 | Taito F2/F3, Irem M72/M92, UPL | 68K(+MCU) | R-Type 1/2/Leo, Ninja Kids, Pbobble3 | средняя/высокая |
+| 4 | Midway 68K (T-unit сделано r1660) | 68K+TMS34010 | MK 1-2 (готово); MK3 (Wolf) и NBA Jam — отдельными unit | высокая (T-unit) |
+| 5 | Irem M72 (сделано r1670) | V30+Z80 | R-Type, R-Type II, Image Fight, X Multiply, Gallop | средняя |
+| 5а | Irem M92 / M107 | V33(+V30) | Undercover Cops, Gunforce, In the Hunt, Ninja Spirit | средняя (нужны iremga20, pic8259) |
+| 5б | Taito F2/F3, UPL | 68K(+MCU) | Pbobble3, Ninja Kids; F2/F3 требуют ES5505/ES5510 и 68020 | высокая |
 | 6 | Konami/Capcom ранние | 6809/6502 | 1942, Commando, R-Type (Capcom) | высокая (нужны CPU) |
+
+## Аркады: оптимизация (r1735–r1740)
+
+- DCS-SMP Midway (DCS на CPU1) удалён в r1735 — DSP снова локально на core0.
+- Профилировщик r1736: `PROF` + `tools/arc_profile.ps1` (`docs/ARC_PROFILE.md`).
+- Cyclone 68000 r1739: CPS-1 проверен на стенде — `dino`/`sf2`/`punisher`
+  59.6 fps, `emu` 4.4–10.0 мс. Default пока Musashi; сборка — `ARC_CYCLONE=1`.
+- **Следующая — Sega System 16B:** `goldnaxe` на r1740 даёт 45 fps,
+  `emu` 19–22 мс. Сначала stage-таймеры кадра (CPU/видео/звук), затем
+  draw/FD1094; после неё — Data East, Toaplan, Cave, CPS-2.
 
 Риски: защитные MCU (частично покрыто M6805), видео Midway T-unit/System 32,
 объём вендора (только выборка файлов семейства).

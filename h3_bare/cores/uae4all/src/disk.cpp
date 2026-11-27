@@ -214,8 +214,10 @@ FILE *DISK_validate_filename (const char *fname, int leave_open, int *wrprot)
 #endif
     FILE *f = zfile_open (fname, "r+b");
     if (f) {
+	// r1733 (D-06): fs_layer принимает "r+b", но запись всегда 0 —
+	// «успешное» открытие не делает образ записываемым.
 	if (wrprot)
-	    *wrprot = 0;
+	    *wrprot = 1;
     } else {
 	if (wrprot)
 	    *wrprot = 1;
@@ -792,6 +794,10 @@ void DISK_ersatz_read (int tr, int sec, uaecptr dest)
     dbg("disc.c : DISK_ersatz_read");
 #endif
     uae_u8 *dptr = get_real_address (dest);
+    // r1733 (D-06): ersatz-путь (нет Kickstart) мог разыменовать пустой
+    // diskfile, если вставка не удалась (drive_insert оставил его 0).
+    if (!floppy[0].diskfile)
+	return;
     uae4all_fseek (floppy[0].diskfile, floppy[0].trackdata[tr].offs + sec * 512, SEEK_SET);
     uae4all_fread (dptr, 1, 512, floppy[0].diskfile);
 }

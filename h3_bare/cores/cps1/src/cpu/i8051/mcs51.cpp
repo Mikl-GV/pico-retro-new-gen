@@ -254,6 +254,10 @@ struct _mcs51_uart
 
 UINT8 *mcs51_program_data = NULL;
 static INT32 g_mcs51_total = 0;
+// r1681: циклы текущего прогона считаются как (старт - остаток), как в эталоне
+// (total_cycles + cycle_start - icount). Без этого счётчик всегда был 0:
+// порт прибавлял (cycles - icount) до исполнения, где icount == cycles.
+static INT32 g_mcs51_cycle_start = 0;
 static UINT8 (*cpu_readop_arg_dat)(INT32) = NULL;
 static void (*mcs51_write_port)(INT32,UINT8) = NULL;
 static UINT8 (*mcs51_read_port)(INT32) = NULL;
@@ -1974,6 +1978,7 @@ INT32 mcs51Run(int cycles) // divide cycles by 12! -dink
 	UINT8 op;
 
 	mcs51_state.icount = cycles;
+	g_mcs51_cycle_start = cycles;   // r1681: база для mcs51TotalCycles()
 	/* external interrupts may have been set since we last checked */
 	mcs51_state.inst_cycles = 0;
 	check_irqs();
@@ -1987,9 +1992,6 @@ INT32 mcs51Run(int cycles) // divide cycles by 12! -dink
 
 	mcs51_state.icount -= mcs51_state.inst_cycles;
 	burn_cycles(mcs51_state.inst_cycles);
-
-	/* r0.383: счётчик выполненных циклов (для синхронизации как Z80/68K) */
-	if (cycles >= 0) g_mcs51_total += (cycles - mcs51_state.icount);
 
 	if ((mcs51_state.features & FEATURE_CMOS) && GET_IDL)
 	{
@@ -2032,7 +2034,13 @@ INT32 mcs51Run(int cycles) // divide cycles by 12! -dink
 
 	} while( mcs51_state.icount > 0 );
 
-	return cycles - mcs51_state.icount;
+	// r1681: как в эталоне (endit): пройденное накапливаем, базу обнуляем.
+	{
+		INT32 done = cycles - mcs51_state.icount;
+		g_mcs51_cycle_start = mcs51_state.icount = 0;
+		g_mcs51_total += done;
+		return done;
+	}
 }
 
 void mcs51RunEnd(void)
@@ -2044,11 +2052,27 @@ void mcs51RunEnd(void)
 void mcs51NewFrame(void)
 {
 	g_mcs51_total = 0;
+	g_mcs51_cycle_start = 0;
+	mcs51_state.icount = 0;
 }
 
+// r1681: как в эталоне — пройденные циклы текущего прогона это
+// (cycle_start - icount), плюс накопленное за прошлые прогоны.
 INT32 mcs51TotalCycles(void)
 {
-	return g_mcs51_total;
+	return g_mcs51_total + (g_mcs51_cycle_start - mcs51_state.icount);
+}
+
+// r1670: idle-такт МК (i8751 в Irem M72): инструкции не исполняются, но время
+// идёт — драйвер так синхронизирует MCU с V30.
+INT32 mcs51Idle(INT32 cycles)
+{
+	if (cycles > 0) {
+		g_mcs51_total += cycles;
+	}
+	g_mcs51_cycle_start = 0;
+	mcs51_state.icount = 0;
+	return cycles;
 }
 
 void mcs51_set_program_data(UINT8* pData)

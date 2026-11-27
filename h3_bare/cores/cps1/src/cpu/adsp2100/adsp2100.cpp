@@ -312,7 +312,26 @@ INLINE void WWORD_PGM(adsp2100_state *adsp, UINT32 addr, UINT32 data)
 }
 
 //#define ROPCODE(a) memory_decrypted_read_dword((a)->program, (a)->pc << 2)
-#define ROPCODE(a)  adsp21xx_read_dword_32le((a)->pc << 2)
+// r1707: быстрый путь чтения опкодов. Сейчас каждый опкод шёл через
+// adsp21xx_read_dword_32le: сдвиг, PFN, выбор страницы, проверка хендлера,
+// вызов. Для DCS (10 МГц, ~185k циклов/кадр) это ~2 мс накладных только на
+// выборку. Драйвер, у которого программная память — два плоских массива
+// (pIntRAM и текущий банк pExtRAM32), задаёт указатели ниже; остальные
+// драйверы (NULL) идут прежним путём без изменений поведения.
+UINT32 *adsp_fast_prg_lo = NULL;    // 0x0000..0x03FF (pIntRAM)
+UINT32 **adsp_fast_prg_hi = NULL;   // 0x0800..0x1FFF (текущий банк pExtRAM32)
+
+static inline UINT32 adsp_fetch_op(UINT32 pc)
+{
+    if (pc < 0x400u) {
+        if (adsp_fast_prg_lo) return adsp_fast_prg_lo[pc];
+    } else if (pc >= 0x800u && pc <= 0x1FFFu) {
+        if (adsp_fast_prg_hi) return (*adsp_fast_prg_hi)[pc & 0x7FFu];
+    }
+    return adsp21xx_read_dword_32le(pc << 2);
+}
+
+#define ROPCODE(a)  adsp_fetch_op((a)->pc)
 
 
 /***************************************************************************

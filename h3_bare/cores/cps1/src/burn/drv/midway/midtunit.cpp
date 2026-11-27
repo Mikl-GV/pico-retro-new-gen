@@ -132,19 +132,31 @@ static INT32 MemIndex()
 }
 
 // dcs sound helpers
+// r1735: DSP исполняется локально на core0; здесь только постановка цели
+// и RPC портов.
+extern "C" void dcs_host_setup(int dcs_game);
+extern "C" void dcs_host_sync(int cyc);
+extern "C" uint32_t dcs_host_total(void);
+extern "C" uint32_t dcs_host_ctrl_read(void);
+extern "C" uint32_t dcs_host_data_read(void);
+extern "C" void dcs_host_data_write(uint32_t v);
+extern "C" void dcs_host_reset_write(uint32_t v);
+extern "C" void dcs_host_newframe(void);
+extern "C" void dcs_host_check_irq(void);   // r1720: IRQ-чек DSP на его ядре
+
 static void dcs_sound_sync()
 {
-	INT32 cyc = ((double)TMS34010TotalCycles() / 63 * 100) - Dcs2kTotalCycles();
+	INT32 cyc = ((double)TMS34010TotalCycles() / 63 * 100) - (INT32)dcs_host_total();
 	if (cyc > 0) {
-		Dcs2kRun(cyc);
+		dcs_host_sync(cyc);
 	}
 }
 
 static void dcs_sound_sync_end()
 {
-	INT32 cyc = ((double)10000000 * 100 / nBurnFPS) - Dcs2kTotalCycles();
+	INT32 cyc = ((double)10000000 * 100 / nBurnFPS) - (INT32)dcs_host_total();
 	if (cyc > 0) {
-		Dcs2kRun(cyc);
+		dcs_host_sync(cyc);
 	}
 }
 
@@ -611,7 +623,7 @@ static UINT16 TUnitSoundStateRead(UINT32 address)
 	if (address >= 0x1d00000 && address <= 0x1d0001f) {
 		if (nSoundType == SOUND_DCS) {
 			dcs_sound_sync();
-			return Dcs2kControlRead() >> 4;
+			return dcs_host_ctrl_read() >> 4;
 		}
 
 		if (DrvFakeSound) {
@@ -628,9 +640,7 @@ static UINT16 TUnitSoundRead(UINT32 address)
 	if (address >= 0x01d01020 && address <= 0x01d0103f) {
 		if (nSoundType == SOUND_DCS) {
 			dcs_sound_sync();
-			UINT16 dr = Dcs2kDataRead();
-			Dcs2kRun(20); // "sync" in frame will even things out.
-			return dr & 0xff;
+			return (UINT16)(dcs_host_data_read() & 0xff);   // r1708: RPC, +20 циклов внутри
 		}
 	}
 	//bprintf(PRINT_NORMAL, _T("Sound Read %x\n"), address);
@@ -654,8 +664,8 @@ static void TUnitSoundWrite(UINT32 address, UINT16 value)
 
 			case SOUND_DCS: {
 				dcs_sound_sync();
-				Dcs2kResetWrite(~value & 0x100);
-				Dcs2kDataWrite(value & 0xff);
+				dcs_host_reset_write(~value & 0x100);
+				dcs_host_data_write(value & 0xff);
 
 				DrvFakeSound = 128;
 				break;
@@ -1248,7 +1258,7 @@ INT32 TUnitDraw()
 
 static void HandleDCSIRQ(INT32 line)
 {
-	if (line == 0 || line == 96 || line == 192) DcsCheckIRQ(); // 3x
+	if (line == 0 || line == 96 || line == 192) dcs_host_check_irq(); // 3x, r1720: на ядре DSP
 }
 
 INT32 TUnitFrame()
@@ -1267,7 +1277,10 @@ INT32 TUnitFrame()
 
 	if (nSoundType == SOUND_DCS) {
 		nCyclesTotal[1] = (INT32)(10000000 / (nBurnFPS/100));
-		Dcs2kNewFrame();
+		dcs_host_setup(1);     // r1708: DSP на CPU1, если он поднят
+		dcs_host_newframe();
+	} else {
+		dcs_host_setup(0);
 	}
 
 	if (nSoundType == SOUND_ADPCM) M6809Open(0);

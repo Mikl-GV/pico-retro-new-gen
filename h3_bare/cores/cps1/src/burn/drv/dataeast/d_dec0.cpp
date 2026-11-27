@@ -8,6 +8,15 @@
 #include "burn_ym3812.h"
 #include "h6280_intf.h"
 #include "mcs51.h"
+#include "h3_hs_timer.h"
+
+// r1701: замеры DEC0 для CPS: perf (snd/draw), как у T-unit.
+uint32_t g_de_us_snd = 0, g_de_us_draw = 0;
+// r1702: разбивка рендера RobocopDraw.
+uint32_t g_de_us_clear = 0, g_de_us_pal = 0, g_de_us_lay = 0, g_de_us_copy = 0;
+// r1703: вклад слоёв (тайлы 1/2, чары, спрайты) в «lay».
+uint32_t g_de_us_t1 = 0, g_de_us_t2 = 0, g_de_us_char = 0, g_de_us_spr = 0;
+
 
 static UINT8 DrvInputPort0[8]       = {0, 0, 0, 0, 0, 0, 0, 0};
 static UINT8 DrvInputPort1[8]       = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -5190,6 +5199,62 @@ static void Dec0Render16x16Tile_Mask_FlipXY(UINT16* pDestDraw, INT32 nTileNumber
 #define TILEMAP_LAYER0		1
 #define TILEMAP_LAYER1		0
 
+// r1705: X-диапазон карты, который реально читает DrvRenderCustomTilemap.
+// До правки рисовались ВСЕ тайлы ширины 1024 при экране 256 — 4-кратная
+// работа (robocop: t1 2.7 + t2 3.0 + char 3.0 мс). Отдаём индексы тайлов
+// [*pFirst..*pLast] по модулю mw; при флипе или широком row-scroll —
+// полный диапазон (0..mw-1), чтобы не потерять столбцы.
+static void Dec0VisibleX(UINT16 *pControl0, UINT16 *pControl1, UINT16 *RowScrollRam,
+                         INT32 TilemapHeight, INT32 mw, INT32 shift,
+                         INT32 *pFirst, INT32 *pLast)
+{
+	*pFirst = 0;
+	*pLast = mw - 1;
+	if (DrvFlipScreen) return;
+
+	UINT32 xScroll = BURN_ENDIAN_SWAP_INT16(pControl1[0]);
+	INT32 minx, maxx;
+
+	if (BURN_ENDIAN_SWAP_INT16(pControl0[0]) & 0x04) {
+		UINT16 rshift = BURN_ENDIAN_SWAP_INT16(pControl1[3]) & 0x0f;
+		INT32 yScroll = BURN_ENDIAN_SWAP_INT16(pControl1[1]);
+		minx = 0x7fffffff; maxx = -0x7fffffff;
+		for (INT32 y = 0; y < nScreenHeight; y++) {
+			INT32 ySrc = (yScroll + 8 + y) & (TilemapHeight - 1);
+			INT32 xs = (INT32)xScroll + (int16_t)BURN_ENDIAN_SWAP_INT16(RowScrollRam[(ySrc >> rshift) & (0x1ff >> rshift)]);
+			if (xs < minx) minx = xs;
+			if (xs > maxx) maxx = xs;
+		}
+	} else {
+		minx = (INT32)xScroll;
+		maxx = minx;
+	}
+
+	INT32 first = minx >> shift;
+	INT32 last = (maxx + nScreenWidth) >> shift;
+	if (last - first + 1 < mw) {   // иначе весь круг всё равно нужен
+		*pFirst = first;
+		*pLast = last;
+	}
+}
+
+// r1706: чистим только те столбцы карты, которые реально читает
+// DrvRenderCustomTilemap. Полный memset 1024×256×2 (512 КБ) на каждый слой
+// съедал ~1.3 мс и после r1705 стал основной долей «lay».
+static void Dec0ClearX(UINT16 *pLayer, INT32 W, INT32 H, INT32 k0, INT32 k1, INT32 tsize)
+{
+	INT32 len = (k1 - k0 + 1) * tsize;
+	if (len >= W) { memset(pLayer, 0, (size_t)W * H * sizeof(UINT16)); return; }
+	INT32 a = (k0 * tsize) & (W - 1);
+	INT32 head = W - a; if (head > len) head = len;
+	INT32 tail = len - head;
+	for (INT32 y = 0; y < H; y++) {
+		UINT16 *row = pLayer + (size_t)y * W;
+		memset(row + a, 0, (size_t)head * sizeof(UINT16));
+		if (tail) memset(row, 0, (size_t)tail * sizeof(UINT16));
+	}
+}
+
 static void DrvRenderCustomTilemap(UINT16 *pSrc, UINT16 *pControl0, UINT16 *pControl1, UINT16 *RowScrollRam, UINT16 *ColScrollRam, INT32 TilemapWidth, INT32 TilemapHeight, INT32 Opaque, INT32 DrawLayer)
 {
 	INT32 x, y, xSrc, ySrc, ColOffset = 0, pPixel;
@@ -5238,6 +5303,7 @@ static void DrvRenderCustomTilemap(UINT16 *pSrc, UINT16 *pControl0, UINT16 *pCon
 static void DrvRenderTile1Layer(INT32 Opaque, INT32 DrawLayer)
 {
 	INT32 mx, my, Code, Attr, Colour, x, y, TileIndex, Layer;
+	uint32_t de_s = h3_hs_timer_lo_us();
 	UINT16 *Control0 = (UINT16*)DrvVideo1Ctrl0Ram;
 	UINT16 *VideoRam = (UINT16*)DrvVideo1Ram;
 	
@@ -5263,10 +5329,14 @@ static void DrvRenderTile1Layer(INT32 Opaque, INT32 DrawLayer)
 		}
 	}
 	
-	memset(pTile1LayerDraw, 0, DrvTile1TilemapWidth * DrvTile1TilemapHeight * sizeof(UINT16));
-	
-	for (my = 0; my < (DrvTile1TilemapHeight / 16); my++) {
-		for (mx = 0; mx < (DrvTile1TilemapWidth / 16); mx++) {
+	{
+		INT32 mw = DrvTile1TilemapWidth / 16, k0, k1;
+		Dec0VisibleX(Control0, (UINT16*)DrvVideo1Ctrl1Ram, (UINT16*)DrvVideo1RowScrollRam,
+		             DrvTile1TilemapHeight, mw, 4, &k0, &k1);
+		Dec0ClearX(pTile1LayerDraw, DrvTile1TilemapWidth, DrvTile1TilemapHeight, k0, k1, 16);
+		for (my = 0; my < (DrvTile1TilemapHeight / 16); my++) {
+		for (INT32 k = k0; k <= k1; k++) {
+			mx = k & (mw - 1);
 			TileIndex = (mx & 0x0f) + ((my & 0x0f) << 4) + ((mx & 0x30) << 4);
 			if (RenderType == 1) TileIndex = (mx & 0x0f) + ((my & 0x0f) << 4) + ((my & 0x10) << 4) + ((mx & 0x10) << 5);
 			if (RenderType == 2) TileIndex = (mx & 0x0f) + ((my & 0x3f) << 4);
@@ -5304,14 +5374,17 @@ static void DrvRenderTile1Layer(INT32 Opaque, INT32 DrawLayer)
 				}
 			}
 		}
+		}
 	}
 	
 	DrvRenderCustomTilemap(pTile1LayerDraw, (UINT16*)DrvVideo1Ctrl0Ram, (UINT16*)DrvVideo1Ctrl1Ram, (UINT16*)DrvVideo1RowScrollRam, (UINT16*)DrvVideo1ColScrollRam, DrvTile1TilemapWidth, DrvTile1TilemapHeight, Opaque, DrawLayer);
+	g_de_us_t1 = h3_hs_timer_lo_us() - de_s;
 }
 
 static void DrvRenderTile2Layer(INT32 Opaque, INT32 DrawLayer)
 {
 	INT32 mx, my, Code, Attr, Colour, x, y, TileIndex, Layer;
+	uint32_t de_s = h3_hs_timer_lo_us();
 	UINT16 *Control0 = (UINT16*)DrvVideo2Ctrl0Ram;
 	UINT16 *VideoRam = (UINT16*)DrvVideo2Ram;
 	
@@ -5337,10 +5410,14 @@ static void DrvRenderTile2Layer(INT32 Opaque, INT32 DrawLayer)
 		}
 	}
 	
-	memset(pTile2LayerDraw, 0, DrvTile2TilemapWidth * DrvTile2TilemapHeight * sizeof(UINT16));
-	
-	for (my = 0; my < (DrvTile2TilemapHeight / 16); my++) {
-		for (mx = 0; mx < (DrvTile2TilemapWidth / 16); mx++) {
+	{
+		INT32 mw = DrvTile2TilemapWidth / 16, k0, k1;
+		Dec0VisibleX(Control0, (UINT16*)DrvVideo2Ctrl1Ram, (UINT16*)DrvVideo2RowScrollRam,
+		             DrvTile2TilemapHeight, mw, 4, &k0, &k1);
+		Dec0ClearX(pTile2LayerDraw, DrvTile2TilemapWidth, DrvTile2TilemapHeight, k0, k1, 16);
+		for (my = 0; my < (DrvTile2TilemapHeight / 16); my++) {
+		for (INT32 k = k0; k <= k1; k++) {
+			mx = k & (mw - 1);
 			TileIndex = (mx & 0x0f) + ((my & 0x0f) << 4) + ((mx & 0x30) << 4);
 			if (RenderType == 1) TileIndex = (mx & 0x0f) + ((my & 0x0f) << 4) + ((my & 0x10) << 4) + ((mx & 0x10) << 5);
 			if (RenderType == 2) TileIndex = (mx & 0x0f) + ((my & 0x3f) << 4);
@@ -5378,14 +5455,17 @@ static void DrvRenderTile2Layer(INT32 Opaque, INT32 DrawLayer)
 				}
 			}
 		}
+		}
 	}
 	
 	DrvRenderCustomTilemap(pTile2LayerDraw, (UINT16*)DrvVideo2Ctrl0Ram, (UINT16*)DrvVideo2Ctrl1Ram, (UINT16*)DrvVideo2RowScrollRam, (UINT16*)DrvVideo2ColScrollRam, DrvTile2TilemapWidth, DrvTile2TilemapHeight, Opaque, DrawLayer);
+	g_de_us_t2 = h3_hs_timer_lo_us() - de_s;
 }
 
 static void DrvRenderCharLayer()
 {
 	INT32 mx, my, Code, Attr, Colour, x, y, TileIndex;
+	uint32_t de_s = h3_hs_timer_lo_us();
 	UINT16 *Control0 = (UINT16*)DrvCharCtrl0Ram;
 	UINT16 *CharRam = (UINT16*)DrvCharRam;
 	
@@ -5411,10 +5491,14 @@ static void DrvRenderCharLayer()
 		}
 	}
 	
-	memset(pCharLayerDraw, 0, DrvCharTilemapWidth * DrvCharTilemapHeight * sizeof(UINT16));
-	
-	for (my = 0; my < (DrvCharTilemapHeight / 8); my++) {
-		for (mx = 0; mx < (DrvCharTilemapWidth / 8); mx++) {
+	{
+		INT32 mw = DrvCharTilemapWidth / 8, k0, k1;
+		Dec0VisibleX(Control0, (UINT16*)DrvCharCtrl1Ram, (UINT16*)DrvCharRowScrollRam,
+		             DrvCharTilemapHeight, mw, 3, &k0, &k1);
+		Dec0ClearX(pCharLayerDraw, DrvCharTilemapWidth, DrvCharTilemapHeight, k0, k1, 8);
+		for (my = 0; my < (DrvCharTilemapHeight / 8); my++) {
+		for (INT32 k = k0; k <= k1; k++) {
+			mx = k & (mw - 1);
 			TileIndex = (mx & 0x1f) + ((my & 0x1f) << 5) + ((mx & 0x60) << 5);
 			if (RenderType == 1) TileIndex = (mx & 0x1f) + ((my & 0x1f) << 5) + ((my & 0x20) << 5) + ((mx & 0x20) << 6);
 			if (RenderType == 2) TileIndex = (mx & 0x1f) + ((my & 0x7f) << 5);
@@ -5437,13 +5521,16 @@ static void DrvRenderCharLayer()
 				Dec0Render8x8Tile_Mask(pCharLayerDraw, Code, x, y, Colour, 4, 0, DrvCharPalOffset, DrvChars, DrvCharTilemapWidth);
 			}
 		}
+		}
 	}
 	
 	DrvRenderCustomTilemap(pCharLayerDraw, (UINT16*)DrvCharCtrl0Ram, (UINT16*)DrvCharCtrl1Ram, (UINT16*)DrvCharRowScrollRam, (UINT16*)DrvCharColScrollRam, DrvCharTilemapWidth, DrvCharTilemapHeight, 0, TILEMAP_BOTH_LAYERS);
+	g_de_us_char = h3_hs_timer_lo_us() - de_s;
 }
 
 static void DrvRenderSprites(INT32 PriorityMask, INT32 PriorityVal)
 {
+	uint32_t de_s = h3_hs_timer_lo_us();
 	UINT16 *spriteram = (UINT16*)DrvSpriteDMABufferRam;
 	const INT32 size = 0x800/2;
 	for (INT32 offs = 0; offs < size;)
@@ -5516,6 +5603,7 @@ static void DrvRenderSprites(INT32 PriorityMask, INT32 PriorityVal)
 			offs += 4;
 		}
 	}
+	g_de_us_spr = h3_hs_timer_lo_us() - de_s;
 }
 
 static INT32 BaddudesDraw()
@@ -5648,6 +5736,7 @@ static INT32 MidresDraw()
 static INT32 RobocopDraw()
 {
 	INT32 Trans;
+	uint32_t de_t0, de_t1;
 	UINT16 *Control0 = (UINT16*)DrvCharCtrl0Ram;
 	DrvFlipScreen = BURN_ENDIAN_SWAP_INT16(Control0[0]) & 0x80;
 	
@@ -5657,8 +5746,12 @@ static INT32 RobocopDraw()
 		Trans = 0x00;
 	}
 	
+	// r1702: разбивка рендера robocop (~10 мс) — строка DE: draw в CPS: perf.
+	de_t0 = h3_hs_timer_lo_us();
 	BurnTransferClear();
+	de_t1 = h3_hs_timer_lo_us(); g_de_us_clear = de_t1 - de_t0; de_t0 = de_t1;
 	DrvCalcPalette();
+	de_t1 = h3_hs_timer_lo_us(); g_de_us_pal = de_t1 - de_t0; de_t0 = de_t1;
 	
 	if (DrvPriority & 0x01) {
 		if (nBurnLayer & 1) DrvRenderTile1Layer(1, TILEMAP_LAYER1);
@@ -5677,7 +5770,9 @@ static INT32 RobocopDraw()
 	}
 	
 	if (nBurnLayer & 4) DrvRenderCharLayer();
+	de_t1 = h3_hs_timer_lo_us(); g_de_us_lay = de_t1 - de_t0; de_t0 = de_t1;
 	BurnTransferCopy(DrvPalette);
+	de_t1 = h3_hs_timer_lo_us(); g_de_us_copy = de_t1 - de_t0;
 
 	return 0;
 }
@@ -5707,6 +5802,7 @@ static INT32 SlyspyDraw()
 static INT32 DrvFrame()
 {
 	INT32 nInterleave = 272*4;
+	uint32_t de_t0;
 
 	if (DrvReset) BaddudesDoReset();
 
@@ -5748,11 +5844,13 @@ static INT32 DrvFrame()
 	SekClose();
 	M6502Close();
 
+	de_t0 = h3_hs_timer_lo_us();
 	if (pBurnSoundOut) {
 		BurnYM2203Update(pBurnSoundOut, nBurnSoundLen);
 		BurnYM3812Update(pBurnSoundOut, nBurnSoundLen);
 		MSM6295Render(0, pBurnSoundOut, nBurnSoundLen);
 	}
+	g_de_us_snd = h3_hs_timer_lo_us() - de_t0;
 
 	nExtraCycles[0] = nCyclesDone[0] - nCyclesTotal[0];
 	nExtraCycles[1] = 0; // sound cpu, not needed
@@ -5762,12 +5860,16 @@ static INT32 DrvFrame()
 		BurnDrvRedraw();
 	}
 
+	// r1705: draw-замер нужен и на этом пути (baddudes и др. на DrvFrame).
+	g_de_us_draw = h3_hs_timer_lo_us() - de_t0;
+
 	return 0;
 }
 
 static INT32 RobocopFrame()
 {
 	INT32 nInterleave = 264;
+	uint32_t de_t0, de_t1;
 
 	if (DrvReset) RobocopDoReset();
 
@@ -5802,15 +5904,21 @@ static INT32 RobocopFrame()
 	M6502Close();
 	h6280Close();
 
+	// r1701: звук и рендер robocop — цифры в CPS: perf (snd/draw).
+	de_t0 = h3_hs_timer_lo_us();
 	if (pBurnSoundOut) {
 		BurnYM2203Update(pBurnSoundOut, nBurnSoundLen);
 		BurnYM3812Update(pBurnSoundOut, nBurnSoundLen);
 		MSM6295Render(0, pBurnSoundOut, nBurnSoundLen);
 	}
-
+	de_t1 = h3_hs_timer_lo_us();
+	g_de_us_snd = de_t1 - de_t0;
+	de_t0 = h3_hs_timer_lo_us();
 	if (pBurnDraw) {
 		BurnDrvRedraw();
 	}
+	de_t1 = h3_hs_timer_lo_us();
+	g_de_us_draw = de_t1 - de_t0;
 
 	return 0;
 }

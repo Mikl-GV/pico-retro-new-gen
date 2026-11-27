@@ -53,7 +53,8 @@ static uint32_t g_hdd_size[2];
 
 static int pxt_hdd_read_slot(int slot, uint32_t off, uint8_t* buf, uint32_t len) {
     if (slot < 0 || slot > 1 || !g_hdd_size[slot]) return -1;
-    if (off + len > g_hdd_size[slot]) return -1;
+    // r1732 (D-10): без переполнения uint32: off + len могла обойти границу.
+    if (len > g_hdd_size[slot] || off > g_hdd_size[slot] - len) return -1;
     return (fat_stream_read(&g_hdd_stream[slot], off, buf, len) == (int)len) ? 0 : -1;
 }
 
@@ -70,6 +71,12 @@ void pxt_mount_hdd(void) {
     static const char* const names[2] = { "hdd.img", "hdd2.img" };
     static const uint8_t units[2] = { 0x80, 0x81 };
     for (int i = 0; i < 2; i++) {
+        // r1728: слот снимается целиком до поиска файла. Иначе после смены
+        // ромсета без hdd2.img читалка D: продолжала отдавать СТАРЫЙ поток
+        // (g_hdd_size[1] держал прошлый размер при мёртвом g_hdd[1]/stream).
+        g_hdd_size[i] = 0;
+        g_hdd[i].size = 0;
+        pxt_disk_set_stream(units[i], 0, 0);
         fat_entry_t e;
         if (fat_find("/roms/pxt/hdd", names[i], &e) && e.size) {
             g_hdd[i] = e;

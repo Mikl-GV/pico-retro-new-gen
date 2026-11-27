@@ -1,0 +1,925 @@
+
+// This file is part of the Cyclone 68000 Emulator
+
+// Copyright (c) 2004,2011 FinalDave (emudave (at) gmail.com)
+// Copyright (c) 2005-2011 Gražvydas "notaz" Ignotas (notasas (at) gmail.com)
+
+// This code is licensed under the GNU General Public License version 2.0 and the MAME License.
+// You can choose the license that has the most advantages for you.
+
+// git repository can be found at https://github.com/notaz/cyclone68000/
+
+
+#include "app.h"
+
+// --------------------- Opcodes 0x0000+ ---------------------
+// Emit an Ori/And/Sub/Add/Eor/Cmp Immediate opcode, 0000ttt0 ssaaaaaa
+int OpArith(int op)
+{
+  int type=0,size=0;
+  int sea=0,tea=0;
+  int use=0;
+  const char *shiftstr="";
+  EaRWType stype=earwt_msb_dont_care;
+  EaRWType ttype=earwt_shifted_up;
+
+  // Get source and target EA
+  type=(op>>9)&7; if (type==4 || type>=7) return 1;
+  size=(op>>6)&3; if (size>=3) return 1;
+  sea=   0x003c;
+  tea=op&0x003f;
+
+  // See if we can do this opcode:
+  if (EaCanRead(tea,size)==0) return 1;
+  if (EaCanWrite(tea)==0 || EaAn(tea)) return 1;
+
+  use=OpBase(op,size);
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op, sea, tea); Cycles=4;
+
+  // Avoid sign-extended load optimizations for bytes,
+  // which would introduce a separate register index shift
+  if (size) {
+    if (tea<0x10&&(type<2||type==5)) {
+      // Do register-based bitwise ops with sign extension
+      stype=earwt_sign_extend;
+      ttype=earwt_sign_extend;
+    }
+  }
+
+  // imm must be read first
+  EaCalcRead(-1,10,sea,size,0,stype);
+  EaCalcRead((type!=6)?11:-1,0,tea,size,0x003f,stype);
+
+  if (size<2&&ttype==earwt_shifted_up) {
+    shiftstr=size?",asl #16":",asl #24";
+    ot("  mov r10,r10%s\n",shiftstr);
+  }
+
+  ot(";@ Do arithmetic:\n");
+
+  if (type==0) ot("  orrs r1,r10,r0%s\n",shiftstr);
+  if (type==1) ot("  ands r1,r10,r0%s\n",shiftstr);
+  if (type==2||type==6)
+               ot("  rsbs r1,r10,r0%s ;@ Defines NZCV\n",shiftstr);
+  if (type==3) ot("  adds r1,r10,r0%s ;@ Defines NZCV\n",shiftstr);
+  if (type==5) ot("  eors r1,r10,r0%s\n",shiftstr);
+
+  if (type< 2) OpGetFlagsNZ(1); // Ori/And
+  if (type==2) OpGetFlags(1,1); // Sub: Subtract/X-bit
+  if (type==3) OpGetFlags(0,1); // Add: X-bit
+  if (type==5) OpGetFlagsNZ(1); // Eor
+  if (type==6) OpGetFlags(1,0); // Cmp: Subtract
+  ot("\n");
+
+  if (type!=6)
+  {
+    EaWrite(11, 1, tea,size,0x003f,ttype);
+  }
+
+  // Correct cycles:
+  if (type==6)
+  {
+    if (size>=2 && tea<0x10) Cycles+=2;
+  }
+  else
+  {
+    if (size>=2) Cycles+=4;
+    if (tea>=8)  Cycles+=4;
+  }
+
+  OpEnd(sea,tea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0x5000+ ---------------------
+int OpAddq(int op)
+{
+  // 0101nnnt xxeeeeee (nnn=#8,1-7 t=addq/subq xx=size, eeeeee=EA)
+  int num=0,type=0,size=0,ea=0;
+  int use=0;
+  char count[16]="";
+  int shift=0;
+
+  num =(op>>9)&7; if (num==0) num=8;
+  type=(op>>8)&1;
+  size=(op>>6)&3; if (size>=3) return 1;
+  ea  = op&0x3f;
+
+  // See if we can do this opcode:
+  if (EaCanRead (ea,size)==0) return 1;
+  if (EaCanWrite(ea)     ==0) return 1;
+  if (size == 0 && EaAn(ea) ) return 1;
+
+  use=OpBase(op,size,1);
+
+  if (num!=8) use|=0x0e00; // If num is not 8, use same handler
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,ea);
+  Cycles=ea<8?4:8;
+  if(size>=2) Cycles=ea<0x10?8:12;
+
+  if (size>0 && (ea&0x38)==0x08) size=2; // addq.w #n,An is also 32-bit
+
+  EaCalcRead(11,0,ea,size,0x003f,earwt_msb_dont_care);
+
+  shift=32-(8<<size);
+
+  if (num!=8)
+  {
+    int lsr=9-shift;
+
+    ot("  and r2,r8,#0x0e00 ;@ Get quick value\n");
+
+    if (lsr>=0) sprintf(count,"r2,lsr #%d",  lsr);
+    else        sprintf(count,"r2,lsl #%d", -lsr);
+
+    ot("\n");
+  }
+  else
+  {
+    sprintf(count,"#0x%.4x",8<<shift);
+  }
+
+  if (size<2)  ot("  mov r0,r0,asl #%d\n\n",size?16:24);
+
+  if (type==0) ot("  adds r1,r0,%s\n",count);
+  if (type==1) ot("  subs r1,r0,%s\n",count);
+
+  if ((ea&0x38)!=0x08) OpGetFlags(type,1);
+  ot("\n");
+
+  EaWrite(11, 1, ea,size,0x003f,earwt_shifted_up);
+
+  OpEnd(ea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0x8000+ ---------------------
+// 1t0tnnnd xxeeeeee (tt=type:or/sub/and/add xx=size, eeeeee=EA)
+int OpArithReg(int op)
+{
+  int use=0;
+  int type=0,size=0,dir=0,rea=0,ea=0;
+  const char *shift="";
+  const char *strop=0;
+  EaRWType reg_rtype=earwt_msb_dont_care;
+  EaRWType rtype=earwt_msb_dont_care;
+  EaRWType wtype=earwt_shifted_up;
+
+  type=(op>>12)&5;
+  rea =(op>> 9)&7;
+  dir =(op>> 8)&1; // er,re
+  size=(op>> 6)&3; if (size>=3) return 1;
+  ea  = op&0x3f;
+
+  if (dir && ea<0x10) return 1; // addx/subx opcode
+
+  // See if we can do this opcode:
+  if (dir==0 && EaCanRead (ea,size)==0) return 1;
+  if (dir    && EaCanWrite(ea)==0)      return 1;
+  if ((size==0||!(type&1))&&EaAn(ea))   return 1;
+
+  use=OpBase(op,size);
+  use&=~0x0e00; // Use same opcode for Dn
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,ea); Cycles=4;
+
+  // Avoid sign-extended load optimizations for bytes,
+  // which would introduce a separate register index shift
+  if (size) {
+    if ((ea<0x10||ea==0x3c)&&!(type&1)) {
+      // Do register/imm-based bitwise operations on sign-extended values
+      reg_rtype=earwt_sign_extend;
+      rtype=earwt_sign_extend;
+      wtype=earwt_sign_extend;
+    } else if (!dir&&!(type&1)) {
+      // Do other register-destination bitwise operations on sign-extended values,
+      // but without auto-extending the source
+      reg_rtype=earwt_sign_extend;
+      wtype=earwt_sign_extend;
+    }
+  }
+
+  EaCalcRead(dir?11:-1,0,ea,size,0x003f,rtype);
+
+  EaCalcRead(dir?-1:11,1,rea,size,0x0e00,reg_rtype);
+
+  ot(";@ Do arithmetic:\n");
+  if (type==0) strop = "orrs";
+  if (type==1) strop = dir ? "subs" : "rsbs";
+  if (type==4) strop = "ands";
+  if (type==5) strop = "adds";
+
+  if (size<2) {
+    if (wtype==earwt_shifted_up) {
+      shift=size?",asl #16":",asl #24";
+      ot("  mov r0,r0%s\n",shift);
+    } else if (wtype==earwt_sign_extend&&rtype==earwt_msb_dont_care) {
+#if HAVE_ARMv6
+      SignExtend(0,0,size);
+#else
+      shift=size?",asl #16":",asl #24";
+      ot("  mov r0,r0%s\n",shift);
+      shift=size?",asr #16":",asr #24";
+#endif
+    }
+  }
+  if (wtype==earwt_shifted_up) ot("  %s r1,r0,r1%s\n",strop,shift);
+  else                         ot("  %s r1,r1,r0%s\n",strop,shift);
+
+  if (type&1) OpGetFlags(type==1,type&1); // add/subtract
+  else        OpGetFlagsNZ(1);
+  ot("\n");
+
+  ot(";@ Save result:\n");
+  if (dir) EaWrite(11, 1, ea,size,0x003f,wtype);
+  else     EaWrite(11, 1,rea,size,0x0e00,wtype);
+
+  if(rea==ea) {
+    if(ea<8) Cycles=(size>=2)?8:4; else Cycles+=(size>=2)?26:14;
+  } else if(dir) {
+    Cycles+=4;
+    if(size>=2) Cycles+=4;
+  } else {
+    if(size>=2) {
+      Cycles+=2;
+      if(ea<0x10||ea==0x3c) Cycles+=2;
+    }
+  }
+
+  OpEnd(ea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0x80c0+ ---------------------
+static void UnrolledDiv()
+{
+  ot("  rsbs r0,r1,#0 ;@ negate divisor and clear carry\n");
+  ot("  sbc r10,r1,r1,lsr #1 ;@ r10=(divisor<<15)-1\n");
+  ot(";@ calculate number of skipped initial iterations\n");
+#if HAVE_ARMv5
+  // Use the difference in approximated log2 to determine skipped iterations,
+  // but round down by subtracting an extra 1.
+  // This rounded result may be less than 0, which is handled below.
+  ot("  orr r3,r2,r1,lsr #16 ;@ make sure the rounded difference is at most 15\n");
+  ot("  clz r3,r3 ;@ leading zeros of dividend, clamped to clz(divisor)+16\n");
+  ot("  clz r1,r1 ;@ leading zeros of divisor\n");
+  ot("  sbcs r3,r3,r1 ;@ subtract and round down (carry is still clear)\n");
+  ot("  mov r3,r3,lsl #1 ;@ each skipped iteration has 2 penalty cycle pairs\n");
+  ot(";@ add branch offset (12 bytes per iteration)\n");
+  ot("  add r1,r3,r3,lsl #1\n");
+  ot("  addhi pc,pc,r1,lsl #1 ;@ fallthrough if max iterations\n");
+  ot("  mov r3,#0 ;@ saturate negative cycles to 0\n");
+#else
+  ot("  mov r3,#0 ;@ number of additional cycle pairs\n");
+  // Resolve only to an even number of skipped iterations, because
+  // determining bit 0 would be just as expensive as the skipped iteration
+  for (int shift=8; shift!=1; shift>>=1)
+  {
+    ot("  cmp r2,r1,lsr #%d+1\n",shift);
+    ot("  addlo r3,r3,#%d*2 ;@ each skipped iteration has 2 penalty cycle pairs\n",shift);
+    if (shift!=2) ot("  movlo r1,r1,lsr #%d\n",shift);
+  }
+  ot("\n");
+  ot(";@ add branch offset (12 bytes per iteration)\n");
+  ot("  adds r1,r3,r3,lsl #1\n");
+  ot("  addne pc,pc,r1,lsl #1 ;@ fallthrough if max iterations\n");
+  ot("  nop ;@ padding for pc-relative offset\n");
+#endif
+  ot("\n");
+  ot(";@ For each iteration:\n");
+  ot(";@ Shift remainder into upper bits and compare the pre-shifted divisor to it.\n");
+  ot(";@ This resets carry if non-restoring, and sets overflow if remainder MSB was 1.\n");
+  ot(";@ Then, conditionally shift and add the negated divisor, setting an upper quotient bit.\n");
+  ot(";@ Finally, add 0, 1, or 2 penalty cycle pairs based on the overflow and carry flags.\n");
+  for (int shift=0; shift<16; shift++)
+  {
+    ot("  cmp r10,r2,lsl #%d\n",shift);
+    ot("  addcc r2,r2,r0,lsr #%d+1\n",shift);
+    // Final iteration has a fixed cycle length
+    if (shift!=15) ot("  adcvc r3,r3,#1\n");
+  }
+  ot("\n");
+  ot("  sub r5,r5,r3,lsl #1 ;@ Count penalty cycle pairs\n");
+}
+
+int OpMul(int op)
+{
+  // Div/Mul: 1m00nnns 11eeeeee (m=Mul, nnn=Register Dn, s=signed, eeeeee=EA)
+  int type=0,rea=0,sign=0,ea=0;
+  int use=0;
+
+  type=(op>>14)&1; // div/mul
+  rea =(op>> 9)&7;
+  sign=(op>> 8)&1;
+  ea  = op&0x3f;
+
+  // See if we can do this opcode:
+  if (EaCanRead(ea,1)==0||EaAn(ea)) return 1;
+
+  use=OpBase(op,1);
+  use&=~0x0e00; // Use same for all registers
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  // Output common unrolled divide loop function before first DIVU opcode
+  if (op == 0x80c0)
+  {
+#if !INLINE_UNROLLED_DIV
+    ot(";@ ---------- Common unrolled division subroutine ----------\n");
+    ot(";@ Fully unrolled unsigned division, with accurate cycle counting.\n");
+    ot(";@ Assumes divide-by-zero and unsigned overflow checks have passed.\n");
+    ot(";@ Inputs: r2=dividend, r1=divisor<<16\n");
+    ot(";@ Output: r2=(quotient<<16)|remainder\n");
+    ot(";@ Destroys: r0,r1,r3,r10\n");
+    ot(";@ r5 is adjusted with the per-iteration penalty cycles.\n");
+    ot("DivideCommon%s\n",ms?"":":");
+    UnrolledDiv();
+    ot("  bx lr\n");
+    ot("\n");
+#endif
+  }
+
+  OpStart(op,ea,0,1);
+  if(type) Cycles=38;
+  else     Cycles=sign?16:10;
+
+  if (type==0) // div
+  {
+    EaCalcRead(-1,0, ea,1,0x003f,earwt_msb_dont_care);
+    EaCalcRead(11,2,rea,2,0x0e00);
+
+    ot("  movs r1,r0,asl #16\n");
+    // the manual says C is always cleared, but neither Musashi nor FAME do that
+    //ot("  bic r10,r10,#0x20000000 ;@ always clear C\n");
+    ot("  beq divzero%.4x ;@ division by zero\n",op);
+    ot("\n");
+    
+    if (sign)
+    {
+      ot("  ands r12,r2,#0x80000000 ;@ r12 = odd parity if the result is negative\n");
+      ot("  submi r5,r5,#2\n");
+      ot("  rsbmi r2,r2,#0 ;@ Make r2 positive\n");
+      ot("\n");
+      ot("  tst r1,r1\n");
+      ot("  orrmi r12,r12,#0x40000000\n");
+      ot("  rsbmi r1,r1,#0 ;@ Make r1 positive\n");
+    }
+    ot("\n");
+
+    ot(";@ Overflow?\n");
+    ot("  cmp r2,r1\n");
+    ot("  movhs r10,#0x90000000 ;@ set overflow/negative flags\n");
+    ot("  bhs endofop%.4x ;@ overflow!\n",op);
+    ot("\n");
+
+    ot("  sub r5,r5,#%d ;@ Minimum cycles divide loop can take\n",sign?74:66);
+#if INLINE_UNROLLED_DIV
+    UnrolledDiv();
+#else
+    ot("  bl DivideCommon ;@ Divide r2 by (r1>>16)\n");
+#endif
+    ot(";@r2==(quotient<<16)|remainder\n");
+    ot("\n");
+
+    if (sign)
+    {
+      // sign correction
+      ot("  mov r3,r2,lsr #16\n");
+      ot("  cmn r12,r12\n");
+      ot("  rsbvs r3,r3,#0 ;@ negate if quotient is negative\n");
+      ot("  subvs r5,r5,#2\n");
+      ot("  rsbcs r2,r2,#0 ;@ negate the remainder if dividend was negative\n");
+      ot("  subcs r5,r5,#2\n");
+      ot("\n");
+
+      ot("  movs r0,r3,lsl #16 ;@ set flags based on quotient\n");
+      OpGetFlagsNZ(0);
+      // signed overflow check
+      ot("  cmp r3,r0,asr #16 ;@ signed overflow?\n");
+      ot("  movne r10,#0x90000000 ;@ set overflow/negative flags\n");
+      ot("  bne endofop%.4x ;@ overflow!\n",op);
+      ot("\n");
+
+      ot("  mov r0,r0,lsr #16\n");
+      ot("  orr r0,r0,r2,lsl #16 ;@ Insert remainder\n");
+    }
+    else
+    {
+      ot("  mov r0,r2,ror #16 ;@ swap quotient and remainder\n");
+      ot("  movs r2,r0,lsl #16 ;@ set flags based on quotient\n");
+      OpGetFlagsNZ(2);
+    }
+    ot("\n");
+  }
+
+  if (type==1)
+  {
+    EaRWType rtype=sign?earwt_sign_extend:earwt_zero_extend;
+
+    EaCalcRead(-1,0, ea,1,0x003f,rtype);
+    EaCalcRead(11,2,rea,1,0x0e00,rtype,0,1);
+    
+    ot(";@ Calculate cycles needed: 2*(#bits set in multiplier engine mask)\n");
+    if (sign) ot("  eor r1,r0,r0,lsl #1 ;@ zeros upper 16 bits\n");
+    ot(";@ count bottom 16 bits, the O(1) way\n");
+    // use the bit-trio method (HAKMEM 169) which needs fewer immediates
+ #if HAVE_ARMv6T2
+    ot("  movw r12,#0x9249 ;@ r12 = 0o111111\n");
+    ot("  movt r12,#0x38E3 ;@ r12 |= 0o070707 << 15\n");
+    ot("  and r3,r12,r%d,lsr #2\n",sign?1:0);
+    ot("  bic r10,r%d,r12\n",sign?1:0);
+    ot("  sub r1,r%d,r3\n",sign?1:0);
+    ot("  sub r1,r1,r10,lsr #1\n");
+ #else
+    ot("  mov r12,#0x38C00000\n");
+    ot("  orr r12,r12,#0x00238000 ;@ r12 = 0o070707 << 15\n");
+    ot("  eor r10,r12,r12,lsl #1  ;@ r10 = 0o111111 << 15\n");
+    ot("  and r3,r10,r%d,lsl #13\n",sign?1:0);
+    ot("  bic r10,r%d,r10,lsr #15\n",sign?1:0);
+    ot("  rsb r1,r3,r%d,lsl #15\n",sign?1:0);
+    ot("  sub r1,r1,r10,lsl #14\n");
+ #endif
+    ot("  add r1,r1,r1,lsr #3\n");
+ #if HAVE_ARMv6T2
+    ot("  and r1,r12,r1,lsl #15\n");
+ #else
+    ot("  and r1,r12,r1\n");
+ #endif
+    ot("  add r1,r1,r1,lsr #6\n");
+    ot("  add r1,r1,r1,lsl #12\n");
+    ot("  sub r5,r5,r1,lsr #26 ;@ cycles -= 2*bitcount(mask)\n");
+    ot("\n");
+
+    ot("  muls r0,r2,r0\n");
+    OpGetFlagsNZ(0);
+  }
+  ot("\n");
+
+  EaWrite(11, 0,rea, 2,0x0e00,earwt_msb_dont_care,type==1);
+
+  if (type==0) ot("endofop%.4x%s\n",op,ms?"":":");
+  opend_op_changes_cycles=1;
+  OpEnd(ea);
+
+  if (type==0) // div
+  {
+    ot("divzero%.4x%s\n",op,ms?"":":");
+    ot("  mov r0,#5 ;@ Divide by zero\n");
+    ot("  bl Exception\n");
+    Cycles+=34-6;
+    OpEnd(ea);
+    ot("\n");
+  }
+
+  return 0;
+}
+
+// Get X Bit into carry - trashes r2
+int GetXBit(int subtract)
+{
+  ot(";@ Get X bit:\n");
+  ot("  ldr r2,[r7,#0x4c]\n");
+  if (subtract) ot("  mvn r2,r2 ;@ Invert it\n");
+  ot("  tst r2,r2,lsl #3 ;@ Get into Carry\n");
+  ot("\n");
+  return 0;
+}
+
+// --------------------- Opcodes 0x8100+ ---------------------
+// 1t00ddd1 0000asss - sbcd/abcd Ds,Dd or -(As),-(Ad)
+int OpAbcd(int op)
+{
+  int use=0;
+  int type=0,sea=0,mem=0,dea=0;
+  
+  type=(op>>14)&1; // sbcd/abcd
+  dea =(op>> 9)&7;
+  mem =(op>> 3)&1;
+  sea = op     &7;
+
+  if (mem) { sea|=0x20; dea|=0x20; }
+
+  use=op&~0x0e07; // Use same opcode for all registers..
+  if (sea==0x27) use|=0x0007; // ___x.b -(a7)
+  if (dea==0x27) use|=0x0e00; // ___x.b -(a7)
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,sea,dea); Cycles=6;
+
+  if (mem)
+  {
+    ot(";@ Get src/dest EA vals\n");
+    EaCalcRead(-1,11,sea,0,0x000f,earwt_msb_dont_care);
+    EaCalcRead( 8, 0,dea,0,0x0e00,earwt_msb_dont_care);
+  }
+  else
+  {
+    ot(";@ Get src/dest reg vals\n");
+    EaCalcRead(-1,11,sea,0,0x0007,earwt_msb_dont_care);
+    EaCalcRead( 8, 0,dea,0,0x0e00,earwt_msb_dont_care);
+  }
+
+  ot("  ldr r1,[r7,#0x4c] ;@ Get X bit\n");
+  ot("  orr r3,r10,#0xb0000000 ;@ for old Z\n");
+  ot("  movs r1,r1,lsl #3 ;@ X into carry\n");
+
+  if (type)
+  {
+    // abcd
+    ot("  eor r1,r0,r11\n");
+    ot("  adc r0,r0,r11\n");
+    ot("  eor r1,r1,r0 ;@ carries from each bit of ADC\n");
+
+    ot("  add r2,r0,#0x66\n");
+    ot("  eor r2,r2,r0 ;@ carries from each bit of adjust\n");
+    ot("  orr r2,r2,r1 ;@ combine carries\n");
+  }
+  else
+  {
+    // sbcd
+    ot("  adc r1,r11,#0\n");
+    ot("  eor r2,r11,r0\n");
+    ot("  sub r0,r0,r1\n");
+    ot("  eor r2,r2,r0 ;@ borrows from each bit of SBC\n");
+  }
+
+  ot("  and r2,r2,#0x110 ;@ generate adjustment, shifted left by 2\n");
+  ot("  orr r1,r2,r2,lsr #1\n");
+
+  ot("  mov r0,r0,lsl #24\n");
+  if (type) ot("  adds r0,r0,r1,lsl #22 ;@ add adjustment, handles undefined V behavior\n");
+  else      ot("  subs r0,r0,r1,lsl #22 ;@ subtract adjustment, handles undefined V behavior\n");
+
+  OpGetFlags(type==0,0);
+  ot("  orr r2,r10,r2,lsl #21 ;@ combine carry from adjustment check\n");
+  ot("  and r10,r2,r3 ;@ fix Z\n");
+  ot("  str r2,[r7,#0x4c] ;@ Save X bit\n");
+  ot("\n");
+
+  EaWrite(8,0,dea,0,0x0e00,earwt_shifted_up);
+
+  OpEnd(sea,dea);
+
+  return 0;
+}
+
+// 01001000 00eeeeee - nbcd <ea>
+int OpNbcd(int op)
+{
+  int use=0;
+  int ea=0;
+  
+  ea=op&0x3f;
+
+  if(EaCanWrite(ea)==0||EaAn(ea)) return 1;
+
+  use=OpBase(op,0);
+  if(op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,ea); Cycles=6;
+  if(ea >= 8)  Cycles+=2;
+
+  EaCalcRead(11,0,ea,0,0x003f,earwt_msb_dont_care);
+
+  // specialization of sbcd implementation
+  ot("  ldr r1,[r7,#0x4c] ;@ Get X bit\n");
+  ot("  orr r3,r10,#0xb0000000 ;@ for old Z\n");
+  ot("  mov r1,r1,lsl #2 ;@ X into sign\n");
+
+  ot("  rsb r1,r0,r1,asr #31 ;@ r1=0-r0-X\n");
+  ot("  eor r0,r0,r1 ;@ borrows from each bit of SBC\n");
+
+  ot("  and r0,r0,#0x110 ;@ generate adjustment, shifted left by 2\n");
+  ot("  orr r2,r0,r0,lsr #1\n");
+
+  ot("  mov r1,r1,lsl #24\n");
+  ot("  subs r1,r1,r2,lsl #22 ;@ subtract adjustment, handles undefined V behavior\n");
+  OpGetFlags(1,0);
+
+  ot("  orr r2,r10,r0,lsl #21 ;@ combine carry from adjustment check\n");
+
+  ot("  and r10,r2,r3 ;@ fix Z\n");
+  ot("  str r2,[r7,#0x4c] ;@ Save X bit\n");
+  ot("\n");
+
+  EaWrite(11, 1, ea,0,0x3f,earwt_shifted_up);
+
+  OpEnd(ea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0x90c0+ ---------------------
+// Suba/Cmpa/Adda 1tt1nnnx 11eeeeee (tt=type, x=size, eeeeee=Source EA)
+int OpAritha(int op)
+{
+  int use=0;
+  int type=0,size=0,sea=0,dea=0;
+  const char *asr="";
+  EaRWType stype=earwt_msb_dont_care;
+
+  // Suba/Cmpa/Adda/(invalid):
+  type=(op>>13)&3; if (type>=3) return 1;
+
+  size=(op>>8)&1; size++;
+  dea=(op>>9)&7; dea|=8; // Dest=An
+  sea=op&0x003f; // Source
+
+  // See if we can do this opcode:
+  if (EaCanRead(sea,size)==0) return 1;
+
+  use=OpBase(op,size);
+  use&=~0x0e00; // Use same opcode for An
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,sea); Cycles=(size==2)?6:8;
+  if(sea<0x10||sea==0x3c) {
+    if (size==2) Cycles+=2;
+    // Only use sign-extended load optimization for immediates,
+    // to avoid a separate register index shift
+    if (sea==0x3c) stype=earwt_sign_extend;
+  }
+  if(type==1) Cycles=6;
+
+  // EA calculation order defines how situations like  suba.w (A0)+, A0 get handled.
+  EaCalcRead(-1,0,sea,size,0x003f,stype);
+  EaCalcRead(type!=1?11:-1,1,dea,2,0x0e00,earwt_msb_dont_care);
+
+  if (stype!=earwt_sign_extend) {
+#if HAVE_ARMv6
+    SignExtend(0,0,size);
+#else
+    if (size<2) ot("  mov r0,r0,asl #%d\n\n",size?16:24);
+    if (size<2) asr=size?",asr #16":",asr #24";
+#endif
+  }
+
+  if (type==0) ot("  sub r1,r1,r0%s\n",asr);
+  if (type==1) ot("  cmp r1,r0%s ;@ Defines NZCV\n",asr);
+  if (type==1) OpGetFlags(1,0); // Get Cmp flags
+  if (type==2) ot("  add r1,r1,r0%s\n",asr);
+  ot("\n");
+
+  if (type!=1) EaWrite(11, 1, dea,2,0x0e00);
+
+  OpEnd(sea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0x9100+ ---------------------
+// Emit a Subx/Addx opcode, 1t01ddd1 zz00rsss addx.z Ds,Dd
+int OpAddx(int op)
+{
+  int use=0;
+  int type=0,size=0,dea=0,sea=0,mem=0;
+  const char *asl="";
+
+  type=(op>>14)&1;
+  dea =(op>> 9)&7;
+  size=(op>> 6)&3; if (size>=3) return 1;
+  sea = op&7;
+  mem =(op>> 3)&1;
+
+  // See if we can do this opcode:
+  if (EaCanRead(sea,size)==0) return 1;
+  if (EaCanWrite(dea)==0) return 1;
+
+  if (mem) { sea+=0x20; dea+=0x20; }
+
+  use=op&~0x0e07; // Use same opcode for Dn
+  if (size==0&&sea==0x27) use|=0x0007; // ___x.b -(a7)
+  if (size==0&&dea==0x27) use|=0x0e00; // ___x.b -(a7)
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,sea,dea); Cycles=4;
+  if(size>=2)   Cycles+=4;
+  if(sea>=0x10) Cycles+=2;
+
+  if (mem)
+  {
+    ot(";@ Get src/dest EA vals\n");
+    EaCalcRead(-1,11,sea,size,0x000f,earwt_msb_dont_care);
+    EaCalcRead(8,0,dea,size,0x0e00,earwt_msb_dont_care);
+  }
+  else
+  {
+    ot(";@ Get src/dest reg vals\n");
+    EaCalcRead(-1,11,sea,size,0x0007,earwt_msb_dont_care);
+    EaCalcRead(8,0,dea,size,0x0e00,earwt_msb_dont_care);
+  }
+
+  ot(";@ Do arithmetic:\n");
+  ot("  ldr r2,[r7,#0x4c] ;@ X bit\n");
+  ot("  orr r3,r10,#0xb0000000 ;@ for old Z\n");
+
+  if (size<2) {
+    asl=size?",asl #16":",asl #24";
+    ot("  mov r11,r11%s\n",asl);
+    ot("  mvns r2,r2,lsr #30 ;@ Get X bit into Carry, set upper bits of r2\n");
+    if (type==1) {
+      ot(";@ Make sure the carry bit will tip the balance:\n");
+      ot("  orrcs r11,r11,r2,lsr #%i ;@ Set lower bits of operand if Carry is set\n",(size==0)?8:16);
+    }
+  }
+  else
+    ot("  movs r2,r2,lsl #3 ;@ Get X bit into Carry\n");
+  ot("\n");
+
+  if (type==0) ot("  sbcs r1,r11,r0%s ;@ Defines CV\n",asl);
+  if (type==0 && size<2)
+               ot("  orr r1,r1,r2,lsr #%i ;@ Set lower bits of result\n",(size==0)?8:16);
+  if (type==0) ot("  mvns r1,r1 ;@ Defines NZ\n");
+  if (type==1) ot("  adcs r1,r11,r0%s ;@ Defines NZCV\n",asl);
+  OpGetFlags(0,1,0); // don't invert carry, save X bit
+  ot("  and r10,r10,r3 ;@ fix Z\n");
+  ot("\n");
+
+  ot(";@ Save result:\n");
+  EaWrite(8, 1, dea,size,0x0e00,earwt_shifted_up);
+
+  OpEnd(sea,dea);
+
+  return 0;
+}
+
+// --------------------- Opcodes 0xb000+ ---------------------
+// Emit a Cmp/Eor opcode, 1011rrrt xxeeeeee (rrr=Dn, t=cmp/eor, xx=size extension, eeeeee=ea)
+int OpCmpEor(int op)
+{
+  int rea=0,eor=0;
+  int size=0,ea=0,use=0;
+  const char *asl="";
+  EaRWType rtype=earwt_msb_dont_care;
+  EaRWType wtype=earwt_shifted_up;
+
+  // Get EA and register EA
+  rea=(op>>9)&7;
+  eor=(op>>8)&1;
+  size=(op>>6)&3; if (size>=3) return 1;
+  ea=op&0x3f;
+
+  if (eor && (ea>>3) == 1) return 1; // not a valid mode for eor
+
+  // See if we can do this opcode:
+  if (EaCanRead(ea,size)==0) return 1;
+  if (eor && EaCanWrite(ea)==0) return 1;
+  if (EaAn(ea)&&(eor||size==0)) return 1;
+
+  use=OpBase(op,size);
+  use&=~0x0e00; // Use 1 handler for register d0-7
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,ea); Cycles=4;
+  if(eor) {
+    if(ea>8)     Cycles+=4;
+    if(size>=2)  Cycles+=4;
+  } else {
+    if(size>=2)  Cycles+=2;
+  }
+
+  // Avoid sign-extended load optimizations for bytes,
+  // which would introduce a separate register index shift
+  if (size) {
+    if (eor&&ea<0x10) {
+      // Do register-based bitwise operations on sign-extended values
+      rtype=earwt_sign_extend;
+      wtype=earwt_sign_extend;
+    }
+  }
+
+  ot(";@ Get EA into r11 and value into r0:\n");
+  EaCalcRead(eor?11:-1,0,ea,size,0x003f,rtype);
+
+  ot(";@ Get register operand into r1:\n");
+  EaCalcRead(-1,1,rea,size,0x0e00,rtype);
+
+  if (size<2&&wtype==earwt_shifted_up) {
+    asl=size?",asl #16":",asl #24";
+    ot("  mov r0,r0%s\n\n",asl);
+  }
+
+  ot(";@ Do arithmetic:\n");
+  if (eor)
+  {
+    ot("  eors r1,r0,r1%s\n",asl);
+    OpGetFlagsNZ(1);
+  }
+  else
+  {
+    ot("  rsbs r1,r0,r1%s\n",asl);
+    OpGetFlags(1,0); // Cmp like subtract
+  }
+  ot("\n");
+
+  if (eor) EaWrite(11, 1,ea,size,0x003f,wtype);
+
+  OpEnd(ea);
+  return 0;
+}
+
+// Emit a Cmpm opcode, 1011ddd1 xx001sss (rrr=Adst, xx=size extension, sss=Asrc)
+int OpCmpm(int op)
+{
+  int size=0,sea=0,dea=0,use=0;
+  const char *asl="";
+
+  // get size, get EAs
+  size=(op>>6)&3; if (size>=3) return 1;
+  sea=(op&7)|0x18;
+  dea=(op>>9)&0x3f;
+
+  use=op&~0x0e07; // Use 1 handler for all registers..
+  if (size==0&&sea==0x1f) use|=0x0007; // ..except (a7)+
+  if (size==0&&dea==0x1f) use|=0x0e00;
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,sea); Cycles=4;
+
+  ot(";@ Get src operand into r11:\n");
+  EaCalcRead(-1,11,sea,size,0x0007,earwt_shifted_up);
+
+  ot(";@ Get dst operand into r0:\n");
+  EaCalcRead(-1, 0,dea,size,0x0e00,earwt_msb_dont_care);
+
+  if (size<2) asl=size?",asl #16":",asl #24";
+
+  ot("  rsbs r0,r11,r0%s\n",asl);
+  OpGetFlags(1,0); // Cmp like subtract
+  ot("\n");
+
+  OpEnd(sea);
+  return 0;
+}
+
+
+// Emit a Chk opcode, 0100ddd1 x0eeeeee (rrr=Dn, x=size extension, eeeeee=ea)
+int OpChk(int op)
+{
+  int rea=0;
+  int size=0,ea=0,use=0;
+
+  // Get EA and register EA
+  rea=(op>>9)&7;
+  if((op>>7)&1)
+       size=1; // word operation
+  else size=2; // long
+  ea=op&0x3f;
+
+  if (EaAn(ea)) return 1; // not a valid mode
+  if (size!=1)  return 1; // 000 variant only supports word
+
+  // See if we can do this opcode:
+  if (EaCanRead(ea,size)==0) return 1;
+
+  use=OpBase(op,size);
+  use&=~0x0e00; // Use 1 handler for register d0-7
+  if (op!=use) { OpUse(op,use); return 0; } // Use existing handler
+
+  OpStart(op,ea,0,1); Cycles=10;
+
+  ot(";@ Get value into r0:\n");
+  EaCalcRead(-1,0,ea,size,0x003f,earwt_msb_dont_care);
+
+  ot(";@ Get register operand into r1:\n");
+  EaCalcRead(-1,1,rea,size,0x0e00,earwt_msb_dont_care);
+
+  if (size<2) ot("  movs r1,r1,asl #%d\n\n",size?16:24);
+  else        ot("  adds r1,r1,#0 ;@ Define flags\n");
+
+  ot(";@ get flags, including undocumented ones\n");
+  OpGetFlagsNZ(1);
+
+  ot(";@ is reg negative?\n");
+  ot("  bmi chktrapneg%.4x\n",op);
+
+  ot(";@ Do arithmetic:\n");
+  if (size<2) ot("  cmp r1,r0,asl #%d\n",size?16:24);
+  else        ot("  cmp r1,r0\n");
+  ot("  bgt chktrap%.4x\n",op);
+
+  OpEnd(ea);
+
+  ot("chktrapneg%.4x%s ;@ CHK negative exception:\n",op,ms?"":":");
+  ot(";@ Delayed negative trap only if !(N||V), which is !N for a negative subtrahend\n");
+  if (size<2) ot("  rsbs r0,r1,r0,asl #%d\n",size?16:24);
+  else        ot("  cmp r0,r1\n");
+  ot("  subpl r5,r5,#2\n");
+  ot("chktrap%.4x%s ;@ CHK exception:\n",op,ms?"":":");
+  ot("  mov r0,#6\n");
+  ot("  bl Exception\n");
+  Cycles+=34-6;
+  opend_op_changes_cycles=1;
+  OpEnd(ea);
+
+  return 0;
+}
+
+// vim:ts=2:sw=2:expandtab

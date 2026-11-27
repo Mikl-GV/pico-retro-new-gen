@@ -102,6 +102,7 @@ void mcs51_scan(INT32 nAction);
 extern UINT8 *mcs51_program_data;
 /* r0.383: адаптеры под System 16 API */
 extern INT32 mcs51TotalCycles(void);
+extern INT32 mcs51Idle(INT32 cycles);   /* r1670: idle-такт (Irem M72 i8751) */
 extern void mcs51NewFrame(void);
 extern void mcs51_set_program_data(UINT8* pData);
 

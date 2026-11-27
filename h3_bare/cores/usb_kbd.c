@@ -91,17 +91,26 @@ typedef struct {
 
 // Секция .coherent: HC пишет report[] через DMA, write-back D-cache давал
 // бы stale-чтения (гонка с toggle).
-static usb_dev_t g_kbd   __attribute__((section(".coherent"), aligned(8)));
-static usb_dev_t g_touch __attribute__((section(".coherent"), aligned(8)));
-static usb_dev_t g_pad   __attribute__((section(".coherent"), aligned(8)));
+// r1731 (U-08): aligned(32) — объект не должен делить кэш-линию с соседями;
+// found/type дополнительно публикуются dev_publish() после записи.
+static usb_dev_t g_kbd   __attribute__((section(".coherent"), aligned(32)));
+static usb_dev_t g_touch __attribute__((section(".coherent"), aligned(32)));
+static usb_dev_t g_pad   __attribute__((section(".coherent"), aligned(32)));
 
-static uint8_t g_pad_report[8] __attribute__((section(".coherent"), aligned(8)));
+static uint8_t g_pad_report[8] __attribute__((section(".coherent"), aligned(32)));
 
 static int g_pad_x = 512;
 static int g_pad_y = 300;
 static uint8_t g_pad_btn = 0;      // r1237: кнопки boot-mouse (бит0=ЛКМ, бит1=ПКМ, бит2=СКМ)
 
-static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), aligned(8)));
+static uint8_t g_touch_report[TOUCH_BUF] __attribute__((section(".coherent"), aligned(32)));
+
+// r1731 (U-08): report[8] (DMA) и found/type делят 32-Б линию. После записи
+// полей — clean, иначе последующий cache_inv(report) отбросит грязную строку,
+// и найденное устройство «забудется» (found=0 из DRAM).
+static void dev_publish(usb_dev_t* d) {
+    usb_cache_clean((uint32_t)d, sizeof(*d));
+}
 
 // ============================================================================
 //  КЛАВИАТУРА: состояние + события
@@ -494,6 +503,10 @@ int usb_kbd_init(void) {
 
     if (mouse1.type == 3) { memcpy(&g_pad, &mouse1, sizeof(g_pad)); }
     else if (mouse2.type == 3) { memcpy(&g_pad, &mouse2, sizeof(g_pad)); }
+    // r1731 (U-08): found/type → DRAM до первого cache_inv(report).
+    dev_publish(&g_kbd);
+    dev_publish(&g_touch);
+    dev_publish(&g_pad);
 
     // Тачпад (I8 Pro/Novatek boot mouse): interrupt-IN слот 1.
     if (g_pad.found && g_pad.in_ep) {
@@ -595,6 +608,19 @@ void usb_kbd_restart_intr(void) {
     if (!kbd_found || !kbd_low_speed) return;
     usb_ohci_intr_in_start(g_kbd.base, g_kbd.addr,
                            g_kbd.in_ep & 0x7F, g_kbd.report, 8, 0);
+}
+
+// r1731 (U-05): HCR/re-init контроллера (usb_hc_full_recover → usb_ohci_init)
+// обнуляет его periodic-список (HCCA, peried=0). Перемонтируем interrupt-кольца
+// устройств на этом base: клавиатура — слот 0 (включает PLE), тачпад/геймпад —
+// слот 1. Без этого после recover клавиатура на этом PHY мертва.
+void usb_kbd_restart_intr_base(uint32_t base) {
+    if (g_kbd.found && g_kbd.base == base && kbd_found && kbd_low_speed)
+        usb_ohci_intr_in_start(g_kbd.base, g_kbd.addr,
+                               g_kbd.in_ep & 0x7F, g_kbd.report, 8, 0);
+    if (g_pad.found && g_pad.base == base && g_pad.in_ep)
+        usb_ohci_intr_in_start(g_pad.base, g_pad.addr,
+                               g_pad.in_ep & 0x7F, g_pad_report, 8, 1);
 }
 
 // Дождаться, пока СЛОЙ не покажет ноль удержанных клавиш (или 800 мс).

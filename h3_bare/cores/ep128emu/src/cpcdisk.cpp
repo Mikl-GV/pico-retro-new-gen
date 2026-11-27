@@ -408,9 +408,9 @@ namespace CPC464 {
         if (!imageFile)
           throw Ep128Emu::Exception("error opening CPC disk image file");
       }
-      else {
-        writeProtectFlag = false;
-      }
+      // r1733 (D-07): fs_layer принимает "r+b", но fwrite всегда 0 — образ
+      // только читается. writeProtectFlag оставлен true (write-protect),
+      // иначе writeSector «пишет» в никуда.
       std::setvbuf(imageFile, (char *) 0, _IONBF, 0);
       if (std::fseek(imageFile, 0L, SEEK_END) < 0)
         throw Ep128Emu::Exception("error seeking CPC disk image file");

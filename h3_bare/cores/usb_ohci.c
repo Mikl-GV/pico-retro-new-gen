@@ -778,6 +778,12 @@ static int usb_ohci_bulk(uint32_t base, uint8_t addr, uint8_t ep,
     ohci->ctrl &= ~(1u << 5);   /* BLE off */
     __asm volatile("dsb" ::: "memory");
     for (uint32_t w = 0; w < 2000u && ohci->bulkcur; w++) udelay(10);
+    // r1730 (U-03): если HC всё ещё держит TD (bulkcur) — отпустить канал до
+    // memset, иначе HC может читать затираемый TD (gonka с затиранием).
+    if (ohci->bulkcur) {
+        bulk_release(ohci, ed, addr, ep, mps, idx, di);
+        return -1;
+    }
 
     memset(&g_bulk_td[idx][di], 0, sizeof(g_bulk_td[idx][di]));
 

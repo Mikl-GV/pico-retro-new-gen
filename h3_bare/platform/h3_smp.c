@@ -25,10 +25,15 @@ extern int printf(const char* fmt, ...);
 #define R_CPUCFG_BASE      0x01F01C00u
 #define CPU_RST_CTRL(cpu)  (R_CPUCFG_BASE + 0x40u + (cpu) * 0x40u)
 
-/* «Почта» CPU1 в SRAM A1: ядро пишет magic в 0x20 первой инструкцией,
- * core0 ждёт его после release. SRAM вне кэшей — видимость мгновенная,
- * независимо от состояния MMU/кэшей обоих ядер. */
-#define CPU1_MAIL_ADDR 0x00000020u
+/* «Почта» в SRAM A1: ядро пишет magic первой инструкцией, core0 ждёт его
+ * после release. SRAM вне кэшей — видимость мгновенная, независимо от
+ * состояния MMU/кэшей обоих ядер.
+ * r1727: у каждого вторичного ядра СВОЯ ячейка magic. Раньше оба писали в
+ * 0x20, а h3_secondary_start обнуляет её перед каждой попыткой — живой CPU2
+ * из прошлой попытки успевал снова туда прописать magic, и core0 принимал
+ * не то ядро за поднятое. CPU1/CPU2 обязаны писать каждый в свою. */
+#define CPU1_MAIL_ADDR 0x000000C4u   /* CPU1 → core0 (startup.S cpu1_entry) */
+#define CPU2_MAIL_ADDR 0x00000020u   /* CPU2 → core0 (startup.S cpu2_entry) */
 #define CPU1_MAGIC     0x13579BDFu
 
 /* PSCI 0.2 SMC32: CPU_ON */
@@ -91,7 +96,7 @@ static int h3_secondary_start(int cpu, uint32_t entry) {
     __asm volatile("dsb" ::: "memory");
 
     for (int attempt = 0; attempt < 5; attempt++) {
-        volatile uint32_t* mail = (volatile uint32_t*)CPU1_MAIL_ADDR;
+        volatile uint32_t* mail = (volatile uint32_t*)((cpu == 2) ? CPU2_MAIL_ADDR : CPU1_MAIL_ADDR);
         *mail = 0;
         __asm volatile("dsb" ::: "memory");
 

@@ -1,4 +1,4 @@
-﻿// cps1_host.c — FinalBurn Neo, CPS-1 (Capcom Play System 1) host for H3 bare-metal.
+// cps1_host.c — FinalBurn Neo, CPS-1 (Capcom Play System 1) host for H3 bare-metal.
 //
 // Ядро: h3_bare/cores/cps1/ (vendored подмножество FBNeo, коммит d025cfc).
 // В отличие от libretro-систем это «нативный» FBNeo: host сам выбирает
@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <arm_neon.h>   // r1684: конверсия кадра RGB565→XRGB8888 (8 пикселей/итерация)
 
 #include "burnint.h"
 #include "driverlist.h"
@@ -53,8 +54,10 @@ int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
                           uint32_t bpp, uint32_t dx, uint32_t dy,
                           uint32_t dw, uint32_t dh);
 void h3_de2_ui_restore(void);
+void h3_de2_ui_set_addr(uint32_t addr);   // r1683: двойной буфер кадра
 void h3_de2_set_bkcolor(uint32_t argb);
 void usb_cache_clean(uint32_t addr, uint32_t size);
+void usb_cache_invalidate(uint32_t addr, uint32_t size);   // r1709: почта DCS
 }
 
 // ---- FBNeo extern (burn.cpp / драйвер) ----
@@ -145,7 +148,9 @@ static int g_arc_flip = 0;
 // растягивает на всю высоту FB_H=600 с сохранением пропорций (contain,
 // dst_w = w×600/h, кламп 1024, dx по центру — как MD r1505); слой
 // перекалибруется при смене w/h (урок r1506 — MD «строки разъехались»).
-static uint32_t cps_rgb32[CPS1_W * 320] __attribute__((aligned(4), section(".rgb_hi")));
+// r1683: два буфера — видеоконвейер на CPU1 (см. arc_vid_worker_poll).
+// CPU1 заполняет один, DE2 читает другой; переключение — h3_de2_ui_set_addr.
+static uint32_t cps_rgb32[2][CPS1_W * 320] __attribute__((aligned(4), section(".rgb_hi")));
 // r1512: активен ли аппаратный DE2 GSU (для run_cps — не звать программный
 // host_render_frame). file-static — переживает сессии, сбрасывается в run_cps
 // при входе (урок r1496: без сброса повторный запуск = чёрный экран).
@@ -408,7 +413,8 @@ static int check_romset(const char* game)
     }
     if (total == 0) return 1;
     s_prog_total = total;
-    printf("RS %s: %d ok / %d total (%d missing, %d bad size)\n", game, total - missing - bad, total, missing, bad);
+    // r1695: печать «RS …» убрана — то же самое выводит строка ARC: roms ниже
+    // (владелец: дубли в логе). MISSING/BAD SIZE выше остаются — это ошибки.
     emulog_field("ARC", "roms", "%d/%d ok (%d missing, %d bad)", total - missing - bad, total, missing, bad);
     return (missing || bad) ? 1 : 0;
 }
@@ -501,6 +507,10 @@ static uint32_t lut_rgb565(uint16_t p) {
 
 // r1512: инициализация LUT RGB565→XRGB8888 вынесена из host_render_frame —
 // её использует и программный путь, и cps_render_frame (GSU). Однократно.
+// r1699: микросекунды 68000 за текущий кадр (пишет m68000_intf.cpp) — чтобы
+// в CPS: perf видеть долю CPU и не гадать, где время.
+uint32_t g_m68k_us_frame = 0;
+
 static void lut_init(void) {
     if (g_lut_ready) return;
     for (int i = 0; i < 65536; i++) {
@@ -587,31 +597,258 @@ static void host_render_frame(void)
     }
 }
 
+// ---- r1683: видеоконвейер на CPU1 (этап A плана PLAN-MULTICORE) ----
+// ПРАВИЛО ОБМЕНА (владелец): строки/структуры через почту НЕ передаём —
+// только числа и флаг готовности; печатает всегда то ядро, которое пишет в
+// UART. Поэтому воркер молчит, а core0 читает его числа лишь после VIDW_DONE.
+// core0 отдаёт кадр конверсии RGB565→XRGB8888 ядру CPU1 и не ждёт: пока CPU1
+// заполняет буфер N+1, core0 эмулирует следующий кадр; DE2 показывает буфер N
+// (задержка ровно один кадр). Почта — в SRAM A1 (0x9000..0x9024): она вне кэшей
+// и видна CPU1 (MMU/кэш выключены) сразу, тогда как .coherent для межъядерного
+// обмена не годится (r1206/r1357). Буферы кадра в .rgb_hi (0x53000000) CPU1
+// пишет напрямую в DRAM (не-кэш), DE2 читает DMA по тому же адресу — когерентно.
+#define VIDW_REQ      (*(volatile uint32_t*)0x9000u)   // номер задачи (core0→CPU1)
+#define VIDW_DONE     (*(volatile uint32_t*)0x9004u)   // номер завершённой (CPU1→core0)
+#define VIDW_SRC      (*(volatile uint32_t*)0x9008u)   // pBurnDraw (RGB565)
+#define VIDW_DST      (*(volatile uint32_t*)0x900Cu)   // cps_rgb32[buf]
+#define VIDW_W        (*(volatile int32_t*)0x9010u)
+#define VIDW_H        (*(volatile int32_t*)0x9014u)
+#define VIDW_SSTRIDE  (*(volatile int32_t*)0x9018u)
+#define VIDW_FLIP     (*(volatile int32_t*)0x901Cu)    // поворот на 180° (r1624)
+#define VIDW_US       (*(volatile uint32_t*)0x9024u)   // длительность последней задачи, мкс
+
+// ---- DCS (T-unit MK/MK2): локально на core0 ----
+// r1735: многоядерный DCS (CPU1) удалён как тупиковый — таймауты и откаты
+// съедали выигрыш, а почта/обслуживание кэша усложняли код. DSP снова
+// исполняется синхронно на core0; API dcs_host_* сохранён для драйвера.
+
+// Прототипы DSP (dcs2k.cpp). Заголовок вендора не подключён, имена — C++
+// (namespace-мангал), поэтому объявления без extern "C".
+void Dcs2kRun(int cycles);
+uint32_t Dcs2kTotalCycles();
+int Dcs2kControlRead();
+int Dcs2kDataRead();
+void Dcs2kDataWrite(int data);
+void Dcs2kResetWrite(int data);
+void Dcs2kNewFrame();
+void DcsCheckIRQ();
+
+extern "C" void dcs_host_setup(int dcs_game) {
+    // r1735: режим один — DSP на core0.
+    (void)dcs_game;
+}
+
+// r1735: состояния SMP больше нет — вызов оставлен ради API драйвера.
+extern "C" void dcs_host_new_game(void) {}
+
+// Добавить DSP-циклы: сразу исполняем на core0.
+extern "C" void dcs_host_sync(int cyc) {
+    if (cyc > 0) Dcs2kRun(cyc);
+}
+
+// «Сколько циклов уже исполнено» — по этой величине midtunit считает дельту.
+extern "C" uint32_t dcs_host_total(void) {
+    return Dcs2kTotalCycles();
+}
+
+// Локальный DSP уже догнал цель — ждать нечего; вызов сохранён для драйвера.
+extern "C" void dcs_host_wait(void) {}
+
+// RPC к DSP на core0.
+static uint32_t dcs_rpc(uint32_t cmd, uint32_t arg) {
+    switch (cmd) {
+        case 1: return (uint32_t)Dcs2kControlRead();
+        case 2: { uint32_t v = (uint32_t)Dcs2kDataRead(); Dcs2kRun(20); return v; }
+        case 3: Dcs2kDataWrite((int)arg); return 0;
+        case 4: Dcs2kResetWrite((int)arg); return 0;
+        case 5: Dcs2kNewFrame(); return 0;
+        case 6: DcsCheckIRQ(); return 0;
+    }
+    return 0;
+}
+
+extern "C" uint32_t dcs_host_ctrl_read(void)  { return dcs_rpc(1, 0); }
+extern "C" uint32_t dcs_host_data_read(void)  { return dcs_rpc(2, 0); }
+extern "C" void dcs_host_data_write(uint32_t v)  { dcs_rpc(3, v); }
+extern "C" void dcs_host_reset_write(uint32_t v) { dcs_rpc(4, v); }
+extern "C" void dcs_host_newframe(void)          { dcs_rpc(5, 0); }
+extern "C" void dcs_host_check_irq(void)         { dcs_rpc(6, 0); }
+
+// r1683: воркер CPU1. Вызывается из tft_core_main (tft_drv.c) из ветки «игра
+// активна» (0x74==1); core0 в игре CPU1 не трогает (r162), поэтому ядро свободно.
+// r1685: CPU1 работает с MMU и кэшами, поэтому перед чтением pBurnDraw кэш
+// инвалидируется (core0 писал через свой кэш), а выходной буфер чистится —
+// иначе DE2/DRAM увидят старое.
+static void cps_row_rgb32(uint32_t* d, const uint16_t* s, int w);
+static inline uint32_t rgb565_x888(uint16_t p) {
+    return ((uint32_t)((p >> 11) & 0x1F) << 19) |
+           ((uint32_t)((p >> 5) & 0x3F) << 10) |
+           ((uint32_t)(p & 0x1F) << 3);
+}
+extern "C" void arc_vid_worker_poll(void) {
+    // r1692: почта в SRAM кэшируется (D-cache on) — перед чтением флагов
+    // инвалидируем ровно её строки, после записи — чистим.
+    // r1727: диапазон сужен с 0x9000..0x9080 до 0x9000..0x9028 (почта видео).
+    // 0x9040..0x9070 — параметры MMU, ACTLR и счётчики CPU1; чистка/инвалидация
+    // чужой линии = false sharing (тот же урок, что r1726 для DCS-почты).
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    extern void usb_cache_invalidate(uint32_t addr, uint32_t size);
+    // r1716: при включённом D-cache на CPU1 инвалидация — реальные операции
+    // PL310, а конвейер кадра выключен (k_vidw_enable=0). Опрашиваем реже,
+    // раз в 64 итерации: задержка реакции — микросекунды, экономия — весь цикл.
+    static uint32_t poll_tick = 0;
+    if ((++poll_tick & 63u) != 0) return;
+    usb_cache_invalidate(0x9000u, 0x28u);
+    uint32_t req = VIDW_REQ;
+    if (req == VIDW_DONE) return;                      // задач нет
+    (*(volatile uint32_t*)0x9064u)++;                  // r1689: задач принято
+    extern uint32_t h3_hs_timer_lo_us(void);
+    const uint16_t* src = (const uint16_t*)(uintptr_t)VIDW_SRC;
+    uint32_t* dst = (uint32_t*)(uintptr_t)VIDW_DST;
+    const int w = VIDW_W, h = VIDW_H, sstride = VIDW_SSTRIDE, flip = VIDW_FLIP;
+    uint32_t t0 = h3_hs_timer_lo_us();
+    // r1691: страховка от мусорных размеров (если параметры не дошли, цикл
+    // конверсии ушёл бы в миллиарды итераций — ядро «зависало» без исключения).
+    if (src && dst && w > 0 && w <= 1024 && h > 0 && h <= 512) {
+        // r1692: D-cache включён — источник и приёмник тоже под кэшем, поэтому
+        // освежаем вход (core0 писал его через свой кэш) и чистим выход,
+        // иначе DE2 увидит старое, а конверсия прочтёт устаревшие пиксели.
+        usb_cache_invalidate((uint32_t)(uintptr_t)src,
+                             (uint32_t)((size_t)sstride * h * 2u));
+        for (int y = 0; y < h; y++) {
+            const uint16_t* srow = src + (size_t)(flip ? h - 1 - y : y) * sstride;
+            uint32_t* drow = dst + (size_t)y * w;
+            if (flip) {
+                for (int x = 0; x < w; x++)
+                    drow[x] = rgb565_x888(srow[w - 1 - x]);
+            } else {
+                cps_row_rgb32(drow, srow, w);
+            }
+        }
+        usb_cache_clean((uint32_t)(uintptr_t)dst, (uint32_t)((size_t)w * h * 4u));
+    }
+    __asm volatile("dsb st" ::: "memory");             // выгрузить write-buffer в DRAM
+    // Замер времени (решает судьбу конвейера на стенде).
+    VIDW_US = h3_hs_timer_lo_us() - t0;
+    VIDW_DONE = req;
+    usb_cache_clean(0x9000u, 0x28u);   // r1727: числа почты (US+DONE) → DRAM, не чужие линии
+}
+
+// r1686: TFT-панели нет (tft_init()<0) — CPU1 целиком отдан видеоконвейеру:
+// опрос почты без задержек (в TFT-цикле был delay_ms(1) и тач-скан по 300 мс).
+// r1689: счётчик итераций 0x905C — признак «ядро живо» для core0.
+// r1692: раз в ~2 млн итераций дёргаем PL10 (индикатор жизни CPU1).
+extern "C" __attribute__((noreturn)) void arc_vid_worker_loop(void) {
+    extern void led_heartbeat_cpu1(void);
+    uint32_t n = 0;
+    for (;;) {
+        (*(volatile uint32_t*)0x905Cu)++;
+        arc_vid_worker_poll();
+        if ((++n & 0x1FFFFFu) == 0)
+            led_heartbeat_cpu1();
+    }
+}
+
+// r1683: состояние конвейера (только core0): «задача N показана» и «выдана».
+// Конвейер: CPU1 (MMU+кэши с r1685, воркер — NEON без LUT) заполняет свободный
+// буфер, core0 показывает предыдущий. 0 — вернуть кадр на core0 (NEON-путь).
+// r1694: конвейер ВЫКЛЮЧЕН на стенд (оставлен код и автокалибровка). Стенды
+// r1691/r1693: воркер CPU1 делал кадр 384×256 за 10.6 мс (D-cache off: каждое
+// чтение пикселя в DRAM) и 21.5 мс (D-cache on + invalidate/clean по линиям
+// PL310 на 196 КБ входа + 384 КБ выхода — дороже самой конверсии). Синхронный
+// NEON-путь на core0 — 1.3 мс (`render`), конвейер не окупается;
+// кросс-ядерная передача кадра не влезает в SRAM A1 (48 КБ), а кэш-почта глючит.
+static const int k_vidw_enable = 0;
+static uint32_t g_vidw_shown = 0;
+static uint32_t g_vidw_issued = 0;
+static int      g_vidw_on = 0;          // 1 — воркер CPU1 принят в этой сессии
+static int      g_vidw_warm = 0;        // первый кадр сессии уже сконвертирован
+static int      g_vidw_stall = 0;       // кадров подряд с висящей задачей
+static int      g_vidw_de2_buf = 0;     // какой буфер сейчас показывает DE2
+
+// r1683: переключить видимый буфер (только при смене — запись регистра DE2).
+static void cps_show_buf(int idx) {
+    extern void h3_de2_ui_set_addr(uint32_t addr);
+    idx &= 1;
+    if (idx == g_vidw_de2_buf) return;
+    h3_de2_ui_set_addr((uint32_t)(uintptr_t)cps_rgb32[idx]);
+    g_vidw_de2_buf = idx;
+}
+
+// r1683: синхронная конверсия в буфер 0 (core0) — первый кадр сессии и запасной
+// путь, когда воркер CPU1 недоступен.
+static void cps_show_buf(int idx);
+// r1684: строка RGB565→XRGB8888 через NEON: 8 пикселей за итерацию вместо
+// скалярного цикла с LUT (2 чтения DRAM на пиксель). Формула совпадает с LUT
+// один в один: (r5<<19) | (g6<<10) | (b5<<3), хвост w%8 — скалярно.
+static void cps_row_rgb32(uint32_t* d, const uint16_t* s, int w) {
+    int x = 0;
+    const uint32x4_t m5 = vdupq_n_u32(0x1Fu);
+    const uint32x4_t m6 = vdupq_n_u32(0x3Fu);
+    for (; x + 8 <= w; x += 8) {
+        uint16x8_t p = vld1q_u16(s + x);
+        uint32x4_t lo = vmovl_u16(vget_low_u16(p));
+        uint32x4_t hi = vmovl_u16(vget_high_u16(p));
+        uint32x4_t rl = vshlq_n_u32(vandq_u32(vshrq_n_u32(lo, 11), m5), 19);
+        uint32x4_t gl = vshlq_n_u32(vandq_u32(vshrq_n_u32(lo, 5), m6), 10);
+        uint32x4_t bl = vshlq_n_u32(vandq_u32(lo, m5), 3);
+        uint32x4_t rh = vshlq_n_u32(vandq_u32(vshrq_n_u32(hi, 11), m5), 19);
+        uint32x4_t gh = vshlq_n_u32(vandq_u32(vshrq_n_u32(hi, 5), m6), 10);
+        uint32x4_t bh = vshlq_n_u32(vandq_u32(hi, m5), 3);
+        vst1q_u32(d + x, vorrq_u32(vorrq_u32(rl, gl), bl));
+        vst1q_u32(d + x + 4, vorrq_u32(vorrq_u32(rh, gh), bh));
+    }
+    for (; x < w; x++) d[x] = g_rgb565_lut[s[x]];
+}
+
+// r1683: синхронная конверсия в буфер 0 (core0) — первый кадр сессии и запасной
+// путь, когда воркер CPU1 недоступен.
+static void cps_convert_sync(const uint16_t* src, int w, int h, int sstride) {
+    extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    cps_show_buf(0);   // DE2 смотрит на буфер 0 (как r1512 до конвейера)
+    uint32_t* d = cps_rgb32[0];
+    for (int y = 0; y < h; y++) {
+        const uint16_t* srow = src + (size_t)(g_arc_flip ? h - 1 - y : y) * sstride;
+        uint32_t* drow = d + (size_t)y * w;
+        if (g_arc_flip) {
+            // r1624: FLIPPED — источник читаем с конца (поворот на 180°).
+            for (int x = 0; x < w; x++)
+                drow[x] = g_rgb565_lut[srow[w - 1 - x]];
+        } else {
+            cps_row_rgb32(drow, srow, w);
+        }
+    }
+    usb_cache_clean((uint32_t)(uintptr_t)d, (uint32_t)((size_t)w * h * 4u));
+}
+
 // r1512: рендер кадра аркады на DE2 GSU (вместо программного host_render_frame).
 // Источник — pBurnDraw (RGB565, активная ширина страйда nBurnPitch/2, высота
 // g_frame_h). Конвертируем активную область в XRGB8888 (cps_rgb32, упакован
 // w×h — строки по w слов, PITCH = INSIZE, урок r1495), DE2 GSU растягивает
 // на всю высоту FB_H=600 с сохранением пропорций (contain: dst_w = w×600/h,
 // кламп 1024, dx по центру — как MD r1505). Слой перекалибруется при смене
-// w/h (урок r1506 — MD «строки разъехались»). Fallback — программный
-// host_render_frame (g_cps_hw_scaler_active=0).
+// w/h (урок r1506 — MD «строки разъехались»). r1683: при включённом воркере
+// конверсия уходит на CPU1 (конвейер), иначе — синхронно в буфер 0 (как раньше).
 static void cps_render_frame(void) {
     extern int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h,
                                      uint32_t bpp, uint32_t dx, uint32_t dy,
                                      uint32_t dw, uint32_t dh);
     extern void usb_cache_clean(uint32_t addr, uint32_t size);
+    extern int g_cpu1_started;
     const uint16_t* src = (const uint16_t*)pBurnDraw;
     if (!src) return;
     int w = g_frame_w > 0 && g_frame_w <= CPS_MID_W ? g_frame_w : (nBurnPitch >> 1);
     if (w <= 0 || w > CPS_MID_W) w = CPS_MID_W;
     int h = g_frame_h;
     if (h <= 0 || h > 320) h = CPS1_H;
-    // cps_rgb32 — CPS1_W*320 слов (122880): 400×256 T-unit укладывается
-    // (102400). Шире/выше — программный путь, слой GSU не поднимаем.
+    // cps_rgb32 — 2×CPS1_W*320 слов: 400×256 T-unit укладывается (102400).
+    // Шире/выше — программный путь, слой GSU не поднимаем.
     if ((size_t)w * (size_t)h > (size_t)CPS1_W * 320) return;
     int sstride = nBurnPitch >> 1;
     if (sstride <= 0 || sstride > CPS1_W) sstride = w;
     // r1512: размер сменился (или слой ещё не настроен) — перекалибровка GSU.
+    // Первый кадр сессии всегда синхронный (в буфер 0): есть что показать, пока
+    // CPU1 заполняет буфер 1 (задержка конвейера ~1 кадр).
     if (!g_cps_hw_scaler_active || w != g_cps_gsu_w || h != g_cps_gsu_h) {
         // Растяжение на всю высоту FB_H=600 с сохранением пропорций (как host_render_frame contain).
         int dh = 600;   // FB_H
@@ -619,7 +856,7 @@ static void cps_render_frame(void) {
         if (dw > 1024) dw = 1024;
         if (dw <= 0) return;
         int dx = (1024 - dw) / 2;
-        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)cps_rgb32,
+        if (h3_de2_ui_scaler_rect((uint32_t)(uintptr_t)cps_rgb32[0],
                                   (uint32_t)w, (uint32_t)h, 32,
                                   (uint32_t)dx, 0, (uint32_t)dw, (uint32_t)dh) == 0) {
             g_cps_hw_scaler_active = 1;
@@ -628,24 +865,75 @@ static void cps_render_frame(void) {
             emulog_field("ARC", "scaler", "DE2 GSU 32bpp %dx%d->%dx%d", w, h, dw, dh);
         } else {
             emulog_field("ARC", "scaler", "fallback CPU host_render_frame");
+            return;
+        }
+        // Сброс конвейера: буфер 0 показан («задача 0»), почта на 0. CPU1 в
+        // игре простаивает (REQ==DONE), гонки нет — SRAM вне кэшей.
+        VIDW_DONE = 0;
+        __asm volatile("dsb st" ::: "memory");
+        VIDW_REQ = 0;
+        g_vidw_shown = 0;
+        g_vidw_issued = 0;
+        g_vidw_warm = 0;
+        g_vidw_stall = 0;
+        g_vidw_de2_buf = 0;     // scaler_rect настроил слой на буфер 0
+        g_vidw_on = k_vidw_enable && g_cpu1_started;
+    }
+    if (!g_cps_hw_scaler_active) return;   // fallback host_render_frame (см. call site)
+    // Первый кадр сессии всегда синхронный (в буфер 0): есть что показать, пока
+    // CPU1 заполняет буфер 1 (задержка конвейера ~1 кадр).
+    if (!g_vidw_warm) {
+        cps_convert_sync(src, w, h, sstride);
+        g_vidw_warm = 1;
+        return;
+    }
+    if (!g_vidw_on) {
+        // Синхронный путь (CPU1 не запущен / отказал): как r1512 — конверсия в
+        // буфер 0 на core0, DE2 уже настроен на него.
+        cps_convert_sync(src, w, h, sstride);
+        return;
+    }
+    // Показ готового кадра — ДО выдачи новой задачи: DE2 успевает уйти на
+    // буфер n, и воркер пишет уже невидимый буфер (n+1)&1 (без рваного кадра).
+    uint32_t done = VIDW_DONE;
+    if (done != g_vidw_shown && done <= g_vidw_issued) {
+        cps_show_buf((int)(done & 1));
+        g_vidw_shown = done;
+        // CPU1 читает pBurnDraw, который следующий кадр перезапишет. Если воркер
+        // медленнее половины бюджета кадра, конвейер рвёт картинку — выключаем.
+        if (VIDW_US > 8000u) {
+            g_vidw_on = 0;
         }
     }
-    if (g_cps_hw_scaler_active) {
-        // RGB565 -> XRGB8888, упакованно w×h (строки по w слов):
-        // DE2 PITCH = INSIZE, читает ровно w слов на строку (урок r1495).
-        uint32_t* d = cps_rgb32;
-        for (int y = 0; y < h; y++) {
-            // r1624: FLIPPED — источник читаем с конца (поворот на 180°).
-            const uint16_t* srow = src + (size_t)(g_arc_flip ? h - 1 - y : y) * sstride;
-            uint32_t* drow = d + (size_t)y * w;
-            for (int x = 0; x < w; x++) {
-                uint16_t p = srow[g_arc_flip ? w - 1 - x : x];
-                // LUT RGB565→XRGB8888 (совпадает с host_render_frame).
-                drow[x] = g_rgb565_lut[p];
-            }
+    if (g_vidw_on && VIDW_REQ == VIDW_DONE &&
+        VIDW_DONE == g_vidw_shown && g_vidw_issued == g_vidw_shown) {
+        // Воркер простаивает и всё показано — выдаём следующий кадр в свободный
+        // буфер ((n+1)&1): DE2 показывает показанный буфер (g_vidw_shown&1).
+        uint32_t next = g_vidw_issued + 1;
+        // pBurnDraw (кэш WB core0) → DRAM: CPU1 читает напрямую (D-cache off).
+        usb_cache_clean((uint32_t)(uintptr_t)src,
+                        (uint32_t)((size_t)sstride * h * 2u));
+        VIDW_SRC     = (uint32_t)(uintptr_t)src;
+        VIDW_DST     = (uint32_t)(uintptr_t)cps_rgb32[next & 1];
+        VIDW_W       = w;
+        VIDW_H       = h;
+        VIDW_SSTRIDE = sstride;
+        VIDW_FLIP    = g_arc_flip;
+        __asm volatile("dsb st" ::: "memory");   // параметры раньше REQ — порядок SRAM
+        VIDW_REQ     = next;                     // запуск воркера
+        // r1693: страховка на случай кэшируемой SRAM у core0 — числа в DRAM.
+        // r1729: 0x28, как в r1727 (:897/:930): 0x80 захватывал линию 0x9040
+        // с MMU-флагом 0x9058 (false sharing с CPU1).
+        usb_cache_clean(0x9000u, 0x28u);
+        g_vidw_issued = next;
+        g_vidw_stall = 0;
+    } else if (g_vidw_issued != VIDW_DONE) {
+        // Задача висит: CPU1 занят (TFT-меню/калибровка) или не в воркере.
+        // Три кадра терпим, дальше — синхронный путь до конца сессии.
+        if (++g_vidw_stall > 3) {
+            g_vidw_on = 0;
+            cps_convert_sync(src, w, h, sstride);   // вернёт DE2 на буфер 0
         }
-        usb_cache_clean((uint32_t)(uintptr_t)cps_rgb32,
-                        (uint32_t)((size_t)w * h * 4u));
     }
 }
 
@@ -662,6 +950,7 @@ static int g_taito    = 0;    // активен Taito-драйвер (misc/F2-к
 static int g_de       = 0;    // активен Data East (DEC0: robocop/baddudes/hbarrel, Karnov, r1626)
 static int g_psikyo   = 0;    // активен Psikyo PS3 (s1945, tengai, r1627)
 static int g_mid      = 0;    // активен Midway T-unit (MK/MK2, r1660)
+static int g_irem     = 0;    // активен Irem M72 (rtype/rtype2/imgfight, r1670)
 static int g_nam_log_done = 0;   // диагностика name-based ввода: слоты уже напечатаны
 static int g_cps_hw_tried = 0;      // попытка поднять DE2 GSU уже была
 
@@ -732,6 +1021,18 @@ static void toa_write_input(const HostPad* p1, const HostPad* p2)
 // с запасом (~0.6 с через весь экран). 0x30 давал 1 отсчёт/кадр — «ползло».
 #define ARC_PADDLE_STEP 0x280
 
+// r1697: полярность полей ввода. В FBNeo pVal обычно 1 = нажато, но часть
+// драйверов (Galaga: input.ports[].current.bits) стартует с 0xff — там
+// нажатие = 0. Полярность определяем по значению поля до первой записи:
+// 0 → активная единица, иначе → активный ноль. Сбрасывается на каждую игру.
+static UINT8 s_nam_idle[2][13];   // значение «отпущено» для каждого слота
+static int   s_nam_pol_ready = 0;
+
+static void nam_input_reset(void) {
+    memset(s_nam_idle, 0, sizeof(s_nam_idle));
+    s_nam_pol_ready = 0;
+}
+
 static void nam_write_input(const HostPad* p1, const HostPad* p2)
 {
     const HostPad* hp[2] = { p1, p2 };
@@ -780,6 +1081,11 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         else if (!strcmp(base, "button 4") || !strcmp(base, "fire 4")) slot = 7;
         else if (!strcmp(base, "button 5") || !strcmp(base, "fire 5")) slot = 8;
         else if (!strcmp(base, "button 6") || !strcmp(base, "fire 6")) slot = 9;
+        // r1697: кнопка без номера и буквой («P1 Fire», «P1 Button A»).
+        else if (!strcmp(base, "button") || !strcmp(base, "fire") ||
+                 !strcmp(base, "button a")) slot = 4;
+        else if (!strcmp(base, "button b")) slot = 5;
+        else if (!strcmp(base, "button c")) slot = 6;
         // r1663: T-unit (MK/MK2) объявляет удары словами, без «Button N».
         else if (!strcmp(base, "high punch") || !strcmp(base, "punch")) slot = 4;
         else if (!strcmp(base, "block"))    slot = 5;
@@ -791,21 +1097,43 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         else if (!strcmp(base, "start"))    slot = 11;
         else if (!strcmp(base, "service") || !strcmp(base, "service mode")) slot = 12;
 
-        // «Coin 1»/«Coin 2»/«Start 1»/«Start 2» — игрок в цифре, без префикса
-        if (slot < 0) {
-            if      (!strcmp(nm, "coin 1"))  { pl = 0; slot = 7; }
-            else if (!strcmp(nm, "coin 2"))  { pl = 1; slot = 7; }
-            else if (!strcmp(nm, "start 1")) { pl = 0; slot = 8; }
-            else if (!strcmp(nm, "start 2")) { pl = 1; slot = 8; }
-        }
-
         // r1614: в galaxian-семействе (Amidar, Galaga, Kingball, Galaxian) имена
         // идут без префикса игрока: «Up»/«Fire 1» — это P1, а P2 там
         // «Up (Cocktail)» (его не маппим: на панели один игрок).
+        // r1697: монета/старт/сервис с суффиксом — «Coin 1», «Coin A», «Bill 1»,
+        // «Start 2», «Start 1 / Fire 1», «Service 1». Во всех аркадах нашего
+        // хоста Coin = S, Start = Enter, Service = T; раньше эти входы уезжали
+        // в kick1/kick2 (монета срабатывала на T/5/6). Номер/буква — игрок.
+        if (slot < 0) {
+            const char* sfx = NULL;
+            if      (!strncmp(nm, "coin ", 5))    { slot = 10; sfx = nm + 5; }
+            else if (!strncmp(nm, "bill ", 5))    { slot = 10; sfx = nm + 5; }
+            else if (!strncmp(nm, "start ", 6))   { slot = 11; sfx = nm + 6; }
+            else if (!strncmp(nm, "service ", 8)) { slot = 12; sfx = nm + 8; }
+            if (sfx) {
+                if (sfx[0] >= '1' && sfx[0] <= '2') pl = sfx[0] - '1';
+                else if (sfx[0] == 'a') pl = 0;
+                else if (sfx[0] == 'b') pl = 1;
+                else pl = 0;               // без номера — первый игрок
+            }
+        }
+
         if (pl < 0 && slot >= 0) pl = 0;
 
+        if (pl > 1) continue;                        // r1697: P3/P4 не поддерживаем
         if (pl < 0 || slot < 0) continue;
         if (!dst[pl][slot]) dst[pl][slot] = p;       // первый найденный
+    }
+
+    // r1697: снимок «отпущенного» значения до первой записи — по нему узнаём
+    // полярность поля (0 → активная 1, 0xff → активный 0, как у Galaga).
+    // Только Namco: у проверенных CPS/DataEast/Toaplan полярность всегда
+    // активная единица, их поведение не трогаем.
+    if (g_nam && !s_nam_pol_ready) {
+        for (int pl = 0; pl < 2; pl++)
+            for (int s = 0; s < 13; s++)
+                if (dst[pl][s]) s_nam_idle[pl][s] = *dst[pl][s];
+        s_nam_pol_ready = 1;
     }
 
     for (int pl = 0; pl < 2; pl++) {
@@ -822,7 +1150,12 @@ static void nam_write_input(const HostPad* p1, const HostPad* p2)
         }
         for (int s = 0; s < 13; s++) {
             if (!dst[pl][s]) continue;
-            *dst[pl][s] = v[s] ? 1 : 0;
+            if (g_nam) {
+                UINT8 idle = s_nam_idle[pl][s];
+                *dst[pl][s] = v[s] ? (idle ? 0 : 1) : idle;   // r1697: полярность
+            } else {
+                *dst[pl][s] = v[s] ? 1 : 0;
+            }
         }
         // Весло: дельта за кадр (драйвер интегрирует её сам).
         if (an[pl]) {
@@ -970,7 +1303,7 @@ static void host_update_input(void)
         toa_write_input(&p1, &p2);
 
     // --- Namco/Taito/Data East/Psikyo: по списку входов драйвера каждый кадр ---
-    if (g_nam || g_taito || g_de || g_psikyo || g_mid) nam_write_input(&p1, &p2);
+    if (g_nam || g_taito || g_de || g_psikyo || g_mid || g_irem) nam_write_input(&p1, &p2);
 }
 
 // снять суффикс .zip/.ZIP
@@ -1015,6 +1348,23 @@ static void arc_dip_defaults(void)
 // BurnDrvGetIndex переставал находить драйверы). Вместо этого оставляем
 // pDriver[i]->szShortName константными строками rodata и выставляем
 // nBurnDrvCount = CPS_DRV_COUNT один раз.
+// r1736: машинно-читаемая строка профиля (одна на 120 кадров). Поля:
+// sys,game,fps*10,emu_us,run_us,scan_us,dcs_us,snd_us,draw_us,render_us,cpu68_us.
+// Значения — средние на кадр, мкс. Парсер: tools/arc_profile.ps1.
+static void arc_prof_emit(const char* sys, const char* game, uint32_t dt,
+                          uint32_t emu, uint32_t run, uint32_t scan,
+                          uint32_t dcs, uint32_t snd, uint32_t draw,
+                          uint32_t ren, uint32_t cpu68)
+{
+    printf("PROF,%s,%s,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+           sys ? sys : "?", game ? game : "?",
+           dt ? (unsigned)(1200000000u / dt) : 0u,
+           (unsigned)(emu / 120u), (unsigned)(run / 120u),
+           (unsigned)(scan / 120u), (unsigned)(dcs / 120u),
+           (unsigned)(snd / 120u), (unsigned)(draw / 120u),
+           (unsigned)(ren / 120u), (unsigned)(cpu68 / 120u));
+}
+
 static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     (void)rom; (void)size;
@@ -1200,13 +1550,16 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         // r1660: Midway T-unit (HARDWARE_PREFIX_MIDWAY = 0x1Bxxxxxx) — кадр
         // 400×254/256, входы по стандартным именам («P1 Button 1»).
         g_mid = (pf == HARDWARE_PREFIX_MIDWAY) ? 1 : 0;
+        // r1670: Irem M72 (HARDWARE_IREM_M72 = 0x1103xxxx) — V30+Z80, кадр
+        // 384×256, входы по стандартным именам («P1 Button 1»).
+        g_irem = (pf == HARDWARE_PREFIX_IREM) ? 1 : 0;
     }
 
     // r1615: DIP до init — драйвер читает их в DrvDoReset внутри BurnDrvInit.
     // Namco/Taito/Data East/Psikyo: дефолты из таблиц драйвера
     // (Service Mode/Coinage/Free Play). Остальным не включаем — годами жили
     // с нулевыми DIP.
-    if (g_nam || g_taito || g_de || g_psikyo || g_mid)
+    if (g_nam || g_taito || g_de || g_psikyo || g_mid || g_irem)
         arc_dip_defaults();
 
     // r1654: Normal-путь FBNeo для YM2610 (gunbird): чип рендерится сразу в
@@ -1261,6 +1614,28 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // семейство: gaplus, todruaga, superpac), без этого отдают нулевую палитру
     // и чёрный кадр — при живом CPU и заполненном pTransDraw.
     BurnRecalcPal();
+
+    // r1710: вынос DCS на CPU1 требует, чтобы воркер видел ВСЕ статики
+    // драйвера (dcs2k: nCtrlReg/sample_rate/указатели банков; adsp2100: карта
+    // и состояние). Core0 держал их в D-cache после Init — воркер читал нули
+    // и уходил в разнос. Один clean всего .bss на входе в игру (~7.6 МБ).
+    {
+        extern char _bstart1[], _bend1[];
+        uint32_t b0 = (uint32_t)(uintptr_t)_bstart1;
+        uint32_t b1 = (uint32_t)(uintptr_t)_bend1;
+        if (b1 > b0) usb_cache_clean(b0, b1 - b0);
+    }
+
+    // r1702: счётчики DEC0 — глобалы драйвера, живут дольше одной игры.
+    // Без сброса строки perf следующей игры показывают чужое «draw».
+    {
+        extern uint32_t g_de_us_snd, g_de_us_draw, g_de_us_clear,
+                        g_de_us_pal, g_de_us_lay, g_de_us_copy;
+        extern uint32_t g_de_us_t1, g_de_us_t2, g_de_us_char, g_de_us_spr;
+        g_de_us_snd = g_de_us_draw = 0;
+        g_de_us_clear = g_de_us_pal = g_de_us_lay = g_de_us_copy = 0;
+        g_de_us_t1 = g_de_us_t2 = g_de_us_char = g_de_us_spr = 0;
+    }
 
     // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
     // 384), поэтому nBurnPitch обязан совпасть с реальной шириной драйвера —
@@ -1480,6 +1855,31 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_frame_h = fh;
         printf("MID: game %s full=%dx%d -> %dx%d pitch=%d\n",
                game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
+    } else if (g_irem) {
+        // r1670: Irem M72 (R-Type, R-Type II, Image Fight…) — кадр 384×256,
+        // драйвер рисует его BurnTransferCopy как есть (pitch = ширина).
+        // Вертикальные игры (rtype) выводятся без поворота: панель ставится
+        // вертикально, как у Toaplan/Cave (g_rot в порте не используется).
+        INT32 fw = 0, fh = 0;
+        BurnDrvGetFullSize(&fw, &fh);
+        if (fh <= 0 || fh > 320 || fw <= 0 || fw > CPS1_W) {
+            printf("IRM: %s full %dx%d exceeds buffer (%dx320), not starting\n",
+                   game, (int)fw, (int)fh, CPS1_W);
+            fb_clear();
+            fb_text_center("FBNeo: frame too big", 210, 2, 0x00FF4444);
+            fb_text_center(game, 250, 2, 0x00FFFFFF);
+            fb_flush();
+            BurnDrvExit();
+            emulog_field("ARC", "init", "FAILED: frame too big");
+            emulog_end("ARC");
+            emu_audio_stop();
+            return;
+        }
+        nBurnPitch = fw * 2;
+        g_frame_w = fw;
+        g_frame_h = fh;
+        printf("IRM: game %s full=%dx%d -> %dx%d pitch=%d\n",
+               game, (int)fw, (int)fh, g_frame_w, g_frame_h, (int)nBurnPitch);
     } else {
         nBurnPitch = CPS1_W * 2;
         g_frame_h = CPS1_H;
@@ -1494,6 +1894,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     g_cps_gsu_w = 0;
     g_cps_gsu_h = 0;
     g_nam_log_done = 0;      // диагностика Namco-ввода печатается на каждую игру
+    nam_input_reset();       // r1697: полярность полей ввода снимается заново
     g_cps_hw_tried = 0;      // DE2 GSU пробуем заново
     host_render_reset();     // иначе поля кадра не перерисуются (старый фон)
     // r1512: LUT RGB565→XRGB8888 нужна и программному пути, и GSU.
@@ -1503,8 +1904,8 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     // r1612: Namco — по префиксу железа (System 1/86/2 и Galaga идут как
     // MISC_PRE90S, Pac-Man/Galaxian — своими префиксами); у CPS/NeoGeo/Toaplan
     // входы пишутся в свои регистры, чужой путь им не нужен.
-    printf("CPS: %s frame %dx%d pitch %d\n", game,
-           (int)(nBurnPitch >> 1), g_frame_h, (int)nBurnPitch);
+    // r1695: печать «CPS: … frame … pitch» убрана — размер и питч уже выводит
+    // строка драйвера («<PRE>: game … full=WxH -> WxH pitch=N»).
 
     if (g_neo_input) {
         printf("NEO keys: P1 arrows+Z/X/C(A/B/C) V=D, 1/Enter=Start, S/5=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC=exit\n");
@@ -1524,11 +1925,13 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         printf("PSI keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else if (g_mid) {
         printf("MID keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
+    } else if (g_irem) {
+        printf("IRM keys: P1 arrows+Z/X/C, 1=Start, 5=Coin, T=Service; P2 WASD+J/K/L, 2=Start, 6=Coin; pad A/B/C, X=Coin; ESC x3=exit\n");
     } else {
         printf("CPS1 keys: P1 arrows+Z/X/C, 1/Enter=Start, S=Coin; P2 WASD+J/K/L, 2=Start, 6=Coin; pad=A/B/C, X=Coin; ESC=exit\n");
     }
 
-    emulog_field("ARC", "video", "%dx%d", g_frame_w, g_frame_h);
+    // r1695: «ARC: video» убрана — размер кадра печатает драйвер (см. выше).
     emulog_field("ARC", "machine", "%s", BurnDrvGetTextA(DRV_SYSTEM));
     emulog_field("ARC", "init", "OK");
 
@@ -1552,6 +1955,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
     for (;;) {
         // r1662: временная диагностика производительности (снять после стенда).
         uint32_t pf_a = h3_hs_timer_lo_us();
+        g_m68k_us_frame = 0;                    // r1699: доля 68000 за кадр
         host_update_input();
         BurnDrvFrame();
 
@@ -1610,34 +2014,101 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         {
             extern uint32_t g_tu_us_snd, g_tu_us_draw;
             extern uint32_t g_tu_us_run, g_tu_us_scan, g_tu_us_dcs;
+            extern uint32_t g_m72_us_cpu, g_m72_us_snd, g_m72_us_draw;
+            extern uint32_t g_de_us_snd, g_de_us_draw;   // r1701: DEC0 (robocop)
+            extern uint32_t g_de_us_clear, g_de_us_pal, g_de_us_lay, g_de_us_copy;
+            extern uint32_t g_de_us_t1, g_de_us_t2, g_de_us_char, g_de_us_spr;
+            static uint32_t pf_de_clear = 0, pf_de_pal = 0, pf_de_lay = 0, pf_de_copy = 0;
+            static uint32_t pf_de_t1 = 0, pf_de_t2 = 0, pf_de_char = 0, pf_de_spr = 0;
             static uint32_t pf_t0 = 0, pf_emu = 0, pf_ren = 0;
             static uint32_t pf_snd = 0, pf_draw = 0;
             static uint32_t pf_run = 0, pf_scan = 0, pf_dcs = 0;
+            static uint32_t pf_m72_cpu = 0, pf_m72_snd = 0, pf_m72_draw = 0;
+            static uint32_t pf_m68k = 0;             // r1699: доля 68000 за кадр
             static int pf_n = 0;
             uint32_t pf_c = h3_hs_timer_lo_us();
             pf_emu += pf_b - pf_a;
             pf_ren += pf_c - pf_b;
-            pf_snd += g_tu_us_snd;
-            pf_draw += g_tu_us_draw;
+            pf_m68k += g_m68k_us_frame;
+            pf_snd += g_tu_us_snd + g_de_us_snd;
+            pf_draw += g_tu_us_draw + g_de_us_draw;
             pf_run += g_tu_us_run;
             pf_scan += g_tu_us_scan;
             pf_dcs += g_tu_us_dcs;
+            pf_m72_cpu += g_m72_us_cpu;
+            pf_m72_snd += g_m72_us_snd;
+            pf_m72_draw += g_m72_us_draw;
+            pf_de_clear += g_de_us_clear;
+            pf_de_pal += g_de_us_pal;
+            pf_de_lay += g_de_us_lay;
+            pf_de_copy += g_de_us_copy;
+            pf_de_t1 += g_de_us_t1;
+            pf_de_t2 += g_de_us_t2;
+            pf_de_char += g_de_us_char;
+            pf_de_spr += g_de_us_spr;
             pf_n++;
             if (!pf_t0) pf_t0 = pf_a;
+            // r1700: отчёт раз в 120 кадров (~2 с) — владелец просил чаще,
+            // чем 600 (по этим строкам видно просадки без ожидания 10 с).
             if (pf_n >= 120) {
                 uint32_t dt = pf_c - pf_t0;
-                if (dt) {
-                    printf("CPS: perf %.1f fps, emu %.1f ms (run %.1f scan %.1f dcs %.1f snd %.1f draw %.1f), render %.1f ms\n",
+                if (dt && g_irem) {
+                    printf("IRM: perf %.1f fps, emu %.1f ms (cpu %.1f snd %.1f draw %.1f), render %.1f ms\n",
                            120000000.0f / (float)dt,
                            (float)pf_emu / 120000.0f,
-                           (float)pf_run / 120000.0f, (float)pf_scan / 120000.0f,
-                           (float)pf_dcs / 120000.0f, (float)pf_snd / 120000.0f,
-                           (float)pf_draw / 120000.0f,
-                           (float)pf_ren / 120000.0f);
+                           (float)pf_m72_cpu / 120000.0f, (float)pf_m72_snd / 120000.0f,
+                            (float)pf_m72_draw / 120000.0f,
+                            (float)pf_ren / 120000.0f);
+                    arc_prof_emit(root, game, dt, pf_emu, pf_m72_cpu, 0, 0,
+                                  pf_m72_snd, pf_m72_draw, pf_ren, 0);
+                } else if (dt) {
+                    // r1740: в логе только реально измеренные поля; run/scan/dcs
+                    // остались в PROF (этапы DCS-SMP, для CPS всегда 0).
+                    char pdet[80];
+                    size_t pn = 0;
+                    pdet[0] = 0;
+                    if (pf_snd) {
+                        int w = snprintf(pdet + pn, sizeof(pdet) - pn, "%ssnd %.1f",
+                                         pn ? " " : "", (float)pf_snd / 120000.0f);
+                        if (w > 0) pn += (size_t)w;
+                    }
+                    if (pf_draw) {
+                        int w = snprintf(pdet + pn, sizeof(pdet) - pn, "%sdraw %.1f",
+                                         pn ? " " : "", (float)pf_draw / 120000.0f);
+                        if (w > 0) pn += (size_t)w;
+                    }
+                    if (pf_m68k) {
+                        int w = snprintf(pdet + pn, sizeof(pdet) - pn, "%s68k %.1f",
+                                         pn ? " " : "", (float)pf_m68k / 120000.0f);
+                        if (w > 0) pn += (size_t)w;
+                    }
+                    if (pn)
+                        printf("CPS: perf %.1f fps, emu %.1f ms (%s), render %.1f ms\n",
+                               120000000.0f / (float)dt, (float)pf_emu / 120000.0f,
+                               pdet, (float)pf_ren / 120000.0f);
+                    else
+                        printf("CPS: perf %.1f fps, emu %.1f ms, render %.1f ms\n",
+                               120000000.0f / (float)dt, (float)pf_emu / 120000.0f,
+                               (float)pf_ren / 120000.0f);
+                    arc_prof_emit(root, game, dt, pf_emu, pf_run, pf_scan, pf_dcs,
+                                  pf_snd, pf_draw, pf_ren, pf_m68k);
+                    // r1702: из чего состоит рендер DEC0 (robocop/baddudes).
+                    if (pf_de_lay | pf_de_clear | pf_de_pal | pf_de_copy) {
+                        printf("DE: draw clear %.1f pal %.1f lay %.1f copy %.1f ms\n",
+                               (float)pf_de_clear / 120000.0f, (float)pf_de_pal / 120000.0f,
+                               (float)pf_de_lay / 120000.0f, (float)pf_de_copy / 120000.0f);
+                        printf("DE: lay t1 %.1f t2 %.1f char %.1f spr %.1f ms\n",
+                               (float)pf_de_t1 / 120000.0f, (float)pf_de_t2 / 120000.0f,
+                               (float)pf_de_char / 120000.0f, (float)pf_de_spr / 120000.0f);
+                    }
                 }
                 pf_t0 = pf_c; pf_emu = 0; pf_ren = 0;
                 pf_snd = 0; pf_draw = 0; pf_n = 0;
                 pf_run = 0; pf_scan = 0; pf_dcs = 0;
+                pf_m72_cpu = 0; pf_m72_snd = 0; pf_m72_draw = 0;
+                pf_de_clear = 0; pf_de_pal = 0; pf_de_lay = 0; pf_de_copy = 0;
+                pf_de_t1 = 0; pf_de_t2 = 0; pf_de_char = 0; pf_de_spr = 0;
+                pf_m68k = 0;              // r1701: иначе «68k» растёт от отчёта к отчёту
             }
         }
 
@@ -1726,6 +2197,13 @@ void emu_run_psikyo(const uint8_t* rom, uint32_t size, const char* rom_name)
 void emu_run_midway(const uint8_t* rom, uint32_t size, const char* rom_name)
 {
     run_cps("/roms/midway", rom, size, rom_name);
+}
+
+// Irem M72 (r1670): d_m72 (R-Type, R-Type II, Image Fight, X Multiply, Gallop),
+// корень /roms/irem. Звук: Z80 + YM2151 + DAC.
+void emu_run_irem(const uint8_t* rom, uint32_t size, const char* rom_name)
+{
+    run_cps("/roms/irem", rom, size, rom_name);
 }
 
 void emu_run_fbneo(const uint8_t* rom, uint32_t size, const char* rom_name)

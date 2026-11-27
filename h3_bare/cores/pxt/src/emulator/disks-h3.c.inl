@@ -83,7 +83,10 @@ void pxt_disk_set(uint8_t drivenum, const uint8_t* base, size_t len) {
     disk[drivenum].read_cb = 0;
     disk[drivenum].filesize = len;
     disk[drivenum].inserted = (base && len) ? 1 : 0;
-    disk[drivenum].readonly = 0;
+    // r1732 (D-09): RAM-образ (флоппи A:) живёт в ROM_BUF; INT13h AH=03 писал
+    // в него, но на SD образ после выхода оставался прежним. Честный
+    // write-protect вместо «успешной» записи, которая теряется.
+    disk[drivenum].readonly = 1;
     if (!disk[drivenum].inserted) return;
     // Геометрия: как win32-версия (флоппи 360К/720К/1.2М, HDD по BPB образа).
     uint16_t cyls = 0, heads = 0, sects = 0;

@@ -183,6 +183,10 @@ bool ImageDrive::change_image(const char *path)
 		write_protected = true;
 		the_file = open_image_file(path, false);
 	}
+	// r1733 (D-05): fs_layer принимает "r+b", но fwrite всегда 0 — образ
+	// физически read-only. Держим write-protect, чтобы BAM/сектора не
+	// «сохранялись» в никуда.
+	write_protected = true;
 	if (the_file) {
 
 		// Determine file type and fill in image_file_desc structure

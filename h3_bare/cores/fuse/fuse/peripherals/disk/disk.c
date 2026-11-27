@@ -2576,21 +2576,11 @@ disk_open2( disk_t *d, const char *filename, int preindex )
   libspectrum_id_t type;
   int error;
 
-  /* Probe writability through VFS rather than access(): open for update
-     (which must not truncate) and close again straight away. This also
-     drops the Wii/PS3 special case - those platforms lacked access(), but
-     the VFS backend is available everywhere. */
-  {
-    RFILE *probe = filestream_open( filename,
-                                    RETRO_VFS_FILE_ACCESS_READ_WRITE |
-                                    RETRO_VFS_FILE_ACCESS_UPDATE_EXISTING,
-                                    RETRO_VFS_FILE_ACCESS_HINT_NONE );
-
-    d->wrprot = probe ? 0 : 1;
-
-    if( probe )
-      filestream_close( probe );
-  }
+  /* r1733 (D-04): fs_layer принимает "r+b", но compat_file_write всегда
+     возвращает ошибку (fwrite = 0) — запись в образ невозможна. Не выдаём
+     диск за записываемый: wrprot=1, чтобы eject не предлагал «сохранить»
+     и не терял изменения молча. */
+  d->wrprot = 1;
 
   if( utils_read_file( filename, &buffer.file ) )
     return d->status = DISK_OPEN;

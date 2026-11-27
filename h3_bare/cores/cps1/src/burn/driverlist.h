@@ -2021,6 +2021,23 @@ extern struct BurnDriver BurnDrvMk2r32e;
 extern struct BurnDriver BurnDrvMk2r31e;
 extern struct BurnDriver BurnDrvMk2r30;
 extern struct BurnDriver BurnDrvMk2r21;
+// Irem M72 (r1670): R-Type, R-Type II, Image Fight, X Multiply, Gallop и др.
+// Только родительские сеты: kengo/dkgensan/gallop/mrheli — клоны этих игр.
+extern struct BurnDriver BurnDrvRtype;
+extern struct BurnDriver BurnDrvRtype2;
+extern struct BurnDriver BurnDrvImgfight;
+extern struct BurnDriver BurnDrvXmultipl;
+extern struct BurnDriver BurnDrvDbreed;
+extern struct BurnDriver BurnDrvBchopper;
+// nspirit не включён: в сете fbneo нет обязательного ROM MCU nin_c-pr-b.ic1 —
+// драйвер возвращает ошибку init (r1671).
+extern struct BurnDriver BurnDrvAirduel;
+extern struct BurnDriver BurnDrvHharry;
+extern struct BurnDriver BurnDrvLtswords;
+extern struct BurnDriver BurnDrvCosmccop;
+extern struct BurnDriver BurnDrvLoht;
+extern struct BurnDriver BurnDrvPoundfor;
+extern struct BurnDriver BurnDrvMajtitle;
 
 static struct BurnDriver* pDriver[] = {
     &BurnDrvGalaxian,
@@ -4037,6 +4054,19 @@ static struct BurnDriver* pDriver[] = {
     &BurnDrvMk2r31e,
     &BurnDrvMk2r30,
     &BurnDrvMk2r21,
+    &BurnDrvRtype,
+    &BurnDrvRtype2,
+    &BurnDrvImgfight,
+    &BurnDrvXmultipl,
+    &BurnDrvDbreed,
+    &BurnDrvBchopper,
+    &BurnDrvAirduel,
+    &BurnDrvHharry,
+    &BurnDrvLtswords,
+    &BurnDrvCosmccop,
+    &BurnDrvLoht,
+    &BurnDrvPoundfor,
+    &BurnDrvMajtitle,
 };
 #define CPS_DRV_COUNT (sizeof(pDriver) / sizeof(pDriver[0]))
 typedef struct { char* game_name; char* sourcefile; } game_sourcefile_entry;

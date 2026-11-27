@@ -504,6 +504,17 @@ void emu_prepare(void) {
         printf("HW: period=%u us  i2s dc_shift=%d bypass=%d ring=%u pairs fill=%u\n",
                (unsigned)emu_period_us, i2s_dc_shift(), i2s_dc_is_bypassed(),
                (unsigned)AUDIO_RING_SIZE, (unsigned)i2s_ring_fill());
+    // r1716: фактические ACTLR/SCTLR обоих ядер — проверка гипотезы
+    // «ACTLR.SMP=0 глушит L1». Печатается здесь, где UART уже работает.
+    if (g_emulog) {
+        uint32_t a0, s0;
+        __asm volatile("mrc p15, 0, %0, c1, c0, 1" : "=r"(a0));
+        __asm volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(s0));
+        printf("CPU: actlr0=%08X sctlr0=%08X actlr1=%08X sctlr1=%08X\n",
+               (unsigned)a0, (unsigned)s0,
+               (unsigned)(*(volatile uint32_t*)0x9070u),
+               (unsigned)(*(volatile uint32_t*)0x904Cu));
+    }
     emu_clear_fb();
     fb_clear();
     fb_flush();
@@ -804,6 +815,9 @@ extern int sms_hw_scaler_active(void);   // r1509: DE2 GSU активен (пр�
 extern int gg_init_game(const uint8_t* rom, uint32_t size);
 extern void gg_run_frame(void);
 extern int gg_hw_scaler_active(void);   // r1503: DE2 GSU активен (пропустить emu_scale_int)
+// r1678: рендер кадра GG на DE2 GSU — в цикле он не вызывался вовсе, поэтому
+// флаг всегда 0 и кадр шёл программным emu_scale_int (r1503 дал только код).
+extern void gg_render_frame(void);
 extern int sg_init_game(const uint8_t* rom, uint32_t size);
 extern void sg_run_frame(void);
 extern void sg_render_frame(void);   // r1510: DE2 GSU рендер кадра SG-1000 (256×192 → 800×600)
@@ -1016,6 +1030,7 @@ void emu_run_gg(const uint8_t* rom, uint32_t size, const char* rom_name) {
     emu_esc_hold_reset();
     for (;;) {
         gg_run_frame();
+        gg_render_frame();   // r1678: DE2 GSU (GG переведён с программного скейла)
         emu_throttle();
         // r1503: при активном DE2 GSU кадр уже на экране (gg_render_frame
         // конвертирует RGB565→XRGB8888, GSU растягивает на 600) — программный

@@ -309,6 +309,14 @@ int h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32_
 	return 0;
 }
 
+// r1683: переключить адрес кадра без перестройки слоя/скейлера — двойная
+// буферизация видеоконвейера (CPU1 пишет кадр N+1, DE2 показывает N).
+void h3_de2_ui_set_addr(uint32_t addr) {
+	H3_DE2_MUX0_UI->CFG[0].TOP_LADDR = addr;
+	H3_DE2_MUX0_GLB->DBUFFER = 1;
+	__asm volatile("dsb" ::: "memory");
+}
+
 // r1462: вернуть слой 1:1 на экранный буфер меню (адрес запомнен в de2_mode_set).
 void h3_de2_ui_restore(void) {
 	if (g_out_w == 0 || g_out_h == 0)

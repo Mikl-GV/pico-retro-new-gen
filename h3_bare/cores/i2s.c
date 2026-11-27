@@ -139,8 +139,10 @@ static const uint8_t k_sin8[256] = {
 #define SRAM_RING_SYNC  (*(volatile uint32_t*)0x000000A0u)  /* двунаправленный */
 // S.0 (стабилизация CPU2): управляющие флаги, которые CPU2 читает в горячем
 // цикле, — тоже в SRAM A1 (r929: DRAM-видимость между ядрами ненадёжна, лог:
-// CPU2 «флапал» — тон шёл рывками/шумом). 0xA4/0xA8 свободны (см. карту SRAM:
-// 0x18..0x74, 0x88..0x8AC, 0x90, 0x94, 0x98..0xA0).
+// CPU2 «флапал» — тон шёл рывками/шумом). 0xA4/0xA8 свободны (карта SRAM:
+// 0x18..0x18 гейт, 0x20 magic, 0x24..0x8C TFT-почта, 0x90/0x94 звук,
+// 0x98..0xC0 кольцо+флаги+счётчики, 0x880..0x8B0 diag, 0x9000.. почта видео;
+// полная таблица — docs/MEMORY.md §3).
 #define SRAM_AUDIO_PAUSED (*(volatile uint32_t*)0x000000A4u)  /* core0→CPU2: 1 = пауза/не писать FIFO */
 #define SRAM_AUDIO_ACTIVE (*(volatile uint32_t*)0x000000A8u)  /* core0→CPU2: 1 = идёт игра/тон */
 #define SRAM_AUDIO_KEY  0x5A5Au                              /* защита от мусора U-Boot */
@@ -472,7 +474,11 @@ uint32_t i2s_push_block(const int16_t* pairs, uint32_t n) {
     return i2s_push_block_raw(pairs, n);
 }
 
+static uint32_t s_ring_ema;   // r1729: объявлена ниже (EMA темпа), нужна reset-у
+
 void i2s_ring_reset(void) {
+    // r1729: EMA темпа прошлой игры не должна задавать target новой сессии.
+    s_ring_ema = 0;
     // r938: сброс TX FIFO (уничтожает «доезды»/хвост из FIFO после выхода).
     // По эталону r909 FLUSH_TX допустим ТОЛЬКО при выключенном TX_EN, иначе
     // FIFO клинит (TXE_CNT=0, долив встаёт). Здесь reset вызывается при

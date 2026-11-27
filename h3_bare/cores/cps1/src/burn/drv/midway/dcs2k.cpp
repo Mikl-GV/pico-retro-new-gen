@@ -6,6 +6,8 @@
 #include "dcs2k.h"
 #include <math.h>
 
+extern "C" void dcs_host_new_game(void);    // r1723: сброс состояния прошлой игры
+
 #define MHz(x)  (x * 1000000)
 #define ADSP_CLOCK   MHz(10)
 
@@ -81,6 +83,8 @@ static INT32 mixer_pos;
 
 void Dcs2kBoot();
 static void SetupMemory();
+
+
 static INT32 RxCallback(INT32 port);
 static void TxCallback(INT32 port, INT32 data);
 static void TimerCallback(INT32 enable);
@@ -106,6 +110,8 @@ static void AdspWrite(UINT32 address, UINT16 value);
 void Dcs2kInit(INT32 dtype, INT32 dmhz)
 {
     dcs_log(_T("init\n"));
+
+	dcs_host_new_game();   // r1723: снимаем блокировку воркера прошлой игры
 
 	dcs_type = dtype;
 	dcs_mhz = dmhz;
@@ -157,6 +163,8 @@ void Dcs2kInit(INT32 dtype, INT32 dmhz)
 	mixer_pos = 0;
 
     nCurrentBank = 0;
+
+
 }
 
 void Dcs2kExit()
@@ -176,6 +184,8 @@ void Dcs2kSetVolume(double vol)
 {
 	dcs_volume = vol;
 }
+
+
 
 void Dcs2kRender(INT16 *pSoundBuf, INT32 nSegmentLength)
 {
@@ -356,6 +366,13 @@ static void SetupMemory()
     Adsp2100MapDataHandler(5, 0x3800, 0x39FF, MAP_READ | MAP_WRITE);
 
     Adsp2100MapDataHandler(6, 0x3FE0, 0x3FFF, MAP_READ | MAP_WRITE);
+
+    // r1707: быстрый путь выборки опкодов — обе области программной памяти
+    // драйвера плоские (pIntRAM и текущий банк pExtRAM32), см. adsp2100.cpp.
+    extern UINT32 *adsp_fast_prg_lo;
+    extern UINT32 **adsp_fast_prg_hi;
+    adsp_fast_prg_lo = (UINT32*)pIntRAM;
+    adsp_fast_prg_hi = &pExtRAM32;
 }
 
 
@@ -367,6 +384,7 @@ void Dcs2kMapSoundROM(void *ptr, INT32 size)
     nSoundBanks = (nSoundSize / 2) / 0x1000;
     dcs_log(_T("Sound size %x"), size);
     dcs_log(_T("Sound banks %x"), nSoundBanks);
+
 }
 
 void Dcs2kBoot()
@@ -416,6 +434,8 @@ void Dcs2kReset()
 	mixer_pos = 0;
 	sample_rate = 31250; // default
 	samples_from = (INT32)((double)((sample_rate * 100) / nBurnFPS) + 0.5);
+
+
 }
 
 static UINT16 ReadRAMBank(UINT32 address)
@@ -688,6 +708,8 @@ void DcsCheckIRQ()
 		DcsIRQ__INT();
 	}
 }
+
+
 
 static void TimerCallback(INT32 enable)
 {

@@ -167,7 +167,6 @@ int sd_read_sector(uint32_t lba, void* buf) {
 // Запись данных через FIFO (TX): ожидаем FIFO не FULL, пишем слова.
 static int mmc_write_data(const uint8_t* buf, uint32_t bytes) {
     uint32_t word_cnt = bytes >> 2;
-    const uint32_t* src = (const uint32_t*)buf;
     uint32_t i = 0;
 
     while (i < word_cnt) {
@@ -183,8 +182,14 @@ static int mmc_write_data(const uint8_t* buf, uint32_t bytes) {
         if (n == 0) n = 1;
         if (n > word_cnt - i) n = word_cnt - i;
 
-        for (uint32_t j = 0; j < n; j++)
-            MMC->fifo = src[i++];
+        // r1730: memcpy вместо uint32_t* каста — buf (g_wr.secbuf) не
+        // гарантированно выровнен на 4, LDR от невыровненного адреса = Data
+        // Abort. Тот же D-22, что r1271 применил для mmc_read_data.
+        for (uint32_t j = 0; j < n; j++, i++) {
+            uint32_t w;
+            memcpy(&w, buf + (i << 2), sizeof(w));
+            MMC->fifo = w;
+        }
     }
 
     // ждём DATA_OVER — передача завершена

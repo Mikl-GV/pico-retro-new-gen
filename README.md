@@ -7,7 +7,7 @@ Bare-metal мультисистемный эмулятор для Orange Pi Lite
 Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Звук — вывод I2S0/CPU2
 (48 кГц стерео, MAX98357A); синтез в ядрах сохранён.
 
-Версия прошивки: **r1547** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
+Версия прошивки: **r1740** (`g_fw_version` и строка `build:` в `h3_bare/src/main.c`).
 
 ## Системы (статус из `h3_bare/cores/systems.h`)
 
@@ -15,7 +15,7 @@ Sega-геймпад 6-button / кнопочный пад (PCF8574, I2C). Зву�
 |--------|-----------------|
 | Портативные | Game Boy / GBC, Game Gear, GBA (mGBA), Atari Lynx, Neo Geo Pocket / Color |
 | Консоли | Atari 2600, Atari 5200, Atari 7800, Master System, NES / Famicom (Dendy), ColecoVision, PC Engine / TurboGrafx (HuCard), SNES, Mega Drive / Genesis, Sega 32X, GCE Vectrex |
-| Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), FB Neo (сводный) |
+| Аркады (FinalBurn Neo) | CPS-1, CPS-2, NEOGEO / MVS, Sega System 16, Toaplan 1 (68K), Cave (68K), Namco, Taito, Data East, Psikyo PS3, Midway T-unit, Irem M72, FB Neo (сводный) |
 | Компьютеры | ZX Spectrum (Fuse), MSX / MSX2 (fMSX, BIOS вшиты), Atari 8-bit (400/800/XL/XE), Amstrad CPC (Caprice32), Commodore 64 (Frodo, BIOS вшиты), Commodore Amiga (UAE4All/Cyclone, Kickstart 1.3 вшит), Apple II+ (POM2, Applesoft ROM вшиты, .dsk/.do/.po/.nib/.woz, r1388), БК-0010/0011М (ROM вшиты), Радио-86РК (монитор вшит), Atari Portfolio (BIOS вшит, builtin), МС 1504 (BIOS PK300 вшит), Enterprise 64/128 (ep128emu, BIOS вшиты, автозагрузка START, r1356), PC/XT-286 (pico-286, BIOS/VBIOS вшиты, диск — образ флоппи/HDD потоком, MS-DOS 5 + Volkov Commander на стенде, r1459) |
 
 ## Сборка и запись
@@ -32,6 +32,9 @@ make sd                  # -> build/h3_bare.img (SD-образ)
 отслеживаются `-MMD -MP`/`build/deps.mk` с r1155, но чистая сборка страхует от
 рассинхрона макросов/ABI структур). Версия — `rNNN` в `h3_bare/src/main.c`,
 инкремент на каждую компиляцию.
+
+Аркадное ядро 68000: `make` — Musashi (default), `make ARC_CYCLONE=1` — Cyclone
+(CPS-1 проверен на стенде в r1739; см. `docs/ARCADE_PLAN.md`).
 
 Запись на флешку (прошивка U-Boot читает `h3_bare.bin` с FAT-раздела):
 

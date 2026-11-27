@@ -214,6 +214,8 @@ int  h3_de2_ui_scaler_rect(uint32_t addr, uint32_t src_w, uint32_t src_h, uint32
 			   uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh);
 void h3_de2_ui_scaler_off(void);
 void h3_de2_ui_restore(void);
+/* r1683: только адрес кадра (двойной буфер) — слой/скейлер не перестраиваются. */
+void h3_de2_ui_set_addr(uint32_t addr);
 void h3_de2_set_bkcolor(uint32_t argb);
 
 #define H3_DE2_UI_CFG_ATTR_FMT(f)	((f & 0xf) << 8)

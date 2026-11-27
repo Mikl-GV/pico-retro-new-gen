@@ -30,6 +30,12 @@ extern int printf(const char* fmt, ...);
 // State: адрес текущего устройства, MPS.
 static uint8_t  g_usb_addr = 0;
 
+// r1728: один MBR-буфер на все три enum-пути (pre / EHCI / OHCI). Было три
+// копии по 512 Б в .coherent, а pre-enum читал сектор «в никуда» — содержимое
+// там не разбиралось. Буфер только приёмник одного сектора при инициализации,
+// пути выполняются последовательно, поэтому общий безопасен.
+static uint8_t g_mbr[512] __attribute__((section(".coherent"), aligned(32)));
+
 // r788: полный enum FS/LS-флешки через OHCI (определена ниже).
 int usb_ohci_enumerate_flash(void);
 
@@ -259,7 +265,6 @@ static int usb_ohci_activate_flash_pre(void) {
     extern void usb_ohci_set_mps(uint16_t mps);
     extern void usb_ohci_bot_recover(uint32_t base);
     const uint32_t base = g_pre_base;   /* r903: база из HID-скана (B400/C400) */
-    static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
     static struct usb_msd_dev mdev;
     uint8_t setup[8];
 
@@ -289,7 +294,7 @@ static int usb_ohci_activate_flash_pre(void) {
     uint32_t last = 0, blk = 0;   /* только для проверки READ CAPACITY */
     if (usb_msd_read_capacity(&mdev, &last, &blk) != 0)
         printf("usb: pre-enum READ CAPACITY fail\n");
-    if (usb_msd_block_read(0, mbr) != 0) {
+    if (usb_msd_block_read(0, g_mbr) != 0) {
         printf("usb: pre-enum MBR read fail\n");
         return -1;
     }
@@ -312,6 +317,26 @@ int usb_bulk_in(uint8_t ep, uint16_t mps, uint8_t* data, uint32_t len) {
         return usb_ohci_bulk_in(g_pre_base, g_usb_addr, ep, data, len, mps);
     }
     return usb_ehci_bulk_in(ep, mps, data, len);
+}
+
+// r1704: последний рубеж, когда BOT recovery не поднял канал: CBW не уходит,
+// bulkhead стоит (лог: bcur == bh, ctl=0xB0/BLE=0). Полный HCR + повторное
+// перечисление флешки на той же базе — как при вставке. Только OHCI-путь:
+// EHCI-флешку не трогаем (её перечисление живёт в usb_hc_init).
+int usb_hc_full_recover(void) {
+    if (!g_bulk_via_ohci) return -1;
+    extern int usb_ohci_init(uint32_t base);
+    extern int usb_ohci_enumerate_flash(void);
+    printf("usb: full recover HCR + re-enum on 0x%X\n", (unsigned)g_pre_base);
+    usb_ohci_init(g_pre_base);
+    // r1731 (U-05): re-init обнулил periodic-список контроллера — вернуть
+    // interrupt-кольца клавиатуры/геймпада, сидящих на этом PHY.
+    {
+        extern void usb_kbd_restart_intr_base(uint32_t base);
+        usb_kbd_restart_intr_base(g_pre_base);
+    }
+    g_usb_addr = 1;
+    return usb_ohci_enumerate_flash();
 }
 
 void usb_hc_bot_recover(void) {
@@ -399,7 +424,6 @@ int usb_hc_init(void) {
     static uint8_t buf[64] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t cfg9[9] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t cfg_full[256] __attribute__((section(".coherent"), aligned(32)));
-    static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
     static struct usb_msd_dev mdev;
     uint8_t setup[8];
 
@@ -450,8 +474,8 @@ int usb_hc_init(void) {
         printf("usb-ehci: READ CAPACITY fail\n");
     }
     if (usb_msd_activate(&mdev) != 0) { printf("usb-ehci: msd activate fail\n"); return -1; }
-    if (usb_msd_block_read(0, mbr) != 0) { printf("usb-ehci: MBR read fail\n"); return -1; }
-    printf("usb-ehci: MBR sig=0x%04X — flash OK\n", mbr[510] | (mbr[511] << 8));
+    if (usb_msd_block_read(0, g_mbr) != 0) { printf("usb-ehci: MBR read fail\n"); return -1; }
+    printf("usb-ehci: MBR sig=0x%04X — flash OK\n", g_mbr[510] | (g_mbr[511] << 8));
     return 0;
 }
 
@@ -477,11 +501,12 @@ int usb_ohci_enumerate_flash(void) {
     extern void usb_ohci_set_mps(uint16_t mps);
     extern void usb_ohci_bot_recover(uint32_t base);
 
-    const uint32_t base = 0x01C1B400u;   /* PHY1 OHCI (компаньон EHCI) */
+    // r1704: база из HID-скана — PHY1 (B400) или PHY2 (C400). Жёсткий B400
+    // при флешке на PHY2 гонял полный re-enum не туда.
+    const uint32_t base = g_pre_base;
     static uint8_t buf[64] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t cfg9[9] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t cfg[256] __attribute__((section(".coherent"), aligned(32)));
-    static uint8_t mbr[512] __attribute__((section(".coherent"), aligned(32)));
     static uint8_t inq[36] __attribute__((section(".coherent"), aligned(32)));
     static struct usb_msd_dev mdev;
     uint8_t setup[8];
@@ -588,10 +613,10 @@ int usb_ohci_enumerate_flash(void) {
         printf("usb-ohci: READ CAPACITY fail\n");
     }
 
-    if (usb_msd_block_read(0, mbr) != 0) {
+    if (usb_msd_block_read(0, g_mbr) != 0) {
         printf("usb-ohci: MBR read fail\n"); return -1;
     }
-    printf("usb-ohci: MBR sig=0x%04X — flash OK\n", mbr[510] | (mbr[511] << 8));
+    printf("usb-ohci: MBR sig=0x%04X — flash OK\n", g_mbr[510] | (g_mbr[511] << 8));
     return 0;
 }
 

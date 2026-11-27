@@ -54,6 +54,15 @@ Windows (MSYS2 + ARM toolchain в PATH):
 make -j%NUMBER_OF_PROCESSORS%
 ```
 
+### 2.1 Аркадное ядро 68000 (Cyclone)
+
+- `make` — Musashi (default); `make ARC_CYCLONE=1` — Cyclone
+  (`c68000_intf.cpp` + `cyclone/Cyclone.S`). Флаг **глобальный** для всех 68000.
+- При смене флага делайте `make clean`: список объектов меняется, но старый
+  `build/h3_bare.elf` может быть новее Musashi-объектов, и make не перелинкует.
+- r1740: Musashi `26 338 356 Б`, Cyclone `26 775 628 Б`. CPS-1 проверен
+  (r1739), S16B `goldnaxe` — 45 fps, поэтому default пока Musashi.
+
 ## 3. Флаги, которые нельзя менять без причины
 
 ```make

@@ -1054,25 +1054,38 @@ CPS1 := $(TOP)h3_bare/cores/cps1
 CPS1_ZLIB := $(TOP)h3_bare/cores/fuse/zlib
 CPS1_INC := -I$(CPS1)/src -I$(CPS1)/src/burn -I$(CPS1)/src/burn/devices \
 	-I$(CPS1)/src/burn/snd -I$(CPS1)/src/burn/drv/capcom \
-	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/intf/cd \
+	-I$(CPS1)/src/cpu -I$(CPS1)/src/cpu/m68k -I$(CPS1)/src/cpu/z80 -I$(CPS1)/src/cpu/cyclone -I$(CPS1)/src/intf/cd \
 	-I$(CPS1)/src/cpu/nec -I$(CPS1)/src/cpu/z180 -I$(CPS1)/src/cpu/m6805 -I$(CPS1)/src/cpu/tms32010 \
 	-I$(CPS1)/src/cpu/i8051 -I$(CPS1)/src/cpu/i8039 -I$(CPS1)/src/cpu/upd7810 \
 	-I$(CPS1)/src/burn/drv/sega -I$(CPS1)/src/burn/drv/namco \
 	-I$(CPS1)/src/burn/drv/taito -I$(CPS1)/src/burn/drv/dataeast \
 	-I$(CPS1)/src/burn/drv/psikyo -I$(CPS1)/src/burn/drv/midway \
+	-I$(CPS1)/src/burn/drv/irem \
 	-I$(CPS1)/src/cpu/m6502 -I$(CPS1)/src/cpu/h6280 \
 	-I$(BUILD) -I$(CPS1_ZLIB) $(INCLUDES)
 CPS1_CFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm -ffreestanding $(DEPFLAGS) \
-	-Wall -Wextra -O2 -fno-strict-aliasing \
+	-Wall -Wextra -O3 -fomit-frame-pointer -fno-strict-aliasing -fwrapv \
 	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
-	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG
+	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K
 # C++-файлы вендора БЕЗ -ffreestanding (как Gearcoleco): newlib freestanding
 # не даёт <cmath>/tr1/free, на что опирается FBNeo.
 CPS1_CXXFLAGS := -mcpu=cortex-a7 -mfpu=neon -mfloat-abi=softfp -marm $(DEPFLAGS) \
-	-Wall -Wextra -O2 -fno-strict-aliasing \
+	-Wall -Wextra -O3 -fomit-frame-pointer -fno-strict-aliasing -fwrapv \
 	-DORANGE_PI_ONE -DALLWINNER_BARE_METAL -DNDEBUG \
-	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K -DFBNEO_DEBUG \
+	-D__fastcall= -DLSB_FIRST=1 -DEMU_M68K \
 	-fno-exceptions -fno-rtti -fno-threadsafe-statics
+
+# r1738: Cyclone pilot. Default is Musashi; ARC_CYCLONE=1 switches the Sek
+# interface to c68000_intf.cpp + the generated Cyclone.S (68000 only).
+ARC_CYCLONE ?= 0
+ifeq ($(ARC_CYCLONE),1)
+M68K_IFACE_OBJ   := $(BUILD)/c1i_c68000_intf.o
+M68K_CYCLONE_OBJ := $(BUILD)/c1cyc_Cyclone.o
+CPS1_CXXFLAGS += -DARC_CYCLONE=1
+else
+M68K_IFACE_OBJ   := $(BUILD)/c1i_m68000_intf.o
+M68K_CYCLONE_OBJ :=
+endif
 
 CPS1_BURN  := burn burn_bitmap burn_gun burn_led burn_memory burn_pal burn_sha1 burn_shift burn_sound cheat debug_track hiscore load tilemap_generic tiles_generic timer
 CPS1_CAP   := cps cps2_crpt cps_config cps_draw cps_mem cps_obj cps_pal cps_run cps_rw cps_scr cpsr cpsrd cpst ctv d_cps1 d_cps2 fcrash_snd kabuki ps ps_m ps_z qs qs_c qs_z sf2mdt_snd
@@ -1082,6 +1095,9 @@ CPS1_SNDC  := fm ym2151 fmopl ym2413 ym2612 ay8910
 CPS1_Z80   := z80 z80ctc z80daisy z80pio
 # Midway T-unit (r1660): драйвер + звук DCS (MK2) на ADSP2100.
 CPS1_MID   := midtunit d_tunit dcs2k
+# Irem M72 (r1670): R-Type, R-Type II, Image Fight, X Multiply, Gallop.
+# CPU V30 (nec) + Z80, YM2151, DAC, защитный mcs51 (i8051) — всё уже в сборке.
+CPS1_IREM  := d_m72 irem_cpu
 # r1666: ядро TMS34010 — src/cpu/tms34010 (переписанное ядро FBNeo).
 # Старое src/cpu/tms34 удалено вместе с переходом (r1667).
 CPS1_TUCORE_OBJ := $(BUILD)/c1t34n_tms34010.o $(BUILD)/c1t34n_tms34010_optable.o \
@@ -1094,9 +1110,10 @@ OBJ += $(addprefix $(BUILD)/c1s_,$(addsuffix .o,$(CPS1_SND)))
 OBJ += $(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC)))
 OBJ += $(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80)))
 OBJ += $(addprefix $(BUILD)/c1mw_,$(addsuffix .o,$(CPS1_MID)))
+OBJ += $(addprefix $(BUILD)/c1ir_,$(addsuffix .o,$(CPS1_IREM)))
 OBJ += $(CPS1_TUCORE_OBJ) $(BUILD)/c1ads_adsp2100.o $(BUILD)/c1i_adsp2100_intf.o
-OBJ += $(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o
-OBJ += $(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o
+OBJ += $(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kops.o
+OBJ += $(M68K_IFACE_OBJ) $(M68K_CYCLONE_OBJ) $(BUILD)/c1i_z80_intf.o
 OBJ += $(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
 
 # Только объекты CPS-1 (для отладки цели cps1-obj)
@@ -1107,9 +1124,10 @@ CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
 	$(addprefix $(BUILD)/c1sc_,$(addsuffix .o,$(CPS1_SNDC))) \
 	$(addprefix $(BUILD)/c1z_,$(addsuffix .o,$(CPS1_Z80))) \
 	$(addprefix $(BUILD)/c1mw_,$(addsuffix .o,$(CPS1_MID))) \
+	$(addprefix $(BUILD)/c1ir_,$(addsuffix .o,$(CPS1_IREM))) \
 	$(CPS1_TUCORE_OBJ) $(BUILD)/c1ads_adsp2100.o $(BUILD)/c1i_adsp2100_intf.o \
-	$(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kdasm.o $(BUILD)/c1m_m68kops.o \
-	$(BUILD)/c1i_m68000_intf.o $(BUILD)/c1i_z80_intf.o \
+	$(BUILD)/c1m_m68kcpu.o $(BUILD)/c1m_m68kops.o \
+	$(M68K_IFACE_OBJ) $(M68K_CYCLONE_OBJ) $(BUILD)/c1i_z80_intf.o \
 	$(BUILD)/c1x_stubs.o $(BUILD)/c1x_netg.o $(BUILD)/c1x_neostubs.o $(BUILD)/cps1_host.o
 
 HOSTCC ?= gcc
@@ -1153,12 +1171,14 @@ $(BUILD)/c1sc_ym2612.o: $(CPS1)/src/burn/snd/ym2612.c | $(BUILD)
 
 # добор звука из FBNeo (r0.305): ym3812 (Toaplan), upd7759 (NeoGeo), msm5232
 # не в текущем линке (msm5232 требует C++ tr1); правило c1sd_ не нужно.
-# Musashi CPU (C): m68kcpu/m68kdasm включают m68kops.h, ждём генерации.
+# Musashi CPU (C): m68kcpu/m68kops включают m68kops.h, ждём генерации.
+# r1699: m68kdasm (отладочный дизассемблер) из линка исключён — без
+# FBNEO_DEBUG он тянет SekDbgFetchWordDisassembler, которого в сборке нет,
+# и на ходу он всё равно не нужен.
 $(BUILD)/c1m_%.o: $(CPS1)/src/cpu/m68k/%.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1m_m68kcpu.o: $(BUILD)/m68kops.h
-$(BUILD)/c1m_m68kdasm.o: $(BUILD)/m68kops.h
 $(BUILD)/c1m_m68kops.o: $(BUILD)/m68kops.c | $(BUILD)
 	$(CC) $(CPS1_CFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
@@ -1169,6 +1189,10 @@ $(BUILD)/c1z_%.o: $(CPS1)/src/cpu/z80/%.cpp | $(BUILD)
 # CPU-интерфейсы (m68000_intf/z80_intf)
 $(BUILD)/c1i_%.o: $(CPS1)/src/cpu/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# r1738: Cyclone.S — готовый сгенерированный исходник (не пересобирается здесь).
+$(BUILD)/c1cyc_Cyclone.o: $(CPS1)/src/cpu/cyclone/Cyclone.S | $(BUILD)
+	$(CC) $(CPS1_CFLAGS) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # glue-стабы
 $(BUILD)/c1x_stubs.o: $(CPS1)/src/cps1_stubs.cpp | $(BUILD)
@@ -1350,10 +1374,10 @@ $(BUILD)/c1nec_nec_intf.o: $(CPS1)/src/cpu/nec_intf.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1nec_nec.o: $(CPS1)/src/cpu/nec/nec.cpp | $(BUILD)
-	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 $(BUILD)/c1nec_v25.o: $(CPS1)/src/cpu/nec/v25.cpp | $(BUILD)
-	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
+	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # Прочие CPU Toaplan (r0.338): TMS32010 (twincobr/wardner/toaplan1-сеты),
 # Z180 (ghox), M6805 (slapfght). z180 — те же op-файлы #include в z180.cpp,
@@ -1387,6 +1411,10 @@ $(BUILD)/c1cpu_i8039.o: $(CPS1)/src/cpu/i8039/i8039.cpp | $(BUILD)
 # собирать (двойные определения). DCS (MK2) — отдельный CPU ADSP2100.
 $(BUILD)/c1mw_%.o: $(CPS1)/src/burn/drv/midway/%.cpp | $(BUILD)
 	$(CXX) $(CPS1_CXXFLAGS) -O3 $(CPS1_INC) -c -o $@.tmp $<
+	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
+# Irem M72 (r1670): драйвер и таблицы расшифровки защитного MCU.
+$(BUILD)/c1ir_%.o: $(CPS1)/src/burn/drv/irem/%.cpp | $(BUILD)
+	$(CXX) $(CPS1_CXXFLAGS) $(CPS1_INC) -c -o $@.tmp $<
 	$(TOP)h3_bare/cores/cps1_rename.sh $@.tmp && mv $@.tmp $@
 # r1666: ядро TMS34010 (src/cpu/tms34010) — объекты c1t34n_*
 $(BUILD)/c1t34n_%.o: $(CPS1)/src/cpu/tms34010/%.cpp | $(BUILD)

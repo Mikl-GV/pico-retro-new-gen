@@ -21,6 +21,13 @@ _Обновление r1660:_
 - **Midway T-unit** → `/roms/midway` (mk, mkr4, mkplus, mktturbo, mk2 и его
   ревизии: mk2r42, mk2r32e, mk2r31e, mk2r30, mk2r21).
 
+_Обновление r1670:_
+- **Irem M72** → `/roms/irem` (rtype, rtype2, imgfight, xmultipl, dbreed,
+  bchopper, nspirit, airduel, hharry, ltswords, cosmccop, loht, poundfor,
+  majtitle; клоны kengo/dkgensan/gallop/mrheli грузятся с родительских сетов).
+  Реально перенесены из fbneo: rtype, rtype2, imgfight, xmultipl, dbreed,
+  hharry, loht (nspirit — неполный: нет MCU `nin_c-pr-b.ic1`, исключён из меню).
+
 В fbneo остались ONLY сети, для которых драйверов в нашей прошивке НЕТ (чужие платы).
 Ниже — чем их реально запускать вне прошивки.
 

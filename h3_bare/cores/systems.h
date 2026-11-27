@@ -91,6 +91,9 @@ static const system_entry_t systems[] = {
     // r1660: Midway T-unit (Mortal Kombat 1/2 и клоны) — TMS34010, папка
     // /roms/midway на общем FBNeo-хосте (run_cps).
     SYS("midway",     "Midway (Arcade)",              ARCADE,   READY),
+// r1670: Irem M72 (R-Type, R-Type II, Image Fight, X Multiply, Gallop и др.) —
+// V30 + Z80, папка /roms/irem на общем FBNeo-хосте (run_cps).
+SYS("irem",       "Irem (Arcade)",                ARCADE,   READY),
     SYS("cave",       "Cave (68K) STGs",              ARCADE,   READY),
     // -- Компьютеры --
     SYS("zxspectrum", "ZX Spectrum 48k/128k",        COMPUTER, READY),

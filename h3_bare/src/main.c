@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <string.h>
 #include "h3.h"
 #include "uart.h"
@@ -584,7 +584,11 @@ static int rk86_source_dialog(void) {
 
 // Единая строка версии прошивки: показывается в About (HDMI) и на TFT в углу.
 // Обновлять при каждой сборке (совпадает с баннером build:).
-const char g_fw_version[] = "r1669";
+const char g_fw_version[] = "r1740";
+
+// r1683: CPU1 поднят — хост аркад отдаёт ему конверсию кадра (видеоконвейер),
+// иначе кадр конвертируется на core0 синхронно.
+int g_cpu1_started = 0;
 
 // r1203-ДИАГ: состояние LPAE-карты. r1359: компилируется только при
 // BOOT_VERBOSE=1 (в релизе дамп не нужен и засоряет boot-лог).
@@ -799,12 +803,61 @@ void main(void) {
     // Вторичное ядро CPU1: SPI-дисплей на своём ядре — core0 не нагружается.
     // r124: когерентность .coherent включаем ЯВНО (см. r704 выше).
     // SRAM-почта (калибровка/кнопки/справка) не зависит от этого.
+    // r1685: отдаём CPU1 таблицы MMU (копия L0 core0, LPAE) и МАСКУ SCTLR —
+    // ядро включает MMU + кэши и работает с теми же виртуальными адресами.
+    // SCTLR меняется маской (M|C|I|Z): прочие биты (EE/TE/U/XP) не трогаем.
+    {
+        uint32_t ttbr0, ttbcr, dacr, mask;
+        __asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(ttbr0));
+        __asm volatile("mrc p15, 0, %0, c2, c0, 2" : "=r"(ttbcr));
+        __asm volatile("mrc p15, 0, %0, c3, c0, 0" : "=r"(dacr));
+        // r1713: D-cache включён — DSP DCS на CPU1 без кэша не успевает
+        // (стенд r1712: rdone=11 из rseq=291). SRAM-почта из прошлой схемы
+        // больше не используется: почта DCS — в .bss (DRAM), обмен через
+        // точечные clean/invalidate на обоих ядрах.
+        // r1714: на Cortex-A7 ACTLR.SMP=0 глушит L1 аппаратно — без него
+        // SCTLR.C бессилен. Ставим SMP на core0 и логируем факт.
+        {
+            uint32_t actlr;
+            __asm volatile("mrc p15, 0, %0, c1, c0, 1" : "=r"(actlr));
+            if (!(actlr & 0x40u)) {
+                actlr |= 0x40u;
+                __asm volatile("mcr p15, 0, %0, c1, c0, 1" :: "r"(actlr));
+                __asm volatile("isb" ::: "memory");
+            }
+            printf("cpu0: ACTLR=%08X SMP=%u\n", (unsigned)actlr,
+                   (unsigned)((actlr >> 6) & 1u));
+        }
+        mask = 0x1u | 0x4u | 0x1000u;   /* M|C|I */
+        *(volatile uint32_t*)0x9040u = ttbr0;
+        *(volatile uint32_t*)0x9044u = ttbcr;
+        *(volatile uint32_t*)0x9048u = dacr;
+        *(volatile uint32_t*)0x9050u = mask;
+        __asm volatile("dsb st" ::: "memory");
+    }
     extern int h3_cpu_start(int cpu, void (*entry)(void));
     extern void cpu1_entry(void);
-    if (h3_cpu_start(1, cpu1_entry) == 1)
+    // r1690: сигнатуры в счётчиках CPU1 — иначе не отличить «ядро не писало»
+    // (в SRAM остаётся мусор U-Boot) от «писало, но не растёт».
+    *(volatile uint32_t*)0x905Cu = 0xDEAD0001u;
+    *(volatile uint32_t*)0x9060u = 0xDEAD0002u;
+    *(volatile uint32_t*)0x9064u = 0xDEAD0003u;
+    __asm volatile("dsb st" ::: "memory");
+    if (h3_cpu_start(1, cpu1_entry) == 1) {
         uart_puts("smp: CPU1 started (TFT core)\n");
-    else
+        {
+            // r1687: только числа и только после флага готовности 0x9058.
+            extern uint32_t h3_hs_timer_lo_us(void);
+            uint32_t t0 = h3_hs_timer_lo_us();
+            while (*(volatile uint32_t*)0x9058u != 1u &&
+                   (h3_hs_timer_lo_us() - t0) < 200000u) { }
+            if (*(volatile uint32_t*)0x9058u != 1u)   // информативно только отказ
+                uart_puts("MMU: cpu1 no flag (0x9058)\n");
+        }
+        g_cpu1_started = 1;   // r1683: хост аркад отдаёт конверсию кадра на CPU1
+    } else {
         uart_puts("smp: CPU1 FAILED to start\n");
+    }
 
 // Меню на HDMI — обычная работа core0; справка на TFT.
     // r123: SRAM-почта 0x64 (кнопки с TFT) не zero-инициализируется и может

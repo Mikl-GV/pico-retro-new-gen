@@ -3,6 +3,12 @@
 #include "burnint.h"
 #include "m68000_intf.h"
 #include "m68000_debug.h"
+#include "m68k_core.h"   // r1736: выбор ядра 68000 (Musashi / Cyclone-пилот)
+
+// r1699: H3-хост — системный таймер (мкс) для замера доли 68000 в кадре.
+// h3_hs_timer_lo_us — inline static в заголовке, отдельного символа нет.
+#include "h3_hs_timer.h"
+extern uint32_t g_m68k_us_frame;
 
 #if defined (BUILD_WIN32)
 	enum LuaMemHookType
@@ -1798,7 +1804,11 @@ INT32 SekRun(const INT32 nCycles)
 		}
 		else
 		{
+			// r1699: замер доли 68000 в кадре (H3-хост, печать в CPS: perf).
+			// Нужен, чтобы отличать «медленный CPU» от «медленного драйвера».
+			uint32_t t0 = h3_hs_timer_lo_us();
 			nSekCyclesSegment = m68k_execute(nCycles);
+			g_m68k_us_frame += h3_hs_timer_lo_us() - t0;
 		}
 
 		nSekCyclesTotal += nSekCyclesSegment;

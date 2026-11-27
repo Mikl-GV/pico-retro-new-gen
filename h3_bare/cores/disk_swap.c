@@ -214,14 +214,17 @@ static int swap_run(void)
         } else if (k == 81) {
             if (n > 1) cursor = (cursor >= n - 1) ? 0 : cursor + 1;
         } else if (k == 40) {
+            // r1732 (D-01): list указывает в fat_scratch(), а fat_find ниже
+            // перезаписывает scratch — фиксируем выбранную запись заранее.
+            fat_entry_t sel = list[cursor];
             char name[FAT_NAME_LEN];
             char path[sizeof(g_dir) + FAT_NAME_LEN + 2];
             fat_entry_t f;
-            int sl = (int)strlen(list[cursor].name);
+            int sl = (int)strlen(sel.name);
             int pl;
 
             if (sl >= FAT_NAME_LEN) sl = FAT_NAME_LEN - 1;
-            memcpy(name, list[cursor].name, (size_t)sl);
+            memcpy(name, sel.name, (size_t)sl);
             name[sl] = 0;
 
             pl = (int)strlen(g_dir);

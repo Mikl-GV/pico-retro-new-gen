@@ -112,7 +112,7 @@ static int usb_msd_cmd_once(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t
     }
     if (usb_msd_bulk_in(g_csw_buf, 13) != 0) { printf("msd: op=0x%02X CSW fail\n", cdb[0]); return -4; }
     struct usb_msd_csw* csw = (struct usb_msd_csw*)g_csw_buf;
-    if (csw->signature != USB_MSD_CSW_SIG || csw->status != 0) {
+    if (csw->signature != USB_MSD_CSW_SIG || csw->status != 0 || csw->residue != 0) {
         if (MSD_VERBOSE_LOG || cdb[0] != 0x00) {
             printf("msd: csw op=0x%02X sig=0x%08X tag=0x%08X st=%d res=%u\n",
                    cdb[0], csw->signature, csw->tag, csw->status, (unsigned)csw->residue);
@@ -123,15 +123,32 @@ static int usb_msd_cmd_once(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t
 }
 
 // Обёртка: при обрыве фазы один раз восстанавливаем BOT-канал и повторяем.
+static int g_full_recover_busy = 0;   // r1704: guard от рекурсии
 static int usb_msd_cmd(struct usb_msd_dev* dev, const uint8_t* cdb, uint8_t cb_len,
                        uint32_t dir_in, uint32_t xlen,
                        uint8_t* data, uint32_t data_len) {
-    // r969: до 3 попыток с BOT-восстановлением. Одна потеря пакета на USB
+    // r969: повтор с BOT-восстановлением. Одна потеря пакета на USB
     // (short IN 448/512) не должна ронять чтение FAT/ROM: после recover
     // канал в норме, и повтор обычно проходит.
+    // r1704: CBW fail (-2) — не «потеря пакета», а мёртвый bulk-канал
+    // (bcur == bulkhead, BLE=0). Всего до 4 попыток: первая, после
+    // BOT-recover, после полного HCR+re-enum, последняя. Guard не даёт
+    // рекурсии: сама реинициализация читает сектора через этот же путь.
     int rc = -1;
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 4; attempt++) {
         rc = usb_msd_cmd_once(dev, cdb, cb_len, dir_in, xlen, data, data_len);
+        if (rc == 0) break;
+        if (rc == -2) {
+            if (attempt == 0) { usb_msd_bot_recover(); continue; }
+            if (!g_full_recover_busy) {
+                extern int usb_hc_full_recover(void);
+                g_full_recover_busy = 1;
+                int fr = usb_hc_full_recover();
+                g_full_recover_busy = 0;
+                if (fr == 0) continue;
+            }
+            break;
+        }
         if (rc != -3 && rc != -4) break;
         usb_msd_bot_recover();
     }

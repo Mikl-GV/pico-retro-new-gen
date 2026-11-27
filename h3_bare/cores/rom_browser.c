@@ -180,7 +180,9 @@ static void run_emulator(const char* sys_id, uint8_t* rom, uint32_t size,
     else if (strcmp(sys_id, "psikyo") == 0)
         emu_run_psikyo(rom, size, sel_name);
     else if (strcmp(sys_id, "midway") == 0)
-        emu_run_midway(rom, size, sel_name);    // Psikyo PS3 — /roms/psikyo (r1627)
+        emu_run_midway(rom, size, sel_name);    // Midway T-unit — /roms/midway (r1660)
+    else if (strcmp(sys_id, "irem") == 0)
+        emu_run_irem(rom, size, sel_name);      // Irem M72 — /roms/irem (r1670)
     else if (strcmp(sys_id, "fbneo") == 0)
         emu_run_fbneo(rom, size, sel_name);     // общий FBNeo-корень
     else if (strcmp(sys_id, "atari800") == 0)
@@ -324,7 +326,8 @@ static int is_arcade_sys(const char* sys_id) {
            strcmp(sys_id, "fbneo") == 0 || strcmp(sys_id, "cave") == 0 ||
            strcmp(sys_id, "segasys") == 0 || strcmp(sys_id, "namco") == 0 ||
            strcmp(sys_id, "taito") == 0 || strcmp(sys_id, "dataeast") == 0 ||
-           strcmp(sys_id, "psikyo") == 0 || strcmp(sys_id, "midway") == 0;
+           strcmp(sys_id, "psikyo") == 0 || strcmp(sys_id, "midway") == 0 ||
+           strcmp(sys_id, "irem") == 0;
 }
 
 static char rom_lc(char c) {

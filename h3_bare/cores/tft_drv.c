@@ -408,12 +408,10 @@ static void spi0_init(void) {
     udelay(100);
 }
 
-static void spi_dump(void) {
-    printf("DMP GCR=0x%08X TCR=0x%08X FSR=0x%08X ISR=0x%08X CCR=0x%08X MBC=0x%08X BCC=0x%08X\n",
-           (unsigned)SPI0_GCR, (unsigned)SPI0_TCR, (unsigned)SPI0_FSR,
-           (unsigned)SPI0_ISR, (unsigned)SPI0_CCR,
-           (unsigned)SPI0_MBC, (unsigned)SPI0_BCC);
-}
+// r1695: дамп регистров SPI убран — в логе строка выходила битой и была
+// неинформативной (владелец). Заглушка сохранена, чтобы не править 12 точек
+// вызова при сбоях инициализации панели.
+static void spi_dump(void) { }
 
 // Последовательность инициализации ILI9486 — из waveshare35a-overlay.dtb.
 // B0=00, 3A=55, 36=28, C2=44, C5=6×00, E0/E1/E2 гаммы, 36=28, 11, 29.
@@ -792,6 +790,11 @@ static const struct {
   { "midway",
   "Midway (Arcade)",
   {"P1: arrows + Z/X/C","1/Enter Start    5/S Coin","T = Service (DIP/menu)","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
+  },
+  // r1670: Irem M72 — R-Type, R-Type II, Image Fight, X Multiply, Gallop.
+  { "irem",
+  "Irem (Arcade)",
+  {"P1: arrows + Z/X/C (B = shot)","1/Enter Start    5/S Coin","T = Service (DIP/menu)","P2: WASD + J/K/L","Pad: A/B/C, X=Coin","ESC x3 = exit",NULL}
   },
   // r1623: Taito — Rastan/Rainbow Islands/Volfied/Bubble Bobble/Arkanoid.
   { "taito",
@@ -1240,8 +1243,18 @@ void tft_core_main(void) {
    тогда панель терялась до перезагрузки. Метим статус и всё равно идём в
    рабочий цикл: он продолжает обновлять HEARTBEAT и TFT_CMD, а core0 по
    TFT_STAT видит причину. */
-    if (tft_init() < 0) TFT_STAT = 9;
-    else TFT_STAT = 2;
+    if (tft_init() < 0) {
+        TFT_STAT = 9;
+        // r1686: панели нет (SPI fail @SWRESET — у владельца TFT пока не
+        // подключён). Незачем тратить ядро на тач-скан с таймаутами: CPU1
+        // целиком отдаём видеоконвейеру аркад (вечный опрос почты).
+        *(volatile uint32_t*)0x9060u = 1;   // r1689: стадия «воркер-цикл»
+        extern void arc_vid_worker_loop(void);
+        arc_vid_worker_loop();
+    } else {
+        TFT_STAT = 2;
+        *(volatile uint32_t*)0x9060u = 2;   // r1689: стадия «TFT-цикл»
+    }
     // r120: SRAM-почта не zero-инициализируется — чистим при старте
     TFT_BTN = 0;
     TFT_HELP_ID = 0;
@@ -1283,7 +1296,12 @@ void tft_core_main(void) {
         // Это полностью убирает RMW-гонку с Sega-падом внутри эмулятора (дисплей
         // «заморожен», меню не нужно). Живой-индикатор (PL10, R_PIO) продолжает.
         if (*(volatile uint32_t*)0x74u == 1) {
-            delay_ms(30);
+            // r1683: в игре CPU1 свободен — обслуживаем видеоконвейер аркад
+            // (конверсия RGB565→XRGB8888 по почте VIDW в SRAM A1 0x9000).
+            // 30 мс сна не хватает: кадр ~18 мс, воркер должен успевать за core0.
+            extern void arc_vid_worker_poll(void);
+            arc_vid_worker_poll();
+            delay_ms(1);
             continue;
         }
 
