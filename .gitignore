@@ -1,4 +1,6 @@
 build/
+build-*.log
+build-fail*.log
 AGENTS.md
 AUDIT_PROMPT.md
 AUDIT_PROMPT_REVIEW.md
@@ -28,6 +30,7 @@ emulator-refs/
 # BIOS-бинарники, которые .S-файлы вшивают через .incbin (нужны для сборки из клона):
 !h3_bare/cores/gba_sp/bios/open_gba_bios.bin
 !h3_bare/cores/gearcoleco/coleco_bios.bin
+!h3_bare/cores/atari_st_cw/bios/etos192us.img
 # WiFi-прошивка RTL8189FTV нужна сборке: h3_bare/platform/fw_blob.S делает
 # .incbin "fw_nic.bin", а $(BUILD)/fw_blob.o входит в OBJ (Makefile:86).
 # Файл обязан быть в репозитории — без него клон не соберётся (r1728: аудит

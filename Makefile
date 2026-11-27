@@ -1133,7 +1133,10 @@ CPS1_OBJ := $(addprefix $(BUILD)/c1b_,$(addsuffix .o,$(CPS1_BURN))) \
 HOSTCC ?= gcc
 $(BUILD)/m68kmake: $(CPS1)/src/cpu/m68k/m68kmake.c | $(BUILD)
 	$(HOSTCC) -O2 -I$(CPS1)/src/cpu/m68k -o $@ $<
-$(BUILD)/m68kops.c $(BUILD)/m68kops.h: $(BUILD)/m68kmake $(CPS1)/src/cpu/m68k/m68k_in.c
+# r1741: grouped target (&), иначе -j20 запускает m68kmake дважды параллельно
+# на m68kops.c и m68kops.h — гонка портит сгенерированный файл (сборка из
+# свежего клона давала другой размер бинарника).
+$(BUILD)/m68kops.c $(BUILD)/m68kops.h &: $(BUILD)/m68kmake $(CPS1)/src/cpu/m68k/m68k_in.c
 	$(BUILD)/m68kmake $(BUILD)/ $(CPS1)/src/cpu/m68k/m68k_in.c
 
 # Паттерн-правила: C++ core-файлы -> c1*.o + cps1_rename.sh (objcopy)
