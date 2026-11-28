@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include "emu.h"
@@ -533,7 +534,8 @@ void emu_prepare(void) {
 // чтобы простой в меню не засорял статистику.
 // r939: не static — вызывается из host-слоёв (snes/gpgx/fceumm) на выходе.
 void emu_audio_stop(void) {
-    uint32_t fmax = 0, fmin = 0, drop = 0, under = 0, pairs = 0;
+  emu_log_flush_all();   // r1747: добить буфер лога до AUDIO-END
+  uint32_t fmax = 0, fmin = 0, drop = 0, under = 0, pairs = 0;
     i2s_stats_get(&fmax, &fmin, &drop, &under, &pairs);
     // r921: добавляем фактические счётчики долива CPU2 (fw=выведено пар в FIFO,
     // skip=раз «FIFO полон») — по ним видно, растёт ли долив при живом beat.
@@ -605,6 +607,48 @@ void emu_set_period_us_ex(uint32_t us_q16) {
 // r703 (C4): liveness CPU2. g_audio_beat инкрементится CPU2 в цикле — если он
 // перестал расти, аудио-ядро зависло. Мониторинг — инструмент диагностики,
 // НЕ включает долив core0 (единственный писатель TX FIFO — CPU2, r739).
+// r1747: лог горячего цикла. printf в кадре блокирует UART на миллисекунды;
+// копим строки в RAM и сливаем в простое throttle (там же вычитаем budget).
+#define EMU_LOG_BUF_SIZE 4096
+static char     s_emu_log[EMU_LOG_BUF_SIZE];
+static uint32_t s_emu_log_head = 0;
+static uint32_t s_emu_log_tail = 0;
+
+void emu_log_printf(const char* fmt, ...) {
+    char line[192];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
+
+    uint32_t used = s_emu_log_head - s_emu_log_tail;
+    if ((uint32_t)n > EMU_LOG_BUF_SIZE - used) return;   // переполнение — строку теряем
+
+    for (int i = 0; i < n; i++) {
+        s_emu_log[(s_emu_log_head + (uint32_t)i) & (EMU_LOG_BUF_SIZE - 1)] = line[i];
+    }
+    s_emu_log_head += (uint32_t)n;
+}
+
+void emu_log_flush_idle(uint32_t budget_us) {
+    if (!budget_us || s_emu_log_tail == s_emu_log_head) return;
+    uint32_t t0 = h3_hs_timer_lo_us();
+    while (s_emu_log_tail != s_emu_log_head) {
+        if ((h3_hs_timer_lo_us() - t0) >= budget_us) break;
+        uart_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
+        s_emu_log_tail++;
+    }
+}
+
+void emu_log_flush_all(void) {
+    while (s_emu_log_tail != s_emu_log_head) {
+        uart_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
+        s_emu_log_tail++;
+    }
+}
+
 void emu_throttle(void) {
     // r155: мигание alive (PL10, «код жив») убрано с core0 — теперь его делает
     // ЯДРО 1 (led_heartbeat_cpu1), чтобы core0 не писал в PA_DAT (гонка с PA21/CS).
@@ -670,9 +714,20 @@ void emu_throttle(void) {
         // сдвигается на period, переработка (elapsed≥period) учитывается в debt.
         if (elapsed < period) {
             uint32_t wait = period - elapsed;
-            udelay(wait);
+            uint32_t budget = (wait > 2000u) ? 1000u : wait / 2u;
+            if (budget) {
+                uint32_t f0 = h3_hs_timer_lo_us();
+                emu_log_flush_idle(budget);
+                uint32_t spent = h3_hs_timer_lo_us() - f0;
+                if (spent < wait) udelay(wait - spent);
+            } else {
+                udelay(wait);
+            }
             emu_ts0 += period;
         } else {
+            // Кадр не успевает: большого простоя нет, но 200 мкс на лог
+            // оставляем — иначе PROF/S16D не дойдут до UART на медленных играх.
+            emu_log_flush_idle(200u);
             emu_debt = (int32_t)(elapsed - period);
             if (emu_debt > (int32_t)(period * 3)) emu_debt = (int32_t)(period * 3);
             emu_ts0 += period;

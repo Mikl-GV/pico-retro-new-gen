@@ -33,6 +33,11 @@ void emu_audio_stop(void);   // r939: финализация звука на в�
 // Throttle 60 FPS — вызывать раз в кадр
 void emu_throttle(void);
 
+// r1747: лог горячего цикла — в RAM-буфер, UART только в простое throttle.
+void emu_log_printf(const char* fmt, ...);
+void emu_log_flush_idle(uint32_t budget_us);
+void emu_log_flush_all(void);
+
 // Сброс фазы throttle (вызывать перед циклом кадров системы)
 void emu_throttle_reset(void);
 

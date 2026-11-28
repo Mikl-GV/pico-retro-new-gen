@@ -1356,7 +1356,7 @@ static void arc_prof_emit(const char* sys, const char* game, uint32_t dt,
                           uint32_t dcs, uint32_t snd, uint32_t draw,
                           uint32_t ren, uint32_t cpu68)
 {
-    printf("PROF,%s,%s,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+    emu_log_printf("PROF,%s,%s,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
            sys ? sys : "?", game ? game : "?",
            dt ? (unsigned)(1200000000u / dt) : 0u,
            (unsigned)(emu / 120u), (unsigned)(run / 120u),
@@ -2070,7 +2070,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             if (pf_n >= 120) {
                 uint32_t dt = pf_c - pf_t0;
                 if (dt && g_irem) {
-                    printf("IRM: perf %.1f fps, emu %.1f ms (cpu %.1f snd %.1f draw %.1f), render %.1f ms\n",
+                    emu_log_printf("IRM: perf %.1f fps, emu %.1f ms (cpu %.1f snd %.1f draw %.1f), render %.1f ms\n",
                            120000000.0f / (float)dt,
                            (float)pf_emu / 120000.0f,
                            (float)pf_m72_cpu / 120000.0f, (float)pf_m72_snd / 120000.0f,
@@ -2100,23 +2100,23 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
                         if (w > 0) pn += (size_t)w;
                     }
                     if (pn)
-                        printf("CPS: perf %.1f fps, emu %.1f ms (%s), render %.1f ms\n",
+                        emu_log_printf("CPS: perf %.1f fps, emu %.1f ms (%s), render %.1f ms\n",
                                120000000.0f / (float)dt, (float)pf_emu / 120000.0f,
                                pdet, (float)pf_ren / 120000.0f);
                     else
-                        printf("CPS: perf %.1f fps, emu %.1f ms, render %.1f ms\n",
+                        emu_log_printf("CPS: perf %.1f fps, emu %.1f ms, render %.1f ms\n",
                                120000000.0f / (float)dt, (float)pf_emu / 120000.0f,
                                (float)pf_ren / 120000.0f);
                     arc_prof_emit(root, game, dt, pf_emu, pf_run, pf_scan, pf_dcs,
                                   pf_snd, pf_draw, pf_ren, pf_m68k);
                     // r1742: System16B — CPU/звук/MCU/draw раздельно.
                     if (g_sega && (pf_run | pf_snd | pf_dcs | pf_draw)) {
-                        printf("S16: perf cpu %.1f snd %.1f mcu %.1f draw %.1f ms\n",
+                        emu_log_printf("S16: perf cpu %.1f snd %.1f mcu %.1f draw %.1f ms\n",
                                (float)pf_run / 120000.0f, (float)pf_snd / 120000.0f,
                                (float)pf_dcs / 120000.0f, (float)pf_draw / 120000.0f);
                         if (g_s16_us_draw_clear | g_s16_us_draw_map | g_s16_us_draw_tiles |
                             g_s16_us_draw_text | g_s16_us_draw_spr | g_s16_us_draw_merge | g_s16_us_draw_copy) {
-                            printf("S16D: clear %.2f map %.2f tiles %.2f text %.2f spr %.2f merge %.2f copy %.2f ms\n",
+                            emu_log_printf("S16D: clear %.2f map %.2f tiles %.2f text %.2f spr %.2f merge %.2f copy %.2f ms\n",
                                    (float)g_s16_us_draw_clear / 1000.0f, (float)g_s16_us_draw_map / 1000.0f,
                                    (float)g_s16_us_draw_tiles / 1000.0f, (float)g_s16_us_draw_text / 1000.0f,
                                    (float)g_s16_us_draw_spr / 1000.0f, (float)g_s16_us_draw_merge / 1000.0f,
@@ -2125,10 +2125,10 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
                     }
                     // r1702: из чего состоит рендер DEC0 (robocop/baddudes).
                     if (pf_de_lay | pf_de_clear | pf_de_pal | pf_de_copy) {
-                        printf("DE: draw clear %.1f pal %.1f lay %.1f copy %.1f ms\n",
+                        emu_log_printf("DE: draw clear %.1f pal %.1f lay %.1f copy %.1f ms\n",
                                (float)pf_de_clear / 120000.0f, (float)pf_de_pal / 120000.0f,
                                (float)pf_de_lay / 120000.0f, (float)pf_de_copy / 120000.0f);
-                        printf("DE: lay t1 %.1f t2 %.1f char %.1f spr %.1f ms\n",
+                        emu_log_printf("DE: lay t1 %.1f t2 %.1f char %.1f spr %.1f ms\n",
                                (float)pf_de_t1 / 120000.0f, (float)pf_de_t2 / 120000.0f,
                                (float)pf_de_char / 120000.0f, (float)pf_de_spr / 120000.0f);
                     }

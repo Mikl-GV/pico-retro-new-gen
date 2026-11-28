@@ -257,8 +257,10 @@
 - r1743: tile-span снизил draw до 9.2–11.2 мс, fps 39.5 → 44.8.
 - r1744 разложил draw: tiles 7.8–8.1, merge 0.9–1.4, text 0.8–1.4, copy 0.7,
   sprite 0–0.5, snd 4.7–5.5. Доминируют тайлы.
-- r1745: tile-span на NEON (8 пикселей, прозрачные/непрозрачные отдельно);
-  ждём tiles. После — merge/copy и snd.
+- r1745: tile-span на NEON (8 пикселей) — замер: tiles 4.55–5.05,
+  draw 7.6–8.2, snd 6.0, fps 50–57. Следующий резерв — snd/merge/copy.
+- r1747: логи горячего цикла убраны в RAM-буфер (UART в простое throttle);
+  дальше — snd и merge.
 
 ### 5.5 Toaplan
 
@@ -343,7 +345,7 @@
   `make ARC_CYCLONE=1` собирает Cyclone-вариант; по умолчанию — Musashi.
 - r1738 с byte-swap shadow давал чёрный экран: reset-вектор читался из
   переставленной тени, PC попадал в данные. Shadow отменён в r1739.
-- Проверено: Musashi 26 347 252 Б, Cyclone 26 784 588 Б (r1746), `linkcheck: OK`;
+- Проверено: Musashi 26 348 276 Б, Cyclone 26 785 548 Б (r1747), `linkcheck: OK`;
   в Cyclone-ELF есть `c1m68k_checkpc` и `CycloneRun`.
 - Стенд: CPS-1 (`dino`/`sf2`/`punisher`) — 59.6 fps, `emu` 4.4–10.0 мс;
   S16B (`goldnaxe`) — 44.8 fps после tile-span r1743, draw оптимизируется (см. §5.4).

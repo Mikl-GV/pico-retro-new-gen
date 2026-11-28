@@ -547,7 +547,7 @@ Sega pad, Keyboard remap, Touch Calibration, ROM partition info, Create folders.
 - **Обнуление при старте**: `.a8_bss`/`.frodo_bss` — `startup.S` (один раз при
   boot); кольцо/флаги звука — SRAM A1 (CPU2 видит без MMU).
 
-## Карта памяти (актуально r1746; источник истины — `docs/MEMORY.md`; ниже инварианты, числа сверять `nm`)
+## Карта памяти (актуально r1747; источник истины — `docs/MEMORY.md`; ниже инварианты, числа сверять `nm`)
 
 Секция `.ring_buf` удалена из `linker.ld` (r1009): кольцо звука целиком в
 SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NOLOAD, ноль
@@ -559,10 +559,10 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 |-------|------------|
 | 0x00000000..0x00006000 | **SRAM A1** (24 КБ, некэш. для обоих ядер): one-shot-гейт абортов `0x18`; диaг-блок исключений `0x880..0x8A8`; SMP-почта `0x20` (magic CPU1) / статус CPU1 `0x24` / статус CPU2 `0x90`; пробы `0x28..0x30`; SRAM-почта калибровки/кнопок/настроек `0x34..0x8C`; A2600 diff `0x70`; флаг «игра активна» `0x74` (TFT frozen); кольцо звука `0x1000/0x3000` + индексы/FIFO-почта `0x94..0xC0` (r928/r929/r957) |
 | 0x40000000 | Образ (подряд): `.text` → `.init_array` → `.rodata` → `.ARM.extab/.exidx` → `.data` → `.bss` → бесплатный хвост; `.noinit_fbn` (r1191) закреплён на 0x54000000 (см. ниже) |
-| 0x40000000..0x40DE59E4 | `.text` + init_array (≈13.88 МБ, r1746); векторы `_vectors`=0x40000000 |
-| 0x40DE5A00..0x413D7DC8 | `.rodata` (≈5.94 МБ, r1746) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
-| 0x413DE110..0x419206F4 | `.data` (≈5.25 МБ, копируется из образа) |
-| 0x41921000..0x4479F520 | `.bss` (`_bstart1.._bend1`, ≈46.5 МБ, обнуляется в `startup.S`; r1544 — `ms1504_scr` в `.noinit_fbn`; r1545 — GW-буферы в `.noinit_fbn`) |
+| 0x40000000..0x40DE5DD4 | `.text` + init_array (≈13.88 МБ, r1747); векторы `_vectors`=0x40000000 |
+| 0x40DE5E00..0x413D81C8 | `.rodata` (≈5.94 МБ, r1747) — внутри вшиты Kickstart 1.3 и Workbench 1.3 (`puae_kick13_rom`, `puae_wb13_adf`), BIOS/шрифты ядер |
+| 0x413DE510..0x41920AF4 | `.data` (≈5.25 МБ, копируется из образа) |
+| 0x41921000..0x447A0520 | `.bss` (`_bstart1.._bend1`, ≈46.5 МБ, обнуляется в `startup.S`; r1544 — `ms1504_scr` в `.noinit_fbn`; r1545 — GW-буферы в `.noinit_fbn`) |
 | 0x4A400000..0x4A402E40 | `.libh3_coherent` (DMA-структуры OHCI; NC перевод — no-op r1206). L1-копии LPAE: 0x4A40C000 (L0) + 0x4A410000..0x4A420000 (L1 ×4) |
 | 0x4A420000..0x4A620000 | `.swap_buf` (2 МБ, NOLOAD, r1363) — общий буфер hot-swap дискет `cores/disk_swap.c`; заполняется из файла перед вставкой, `ASSERT` — до `.gb_heap` |
 | 0x4A700000..0x4BF00000 | `_gb_heap_start.._gb_heap_end` — bump-пул кучи **24 МБ** (все ядра; `malloc/free` из `gameboy_stubs.c` в том же пуле) |
@@ -579,15 +579,15 @@ SRAM A1 (r957, L=0x1000/R=0x3000, 4096 пар), она была пустой (NO
 | 0x5FF00000..0x5FF04000 | стеки исключений core0 |
 | 0x60000000 | SVC-стек core0 (растёт вниз) |
 
-Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x4479F520 на r1746),
+Пересечений нет. `_hend` — конец ОБРАЗА сразу после `.bss` (0x447A0520 на r1747),
 не граница кучи и не конец DRAM (r1278, см. `h3_bare/platform/linker.ld`);
 `.coherent`, `_menu_arena` и framebuffer'ы —
 фиксированные адреса вне образа. Проверка адресов: `nm build/h3_bare.elf`,
 `arm-none-eabi-size build/h3_bare.elf`, `arm-none-eabi-readelf -lW`.
 **Числа-размеры плавают с составом прошивки:** актуальные адреса/размеры —
 `docs/MEMORY.md` §2; проверка — `arm-none-eabi-readelf -SW build/h3_bare.elf`
-и `nm -S`. На r1746: `.text` 0xDE59E4, `.rodata` 0x5F23C8, `.data` 0x5425E4,
-`.bss` 0x2E7E520, `.noinit_fbn` 0x7F43900; образ `h3_bare.bin` = 26 347 252 Б.
+и `nm -S`. На r1747: `.text` 0xDE5DD4, `.rodata` 0x5F23C8, `.data` 0x5425E4,
+`.bss` 0x2E7F520, `.noinit_fbn` 0x7F43900; образ `h3_bare.bin` = 26 348 276 Б.
 Cyclone-сборка (`ARC_CYCLONE=1`) больше и сдвигает `.text` — сверять `nm`.
 
 ## Загрузочная карта памяти (r502)
