@@ -1,8 +1,18 @@
-# HANDOVER — текущее состояние (r1741)
+# HANDOVER — текущее состояние (r1742)
 
 > Исторические ссылки на `docs/AUDIT/*` и старые `docs/AUDIT_2026-*.md` —
 > архив: файлы удалены, актуальный послойный отчёт —
 > `docs/AUDIT_2026-11-27_LAYERS.md`.
+
+## r1742 — Sega System 16B: stage-таймеры кадра
+
+- `sys16_run.cpp`: `g_s16_us_cpu/snd/mcu/draw`; в `System16BFrame` измеряются
+  68000 (`SekRun`), Z80+YM2151/MSM6295/UPD7759, mcs51+`Simulate8751`,
+  `BurnDrvRedraw` (`System16BUpdate`).
+- `cps1_host.cpp`: суммы идут в `PROF` (`run` = 68000, `dcs` = MCU),
+  при `g_sega` печатается `S16: perf cpu … snd … mcu … draw …`.
+- Цель — понять, что даёт 19–22 мс на Goldnaxe; оптимизацию не делаем до цифр.
+- Сборка: Musashi `26 339 764 Б`, Cyclone `26 777 100 Б`, `linkcheck: OK`.
 
 ## r1741 — сборка из клона: TOS в репозитории + гонка m68kmake
 

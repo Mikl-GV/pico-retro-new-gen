@@ -5,6 +5,10 @@
 #include "upd7759.h"
 #include "segapcm.h"
 #include "biquad.h"
+#include "h3_hs_timer.h"
+
+// r1742: stage-таймеры System16B для CPS: perf (CPU/звук/MCU/draw).
+uint32_t g_s16_us_cpu = 0, g_s16_us_snd = 0, g_s16_us_mcu = 0, g_s16_us_draw = 0;
 
 UINT8  System16InputPort0[8]  = {0, 0, 0, 0, 0, 0, 0, 0};
 UINT8  System16InputPort1[8]  = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -3015,6 +3019,7 @@ INT32 System16BFrame()
 	const bool has_ym2413 = (BurnDrvGetHardwareCode() & HARDWARE_SEGA_YM2413);
 
 	INT32 nInterleave = (has_ym2413) ? System16YM2413IRQInterval : 256;
+	uint32_t s16_cpu = 0, s16_snd = 0, s16_mcu = 0, s16_t0, s16_t1;
 
 //	bprintf(0, _T("has z80 %d   has 2413 %d   intrl %d\n"), has_z80, has_ym2413, nInterleave);
 
@@ -3039,6 +3044,7 @@ INT32 System16BFrame()
 	SekOpen(0);
 	for (INT32 i = 0; i < nInterleave; i++) {
 		// Run 68000
+		s16_t0 = h3_hs_timer_lo_us();
 		if (System1668KEnable) {
 			CPU_RUN(0, Sek);
 
@@ -3048,9 +3054,12 @@ INT32 System16BFrame()
 		} else {
 			CPU_IDLE(0, Sek);
 		}
+		s16_t1 = h3_hs_timer_lo_us();
+		s16_cpu += s16_t1 - s16_t0;
 
 		// Run Z80
 		if (has_z80) {
+			s16_t0 = h3_hs_timer_lo_us();
 			ZetOpen(0);
 			CPU_RUN_TIMER(1);
 
@@ -3063,11 +3072,14 @@ INT32 System16BFrame()
 			}
 
 			ZetClose();
+			s16_t1 = h3_hs_timer_lo_us();
+			s16_snd += s16_t1 - s16_t0;
 		} else {
 			CPU_IDLE_NULL(1);
 		}
 
 		if (System16I8751RomNum) {
+			s16_t0 = h3_hs_timer_lo_us();
 			CPU_RUN(2, mcs51);
 
 			if (i == (nInterleave - 1)) {
@@ -3082,10 +3094,13 @@ INT32 System16BFrame()
 					mcs51_set_irq_line(MCS51_INT0_LINE, CPU_IRQSTATUS_NONE);
 				}
 			}
+			s16_t1 = h3_hs_timer_lo_us();
+			s16_mcu += s16_t1 - s16_t0;
 		}
 	}
 
 	// Make sure the buffer is entirely filled.
+	s16_t0 = h3_hs_timer_lo_us();
 	if (pBurnSoundOut) {
 		if (has_ym2413) {
 			BurnYM2413Render(pBurnSoundOut, nBurnSoundLen);
@@ -3104,19 +3119,31 @@ INT32 System16BFrame()
 			DACUpdate(pBurnSoundOut, nBurnSoundLen);
 		}
 	}
+	s16_t1 = h3_hs_timer_lo_us();
+	s16_snd += s16_t1 - s16_t0;
 
 	if (!System16I8751RomNum && System1668KEnable) SekSetIRQLine(4, CPU_IRQSTATUS_AUTO);
 	SekClose();
 
+	s16_t0 = h3_hs_timer_lo_us();
 	if (Simulate8751) Simulate8751();
+	s16_t1 = h3_hs_timer_lo_us();
+	s16_mcu += s16_t1 - s16_t0;
 
 	nExtraCycles[0] = nSystem16CyclesDone[0] - nCyclesTotal[0];
 	nExtraCycles[1] = nSystem16CyclesDone[1] - nCyclesTotal[1];
 	nExtraCycles[2] = nSystem16CyclesDone[2] - nCyclesTotal[2];
 
+	s16_t0 = h3_hs_timer_lo_us();
 	if (pBurnDraw) {
 		BurnDrvRedraw();
 	}
+	s16_t1 = h3_hs_timer_lo_us();
+
+	g_s16_us_cpu  = s16_cpu;
+	g_s16_us_snd  = s16_snd;
+	g_s16_us_mcu  = s16_mcu;
+	g_s16_us_draw = s16_t1 - s16_t0;
 
 	return 0;
 }

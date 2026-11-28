@@ -252,9 +252,10 @@
 - Факт r1740 (Cyclone): `goldnaxe` 45.4 → 41.3 fps, `emu` 19.0–22.3 мс,
   `render` 1.0 мс. Это хуже «лёгкой» системы; CPU/видео/звук внутри `emu`
   пока не разделены, подозреваемые — i8751/mcs51, FD1094-декрипт и спрайтовый draw.
-- План: добавить stage-таймеры в `System16Frame` (CPU / видео / звук), снять
-  Musashi и Cyclone на `goldnaxe`/`shinobi`; если Cyclone не хуже — оптимизировать
-  draw/FD1094, иначе сделать per-system откат. **Следующая система — S16B.**
+- Сделано r1742: stage-таймеры в `System16BFrame` (CPU/звук/MCU/draw),
+  `S16: perf` и поля `PROF`. Ждём лог `goldnaxe`: если доминирует draw —
+  оптимизировать `System16BUpdate`; если mcs51 — `Simulate8751`/`mcs51Run`;
+  если 68000 — сравнить Musashi/Cyclone и решать про per-system ядро.
 
 ### 5.5 Toaplan
 
@@ -339,7 +340,7 @@
   `make ARC_CYCLONE=1` собирает Cyclone-вариант; по умолчанию — Musashi.
 - r1738 с byte-swap shadow давал чёрный экран: reset-вектор читался из
   переставленной тени, PC попадал в данные. Shadow отменён в r1739.
-- Проверено: Musashi 26 338 356 Б, Cyclone 26 775 628 Б (r1741), `linkcheck: OK`;
+- Проверено: Musashi 26 339 764 Б, Cyclone 26 777 100 Б (r1742), `linkcheck: OK`;
   в Cyclone-ELF есть `c1m68k_checkpc` и `CycloneRun`.
 - Стенд: CPS-1 (`dino`/`sf2`/`punisher`) — 59.6 fps, `emu` 4.4–10.0 мс;
   S16B (`goldnaxe`) — 45 fps, причина выясняется (см. §5.4).

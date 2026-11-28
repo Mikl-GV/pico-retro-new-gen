@@ -2018,6 +2018,7 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             extern uint32_t g_de_us_snd, g_de_us_draw;   // r1701: DEC0 (robocop)
             extern uint32_t g_de_us_clear, g_de_us_pal, g_de_us_lay, g_de_us_copy;
             extern uint32_t g_de_us_t1, g_de_us_t2, g_de_us_char, g_de_us_spr;
+            extern uint32_t g_s16_us_cpu, g_s16_us_snd, g_s16_us_mcu, g_s16_us_draw;
             static uint32_t pf_de_clear = 0, pf_de_pal = 0, pf_de_lay = 0, pf_de_copy = 0;
             static uint32_t pf_de_t1 = 0, pf_de_t2 = 0, pf_de_char = 0, pf_de_spr = 0;
             static uint32_t pf_t0 = 0, pf_emu = 0, pf_ren = 0;
@@ -2030,11 +2031,11 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             pf_emu += pf_b - pf_a;
             pf_ren += pf_c - pf_b;
             pf_m68k += g_m68k_us_frame;
-            pf_snd += g_tu_us_snd + g_de_us_snd;
-            pf_draw += g_tu_us_draw + g_de_us_draw;
-            pf_run += g_tu_us_run;
+            pf_snd += g_tu_us_snd + g_de_us_snd + g_s16_us_snd;
+            pf_draw += g_tu_us_draw + g_de_us_draw + g_s16_us_draw;
+            pf_run += g_tu_us_run + g_s16_us_cpu;
             pf_scan += g_tu_us_scan;
-            pf_dcs += g_tu_us_dcs;
+            pf_dcs += g_tu_us_dcs + g_s16_us_mcu;
             pf_m72_cpu += g_m72_us_cpu;
             pf_m72_snd += g_m72_us_snd;
             pf_m72_draw += g_m72_us_draw;
@@ -2092,6 +2093,12 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
                                (float)pf_ren / 120000.0f);
                     arc_prof_emit(root, game, dt, pf_emu, pf_run, pf_scan, pf_dcs,
                                   pf_snd, pf_draw, pf_ren, pf_m68k);
+                    // r1742: System16B — CPU/звук/MCU/draw раздельно.
+                    if (g_sega && (pf_run | pf_snd | pf_dcs | pf_draw)) {
+                        printf("S16: perf cpu %.1f snd %.1f mcu %.1f draw %.1f ms\n",
+                               (float)pf_run / 120000.0f, (float)pf_snd / 120000.0f,
+                               (float)pf_dcs / 120000.0f, (float)pf_draw / 120000.0f);
+                    }
                     // r1702: из чего состоит рендер DEC0 (robocop/baddudes).
                     if (pf_de_lay | pf_de_clear | pf_de_pal | pf_de_copy) {
                         printf("DE: draw clear %.1f pal %.1f lay %.1f copy %.1f ms\n",

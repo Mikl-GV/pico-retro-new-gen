@@ -1,11 +1,11 @@
-﻿# MEMORY — карта памяти и правила размещения (актуально r1741)
+﻿# MEMORY — карта памяти и правила размещения (актуально r1742)
 
 > Источник истины по адресам: `linker.ld` + `nm/readelf build/h3_bare.elf`.
-> Таблицы DRAM для default Musashi пересняты на r1741:
-> `.text` = 0x40000000, размер 0xDE378C; `.rodata` = 0x40DE37C0, 0x5F2348;
-> `.data` = 0x413DBE50, 0x5425E4; `.bss` = 0x4191F000..0x4479D520
+> Таблицы DRAM для default Musashi пересняты на r1742:
+> `.text` = 0x40000000, размер 0xDE3CDC; `.rodata` = 0x40DE3D00, 0x5F2388;
+> `.data` = 0x413DC3D0, 0x5425E4; `.bss` = 0x4191F000..0x4479D520
 > (0x2E7E520 ≈ 46.5 МБ), `_bstart1`=0x4191F000, `_bend1`=`_hend`=0x4479D520,
-> `_coherent_end`=0x4A402A40, `h3_bare.bin` = 26 338 356 Б (r1741, Musashi).
+> `_coherent_end`=0x4A402A40, `h3_bare.bin` = 26 339 764 Б (r1742, Musashi).
 > Cyclone-сборка (`ARC_CYCLONE=1`) больше на ~437 КБ и сдвигает `.text` —
 > её адреса сверять `nm` отдельно.
 > При изменении состава секций — обновлять этот файл.
@@ -35,10 +35,10 @@
 
 | Диапазон | Размер | Секция | Что это |
 |---|---|---|---|
-| `0x40000000..0x40DE378C` | ≈13.88 МБ | `.text` | код + init_array, векторы `_vectors`=0x40000000 |
-| `0x40DE37C0..0x413D5B08` | ≈5.94 МБ | `.rodata` | константы, вшитые BIOS/шрифты ядер |
-| `0x413DBE50..0x4191E434` | ≈5.25 МБ | `.data` | инициализированные данные; внутри Kickstart 1.3 (`puae_kick13_rom`) и Workbench 1.3 (`puae_wb13_adf`); адреса плавают с порядком объектов — сверять `nm` |
-| `0x4191F000..0x4479D520` | ≈46.5 МБ | `.bss` | `_bstart1`=`0x4191F000`, `_bend1`=`_hend`=`0x4479D520` (r1741; растёт с ядрами — всегда сверять `nm`); внутри: `tft_fb`=0x4196F730 (0x4B000), `vx_fb`=0x4282C8A8 (0x42108), `g_hdd_stream`=0x435CD630 |
+| `0x40000000..0x40DE3CDC` | ≈13.88 МБ | `.text` | код + init_array, векторы `_vectors`=0x40000000 |
+| `0x40DE3D00..0x413D6088` | ≈5.94 МБ | `.rodata` | константы, вшитые BIOS/шрифты ядер |
+| `0x413DC3D0..0x4191E9B4` | ≈5.25 МБ | `.data` | инициализированные данные; внутри Kickstart 1.3 (`puae_kick13_rom`) и Workbench 1.3 (`puae_wb13_adf`); адреса плавают с порядком объектов — сверять `nm` |
+| `0x4191F000..0x4479D520` | ≈46.5 МБ | `.bss` | `_bstart1`=`0x4191F000`, `_bend1`=`_hend`=`0x4479D520` (r1742; растёт с ядрами — всегда сверять `nm`); внутри: `tft_fb`=0x4196F730 (0x4B000), `vx_fb`=0x4282C8A8 (0x42108), `g_hdd_stream`=0x435CD630 |
 | `_bend1`..`0x44C00000` | ≈4.4 МБ | **свободно** | от конца `.bss` до ZIP_BUF_BIG; при запуске аркад зона перекрывается ZIP_BUF_BIG (`0x44C00000..0x4A400000`, ≤88 МБ) |
 | `0x4A400000..0x4A402A40` | 10816 Б | `.libh3_coherent` | `_coherent_start`=`0x4A400000`, `_coherent_end`=`0x4A402A40` (r1728; внутри `g_mbr` 0x4A402300) |
 | `0x4A402A40..0x4A40C000` | ≈37.5 КБ | **свободно** | под таблицы/буферы (занято guard-маркерами r1245: 128 Б) |
@@ -432,7 +432,7 @@ arm-none-eabi-readelf -SW build/h3_bare.elf    # размеры/адреса с�
 arm-none-eabi-nm build/h3_bare.elf | grep -E "_bstart1|_bend1|_gb_heap|_coherent|_menu_arena|_hend"
 ```
 
-Эталонные значения r1741 (снято с `arm-none-eabi-nm -S -n build/h3_bare.elf`):
+Эталонные значения r1742 (снято с `arm-none-eabi-nm -S -n build/h3_bare.elf`):
 `_bstart1=0x4191F000`, `_bend1=0x4479D520`, `_gb_heap_start=0x4A700000`,
 `_gb_heap_end=0x4BF00000`, `_coherent_start=0x4A400000`,
 `_coherent_end=0x4A402A40`, `_rgb_hi_end=0x531B8000`, `_menu_arena=0x4F000000`,
