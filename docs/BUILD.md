@@ -60,7 +60,7 @@ make -j%NUMBER_OF_PROCESSORS%
   (`c68000_intf.cpp` + `cyclone/Cyclone.S`). Флаг **глобальный** для всех 68000.
 - При смене флага делайте `make clean`: список объектов меняется, но старый
   `build/h3_bare.elf` может быть новее Musashi-объектов, и make не перелинкует.
-- r1742: Musashi `26 339 764 Б`, Cyclone `26 777 100 Б`. CPS-1 проверен
+- r1743: Musashi `26 340 404 Б`, Cyclone `26 777 740 Б`. CPS-1 проверен
   (r1739), S16B `goldnaxe` — 45 fps, поэтому default пока Musashi.
 
 ## 3. Флаги, которые нельзя менять без причины

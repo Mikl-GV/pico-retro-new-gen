@@ -1,8 +1,18 @@
-# HANDOVER — текущее состояние (r1742)
+# HANDOVER — текущее состояние (r1743)
 
 > Исторические ссылки на `docs/AUDIT/*` и старые `docs/AUDIT_2026-*.md` —
 > архив: файлы удалены, актуальный послойный отчёт —
 > `docs/AUDIT_2026-11-27_LAYERS.md`.
+
+## r1743 — S16B draw: tile-span без выбора tilemap на каждый пиксель
+
+- По логу r1742 у Goldnaxe `draw` = 11.4–14.3 мс (cpu 0.8, snd 6.0, mcu 1.9).
+- `System18RenderTileLayer`: в row-scroll ветке `yEffScroll`/`pTileMapSrc`
+  выбирались внутри цикла по x; теперь раз на 16-пиксельный блок (границы
+  `(x+9)/16`), запись — `System18RenderTileSpan`; обычная ветка тоже через span.
+- Ожидание: снять повторные чтения TextRam и выбор карты; проверить draw на
+  стенде, потом браться за sprite layer/merge.
+- Сборка: Musashi `26 340 404 Б`, Cyclone `26 777 740 Б`, `linkcheck: OK`.
 
 ## r1742 — Sega System 16B: stage-таймеры кадра
 

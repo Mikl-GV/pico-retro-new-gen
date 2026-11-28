@@ -3300,19 +3300,35 @@ inline static void System16BUpdateTileValues()
 	}
 }
 
+// r1743: один проход по строке без повторного выбора tilemap на каждый пиксель.
+static inline void System18RenderTileSpan(UINT16 *dst, UINT8 *prio, const UINT16 *src,
+	INT32 x, INT32 xe, INT32 srcOff, INT32 step, INT32 priority, INT32 transparent)
+{
+	for (; x < xe; x++) {
+		UINT16 Pix = src[srcOff];
+		srcOff = (srcOff + step) & 0x3ff;
+
+		if (!transparent || Pix) {
+			dst[x] = Pix;
+			prio[x] |= priority;
+		}
+	}
+}
+
 // System 18 / 16B v dink.01
 static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transparent, INT32 Priority)
 {
-	INT32 xScroll, yScroll, x, y;
+	INT32 xScroll, yScroll, y;
 	UINT16 *TextRam = (UINT16*)System16TextRam;
 
 	xScroll = System16ScrollX[Page];
 	yScroll = System16ScrollY[Page];
-	UINT16 Pix;
 
 	UINT16 *pTileMapSrc = NULL;
 	UINT16 *pTileMapDest = NULL;
 	INT32 xSrcOff, ySrcOff, RowScrollIndex, RowScroll, xEffScroll, yEffScroll;
+	const INT32 step = System16ScreenFlip ? -1 : 1;
+	const INT32 xFlipBase = 312 + System16ScreenFlipXoffs + 192;
 
 	if (yScroll & 0x8000) {
 		for (y = 0; y < nScreenHeight; y++) {
@@ -3323,24 +3339,34 @@ static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transp
 			if (System16ScreenFlip) RowScrollIndex = (216 - y) / 8;
 
 			RowScroll = BURN_ENDIAN_SWAP_INT16(TextRam[0xf80/2 + 0x40/2 * Page + RowScrollIndex]);
-			xEffScroll = (xScroll & 0x8000) ? RowScroll : xScroll;
 
-			for (x = 0; x < nScreenWidth; x++) {
-				yEffScroll = BURN_ENDIAN_SWAP_INT16(TextRam[0xf16/2 + 0x40/2 * Page + (x+9)/16]);
+			if (RowScroll & 0x8000) {
+				xEffScroll = System16ScrollX[Page + 2];
+				yEffScroll = System16ScrollY[Page + 2];
 
-				if (RowScroll & 0x8000) {
-					xEffScroll = System16ScrollX[Page + 2];
-					yEffScroll = System16ScrollY[Page + 2];
+				ySrcOff = (y + yEffScroll) & 0x1ff;
+				if (System16ScreenFlip) ySrcOff = (((216 + System16ScreenFlipYoffs) - y) + yEffScroll) & 0x1ff;
 
-					ySrcOff = (y + yEffScroll) & 0x1ff;
-					if (System16ScreenFlip) ySrcOff = (((216 + System16ScreenFlipYoffs) - y) + yEffScroll) & 0x1ff;
+				if (Page == 0 && PriorityDraw == 0) pTileMapSrc = pSys16FgAltTileMapPri0 + (ySrcOff * 1024);
+				if (Page == 0 && PriorityDraw == 1) pTileMapSrc = pSys16FgAltTileMapPri1 + (ySrcOff * 1024);
+				if (Page == 1 && PriorityDraw == 0) pTileMapSrc = pSys16BgAltTileMapPri0 + (ySrcOff * 1024);
+				if (Page == 1 && PriorityDraw == 1) pTileMapSrc = pSys16BgAltTileMapPri1 + (ySrcOff * 1024);
+				if (Page == 1 && Transparent == 0) pTileMapSrc = pSys16BgAltTileMapOpaque + (ySrcOff * 1024);
 
-					if (Page == 0 && PriorityDraw == 0) pTileMapSrc = pSys16FgAltTileMapPri0 + (ySrcOff * 1024);
-					if (Page == 0 && PriorityDraw == 1) pTileMapSrc = pSys16FgAltTileMapPri1 + (ySrcOff * 1024);
-					if (Page == 1 && PriorityDraw == 0) pTileMapSrc = pSys16BgAltTileMapPri0 + (ySrcOff * 1024);
-					if (Page == 1 && PriorityDraw == 1) pTileMapSrc = pSys16BgAltTileMapPri1 + (ySrcOff * 1024);
-					if (Page == 1 && Transparent == 0) pTileMapSrc = pSys16BgAltTileMapOpaque + (ySrcOff * 1024);
-				} else {
+				xSrcOff = System16ScreenFlip ? (xFlipBase - xEffScroll) & 0x3ff : (192 - xEffScroll) & 0x3ff;
+				System18RenderTileSpan(pTileMapDest, pPrio, pTileMapSrc, 0, nScreenWidth,
+					xSrcOff, step, Priority, Transparent);
+			} else {
+				xEffScroll = (xScroll & 0x8000) ? RowScroll : xScroll;
+
+				// yEffScroll зависит от (x+9)/16 — считаем раз на 16-пиксельный блок.
+				for (INT32 x = 0; x < nScreenWidth; ) {
+					INT32 idx = (x + 9) / 16;
+					INT32 xe = (idx + 1) * 16 - 9;
+					if (xe > nScreenWidth) xe = nScreenWidth;
+
+					yEffScroll = BURN_ENDIAN_SWAP_INT16(TextRam[0xf16/2 + 0x40/2 * Page + idx]);
+
 					ySrcOff = (y + yEffScroll) & 0x1ff;
 					if (System16ScreenFlip) ySrcOff = (((216 + System16ScreenFlipYoffs) - y) + yEffScroll) & 0x1ff;
 
@@ -3349,22 +3375,13 @@ static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transp
 					if (Page == 1 && PriorityDraw == 0 && Transparent == 1) pTileMapSrc = pSys16BgTileMapPri0 + (ySrcOff * 1024);
 					if (Page == 1 && PriorityDraw == 1 && Transparent == 1) pTileMapSrc = pSys16BgTileMapPri1 + (ySrcOff * 1024);
 					if (Page == 1 && Transparent == 0) pTileMapSrc = pSys16BgTileMapOpaque + (ySrcOff * 1024);
-				}
 
-				xSrcOff = (x - xEffScroll + 192) & 0x3ff;
+					xSrcOff = System16ScreenFlip ? (xFlipBase - x - xEffScroll) & 0x3ff
+						: (x + 192 - xEffScroll) & 0x3ff;
+					System18RenderTileSpan(pTileMapDest, pPrio, pTileMapSrc, x, xe,
+						xSrcOff, step, Priority, Transparent);
 
-				if (System16ScreenFlip) xSrcOff = (((312 + System16ScreenFlipXoffs) - x) - xEffScroll + 192) & 0x3ff;
-
-				Pix = pTileMapSrc[xSrcOff];
-
-				if (Transparent) {
-					if (Pix) {
-						pTileMapDest[x] = Pix;
-						pPrio[x] |= Priority;
-					}
-				} else {
-					pTileMapDest[x] = Pix;
-					pPrio[x] |= Priority;
+					x = xe;
 				}
 			}
 		}
@@ -3378,7 +3395,6 @@ static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transp
 
 			RowScroll = BURN_ENDIAN_SWAP_INT16(TextRam[0xf80/2 + 0x40/2 * Page + RowScrollIndex]);
 			xEffScroll = (xScroll & 0x8000) ? RowScroll : xScroll;
-			yEffScroll = yScroll;
 
 			if (RowScroll & 0x8000) {
 				xEffScroll = System16ScrollX[Page + 2];
@@ -3393,6 +3409,8 @@ static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transp
 				if (Page == 1 && PriorityDraw == 1) pTileMapSrc = pSys16BgAltTileMapPri1 + (ySrcOff * 1024);
 				if (Page == 1 && Transparent == 0) pTileMapSrc = pSys16BgAltTileMapOpaque + (ySrcOff * 1024);
 			} else {
+				yEffScroll = yScroll;
+
 				ySrcOff = (y + yEffScroll) & 0x1ff;
 				if (System16ScreenFlip) ySrcOff = (((216 + System16ScreenFlipYoffs) - y) + yEffScroll) & 0x1ff;
 
@@ -3403,23 +3421,9 @@ static void System18RenderTileLayer(INT32 Page, INT32 PriorityDraw, INT32 Transp
 				if (Page == 1 && Transparent == 0) pTileMapSrc = pSys16BgTileMapOpaque + (ySrcOff * 1024);
 			}
 
-			for (x = 0; x < nScreenWidth; x++) {
-				xSrcOff = (x - xEffScroll + 192) & 0x3ff;
-
-				if (System16ScreenFlip) xSrcOff = (((312 + System16ScreenFlipXoffs) - x) - xEffScroll + 192) & 0x3ff;
-
-				Pix = pTileMapSrc[xSrcOff];
-
-				if (Transparent) {
-					if (Pix) {
-						pTileMapDest[x] = Pix;
-						pPrio[x] |= Priority;
-					}
-				} else {
-					pTileMapDest[x] = Pix;
-					pPrio[x] |= Priority;
-				}
-			}
+			xSrcOff = System16ScreenFlip ? (xFlipBase - xEffScroll) & 0x3ff : (192 - xEffScroll) & 0x3ff;
+			System18RenderTileSpan(pTileMapDest, pPrio, pTileMapSrc, 0, nScreenWidth,
+				xSrcOff, step, Priority, Transparent);
 		}
 	}
 }
