@@ -345,7 +345,7 @@
   `make ARC_CYCLONE=1` собирает Cyclone-вариант; по умолчанию — Musashi.
 - r1738 с byte-swap shadow давал чёрный экран: reset-вектор читался из
   переставленной тени, PC попадал в данные. Shadow отменён в r1739.
-- Проверено: Musashi 26 348 276 Б, Cyclone 26 785 548 Б (r1748), `linkcheck: OK`;
+- Проверено: Musashi 26 348 484 Б, Cyclone 26 785 756 Б (r1749), `linkcheck: OK`;
   в Cyclone-ELF есть `c1m68k_checkpc` и `CycloneRun`.
 - Стенд: CPS-1 (`dino`/`sf2`/`punisher`) — 59.6 fps, `emu` 4.4–10.0 мс;
   S16B (`goldnaxe`) — 44.8 fps после tile-span r1743, draw оптимизируется (см. §5.4).

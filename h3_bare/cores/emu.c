@@ -633,8 +633,20 @@ void emu_log_printf(const char* fmt, ...) {
 }
 
 // r1748: буфер хранит '\n', а UART ждёт CRLF — иначе строки уезжают вправо.
+// r1749: каждый buffered-лог начинаем с '\r' — гарантия нулевой колонки,
+// даже если перед ним был прямой printf/чужой вывод.
+static int s_emu_log_col0 = 1;
 static void emu_log_putc(char c) {
-    if (c == '\n') uart_putc('\r');
+    if (c == '\n') {
+        uart_putc('\r');
+        uart_putc('\n');
+        s_emu_log_col0 = 1;
+        return;
+    }
+    if (s_emu_log_col0) {
+        uart_putc('\r');
+        s_emu_log_col0 = 0;
+    }
     uart_putc(c);
 }
 
