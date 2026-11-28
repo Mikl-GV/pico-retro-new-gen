@@ -632,19 +632,25 @@ void emu_log_printf(const char* fmt, ...) {
     s_emu_log_head += (uint32_t)n;
 }
 
+// r1748: буфер хранит '\n', а UART ждёт CRLF — иначе строки уезжают вправо.
+static void emu_log_putc(char c) {
+    if (c == '\n') uart_putc('\r');
+    uart_putc(c);
+}
+
 void emu_log_flush_idle(uint32_t budget_us) {
     if (!budget_us || s_emu_log_tail == s_emu_log_head) return;
     uint32_t t0 = h3_hs_timer_lo_us();
     while (s_emu_log_tail != s_emu_log_head) {
         if ((h3_hs_timer_lo_us() - t0) >= budget_us) break;
-        uart_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
+        emu_log_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
         s_emu_log_tail++;
     }
 }
 
 void emu_log_flush_all(void) {
     while (s_emu_log_tail != s_emu_log_head) {
-        uart_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
+        emu_log_putc(s_emu_log[s_emu_log_tail & (EMU_LOG_BUF_SIZE - 1)]);
         s_emu_log_tail++;
     }
 }
