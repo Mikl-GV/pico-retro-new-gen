@@ -254,9 +254,9 @@
   пока не разделены, подозреваемые — i8751/mcs51, FD1094-декрипт и спрайтовый draw.
 - Факт r1742 (Goldnaxe): draw 11.4–14.3 мс, snd 4.7–6.0, mcu 1.9, cpu 0.8.
   Узкое место — draw, не 68000.
-- r1743: `System18RenderTileLayer` переписан на span-запись без выбора tilemap
-  на каждый пиксель; ждём новый draw. Если всё ещё >8 мс — спрайтовый слой
-  (`System18RenderSpriteLayer`), финальный merge и `BurnTransferCopy`.
+- r1743: tile-span снизил draw до 9.2–11.2 мс, fps 39.5 → 44.8.
+- r1744: sub-таймеры `S16D` (clear/map/tiles/text/spr/merge/copy) — по ним
+  добиваем остаток draw; цель ≤7 мс.
 
 ### 5.5 Toaplan
 
@@ -341,7 +341,7 @@
   `make ARC_CYCLONE=1` собирает Cyclone-вариант; по умолчанию — Musashi.
 - r1738 с byte-swap shadow давал чёрный экран: reset-вектор читался из
   переставленной тени, PC попадал в данные. Shadow отменён в r1739.
-- Проверено: Musashi 26 340 404 Б, Cyclone 26 777 740 Б (r1743), `linkcheck: OK`;
+- Проверено: Musashi 26 343 028 Б, Cyclone 26 780 364 Б (r1744), `linkcheck: OK`;
   в Cyclone-ELF есть `c1m68k_checkpc` и `CycloneRun`.
 - Стенд: CPS-1 (`dino`/`sf2`/`punisher`) — 59.6 fps, `emu` 4.4–10.0 мс;
   S16B (`goldnaxe`) — 45 fps, причина выясняется (см. §5.4).

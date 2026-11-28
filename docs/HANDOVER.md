@@ -1,8 +1,17 @@
-# HANDOVER — текущее состояние (r1743)
+# HANDOVER — текущее состояние (r1744)
 
 > Исторические ссылки на `docs/AUDIT/*` и старые `docs/AUDIT_2026-*.md` —
 > архив: файлы удалены, актуальный послойный отчёт —
 > `docs/AUDIT_2026-11-27_LAYERS.md`.
+
+## r1744 — S16B draw: sub-таймеры (clear/map/tiles/text/sprite/merge/copy)
+
+- r1743 снял draw Goldnaxe с 14.2 до 11.2 мс (fps 39.5 → 44.8), но остаток
+  надо разложить. `System16BRender` теперь меряет: clear+memset, tile values/
+  tilemaps/palette, tile-слои, text, sprite, финальный merge, `BurnTransferCopy`.
+- В лог добавлена `S16D: clear … map … tiles … text … spr … merge … copy …`.
+- Оптимизацию sprite/merge делаем по этим цифрам, не вслепую.
+- Сборка: Musashi `26 343 028 Б`, Cyclone `26 780 364 Б`, `linkcheck: OK`.
 
 ## r1743 — S16B draw: tile-span без выбора tilemap на каждый пиксель
 

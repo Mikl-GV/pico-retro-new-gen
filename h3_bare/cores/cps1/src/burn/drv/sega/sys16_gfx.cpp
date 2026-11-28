@@ -1,4 +1,10 @@
 #include "sys16.h"
+#include "h3_hs_timer.h"
+
+// r1744: разбивка draw S16B (sub-таймеры System16BRender).
+uint32_t g_s16_us_draw_clear = 0, g_s16_us_draw_map = 0, g_s16_us_draw_tiles = 0;
+uint32_t g_s16_us_draw_text = 0, g_s16_us_draw_spr = 0;
+uint32_t g_s16_us_draw_merge = 0, g_s16_us_draw_copy = 0;
 
 INT32 System16SpriteBanks[16];
 INT32 System16TileBanks[8];
@@ -3680,6 +3686,11 @@ INT32 System16BAltRender()
 
 INT32 System16BRender()
 {
+	uint32_t s16t0, s16t1;
+	g_s16_us_draw_clear = g_s16_us_draw_map = g_s16_us_draw_tiles = 0;
+	g_s16_us_draw_text = g_s16_us_draw_spr = g_s16_us_draw_merge = g_s16_us_draw_copy = 0;
+
+	s16t0 = h3_hs_timer_lo_us();
 	BurnTransferClear();
 
 	// clear sprite mixer buffer
@@ -3687,7 +3698,10 @@ INT32 System16BRender()
 
 	// tiles_generic priority mixer: mix-all
 	GenericTilesPRIMASK = 0xff;
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_clear = s16t1 - s16t0;
 
+	s16t0 = h3_hs_timer_lo_us();
 	if (!System16IgnoreVideoEnable) {
 		if (!System16VideoEnable) {
 			return 0;
@@ -3706,7 +3720,10 @@ INT32 System16BRender()
 	} else {
 		System16CalcPalette();
 	}
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_map = s16t1 - s16t0;
 
+	s16t0 = h3_hs_timer_lo_us();
 	if (nBurnLayer & 1) System18RenderTileLayer(1, 0, 0, 0);
 	if (nBurnLayer & 1) System18RenderTileLayer(1, 1, 0, 0);
 
@@ -3715,12 +3732,21 @@ INT32 System16BRender()
 
 	if (nBurnLayer & 8)    System18RenderTileLayer(0, 0, 1, 2);
 	if (nSpriteEnable & 1) System18RenderTileLayer(0, 1, 1, 4);
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_tiles = s16t1 - s16t0;
 
+	s16t0 = h3_hs_timer_lo_us();
 	if (nSpriteEnable & 2) System18RenderTextLayer(0, 4);
 	if (nSpriteEnable & 4) System18RenderTextLayer(1, 8);
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_text = s16t1 - s16t0;
 
+	s16t0 = h3_hs_timer_lo_us();
 	if (nSpriteEnable & 8) System18RenderSpriteLayer();
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_spr = s16t1 - s16t0;
 
+	s16t0 = h3_hs_timer_lo_us();
 	for (INT32 y = System16SpriteYOffset; y < (nScreenHeight - System16SpriteYOffset); y++) {
 		for (INT32 x = 0; x < nScreenWidth; x++) {
 			UINT16* pPixel = pSpriteBitmap + ((y - System16SpriteYOffset) * 320);
@@ -3742,7 +3768,13 @@ INT32 System16BRender()
 		}
 	}
 
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_merge = s16t1 - s16t0;
+
+	s16t0 = h3_hs_timer_lo_us();
 	BurnTransferCopy(System16Palette);
+	s16t1 = h3_hs_timer_lo_us();
+	g_s16_us_draw_copy = s16t1 - s16t0;
 
 	AltModeKludge = 0;
 

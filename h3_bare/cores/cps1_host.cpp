@@ -2019,6 +2019,9 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
             extern uint32_t g_de_us_clear, g_de_us_pal, g_de_us_lay, g_de_us_copy;
             extern uint32_t g_de_us_t1, g_de_us_t2, g_de_us_char, g_de_us_spr;
             extern uint32_t g_s16_us_cpu, g_s16_us_snd, g_s16_us_mcu, g_s16_us_draw;
+            extern uint32_t g_s16_us_draw_clear, g_s16_us_draw_map, g_s16_us_draw_tiles;
+            extern uint32_t g_s16_us_draw_text, g_s16_us_draw_spr;
+            extern uint32_t g_s16_us_draw_merge, g_s16_us_draw_copy;
             static uint32_t pf_de_clear = 0, pf_de_pal = 0, pf_de_lay = 0, pf_de_copy = 0;
             static uint32_t pf_de_t1 = 0, pf_de_t2 = 0, pf_de_char = 0, pf_de_spr = 0;
             static uint32_t pf_t0 = 0, pf_emu = 0, pf_ren = 0;
@@ -2098,6 +2101,14 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
                         printf("S16: perf cpu %.1f snd %.1f mcu %.1f draw %.1f ms\n",
                                (float)pf_run / 120000.0f, (float)pf_snd / 120000.0f,
                                (float)pf_dcs / 120000.0f, (float)pf_draw / 120000.0f);
+                        if (g_s16_us_draw_clear | g_s16_us_draw_map | g_s16_us_draw_tiles |
+                            g_s16_us_draw_text | g_s16_us_draw_spr | g_s16_us_draw_merge | g_s16_us_draw_copy) {
+                            printf("S16D: clear %.2f map %.2f tiles %.2f text %.2f spr %.2f merge %.2f copy %.2f ms\n",
+                                   (float)g_s16_us_draw_clear / 1000.0f, (float)g_s16_us_draw_map / 1000.0f,
+                                   (float)g_s16_us_draw_tiles / 1000.0f, (float)g_s16_us_draw_text / 1000.0f,
+                                   (float)g_s16_us_draw_spr / 1000.0f, (float)g_s16_us_draw_merge / 1000.0f,
+                                   (float)g_s16_us_draw_copy / 1000.0f);
+                        }
                     }
                     // r1702: из чего состоит рендер DEC0 (robocop/baddudes).
                     if (pf_de_lay | pf_de_clear | pf_de_pal | pf_de_copy) {
