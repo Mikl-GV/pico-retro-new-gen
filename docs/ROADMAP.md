@@ -91,7 +91,7 @@ Robocop, Bad Dudes, Heavy Barrel, Karnov), **Psikyo PS3** (r1627,
 | 5б | Taito F2/F3, UPL | 68K(+MCU) | Pbobble3, Ninja Kids; F2/F3 требуют ES5505/ES5510 и 68020 | высокая |
 | 6 | Konami/Capcom ранние | 6809/6502 | 1942, Commando, R-Type (Capcom) | высокая (нужны CPU) |
 
-## Аркады: оптимизация (r1735–r1745)
+## Аркады: оптимизация (r1735–r1746)
 
 - DCS-SMP Midway (DCS на CPU1) удалён в r1735 — DSP снова локально на core0.
 - Профилировщик r1736: `PROF` + `tools/arc_profile.ps1` (`docs/ARC_PROFILE.md`).

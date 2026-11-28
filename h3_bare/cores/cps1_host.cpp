@@ -981,9 +981,9 @@ static void toa_input_cache(void) {
         else if (!strcmp(n, "Down"))    g_toa_pad.down[pl] = p;
         else if (!strcmp(n, "Left"))    g_toa_pad.left[pl] = p;
         else if (!strcmp(n, "Right"))   g_toa_pad.right[pl] = p;
-        else if (!strcmp(n, "Button 1")) g_toa_pad.b1[pl] = p;
-        else if (!strcmp(n, "Button 2")) g_toa_pad.b2[pl] = p;
-        else if (!strcmp(n, "Button 3")) g_toa_pad.b3[pl] = p;
+        else if (!strcmp(n, "Button 1") || !strcmp(n, "Fire 1")) g_toa_pad.b1[pl] = p;
+        else if (!strcmp(n, "Button 2") || !strcmp(n, "Fire 2")) g_toa_pad.b2[pl] = p;
+        else if (!strcmp(n, "Button 3") || !strcmp(n, "Fire 3")) g_toa_pad.b3[pl] = p;
         else if (!strcmp(n, "Coin"))    g_toa_pad.coin[pl] = p;
         else if (!strcmp(n, "Start"))   g_toa_pad.start[pl] = p;
     }
@@ -1635,6 +1635,19 @@ static void run_cps(const char* root, const uint8_t* rom, uint32_t size, const c
         g_de_us_snd = g_de_us_draw = 0;
         g_de_us_clear = g_de_us_pal = g_de_us_lay = g_de_us_copy = 0;
         g_de_us_t1 = g_de_us_t2 = g_de_us_char = g_de_us_spr = 0;
+    }
+
+    // r1746: S16-профиль — глобалы System16BFrame; без сброса System16A
+    // (fantzone) печатала бы цифры предыдущей игры.
+    {
+        extern uint32_t g_s16_us_cpu, g_s16_us_snd, g_s16_us_mcu, g_s16_us_draw;
+        extern uint32_t g_s16_us_draw_clear, g_s16_us_draw_map, g_s16_us_draw_tiles;
+        extern uint32_t g_s16_us_draw_text, g_s16_us_draw_spr;
+        extern uint32_t g_s16_us_draw_merge, g_s16_us_draw_copy;
+        g_s16_us_cpu = g_s16_us_snd = g_s16_us_mcu = g_s16_us_draw = 0;
+        g_s16_us_draw_clear = g_s16_us_draw_map = g_s16_us_draw_tiles = 0;
+        g_s16_us_draw_text = g_s16_us_draw_spr = 0;
+        g_s16_us_draw_merge = g_s16_us_draw_copy = 0;
     }
 
     // NEOGEO: ядро само адресует строки как nNeoScreenWidth (304/320, не
