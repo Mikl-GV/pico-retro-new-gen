@@ -1,8 +1,18 @@
-# HANDOVER — текущее состояние (r1744)
+# HANDOVER — текущее состояние (r1745)
 
 > Исторические ссылки на `docs/AUDIT/*` и старые `docs/AUDIT_2026-*.md` —
 > архив: файлы удалены, актуальный послойный отчёт —
 > `docs/AUDIT_2026-11-27_LAYERS.md`.
+
+## r1745 — S16B tiles: NEON-span 8 пикселей
+
+- r1744 разложил draw Goldnaxe: `tiles` 7.8–8.1 мс — доминирует; merge
+  0.9–1.4, text 0.8–1.4, copy 0.7, sprite 0–0.5.
+- `System18RenderTileSpan`: непрозрачные слои — 8×U16 копия + OR приоритета;
+  прозрачные — NEON `vceqq/vbslq` (пиксель 0 не пишется), приоритет только
+  для ненулевых. Scalar fallback: flip, переход через 1024 и хвост строки.
+- Ожидание: tiles ≈2–3 мс; затем merge/copy и snd.
+- Сборка: Musashi `26 347 252 Б`, Cyclone `26 784 588 Б`, `linkcheck: OK`.
 
 ## r1744 — S16B draw: sub-таймеры (clear/map/tiles/text/sprite/merge/copy)
 

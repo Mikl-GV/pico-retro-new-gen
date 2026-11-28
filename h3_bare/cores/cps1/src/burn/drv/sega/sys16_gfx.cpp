@@ -1,5 +1,6 @@
 #include "sys16.h"
 #include "h3_hs_timer.h"
+#include <arm_neon.h>
 
 // r1744: разбивка draw S16B (sub-таймеры System16BRender).
 uint32_t g_s16_us_draw_clear = 0, g_s16_us_draw_map = 0, g_s16_us_draw_tiles = 0;
@@ -3306,18 +3307,92 @@ inline static void System16BUpdateTileValues()
 	}
 }
 
-// r1743: один проход по строке без повторного выбора tilemap на каждый пиксель.
-static inline void System18RenderTileSpan(UINT16 *dst, UINT8 *prio, const UINT16 *src,
-	INT32 x, INT32 xe, INT32 srcOff, INT32 step, INT32 priority, INT32 transparent)
+// r1745: 8 пикселей за итерацию; прозрачные/непрозрачные слои — разными путями.
+static inline void System18RenderTileSpanTransparent(UINT16 *dst, UINT8 *prio, const UINT16 *src,
+	INT32 x, INT32 xe, INT32 srcOff, INT32 step, INT32 priority)
 {
+	if (step == 1) {
+		const uint8x8_t prio8 = vdup_n_u8((uint8_t)priority);
+
+		while (x + 8 <= xe) {
+			if (srcOff + 8 <= 1024) {
+				uint16x8_t s = vld1q_u16(src + srcOff);
+				uint16x8_t d = vld1q_u16(dst + x);
+				uint16x8_t zero = vceqq_u16(s, vdupq_n_u16(0));
+
+				vst1q_u16(dst + x, vbslq_u16(zero, d, s));
+
+				uint8x8_t p = vld1_u8(prio + x);
+				uint8x8_t nz = vmvn_u8(vmovn_u16(zero));	// 0xff там, где пиксель != 0
+				vst1_u8(prio + x, vorr_u8(p, vand_u8(nz, prio8)));
+
+				x += 8;
+				srcOff += 8;
+				continue;
+			}
+
+			for (INT32 i = 0; i < 8; i++) {
+				UINT16 Pix = src[srcOff];
+				srcOff = (srcOff + 1) & 0x3ff;
+				if (Pix) {
+					dst[x] = Pix;
+					prio[x] |= priority;
+				}
+				x++;
+			}
+		}
+	}
+
 	for (; x < xe; x++) {
 		UINT16 Pix = src[srcOff];
 		srcOff = (srcOff + step) & 0x3ff;
 
-		if (!transparent || Pix) {
+		if (Pix) {
 			dst[x] = Pix;
 			prio[x] |= priority;
 		}
+	}
+}
+
+static inline void System18RenderTileSpanOpaque(UINT16 *dst, UINT8 *prio, const UINT16 *src,
+	INT32 x, INT32 xe, INT32 srcOff, INT32 step, INT32 priority)
+{
+	if (step == 1) {
+		const uint8x8_t prio8 = vdup_n_u8((uint8_t)priority);
+
+		while (x + 8 <= xe) {
+			if (srcOff + 8 <= 1024) {
+				vst1q_u16(dst + x, vld1q_u16(src + srcOff));
+				vst1_u8(prio + x, vorr_u8(vld1_u8(prio + x), prio8));
+
+				x += 8;
+				srcOff += 8;
+				continue;
+			}
+
+			for (INT32 i = 0; i < 8; i++) {
+				dst[x] = src[srcOff];
+				srcOff = (srcOff + 1) & 0x3ff;
+				prio[x] |= priority;
+				x++;
+			}
+		}
+	}
+
+	for (; x < xe; x++) {
+		dst[x] = src[srcOff];
+		srcOff = (srcOff + step) & 0x3ff;
+		prio[x] |= priority;
+	}
+}
+
+static inline void System18RenderTileSpan(UINT16 *dst, UINT8 *prio, const UINT16 *src,
+	INT32 x, INT32 xe, INT32 srcOff, INT32 step, INT32 priority, INT32 transparent)
+{
+	if (transparent) {
+		System18RenderTileSpanTransparent(dst, prio, src, x, xe, srcOff, step, priority);
+	} else {
+		System18RenderTileSpanOpaque(dst, prio, src, x, xe, srcOff, step, priority);
 	}
 }
 

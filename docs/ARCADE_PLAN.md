@@ -255,8 +255,10 @@
 - Факт r1742 (Goldnaxe): draw 11.4–14.3 мс, snd 4.7–6.0, mcu 1.9, cpu 0.8.
   Узкое место — draw, не 68000.
 - r1743: tile-span снизил draw до 9.2–11.2 мс, fps 39.5 → 44.8.
-- r1744: sub-таймеры `S16D` (clear/map/tiles/text/spr/merge/copy) — по ним
-  добиваем остаток draw; цель ≤7 мс.
+- r1744 разложил draw: tiles 7.8–8.1, merge 0.9–1.4, text 0.8–1.4, copy 0.7,
+  sprite 0–0.5, snd 4.7–5.5. Доминируют тайлы.
+- r1745: tile-span на NEON (8 пикселей, прозрачные/непрозрачные отдельно);
+  ждём tiles. После — merge/copy и snd.
 
 ### 5.5 Toaplan
 
@@ -341,10 +343,10 @@
   `make ARC_CYCLONE=1` собирает Cyclone-вариант; по умолчанию — Musashi.
 - r1738 с byte-swap shadow давал чёрный экран: reset-вектор читался из
   переставленной тени, PC попадал в данные. Shadow отменён в r1739.
-- Проверено: Musashi 26 343 028 Б, Cyclone 26 780 364 Б (r1744), `linkcheck: OK`;
+- Проверено: Musashi 26 347 252 Б, Cyclone 26 784 588 Б (r1745), `linkcheck: OK`;
   в Cyclone-ELF есть `c1m68k_checkpc` и `CycloneRun`.
 - Стенд: CPS-1 (`dino`/`sf2`/`punisher`) — 59.6 fps, `emu` 4.4–10.0 мс;
-  S16B (`goldnaxe`) — 45 fps, причина выясняется (см. §5.4).
+  S16B (`goldnaxe`) — 44.8 fps после tile-span r1743, draw оптимизируется (см. §5.4).
 - Ограничения пилота: только 68000 (Psikyo 68EC020 — Musashi); код из RAM без
   `MAP_FETCH` уходит в trap-страницу.
 - Порядок: CPS-1 (пилот, успешно) → Sega System 16B (следующая) → Data East →
